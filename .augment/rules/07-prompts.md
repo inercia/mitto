@@ -13,7 +13,6 @@ keywords:
   - MergePromptsKeepDisabled
   - workspace-prompts
   - enabledWhen
-  - enabledWhenACP
   - predefinedPrompts
   - toggle-enabled
   - prompts menu
@@ -60,7 +59,7 @@ enabledWhen: "acp.matchesServerType('augment') && tools.hasPattern('filesystem_*
 Please review the following code for quality, readability, and potential bugs.
 ```
 
-**Legacy shorthand fields** (`enabledWhenACP`, `enabledWhenMCP`) are still accepted for backward compatibility and are auto-translated to `enabledWhen` CEL expressions. Prefer `enabledWhen` for new prompts.
+**Removed fields**: `enabledWhenACP` and `enabledWhenMCP` have been fully removed from the codebase. If encountered in old code or docs, replace with equivalent `enabledWhen` CEL expressions.
 
 ## Key Types
 
@@ -73,23 +72,13 @@ type WebPrompt struct {
     BackgroundColor string       `json:"backgroundColor,omitempty"`
     Source          PromptSource `json:"source,omitempty"`    // "builtin", "file", "settings", "workspace"
     Enabled         *bool        `json:"enabled,omitempty"`   // nil = enabled, false = disabled
-    EnabledWhenACP  string       `json:"-"`                   // Legacy shorthand → auto-translated to EnabledWhen
-    EnabledWhenMCP  string       `json:"-"`                   // Legacy shorthand → auto-translated to EnabledWhen
-    EnabledWhen     string       `json:"-"`                   // CEL expression (preferred)
+    EnabledWhen     string       `json:"-"`                   // CEL expression (server-side filtering only)
 }
 ```
 
 ## Merging Functions
 
-```go
-// Standard merge: filters out disabled prompts (enabled: false)
-MergePrompts(global, settings, workspace []WebPrompt) []WebPrompt
-
-// Keep disabled: preserves enabled:false entries (for management UI)
-MergePromptsKeepDisabled(global, settings, workspace []WebPrompt) []WebPrompt
-```
-
-Higher-priority source overrides lower-priority by name. Use `MergePromptsKeepDisabled` for the `include_global=true` variant (WorkspacesDialog).
+`MergePrompts(global, settings, workspace)` — filters disabled. `MergePromptsKeepDisabled(...)` — keeps `enabled:false` entries (for WorkspacesDialog `include_global=true`). Higher-priority source overrides lower by name.
 
 ## PromptsCache (`internal/config/prompts_cache.go`)
 
@@ -133,11 +122,27 @@ Three MCP tools for managing prompts programmatically:
 
 **Anti-pattern**: Never do client-side prompt merging — backend does everything. `predefinedPrompts = workspacePrompts` only. Refresh on: dropdown open, file watcher event, visibility change, 30s interval. Supports `If-Modified-Since` / `Last-Modified` for efficient polling.
 
+**Session-switch re-fetch**: CEL expressions referencing `session.*` (e.g., `session.isChild`, `parent.exists`) produce different filtered lists per session. The frontend must re-fetch prompts on every `activeSessionId` change, even within the same workspace — not just on workspace directory change. In `app.js`, a dedicated `useEffect([activeSessionId])` calls `fetchWorkspacePrompts(workingDir, true)` when `workingDir === workspacePromptsDir`.
+
+## Builtin Prompt Content Conventions (`config/prompts/builtin/`)
+
+- **Template variables**: Use `@mitto:*` placeholders (substituted at send time). Full list in `docs/config/prompts.md#variable-substitution` and `internal/processors/variables.go`.
+- **No hardcoded ACP server names**: Use `@mitto:available_acp_servers`; never hardcode server names.
+- **Generic server selection**: instruct agents to "prefer faster/cheaper for simple tasks, more capable for complex tasks"
+- **Spawn deduplication**: Use `@mitto:mcp_children` (auto-substituted list of MCP-created children with titles) to check for existing child conversations before spawning. Avoids extra `mitto_conversation_list` calls. Include spawn caps per run.
+- **Periodic mode pattern**: Use `@mitto:periodic` and `@mitto:periodic_forced` to branch behavior. Scheduled runs → `mitto_ui_notify` only (no blocking UI). Force-triggered or interactive → may use `mitto_ui_options`/`mitto_ui_form`.
+- **Cross-session delegation must confirm first**: Agent proposes its best plan based on conversation context; user confirms or overrides via `mitto_ui_options(allow_free_text: true, timeout: 120s)`; abort on timeout. Do NOT force "3–5 options" — a single clear proposal is preferred. Do NOT call `mitto_conversation_get_summary` — the agent already has context.
+
 ## enabledWhen Filtering
 
-Server-side filtering via `filterPromptsByEnabled()` and `buildPromptEnabledContext()`.
+Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `fileExists(".git/config")`, `commandExists("gh")`, `tools.hasPattern("github_*")`.
 
-Prefer `enabledWhen` (CEL expression). Legacy shorthands are auto-translated at load time:
-- `enabledWhenACP: "augment"` → `acp.matchesServerType("augment")`
-- `enabledWhenACP: "augment, claude-code"` → `acp.matchesServerType(["augment", "claude-code"])`
-- `enabledWhenMCP: "mitto_*"` → `tools.hasPattern("mitto_*")` (legacy, prefer `enabledWhen`)
+### Merge Pitfall: `enabledWhen` Lost in Settings Override
+
+`EnabledWhen` has `json:"-"` tag → not serialized. Settings override of a builtin **loses `enabledWhen`**. Fix: merge logic must carry forward `enabledWhen` from lower-priority source.
+
+### Config Save Anti-pattern: Prompt Round-trip
+
+`GET /api/config` returns ALL merged prompts (files + settings). Never round-trip these back via `POST /api/config`:
+- **Frontend**: Set `prompts: []` explicitly in save requests. `SettingsDialog` (line 1883) does this correctly. `WorkspacesDialog` spreading `...config` was a bug — it included file-sourced prompts in the save payload.
+- **Backend**: `buildNewSettings` must filter `req.Prompts` to only keep `Source == PromptSourceSettings` or empty source. Drop `PromptSourceFile` and `PromptSourceBuiltin` before persisting.

@@ -196,6 +196,9 @@ type UINotifyRequest struct {
 	Sound bool `json:"sound,omitempty"`
 	// Native requests a native OS notification in addition to the in-app toast.
 	Native bool `json:"native,omitempty"`
+	// Sticky keeps the native notification in Notification Center until the user dismisses it.
+	// When false (default), the notification auto-removes after 5 seconds.
+	Sticky bool `json:"sticky,omitempty"`
 }
 
 // UIPrompter allows MCP tools to display interactive prompts in the UI.

@@ -229,7 +229,7 @@ When a client attempts to connect to a session that no longer exists, the server
 
 ## Auto-Children
 
-The **auto-children** feature automatically creates child conversations when a new top-level conversation is started in a workspace. See [Auto-Children Configuration](../config/web/auto-children.md) for usage.
+The **auto-children** feature automatically creates child conversations when a new top-level conversation is started in a workspace. See [Auto-Children Configuration](../config/auto-children.md) for usage.
 
 ### IsAutoChild Field
 

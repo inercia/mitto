@@ -26,54 +26,31 @@ Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
 - **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), periodic control (`mitto_conversation_set_periodic`, `mitto_conversation_run_periodic_now`)
 
-## Transport Modes
-
-| Mode               | Use Case                          | Configuration                                   |
-| ------------------ | --------------------------------- | ----------------------------------------------- |
-| **HTTP** (default) | Remote access, Auggie integration | `TransportModeHTTP`, runs on port 5757          |
-| **STDIO**          | Subprocess usage, Claude Desktop  | `TransportModeSTDIO`, reads/writes stdin/stdout |
-
-HTTP: `mcpserver.NewServer(Config{Mode: TransportModeHTTP, Address: "127.0.0.1:5757"}, sessionsDir, settingsPath).Start(ctx)`
-
-STDIO: `server.RunSTDIO(ctx)` — blocks until context cancelled. Used by `mitto mcp --proxy-to <url>` for stdio MCP proxy.
-
 ## Adding New Tools
 
 Handler signature (3-arg form — SDK unmarshals input automatically):
 
 ```go
 func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input FooInput) (*mcp.CallToolResult, FooOutput, error) {
-    // 1. Validate self_id
-    sessionID, err := s.resolveSessionID(ctx, req, input.SelfID)
-    if err != nil {
-        return nil, FooOutput{Error: err.Error()}, nil
+    // 1. Resolve self_id (always use resolveSelfIDWithMCP in handlers — 3-phase lookup)
+    realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+    if realSessionID == "" {
+        return nil, FooOutput{Error: fmt.Sprintf("session not found: self_id '%s' could not be resolved", input.SelfID)}, nil
     }
     // 2. Do work ...
     return nil, FooOutput{Success: true}, nil
 }
 ```
 
-Register:
-```go
-mcp.AddTool(mcpSrv, &mcp.Tool{Name: "mitto_foo", Description: "..." + selfIDNote}, s.handleFoo)
-```
+**Session ID resolution:** Use `resolveSelfIDWithMCP(selfID, req)` in all handlers (3-phase: direct lookup → ACP correlation → MCP session cache). Use `resolveSelfID(selfID)` only when no `*mcp.CallToolRequest` is available (rare).
+
+Register with `mcp.AddTool(mcpSrv, &mcp.Tool{Name: "mitto_foo", Description: "..." + selfIDNote}, s.handleFoo)`.
 
 **Rules:**
 - Output must be a **struct** (not slice/primitive) — MCP SDK requirement
 - Initialize slice fields as `[]T{}` not nil — Go encodes nil as JSON `null`, ACP rejects that
-- `selfIDNote` constant is already defined in `server.go` — append it to Description
-
-**Reading session store:**
-```go
-s.mu.RLock()
-store := s.store
-s.mu.RUnlock()
-events, err := store.ReadEvents(sessionID)
-// Decode typed data:
-data := session.DecodeEventData(event)  // returns typed union; check each field
-```
-
-See `40-debugging.md` for using MCP tools for debugging.
+- `selfIDNote` constant defined in `server.go` — append it to Description
+- Store access: `s.mu.RLock(); store := s.store; s.mu.RUnlock()`. Decode: `session.DecodeEventData(event)`.
 
 ## Session Registration
 
@@ -92,6 +69,30 @@ New flags: define `const FlagXxx` in `internal/session/flags.go`, add to `Availa
 - No per-session MCP servers — all tools on the global server
 - All session-scoped tools require `session_id` parameter
 - `SessionManager` interface (in `server.go`) has ~20 methods including workspace/prompt helpers (`GetWorkspacePrompts`, `GetWorkspacePromptsDirs`, `GetWorkspace`, etc.). When extending: add stub methods to **all 7 mock types** in `server_test.go`. Stubs returning nil/zero are acceptable for non-tested methods.
+
+## Cross-Workspace Operations
+
+Any tool that operates on a target conversation in a different workspace than the caller MUST:
+1. Check `FlagCanInteractOtherWorkspaces` flag
+2. Call `confirmCrossWorkspaceOperation` (blocking UI confirmation — always required, no bypass)
+
+```go
+if callerMeta.WorkingDir != targetWS.WorkingDir {
+    if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+        return nil, Out{Error: "cross-workspace ops require 'can_interact_other_workspaces' flag"}, nil
+    }
+    if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "description", targetWS); err != nil {
+        return nil, Out{Error: err.Error()}, nil
+    }
+}
+```
+
+**SessionManager workspace methods:**
+- `sm.GetWorkspaces()` — all configured workspaces
+- `sm.GetWorkspacesForFolder(folder)` — workspaces for a specific directory
+- `sm.GetWorkspaceByUUID(uuid)` — lookup by workspace UUID
+
+**Workspace lookup:** build two maps from `sm.GetWorkspaces()`: exact key `workingDir+"|"+acpServer` and dir-only fallback. Try exact first, fall back to dir-only.
 
 ## Optional Late-Bound Dependencies
 
@@ -112,24 +113,27 @@ Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP pro
 
 See `docs/devel/mcp.md` for detailed documentation.
 
+## Input Validation in Tools
+
+Reject invalid inputs with errors that guide AI retry behavior — **never silently truncate or fix**:
+```go
+if len([]rune(question)) > maxQuestionLen {
+    return nil, Out{}, fmt.Errorf("question too long (%d chars, max %d); print context as a message first, then call with a concise question", len([]rune(question)), maxQuestionLen)
+}
+```
+Also document limits in tool descriptions upfront so AI agents know constraints before calling.
+
 ## Agents Package (`internal/agents`)
 
-Manages agent definitions loaded from `agents/builtin/<dir>/` directories. Each agent has `metadata.yaml` with an `acpId` field that maps from ACP server type to agent directory name.
-
-**Key gotcha:** ACP type ≠ agent directory name. Example: ACP type `"auggie"` → directory `"augment"` (matched via `acpId` in `metadata.yaml`). Always use `GetAgentByACPId` to resolve this mapping.
+Agents defined in `agents/builtin/<dir>/` with `metadata.yaml`. **Key gotcha:** ACP type ≠ directory name (e.g. `"auggie"` → `"augment"`). Always use `GetAgentByACPId(acpType)`.
 
 ```go
 mgr := agents.NewManager(agentsDir, logger)
-
-// Look up by ACP server type (NOT directory name)
-agent, err := mgr.GetAgentByACPId(acpType)  // acpType e.g. "auggie", "claude-code"
-
-// Check if agent supports a command
-if agent.HasCommand(agents.CommandMCPList) { ... }
-
-// Run mcp-list command (script reads optional JSON from stdin)
-output, err := mgr.ListMCPServers(ctx, agent.DirName, &agents.MCPListInput{Path: workingDir})
-// output.Servers: []MCPServer{Name, Command, Args, URL}
+agent, err := mgr.GetAgentByACPId(acpType)  // e.g. "auggie", "claude-code"
+if agent.HasCommand(agents.CommandMCPList) {
+    output, err := mgr.ListMCPServers(ctx, agent.DirName, &agents.MCPListInput{Path: workingDir})
+    // output.Servers: []MCPServer{Name, Command, Args, URL}
+}
 ```
 
-API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`). Returns `{servers, agent_name, error?, message?}`.
+API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`).

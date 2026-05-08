@@ -96,6 +96,40 @@ resp := SelectPermissionOption(options, selectedIndex)
 resp := CancelledPermissionResponse()
 ```
 
+## Agent Definitions
+
+Agents are defined in `config/agents/builtin/<agent>/` (shipped) or `MITTO_DIR/agents/custom/<agent>/` (user-created).
+
+### Key Types (`internal/agents/types.go`)
+
+| Type | Purpose |
+|------|---------|
+| `AgentMetadata` | Parsed from `metadata.yaml` |
+| `MCPMetadata` | MCP scope capabilities (`Scopes []string`) |
+| `MCPInstallInput` | JSON input to `mcp-install.sh` (includes `Scope` field) |
+| `AgentDefinition` | Resolved agent with metadata + filesystem location |
+
+### metadata.yaml structure
+
+```yaml
+name: claude-code
+displayName: Claude Code
+acpId: claude
+mcp:
+  scopes: ["user", "project", "local"]  # supported scopes
+install:
+  method: npx
+  package: "@anthropic-ai/claude-code"
+```
+
+**MCP scope values**: `user` (global config), `project` (per-repo), `local` (local-only, not committed).
+
+### Adding a new agent
+
+1. Create `config/agents/builtin/<name>/metadata.yaml`
+2. Add `cmds/` scripts: `install.sh`, `status.sh`, `mcp-list.sh`, `mcp-install.sh`
+3. Set `mcp.scopes` in metadata to reflect what `mcp-install.sh` supports
+
 ### ACP Connection Testing
 
 | Method              | Test Scenarios                                                     |

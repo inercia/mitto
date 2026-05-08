@@ -11,6 +11,7 @@ export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
 export { UserDataPanel } from "./UserDataPanel.js";
+export { ToastContainer } from "./ToastContainer.js";
 
 // Icon components
 export {

@@ -242,9 +242,9 @@ type requiredToolsCheckResponse struct {
 	Patterns map[string]bool `json:"patterns"`
 }
 
-// parseEnabledWhenMCPCheck parses the JSON response from the required tools pattern check.
+// parseToolPatternsCheck parses the JSON response from the required tools pattern check.
 // It handles cases where the response might have extra text around the JSON.
-func parseEnabledWhenMCPCheck(response string) (map[string]bool, error) {
+func parseToolPatternsCheck(response string) (map[string]bool, error) {
 	response = strings.TrimSpace(response)
 	response = stripMarkdownFences(response)
 

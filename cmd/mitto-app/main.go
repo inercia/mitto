@@ -337,6 +337,12 @@ var lastAppActiveMu sync.Mutex
 // to the frontend.  Zero value means no event has been dispatched yet.
 var lastAppActiveTime time.Time
 
+// badgeCountMu guards badgeCount.
+var badgeCountMu sync.Mutex
+
+// badgeCount tracks the current dock badge count (number of sticky notifications shown).
+var badgeCount int
+
 //export goMenuActionCallback
 func goMenuActionCallback(action *C.char) {
 	globalWebViewMu.Lock()
@@ -440,6 +446,9 @@ func goAppDidBecomeActiveCallback() {
 	}
 	lastAppActiveTime = now
 	lastAppActiveMu.Unlock()
+
+	// Clear dock badge when app gains focus
+	clearBadge()
 
 	globalWebViewMu.Lock()
 	w := globalWebView
@@ -570,8 +579,10 @@ type NotificationResult struct {
 }
 
 // showNativeNotification posts a notification to the macOS Notification Center.
+// When sticky is true the notification persists until the user dismisses it;
+// when false it auto-removes after 5 seconds.
 // This is exposed to JavaScript via webview.Bind.
-func showNativeNotification(title, body, sessionId string) NotificationResult {
+func showNativeNotification(title, body, sessionId string, sticky bool) NotificationResult {
 	cTitle := C.CString(title)
 	defer C.free(unsafe.Pointer(cTitle))
 	cBody := C.CString(body)
@@ -579,11 +590,44 @@ func showNativeNotification(title, body, sessionId string) NotificationResult {
 	cSessionId := C.CString(sessionId)
 	defer C.free(unsafe.Pointer(cSessionId))
 
-	result := C.showNativeNotification(cTitle, cBody, cSessionId)
+	stickyInt := C.int(0)
+	if sticky {
+		stickyInt = C.int(1)
+	}
+
+	result := C.showNativeNotification(cTitle, cBody, cSessionId, stickyInt)
 	if result != 0 {
 		return NotificationResult{Success: false, Error: "Failed to show notification"}
 	}
+
+	// Increment dock badge for sticky notifications
+	if sticky {
+		incrementBadge()
+	}
+
 	return NotificationResult{Success: true}
+}
+
+// incrementBadge increases the dock badge count by 1.
+// Called when a sticky native notification is shown.
+func incrementBadge() int {
+	badgeCountMu.Lock()
+	badgeCount++
+	count := badgeCount
+	badgeCountMu.Unlock()
+	C.setDockBadgeCount(C.int(count))
+	slog.Debug("Badge count incremented", "count", count)
+	return count
+}
+
+// clearBadge resets the dock badge to zero.
+// Called when the app becomes active (gains focus).
+func clearBadge() {
+	badgeCountMu.Lock()
+	badgeCount = 0
+	badgeCountMu.Unlock()
+	C.clearDockBadge()
+	slog.Debug("Badge count cleared")
 }
 
 // removeNotificationsForSession removes all delivered notifications for a session.

@@ -35,23 +35,16 @@ options: <children formatted as "Title - ACP Server (running/idle)">
 
 On timeout: abort. Do not send without explicit selection.
 
-## Phase 3: Get Child Summary
+## Phase 3: Prepare Instructions
 
-`mitto_conversation_get_summary(self_id: "@mitto:session_id", conversation_id: <selected_child_id>)`
-
-Review what the child has accomplished and where it left off.
-
-## Phase 4: Prepare Instructions
-
-Based on the child's current state and the overall goal, prepare continuation instructions:
+Based on the conversation context and the overall goal, prepare continuation instructions for the child.
 
 Present to user:
+
 ```markdown
 ## Continue Child Work
 
 **Child:** <title> (<id>)
-**Current Status:** <summary of what child has done>
-**Last Activity:** <when>
 
 **Proposed Instructions:**
 ---
@@ -59,13 +52,24 @@ Present to user:
 ---
 ```
 
-Ask user to confirm or modify the instructions.
+Confirm via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 120s):
 
-## Phase 5: Send Instructions
+```
+question: "Send these instructions to <child title>?"
+options:
+  - label: "Send as proposed"
+    description: "<one-line summary of the proposed instructions>"
+allow_free_text: true
+free_text_placeholder: "Describe what to do differently..."
+```
 
-`mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id: <child_id>, prompt: <instructions>)`
+On timeout: abort. Do not send without explicit confirmation.
 
-## Phase 6: Report
+## Phase 4: Send Instructions
+
+`mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id: <child_id>, prompt: <confirmed instructions>)`
+
+## Phase 5: Report
 
 ```markdown
 ✅ Instructions Sent

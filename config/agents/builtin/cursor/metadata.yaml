@@ -8,3 +8,5 @@ license: "proprietary"
 install:
   method: "binary"
   note: "Download from https://cursor.com — Cursor agent is distributed as part of the Cursor IDE"
+mcp:
+  scopes: ["user", "project"]

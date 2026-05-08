@@ -8,12 +8,12 @@
 # Fire-and-forget: the auxiliary agent works in the background while the main
 # conversation continues normally.
 #
-# Disabled by default — enable per workspace in the Workspaces dialog or .mittorc.
+# Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 # Only activates when a .mittorc file exists but lacks a metadata description.
 ##########################################################################################
 name: identify-workspace-metadata
 description: "Analyzes the project and fills in workspace metadata (description, URL) in .mittorc"
-enabled: false
+enabled: true
 when: first
 priority: 195
 timeout: 120s

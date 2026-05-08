@@ -58,26 +58,13 @@ const isMacApp = typeof window.mittoPickFolder === "function";
 | Different behavior | Works in browser, not in app   | Check Web Inspector console |
 | Process name in Activity Monitor | Shows as "https://127.0.0.1:XXXX" | Call `setProcessName("Mitto")` before `webview.New()` — WebContent child processes inherit name from parent |
 
+**Launch requirement**: Always use `open Mitto.app` (not `./Mitto.app/Contents/MacOS/mitto-app`). Running the binary directly skips Launch Services registration → no dock icon, no badge, no Notification Center support.
+
 **Debugging**: Safari -> Develop -> Your Mac -> Mitto window (enable `setDeveloperExtrasEnabled(true)` in dev builds)
 
 ### Setting the Process Name
 
-WKWebView spawns WebContent child processes that inherit the parent's display name. Without an explicit name, the URL shown in the WKWebView appears as the process name. Fix: call `[[NSProcessInfo processInfo] setProcessName:@"Mitto"]` **before** `webview.New()`:
-
-```objc
-// cmd/mitto-app/menu_darwin.m
-void setProcessName(const char* name) {
-    [[NSProcessInfo processInfo] setProcessName:[NSString stringWithUTF8String:name]];
-}
-```
-
-```go
-// cmd/mitto-app/main.go — early in run(), before webview.New()
-func setProcessName(name string) {
-    cName := C.CString(name); defer C.free(unsafe.Pointer(cName))
-    C.setProcessName(cName)
-}
-```
+Call `setProcessName("Mitto")` **before** `webview.New()`. Defined in `menu_darwin.m` (Obj-C) and called from Go in `main.go`'s `run()` function. Without it, Activity Monitor shows the WKWebView URL as the process name.
 
 ## Keyboard Shortcuts
 
@@ -98,27 +85,55 @@ Handled at two levels:
 
 ### KEYBOARD_SHORTCUTS Array
 
-Define shortcuts centrally for the help dialog:
+Define in `app.js`. Fields: `{ keys, description, section, macOnly? }`. Filter `macOnly` when `!isMacApp`.
 
-```javascript
-const KEYBOARD_SHORTCUTS = [
-  { keys: "Cmd+Shift+M", description: "Show/hide window", macOnly: true, section: "Global" },
-  { keys: "Cmd+N", description: "New conversation", macOnly: true, section: "Conversations" },
-  { keys: "Cmd+1-9", description: "Switch to conversation", section: "Conversations" },
-];
-// Filter: skip macOnly when !isMacApp
+**Adding web shortcuts**: Add entry (no `macOnly`), add handler in `handleGlobalKeyDown`.
+
+**Adding native shortcuts**: Add entry with `macOnly:true`, add menu item in `menu_darwin.m`, add Go callback in `main.go`, expose as `window.mittoActionName`.
+
+## Native Notifications
+
+Defined in `cmd/mitto-app/notifications_darwin.h` / `.m`. Pipeline:
+
+```
+MCP tool (mitto_ui_notify, native:true)
+  → backend UINotifyRequest
+  → WebSocket mitto:notification message (data.native=true, data.sticky)
+  → app.js / useWebSocket.js: window.mittoShowNativeNotification(title, body, sessionId, sticky)
+  → CGo binding in main.go → showNativeNotification() in notifications_darwin.m
 ```
 
-### Adding Web Shortcuts
+Key functions:
+- `showNativeNotification(title, body, sessionId, sticky int)` — Obj-C; when `sticky==0`, notification auto-removes after 5s via `dispatch_after`; when `sticky==1`, persists until user dismisses
+- `removeNotificationsForSession(sessionId)` — removes delivered notifications for a session
+- `initNotificationCenter()` — must be called once at startup
 
-Add to `KEYBOARD_SHORTCUTS` array (no `macOnly` flag), then add handler in `handleGlobalKeyDown`.
+Frontend call: `window.mittoShowNativeNotification(title, body, sessionId, sticky)` — 4th param is bool.
+- Agent-completed events: `sticky=false`
+- Background UI prompts requiring user input: `sticky=true`
 
-### Adding Native Shortcuts
+`UINotifyInput.Sticky bool` (`json:"sticky,omitempty"`) — passed through `UINotifyRequest.Sticky` to the WebSocket message.
 
-1. Add to `KEYBOARD_SHORTCUTS` with `macOnly: true`
-2. Add menu item in `menu_darwin.m`
-3. Add Go callback in `main.go`
-4. Expose JavaScript function via `window.mittoActionName`
+## Dock Badge Count
+
+Displays a red number bubble on the dock icon (like Mail.app). Implemented via `NSApp.dockTile.badgeLabel`:
+
+```objc
+// notifications_darwin.m / .h
+void setDockBadgeCount(int count); // Pass 0 to clear
+void clearDockBadge(void);         // Convenience wrapper
+```
+
+Go pattern (in `main.go`):
+```go
+var badgeCount int; var badgeCountMu sync.Mutex
+
+func incrementBadge() { badgeCountMu.Lock(); badgeCount++; n := badgeCount; badgeCountMu.Unlock(); C.setDockBadgeCount(C.int(n)) }
+func clearBadge()     { badgeCountMu.Lock(); badgeCount = 0; badgeCountMu.Unlock(); C.clearDockBadge() }
+```
+
+- Call `incrementBadge()` when showing a sticky native notification
+- Call `clearBadge()` in `goAppDidBecomeActiveCallback` (app gains focus)
 
 ## Trackpad Gestures
 

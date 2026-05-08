@@ -2,6 +2,22 @@
 
 The **Auto-Children** feature automatically spawns child conversations whenever a new top-level conversation is created in a workspace. This is useful for setting up a team of specialized AI helpers that are always available alongside your primary conversation.
 
+## Configuration in the UI
+
+Auto-children are configured in the **Workspaces → Children** tab:
+
+![Workspaces — Children tab](screenshots/04-workspace-children.png)
+
+From this tab you can:
+
+- **Add** child definitions with the **+ Add Child** button
+- Set each child's **title** and **target workspace** (which determines the ACP server used)
+- Remove children you no longer need
+
+Changes take effect immediately for new conversations.
+
+---
+
 ## The Smart Model + Fast Helpers Pattern
 
 The most powerful use case is pairing a powerful-but-slow model with lightweight helpers:
@@ -149,5 +165,5 @@ Configure children with different roles:
 ## Related Documentation
 
 - [Workspace Configuration](workspace.md) — `.mittorc` workspace files
-- [MCP Server](../../config/mcp.md) — MCP tools for multi-agent coordination
-- [Session Management](../../devel/session-management.md) — How children are stored and managed
+- [MCP Server](mcp.md) — MCP tools for multi-agent coordination
+- [Session Management](../devel/session-management.md) — How children are stored and managed

@@ -2889,13 +2889,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					ID:          child.SessionID,
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
-					IsAutoChild: child.IsAutoChild,
+					IsAutoChild: child.ChildOrigin == session.ChildOriginAuto,
 					ChildOrigin: string(child.ChildOrigin),
 				})
 			}
 		}
 	}
-	// Get cached MCP tool names for enabledWhenMCP and tools.* CEL context
+	// Get cached MCP tool names for tools.* CEL context
 	var mcpToolNames []string
 	if bs.auxiliaryManager != nil && bs.workspaceUUID != "" {
 		if tools, ok := bs.auxiliaryManager.GetCachedMCPTools(bs.workspaceUUID); ok {

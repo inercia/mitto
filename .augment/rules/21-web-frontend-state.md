@@ -123,3 +123,17 @@ Some deployments use file-based config that shouldn't be modified via UI:
 const [configReadonly, setConfigReadonly] = useState(false);
 if (configReadonly) return; // Don't open settings dialog
 ```
+
+## Cross-Workspace Child Sessions: Folder Group Key Resolution
+
+**Anti-pattern**: In `expandGroupForSession` (`useWebSocket.js`), when `groupingMode === "folder"`, using the child session's own `working_dir` as the folder group key collapses the parent's folder group because the child is *displayed* under the parent's folder group (via `resolveRootParent` in `app.js`).
+
+**Rule**: When a session has `parent_session_id`, resolve the root parent's `working_dir` through the parent chain and use that for the folder group key — not the child's own `working_dir`.
+
+```javascript
+// In expandGroupForSession — after computing initial groupKey from working_dir:
+if (storedSession?.parent_session_id && groupingMode === "folder") {
+  const rootParent = resolveRootParentFromList(storedSessions, storedSession.parent_session_id);
+  if (rootParent?.working_dir) groupKey = rootParent.working_dir || "Unknown";
+}
+```

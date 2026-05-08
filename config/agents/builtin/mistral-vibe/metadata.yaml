@@ -9,3 +9,5 @@ license: "Apache-2.0"
 install:
   method: "binary"
   note: "Download from https://github.com/mistralai/mistral-vibe/releases"
+mcp:
+  scopes: ["user", "project"]

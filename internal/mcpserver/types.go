@@ -20,6 +20,8 @@ type ListConversationsInput struct {
 	IsRunning   *bool   `json:"is_running,omitempty"`   // Filter by running status (true = only running, false = only stopped)
 	ACPServer   *string `json:"acp_server,omitempty"`   // Filter by ACP server name (exact match)
 	ExcludeSelf *string `json:"exclude_self,omitempty"` // Exclude this session ID from results (typically your own session)
+	SelfID      string  `json:"self_id,omitempty"`      // Optional: enables permission-aware listing (scoped to caller's workspace unless flag set)
+	Workspace   *string `json:"workspace,omitempty"`    // Optional: filter by workspace UUID
 }
 
 // ConversationInfo contains information about a conversation/session.
@@ -30,6 +32,8 @@ type ConversationInfo struct {
 	Description       string    `json:"description,omitempty"`
 	ACPServer         string    `json:"acp_server"`
 	WorkingDir        string    `json:"working_dir"`
+	WorkspaceUUID     string    `json:"workspace_uuid,omitempty"` // UUID of the workspace this conversation belongs to
+	WorkspaceName     string    `json:"workspace_name,omitempty"` // Display name of the workspace
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	LastUserMessageAt time.Time `json:"last_user_message_at,omitempty"`
@@ -387,6 +391,7 @@ type UINotifyInput struct {
 	Style   string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
 	Sound   bool   `json:"sound,omitempty"`   // Play notification sound
 	Native  bool   `json:"native,omitempty"`  // Show native OS notification if available
+	Sticky  bool   `json:"sticky,omitempty"`  // Keep notification in Notification Center until dismissed
 }
 
 // UINotifyOutput is the output for the mitto_ui_notify tool.

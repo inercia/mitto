@@ -2,11 +2,24 @@
 
 Mitto exposes an MCP (Model Context Protocol) server that allows AI agents to:
 
-1. **Introspect** - Query conversations, configuration, and runtime information
-2. **Interact with users** - Display UI prompts (buttons, dropdowns) for user input
+1. **Introspect** — Query conversations, configuration, and runtime information
+2. **Interact with users** — Display UI prompts (buttons, dropdowns) for user input
 
 This enables powerful workflows where AI agents can debug issues, manage conversations,
 and request user decisions through interactive UI elements.
+
+## Configuration in the UI
+
+MCP tools are managed per-workspace in the **Workspaces dialog**. Select a workspace (e.g., "Auggie") and open the **MCP** tab:
+
+![Workspaces — workspace MCP tab](screenshots/03-workspaces-overview.png)
+
+From this tab you can:
+
+- View the JSON configuration snippet to add to your agent's MCP config file
+- **Install** the MCP server configuration directly into the selected agent
+
+---
 
 ## Quick Start
 

@@ -27,25 +27,10 @@ type Client struct {
 // Option configures the client.
 type Option func(*Client)
 
-// WithHTTPClient sets a custom HTTP client.
-func WithHTTPClient(c *http.Client) Option {
-	return func(client *Client) {
-		client.httpClient = c
-	}
-}
-
 // WithTimeout sets the HTTP client timeout.
 func WithTimeout(d time.Duration) Option {
 	return func(client *Client) {
 		client.httpClient.Timeout = d
-	}
-}
-
-// WithAPIPrefix sets the API prefix (e.g., "/mitto").
-// Default is "/mitto".
-func WithAPIPrefix(prefix string) Option {
-	return func(client *Client) {
-		client.apiPrefix = prefix
 	}
 }
 

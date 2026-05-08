@@ -1,6 +1,5 @@
 // Mitto Web Interface - Preact Application
 const {
-  h,
   render,
   Fragment,
   useState,
@@ -14,18 +13,9 @@ const {
 
 // Import shared library functions
 import {
-  ROLE_USER,
-  ROLE_AGENT,
-  ROLE_THOUGHT,
-  ROLE_TOOL,
-  ROLE_ERROR,
-  ROLE_SYSTEM,
-  INITIAL_EVENTS_LIMIT,
   computeAllSessions,
-  convertEventsToMessages,
   coalesceAgentMessages,
   COALESCE_DEFAULTS,
-  safeJsonParse,
   limitMessages,
   getWorkspaceVisualInfo,
   getBasename,
@@ -89,6 +79,7 @@ import {
   useSwipeNavigation,
   useSwipeToAction,
   useInfiniteScroll,
+  useToast,
 } from "./hooks/index.js";
 
 // Import components
@@ -105,6 +96,7 @@ import {
 import { ConversationPropertiesPanel } from "./components/ConversationPropertiesPanel.js";
 import { UserDataPanel } from "./components/UserDataPanel.js";
 import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
+import { ToastContainer } from "./components/ToastContainer.js";
 import {
   SpinnerIcon,
   CloseIcon,
@@ -3114,6 +3106,8 @@ function App() {
     mcpTools,
   } = useWebSocket();
 
+  const { showToast, dismissToast, toasts } = useToast();
+
   const [showSidebar, setShowSidebar] = useState(false);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [showUserDataPanel, setShowUserDataPanel] = useState(false);
@@ -3121,7 +3115,6 @@ function App() {
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
   const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
   const [isAddingToQueue, setIsAddingToQueue] = useState(false);
-  const [queueToastVisible, setQueueToastVisible] = useState(false);
   const [queueBadgePulse, setQueueBadgePulse] = useState(false);
   // Agent Plan panel state - per-session plan entries stored as { sessionId: entries[] }
   const [planEntriesMap, setPlanEntriesMap] = useState({});
@@ -3182,17 +3175,6 @@ function App() {
   const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
   const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
-  const [toastVisible, setToastVisible] = useState(false);
-  const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
-  const [periodicToastVisible, setPeriodicToastVisible] = useState(false);
-  const [periodicToastData, setPeriodicToastData] = useState(null); // { sessionId, sessionName }
-  const [uiPromptToastVisible, setUIPromptToastVisible] = useState(false);
-  const [uiPromptToastData, setUIPromptToastData] = useState(null); // { sessionId, sessionName, question }
-  const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
-  const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
-  const [acpPermanentError, setAcpPermanentError] = useState(null); // { session_id, error, user_message, user_guidance, command }
-  const [hookFailedError, setHookFailedError] = useState(null); // { name, exit_code, error }
-  const [notificationToast, setNotificationToast] = useState(null); // { title, message, style } from mitto_ui_notify
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   // Per-session draft text: { sessionId: draftText } - null key for "no session" state
@@ -3243,227 +3225,156 @@ function App() {
     }
   }, [swipeArrow]);
 
-  // Ref to track toast hide timer
-  const toastTimerRef = useRef(null);
-
   // Show toast and native notification when a background session completes
   useEffect(() => {
     if (backgroundCompletion) {
-      // Clear any existing timer
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-      }
-
-      // Check if native notifications are enabled (macOS app only)
-      const useNativeNotification =
+      // Show native macOS notification (not sticky — auto-dismisses)
+      if (
         window.mittoNativeNotificationsEnabled &&
-        typeof window.mittoShowNativeNotification === "function";
-
-      if (useNativeNotification) {
-        // Show native macOS notification
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
         window.mittoShowNativeNotification(
           backgroundCompletion.sessionName || "Conversation",
           "Agent completed",
           backgroundCompletion.sessionId,
+          false,
         );
       }
 
-      // Always show in-app toast (in addition to native notification if enabled)
-      setToastData(backgroundCompletion);
-      setToastVisible(true);
+      // Show in-app toast
+      showToast({
+        style: "success",
+        title: backgroundCompletion.sessionName || "Conversation",
+        message: "finished",
+        duration: 5000,
+        onClick: () => switchSession(backgroundCompletion.sessionId),
+      });
       clearBackgroundCompletion();
-
-      // Set timer to hide toast after 5 seconds
-      toastTimerRef.current = setTimeout(() => {
-        setToastVisible(false);
-        toastTimerRef.current = null;
-      }, 5000);
     }
-  }, [backgroundCompletion, clearBackgroundCompletion]);
-
-  // Clear toast data after exit animation completes
-  useEffect(() => {
-    if (!toastVisible && toastData) {
-      const clearTimer = setTimeout(() => {
-        setToastData(null);
-      }, 200);
-      return () => clearTimeout(clearTimer);
-    }
-  }, [toastVisible, toastData]);
-
-  // Ref to track periodic toast hide timer
-  const periodicToastTimerRef = useRef(null);
+  }, [backgroundCompletion, clearBackgroundCompletion, showToast, switchSession]);
 
   // Show toast and native notification when a periodic prompt starts
   useEffect(() => {
     if (periodicStarted) {
-      // Clear any existing timer
-      if (periodicToastTimerRef.current) {
-        clearTimeout(periodicToastTimerRef.current);
-      }
-
-      // Check if native notifications are enabled (macOS app only)
-      const useNativeNotification =
+      // Show native macOS notification (not sticky — auto-dismisses)
+      if (
         window.mittoNativeNotificationsEnabled &&
-        typeof window.mittoShowNativeNotification === "function";
-
-      if (useNativeNotification) {
-        // Show native macOS notification
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
         window.mittoShowNativeNotification(
           periodicStarted.sessionName || "Periodic Conversation",
           "Periodic run started",
           periodicStarted.sessionId,
+          false,
         );
       }
 
-      // Always show in-app toast (in addition to native notification if enabled)
-      setPeriodicToastData(periodicStarted);
-      setPeriodicToastVisible(true);
+      // Show in-app toast
+      showToast({
+        style: "info",
+        title: periodicStarted.sessionName || "Periodic Conversation",
+        message: "periodic run started",
+        duration: 5000,
+        onClick: () => switchSession(periodicStarted.sessionId),
+      });
       clearPeriodicStarted();
-
-      // Set timer to hide toast after 5 seconds
-      periodicToastTimerRef.current = setTimeout(() => {
-        setPeriodicToastVisible(false);
-        periodicToastTimerRef.current = null;
-      }, 5000);
     }
-  }, [periodicStarted, clearPeriodicStarted]);
-
-  // Clear periodic toast data after exit animation completes
-  useEffect(() => {
-    if (!periodicToastVisible && periodicToastData) {
-      const clearTimer = setTimeout(() => {
-        setPeriodicToastData(null);
-      }, 200);
-      return () => clearTimeout(clearTimer);
-    }
-  }, [periodicToastVisible, periodicToastData]);
-
-  // Ref to track UI prompt toast hide timer
-  const uiPromptToastTimerRef = useRef(null);
+  }, [periodicStarted, clearPeriodicStarted, showToast, switchSession]);
 
   // Show toast when a UI prompt arrives in a background session
   useEffect(() => {
     if (backgroundUIPrompt) {
-      // Clear any existing timer
-      if (uiPromptToastTimerRef.current) {
-        clearTimeout(uiPromptToastTimerRef.current);
-      }
-
-      // Show in-app toast (native notification is handled in useWebSocket)
-      setUIPromptToastData(backgroundUIPrompt);
-      setUIPromptToastVisible(true);
+      // In-app toast (native notification is handled in useWebSocket)
+      showToast({
+        style: "warning",
+        title: `Question in ${backgroundUIPrompt.sessionName || "conversation"}`,
+        duration: 8000,
+        onClick: () => switchSession(backgroundUIPrompt.sessionId),
+      });
       clearBackgroundUIPrompt();
-
-      // Set timer to hide toast after 8 seconds (longer for questions)
-      uiPromptToastTimerRef.current = setTimeout(() => {
-        setUIPromptToastVisible(false);
-        uiPromptToastTimerRef.current = null;
-      }, 8000);
     }
-  }, [backgroundUIPrompt, clearBackgroundUIPrompt]);
-
-  // Clear UI prompt toast data after exit animation completes
-  useEffect(() => {
-    if (!uiPromptToastVisible && uiPromptToastData) {
-      const clearTimer = setTimeout(() => {
-        setUIPromptToastData(null);
-      }, 200);
-      return () => clearTimeout(clearTimer);
-    }
-  }, [uiPromptToastVisible, uiPromptToastData]);
+  }, [backgroundUIPrompt, clearBackgroundUIPrompt, showToast, switchSession]);
 
   // Listen for runner fallback events
   useEffect(() => {
     const handleRunnerFallback = (event) => {
       const data = event.detail;
       if (data) {
-        setRunnerFallbackWarning(data);
-        // Auto-hide after 10 seconds
-        setTimeout(() => {
-          setRunnerFallbackWarning(null);
-        }, 10000);
+        showToast({
+          style: "warning",
+          title: "Runner Not Supported",
+          message: `Requested: ${data.requested_type} — Using: ${data.fallback_type} (no restrictions). ${data.reason || ""}`,
+          duration: 10000,
+        });
       }
     };
     window.addEventListener("mitto:runner_fallback", handleRunnerFallback);
     return () => {
       window.removeEventListener("mitto:runner_fallback", handleRunnerFallback);
     };
-  }, []);
+  }, [showToast]);
 
   // Listen for ACP start failed events
   useEffect(() => {
     const handleAcpStartFailed = (event) => {
       const data = event.detail;
       if (data) {
-        setAcpStartFailedError(data);
-        // Auto-hide after 10 seconds
-        setTimeout(() => {
-          setAcpStartFailedError(null);
-        }, 10000);
+        showToast({
+          style: "error",
+          title: "AI Agent Failed to Start",
+          message: "Try switching to the session and sending a message to retry.",
+          duration: 10000,
+          onClick: data.session_id ? () => switchSession(data.session_id) : null,
+        });
       }
     };
     window.addEventListener("mitto:acp_start_failed", handleAcpStartFailed);
     return () => {
-      window.removeEventListener(
-        "mitto:acp_start_failed",
-        handleAcpStartFailed,
-      );
+      window.removeEventListener("mitto:acp_start_failed", handleAcpStartFailed);
     };
-  }, []);
+  }, [showToast, switchSession]);
 
   // Listen for ACP permanent error events (non-retryable errors with guidance)
   useEffect(() => {
     const handleAcpPermanentError = (event) => {
       const data = event.detail;
       if (data) {
-        setAcpPermanentError(data);
-        // Permanent errors stay visible longer (30s) since user action is needed
-        setTimeout(() => {
-          setAcpPermanentError(null);
-        }, 30000);
+        const detail = [data.user_guidance, data.command ? `Command: ${data.command}` : ""]
+          .filter(Boolean)
+          .join(" — ");
+        showToast({
+          style: "error",
+          title: data.user_message || "ACP Server Error",
+          message: detail,
+          duration: 30000,
+        });
       }
     };
-    window.addEventListener(
-      "mitto:acp_error_permanent",
-      handleAcpPermanentError,
-    );
+    window.addEventListener("mitto:acp_error_permanent", handleAcpPermanentError);
     return () => {
-      window.removeEventListener(
-        "mitto:acp_error_permanent",
-        handleAcpPermanentError,
-      );
+      window.removeEventListener("mitto:acp_error_permanent", handleAcpPermanentError);
     };
-  }, []);
-
-  // Ref to track hook-failed toast hide timer
-  const hookFailedTimerRef = useRef(null);
+  }, [showToast]);
 
   // Listen for hook failed events
   useEffect(() => {
     const handleHookFailed = (event) => {
       const data = event.detail;
       if (data) {
-        setHookFailedError(data);
-        // Clear any existing timer
-        if (hookFailedTimerRef.current) {
-          clearTimeout(hookFailedTimerRef.current);
-        }
-        // Auto-hide after 10 seconds
-        hookFailedTimerRef.current = setTimeout(() => {
-          setHookFailedError(null);
-          hookFailedTimerRef.current = null;
-        }, 10000);
+        const exitPart = data.exit_code !== undefined ? ` (exit code ${data.exit_code})` : "";
+        showToast({
+          style: "warning",
+          title: `Hook Failed: ${data.name || "up"}${exitPart}`,
+          message: data.error || "",
+          duration: 10000,
+        });
       }
     };
     window.addEventListener("mitto:hook_failed", handleHookFailed);
     return () => {
       window.removeEventListener("mitto:hook_failed", handleHookFailed);
     };
-  }, []);
-
-  // Ref to track mitto_ui_notify notification toast hide timer
-  const notificationToastTimerRef = useRef(null);
+  }, [showToast]);
 
   // Listen for mitto:notification events dispatched by useWebSocket
   useEffect(() => {
@@ -3486,49 +3397,23 @@ function App() {
           data.title || "Notification",
           data.message || "",
           data.session_id || "",
+          data.sticky || false,
         );
       }
 
       // Show in-app toast
-      setNotificationToast({ title: data.title, message: data.message, style: data.style || "info" });
-
-      // Clear any existing auto-hide timer
-      if (notificationToastTimerRef.current) {
-        clearTimeout(notificationToastTimerRef.current);
-      }
-      // Auto-hide: 8 seconds for errors, 5 seconds for others
-      const delay = data.style === "error" ? 8000 : 5000;
-      notificationToastTimerRef.current = setTimeout(() => {
-        setNotificationToast(null);
-        notificationToastTimerRef.current = null;
-      }, delay);
+      showToast({
+        style: data.style || "info",
+        title: data.title || "Notification",
+        message: data.message || "",
+        duration: data.style === "error" ? 8000 : 5000,
+      });
     };
     window.addEventListener("mitto:notification", handleNotification);
     return () => {
       window.removeEventListener("mitto:notification", handleNotification);
     };
-  }, []);
-
-  // Cleanup timers on unmount
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-      }
-      if (periodicToastTimerRef.current) {
-        clearTimeout(periodicToastTimerRef.current);
-      }
-      if (uiPromptToastTimerRef.current) {
-        clearTimeout(uiPromptToastTimerRef.current);
-      }
-      if (hookFailedTimerRef.current) {
-        clearTimeout(hookFailedTimerRef.current);
-      }
-      if (notificationToastTimerRef.current) {
-        clearTimeout(notificationToastTimerRef.current);
-      }
-    };
-  }, []);
+  }, [showToast]);
 
   // Remove native notifications for the active session when switching to it
   // This prevents stale notifications from lingering in Notification Center
@@ -4179,6 +4064,19 @@ function App() {
       fetchWorkspacePrompts(workingDir, true); // Force refresh for new workspace
     }
   }, [sessionInfo?.working_dir, workspacePromptsDir, fetchWorkspacePrompts]);
+
+  // Re-fetch prompts when active session changes (session switch in same workspace)
+  // CEL expressions like session.isChild and parent.exists vary per session,
+  // so the filtered prompt list may differ even for the same workspace files.
+  useEffect(() => {
+    const workingDir = sessionInfo?.working_dir;
+    if (!workingDir || !activeSessionId) return;
+    // Only re-fetch if we already have prompts for this workspace
+    // (initial fetch is handled by the working_dir change effect above)
+    if (workingDir === workspacePromptsDir) {
+      fetchWorkspacePrompts(workingDir, true); // Force to bypass conditional request (304)
+    }
+  }, [activeSessionId]);
 
   // Set current workspace for file URL conversion (used in web browser mode)
   // Use workspace_uuid directly from sessionInfo (sent by backend in 'connected' message)
@@ -5134,9 +5032,6 @@ function App() {
     [moveQueueMessage],
   );
 
-  // Ref to track queue toast hide timer
-  const queueToastTimerRef = useRef(null);
-
   // Handle adding message to queue (with optional images and files)
   // Called from ChatInput with message text, images, and files
   const handleAddToQueue = useCallback(
@@ -5158,14 +5053,7 @@ function App() {
           updateDraft(activeSessionId, "");
 
           // Show queue toast feedback
-          if (queueToastTimerRef.current) {
-            clearTimeout(queueToastTimerRef.current);
-          }
-          setQueueToastVisible(true);
-          queueToastTimerRef.current = setTimeout(() => {
-            setQueueToastVisible(false);
-            queueToastTimerRef.current = null;
-          }, 2000);
+          showToast({ style: "info", title: "Message queued", duration: 2000, dismissable: false });
 
           // Trigger badge pulse animation
           setQueueBadgePulse(true);
@@ -5199,6 +5087,7 @@ function App() {
       updateDraft,
       activeSessionId,
       fetchQueueMessages,
+      showToast,
     ],
   );
 
@@ -5726,288 +5615,8 @@ function App() {
         onClose=${() => setKeyboardShortcutsDialog({ isOpen: false })}
       />
 
-      <!-- Background completion toast -->
-      ${toastData &&
-      html`
-        <div
-          class="fixed top-4 left-1/2 -translate-x-1/2 z-50 ${toastVisible
-            ? "toast-enter"
-            : "toast-exit"}"
-          onClick=${() => {
-            switchSession(toastData.sessionId);
-            setToastVisible(false);
-            setTimeout(() => setToastData(null), 200);
-          }}
-        >
-          <div
-            class="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-full shadow-lg cursor-pointer hover:bg-green-500 transition-colors"
-          >
-            <span class="text-lg">✓</span>
-            <span class="text-sm font-medium truncate max-w-[200px]"
-              >${toastData.sessionName}</span
-            >
-            <span class="text-xs opacity-75">finished</span>
-          </div>
-        </div>
-      `}
-
-      <!-- Periodic started toast -->
-      ${periodicToastData &&
-      html`
-        <div
-          class="fixed top-4 left-1/2 -translate-x-1/2 z-50 ${periodicToastVisible
-            ? "toast-enter"
-            : "toast-exit"}"
-          onClick=${() => {
-            switchSession(periodicToastData.sessionId);
-            setPeriodicToastVisible(false);
-            setTimeout(() => setPeriodicToastData(null), 200);
-          }}
-        >
-          <div
-            class="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-full shadow-lg cursor-pointer hover:bg-indigo-500 transition-colors"
-          >
-            <span class="text-lg">🔄</span>
-            <span class="text-sm font-medium truncate max-w-[200px]"
-              >${periodicToastData.sessionName}</span
-            >
-            <span class="text-xs opacity-75">periodic run started</span>
-          </div>
-        </div>
-      `}
-
-      <!-- UI prompt in background session toast -->
-      ${uiPromptToastData &&
-      html`
-        <div
-          class="fixed top-4 left-1/2 -translate-x-1/2 z-50 ${uiPromptToastVisible
-            ? "toast-enter"
-            : "toast-exit"}"
-          onClick=${() => {
-            switchSession(uiPromptToastData.sessionId);
-            setUIPromptToastVisible(false);
-            setTimeout(() => setUIPromptToastData(null), 200);
-          }}
-        >
-          <div
-            class="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-full shadow-lg cursor-pointer hover:bg-amber-500 transition-colors"
-          >
-            <span class="text-lg">❓</span>
-            <span class="text-sm font-medium">Question in</span>
-            <span class="text-sm font-medium truncate max-w-[200px]"
-              >${uiPromptToastData.sessionName}</span
-            >
-          </div>
-        </div>
-      `}
-
-      <!-- Queue added toast -->
-      ${queueToastVisible &&
-      html`
-        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
-          <div
-            class="queue-toast flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-full shadow-lg"
-          >
-            <span class="text-lg">📋</span>
-            <span class="text-sm font-medium">Message queued</span>
-          </div>
-        </div>
-      `}
-
-      <!-- Runner fallback warning toast -->
-      ${runnerFallbackWarning &&
-      html`
-        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
-          <div
-            class="flex flex-col gap-1 px-4 py-3 bg-yellow-600 text-white rounded-lg shadow-lg max-w-md"
-          >
-            <div class="flex items-center gap-2">
-              <span class="text-lg">⚠️</span>
-              <span class="text-sm font-medium">Runner Not Supported</span>
-              <button
-                onClick=${() => setRunnerFallbackWarning(null)}
-                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
-                title="Dismiss"
-              >
-                <${CloseIcon} className="w-4 h-4" />
-              </button>
-            </div>
-            <div class="text-xs opacity-90 ml-7">
-              <div>
-                Requested:
-                <strong>${runnerFallbackWarning.requested_type}</strong>
-              </div>
-              <div>
-                Using:
-                <strong>${runnerFallbackWarning.fallback_type}</strong> (no
-                restrictions)
-              </div>
-              <div class="mt-1 text-white/70">
-                ${runnerFallbackWarning.reason}
-              </div>
-            </div>
-          </div>
-        </div>
-      `}
-
-      <!-- ACP start failed toast -->
-      ${acpStartFailedError &&
-      html`
-        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
-          <div
-            class="flex flex-col gap-1 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg max-w-lg"
-          >
-            <div class="flex items-center gap-2">
-              <span class="text-lg">⚠️</span>
-              <span class="text-sm font-medium"
-                >AI Agent Failed to Start</span
-              >
-              <button
-                onClick=${() => setAcpStartFailedError(null)}
-                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
-                title="Dismiss"
-              >
-                <${CloseIcon} className="w-4 h-4" />
-              </button>
-            </div>
-            <div class="text-xs opacity-90 ml-7">
-              ${acpStartFailedError.session_id && html`
-                <div class="text-white/90 mb-1">
-                  Session: <button
-                    class="underline hover:text-white cursor-pointer"
-                    onClick=${() => {
-                      setAcpStartFailedError(null);
-                      if (acpStartFailedError.session_id) {
-                        switchToSession(acpStartFailedError.session_id);
-                      }
-                    }}
-                  >${acpStartFailedError.session_name || acpStartFailedError.session_id}</button>
-                </div>
-              `}
-              <div class="text-white/70">
-                The AI agent process could not be started. Try switching to the session and sending a message to retry.
-              </div>
-            </div>
-          </div>
-        </div>
-      `}
-
-      <!-- ACP permanent error toast (enhanced with guidance) -->
-      ${acpPermanentError &&
-      html`
-        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
-          <div
-            class="flex flex-col gap-2 px-4 py-3 bg-red-700 text-white rounded-lg shadow-lg max-w-lg"
-          >
-            <div class="flex items-center gap-2">
-              <span class="text-lg">🚫</span>
-              <span class="text-sm font-semibold"
-                >${acpPermanentError.user_message || "ACP Server Error"}</span
-              >
-              <button
-                onClick=${() => setAcpPermanentError(null)}
-                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
-                title="Dismiss"
-              >
-                <${CloseIcon} className="w-4 h-4" />
-              </button>
-            </div>
-            ${acpPermanentError.user_guidance &&
-            html`
-              <div class="text-xs bg-red-800/50 rounded px-3 py-2 ml-7">
-                <div class="font-medium mb-1">How to fix:</div>
-                <div class="text-white/90">
-                  ${acpPermanentError.user_guidance}
-                </div>
-              </div>
-            `}
-            ${acpPermanentError.command &&
-            html`
-              <div
-                class="text-xs text-white/60 ml-7 font-mono truncate"
-                title=${acpPermanentError.command}
-              >
-                Command: ${acpPermanentError.command}
-              </div>
-            `}
-          </div>
-        </div>
-      `}
-
-      <!-- Hook failed toast -->
-      ${hookFailedError &&
-      html`
-        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
-          <div
-            class="flex flex-col gap-1 px-4 py-3 bg-orange-600 text-white rounded-lg shadow-lg max-w-md"
-          >
-            <div class="flex items-center gap-2">
-              <span class="text-lg">⚠️</span>
-              <span class="text-sm font-medium">Hook Failed</span>
-              <button
-                onClick=${() => setHookFailedError(null)}
-                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
-                title="Dismiss"
-              >
-                <${CloseIcon} className="w-4 h-4" />
-              </button>
-            </div>
-            <div class="text-xs opacity-90 ml-7">
-              <div>
-                Hook: <strong>${hookFailedError.name || "up"}</strong>
-                ${hookFailedError.exit_code !== undefined &&
-                ` (exit code ${hookFailedError.exit_code})`}
-              </div>
-              <div class="mt-1 text-white/70 break-words">
-                ${hookFailedError.error}
-              </div>
-            </div>
-          </div>
-        </div>
-      `}
-
-      <!-- mitto_ui_notify notification toast -->
-      ${notificationToast &&
-      html`
-        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
-          <div
-            class="flex flex-col gap-1 px-4 py-3 rounded-lg shadow-lg max-w-md ${notificationToast.style ===
-              "error"
-              ? "bg-red-600 text-white"
-              : notificationToast.style === "warning"
-                ? "bg-amber-500 text-white"
-                : notificationToast.style === "success"
-                  ? "bg-green-600 text-white"
-                  : "bg-blue-600 text-white"}"
-          >
-            <div class="flex items-center gap-2">
-              <span class="text-lg"
-                >${notificationToast.style === "error"
-                  ? "❌"
-                  : notificationToast.style === "warning"
-                    ? "⚠️"
-                    : notificationToast.style === "success"
-                      ? "✅"
-                      : "ℹ️"}</span
-              >
-              <span class="text-sm font-medium">${notificationToast.title}</span>
-              <button
-                onClick=${() => setNotificationToast(null)}
-                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
-                title="Dismiss"
-              >
-                <${CloseIcon} className="w-4 h-4" />
-              </button>
-            </div>
-            ${notificationToast.message &&
-            html`
-              <div class="text-xs opacity-90 ml-7 break-words">
-                ${notificationToast.message}
-              </div>
-            `}
-          </div>
-        </div>
-      `}
+      <!-- Unified toast container -->
+      <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
       <!-- Sidebar (hidden on mobile by default) -->
       <div
@@ -6119,7 +5728,7 @@ function App() {
                     title="Streaming — click to open properties"
                   >
                     <span
-                      class="w-2 h-2 bg-blue-400 rounded-full animate-pulse block"
+                      class="w-3.5 h-3.5 bg-blue-400 rounded-full animate-pulse block"
                     ></span>
                   </button>
                 `
@@ -6130,7 +5739,7 @@ function App() {
                     title="${connected ? "Connected — click to open properties" : "Not connected — click to open properties"}"
                   >
                     <span
-                      class="w-2 h-2 rounded-full block ${connected
+                      class="w-3.5 h-3.5 rounded-full block ${connected
                         ? "bg-green-400"
                         : "bg-amber-400"}"
                     ></span>

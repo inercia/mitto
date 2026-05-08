@@ -1541,9 +1541,10 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	go c.checkRequiredToolPatterns(workspaceUUID)
 }
 
-// checkRequiredToolPatterns checks if any prompts have enabledWhenMCP patterns and,
-// if so, broadcasts prompts_changed immediately plus at delayed intervals so the frontend
-// re-fetches and the backend re-evaluates with whatever MCP tools are cached at that point.
+// checkRequiredToolPatterns checks if any prompts have tool pattern requirements in their
+// enabledWhen CEL expressions and, if so, broadcasts prompts_changed immediately plus at
+// delayed intervals so the frontend re-fetches and the backend re-evaluates with whatever
+// MCP tools are cached at that point.
 // MCP tools from external servers can take time to appear (e.g., external Python programs),
 // so delayed re-broadcasts are used to catch late-appearing tools.
 func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
@@ -1585,7 +1586,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
 	}
 }
 
-// collectRequiredToolPatterns collects all unique enabledWhenMCP patterns from all prompt sources.
+// collectRequiredToolPatterns collects all unique tool patterns from enabledWhen CEL expressions across all prompt sources.
 func (c *SessionWSClient) collectRequiredToolPatterns() []string {
 	if c.server == nil {
 		return nil
@@ -1698,12 +1699,10 @@ func (c *SessionWSClient) tryAttachToSession() {
 			}
 			c.OnUIPrompt(*activePrompt)
 		}
-	} else {
-		if c.logger != nil {
-			c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
-				"session_id", c.sessionID,
-				"acp_id", bs.GetACPID())
-		}
+	} else if c.logger != nil {
+		c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
+			"session_id", c.sessionID,
+			"acp_id", bs.GetACPID())
 	}
 
 	// Send a notification to the client that the session is now running,
@@ -2354,5 +2353,6 @@ func (c *SessionWSClient) OnNotification(req UINotifyRequest) {
 		"style":      req.Style,
 		"sound":      req.Sound,
 		"native":     req.Native,
+		"sticky":     req.Sticky,
 	})
 }

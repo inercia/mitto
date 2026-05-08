@@ -10,3 +10,5 @@ install:
   method: "npx"
   package: "@augmentcode/auggie"
   args: ["--workspace-root=$MITTO_WORKING_DIR", "--acp"]
+mcp:
+  scopes: ["user", "project", "local"]

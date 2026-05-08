@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -126,7 +127,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 //     targeting this server). The server's type is looked up from config; if no type is set,
 //     the name is used.
 //   - session_id: If specified, merged prompts are further filtered using
-//     filterPromptsByEnabled (enabledWhenACP, enabledWhenMCP, enabledWhen CEL)
+//     filterPromptsByEnabled (enabledWhen CEL expressions)
 //     with the context of the given session.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	// Build complete config response including workspaces and ACP servers
@@ -514,11 +515,9 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 				Username: req.Web.Auth.Simple.Username,
 				Password: password, // Empty when stored in Keychain
 			}
-		} else {
+		} else if secrets.IsSupported() {
 			// Clean up stored password when simple auth is disabled
-			if secrets.IsSupported() {
-				_ = secrets.DeleteExternalAccessPassword()
-			}
+			_ = secrets.DeleteExternalAccessPassword()
 		}
 
 		// Cloudflare Access auth
@@ -586,9 +585,18 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		permissionsConfig = s.config.MittoConfig.Permissions
 	}
 
+	// Filter out file-sourced and builtin prompts — they should not be persisted to settings.json
+	// since they're already loaded from MITTO_DIR/prompts/ files on startup.
+	var settingsPrompts []configPkg.WebPrompt
+	for _, p := range req.Prompts {
+		if p.Source != configPkg.PromptSourceFile && p.Source != configPkg.PromptSourceBuiltin {
+			settingsPrompts = append(settingsPrompts, p)
+		}
+	}
+
 	return &configPkg.Settings{
 		ACPServers:    newACPServers,
-		Prompts:       req.Prompts,
+		Prompts:       settingsPrompts,
 		Web:           newWebConfig,
 		UI:            newUIConfig,
 		Session:       sessionConfig,
@@ -1006,12 +1014,20 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Compute MCP scopes from agent metadata (always an array, never null)
+	mcpScopes := []string{}
+	if agent.Metadata.MCP != nil {
+		mcpScopes = agent.Metadata.MCP.Scopes
+	}
+
 	// Check if agent has mcp-list command
 	if !agent.HasCommand(agents.CommandMCPList) {
 		writeJSONOK(w, map[string]interface{}{
-			"servers":    []interface{}{},
-			"agent_name": agent.Metadata.DisplayName,
-			"message":    "Agent does not support MCP listing",
+			"servers":         []interface{}{},
+			"agent_name":      agent.Metadata.DisplayName,
+			"message":         "Agent does not support MCP listing",
+			"mcp_scopes":      mcpScopes,
+			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
 		})
 		return
 	}
@@ -1025,15 +1041,158 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 	output, err := mgr.ListMCPServers(r.Context(), agent.DirName, input)
 	if err != nil {
 		writeJSONOK(w, map[string]interface{}{
-			"servers":    []interface{}{},
-			"agent_name": agent.Metadata.DisplayName,
-			"error":      "Failed to list MCP servers: " + err.Error(),
+			"servers":         []interface{}{},
+			"agent_name":      agent.Metadata.DisplayName,
+			"error":           "Failed to list MCP servers: " + err.Error(),
+			"mcp_scopes":      mcpScopes,
+			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
 		})
 		return
 	}
 
 	writeJSONOK(w, map[string]interface{}{
-		"servers":    output.Servers,
-		"agent_name": agent.Metadata.DisplayName,
+		"servers":         output.Servers,
+		"agent_name":      agent.Metadata.DisplayName,
+		"mcp_scopes":      mcpScopes,
+		"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+	})
+}
+
+// handleWorkspaceMCPInstall handles POST /api/workspace-mcp-install
+// Installs MCP servers for a workspace's ACP agent by running mcp-install.sh.
+func (s *Server) handleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	type mcpServerEntry struct {
+		Command string            `json:"command"`
+		Args    []string          `json:"args"`
+		URL     string            `json:"url"`
+		Env     map[string]string `json:"env"`
+	}
+
+	type mcpInstallRequest struct {
+		ACPServer  string `json:"acp_server"`
+		Dir        string `json:"dir"`
+		Scope      string `json:"scope"`
+		Definition struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		} `json:"definition"`
+	}
+
+	var req mcpInstallRequest
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	if req.ACPServer == "" {
+		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Definition.MCPServers) == 0 {
+		http.Error(w, "definition.mcpServers must contain at least one entry", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve ACP server type from config
+	var acpType string
+	if s.config.MittoConfig != nil {
+		acpType = s.config.MittoConfig.GetServerType(req.ACPServer)
+	}
+	if acpType == "" {
+		acpType = req.ACPServer // fallback
+	}
+
+	// Get agents directory
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		http.Error(w, "Failed to get agents directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Find agent by ACP ID
+	mgr := agents.NewManager(agentsDir, s.logger)
+	agent, err := mgr.GetAgentByACPId(acpType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("No agent definition found for ACP type %q", acpType), http.StatusBadRequest)
+		return
+	}
+
+	// Check that the agent supports mcp-install
+	if !agent.HasCommand(agents.CommandMCPInstall) {
+		http.Error(w, fmt.Sprintf("Agent %q does not support MCP installation", agent.Metadata.DisplayName), http.StatusBadRequest)
+		return
+	}
+
+	// Validate scope if the agent declares supported scopes
+	if agent.Metadata.MCP != nil && len(agent.Metadata.MCP.Scopes) > 0 {
+		if req.Scope == "" {
+			http.Error(w, fmt.Sprintf("scope is required; valid scopes for %s: %v", agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			return
+		}
+		validScope := false
+		for _, s := range agent.Metadata.MCP.Scopes {
+			if s == req.Scope {
+				validScope = true
+				break
+			}
+		}
+		if !validScope {
+			http.Error(w, fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			return
+		}
+	}
+
+	type installResult struct {
+		Name    string `json:"name"`
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+
+	results := make([]installResult, 0, len(req.Definition.MCPServers))
+
+	for serverName, rawEntry := range req.Definition.MCPServers {
+		var entry mcpServerEntry
+		if err := json.Unmarshal(rawEntry, &entry); err != nil {
+			results = append(results, installResult{
+				Name:    serverName,
+				Success: false,
+				Message: "Failed to parse server definition: " + err.Error(),
+			})
+			continue
+		}
+
+		input := &agents.MCPInstallInput{
+			Name:    serverName,
+			Command: entry.Command,
+			Args:    entry.Args,
+			URL:     entry.URL,
+			Env:     entry.Env,
+			Scope:   req.Scope,
+			Path:    req.Dir,
+		}
+
+		output, err := mgr.InstallMCPServer(r.Context(), agent.DirName, input)
+		if err != nil {
+			results = append(results, installResult{
+				Name:    serverName,
+				Success: false,
+				Message: err.Error(),
+			})
+			continue
+		}
+
+		results = append(results, installResult{
+			Name:    serverName,
+			Success: output.Success,
+			Message: output.Message,
+		})
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"results": results,
 	})
 }

@@ -2,6 +2,16 @@
 
 Mitto can run AI agents through restricted runners to limit their access to system resources. This provides an additional security layer when working with untrusted agents or in sensitive environments.
 
+## Configuration in the UI
+
+Runners are configured globally in **Settings → Runners**:
+
+![Settings — Runners tab](screenshots/02-settings-runners.png)
+
+Per-workspace runner overrides are available in the **Workspaces dialog** — select a workspace (e.g., "Auggie") and open the **Runner** tab.
+
+---
+
 ## ⚠️ Experimental Feature
 
 > **This feature is experimental.** The API and configuration format may change in future releases. Use with caution and expect potential breaking changes.
@@ -1069,4 +1079,4 @@ Expansion happens before passing paths to the runner, ensuring consistent behavi
 - [go-restricted-runner Documentation](https://github.com/inercia/go-restricted-runner)
 - [Mitto Configuration Overview](./overview.md)
 - [ACP Server Configuration](./acp.md)
-- [Workspace Configuration](./web/workspace.md)
+- [Workspace Configuration](./workspace.md)

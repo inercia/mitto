@@ -10,3 +10,5 @@ install:
   method: "binary"
   note: "Download from https://github.com/anomalyco/opencode/releases"
   args: ["acp"]
+mcp:
+  scopes: ["user", "project"]

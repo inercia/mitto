@@ -13,13 +13,12 @@ Continue the current work in a new conversation, optionally with a different mod
 1. Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
 2. Available ACP servers for this workspace: `@mitto:available_acp_servers`
    Note each server's name, tags (e.g., `[coding, fast]`, `[reasoning, planning]`), and the `(current)` marker.
-3. `mitto_conversation_get_summary(self_id: "@mitto:session_id", conversation_id: "@mitto:session_id")` → current work context
 
 ## Phase 2: Prepare Handoff
 
-Create a self-contained prompt including: context, current state, objective, instructions, files/modules, success criteria, constraints.
+Based on the conversation context, create a self-contained prompt including: context, current state, objective, instructions, files/modules, success criteria, constraints.
 
-Present to user with recommended model:
+Present to user:
 
 ```markdown
 ## Handoff Summary
@@ -31,6 +30,19 @@ Present to user with recommended model:
 ---
 **Recommended Model:** <suggestion based on task complexity>
 ```
+
+Confirm via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 120s):
+
+```
+question: "Create a new child conversation with this handoff?"
+options:
+  - label: "Create as proposed"
+    description: "<one-line summary of the proposed work>"
+allow_free_text: true
+free_text_placeholder: "Describe what to change or do differently..."
+```
+
+On timeout: abort. Do not create a conversation without explicit confirmation.
 
 ## Phase 3: Select ACP Server
 

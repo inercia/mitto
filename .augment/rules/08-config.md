@@ -127,13 +127,23 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 | CLI without `--dir` | `workspaces.json` | Saved on changes |
 | macOS app           | `workspaces.json` | Saved on changes |
 
+## Global Settings REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/mitto/api/config` | Get current effective config (merged RC + settings) |
+| GET | `/mitto/api/settings` | Get editable settings (settings.json content) |
+| POST | `/mitto/api/settings` | Save full settings (replaces settings.json) |
+| POST | `/mitto/api/agents/scan` | Scan for installed ACP agents |
+| POST | `/mitto/api/agents/confirm` | Confirm detected agents (adds to settings) |
+
+Note: `/mitto/api/settings` manages global `settings.json`. For per-session feature flags, see `16-web-backend-settings.md`.
+
 ## WorkspaceSettings Override Pattern
 
-`WorkspaceSettings.ACPCommandOverride` (`json:"acp_command_override,omitempty"`): set default from server map, then apply override if non-empty:
+`WorkspaceSettings.ACPCommandOverride` (`json:"acp_command_override,omitempty"`): set default from server map, then apply override if non-empty. Follow this pattern for any future `*Override` fields. See `internal/config/merger.go` for `GenericMerger[T]` (reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`).
 
 ```go
 newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
 if ws.ACPCommandOverride != "" { newWorkspaces[i].ACPCommand = ws.ACPCommandOverride }
 ```
-
-Follow this same pattern for any future `*Override` fields. See `internal/config/merger.go` for `GenericMerger[T]` (reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`).

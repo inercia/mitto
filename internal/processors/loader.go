@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/inercia/mitto/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -161,12 +160,6 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 	// Set internal fields
 	proc.FilePath = path
 	proc.HookDir = filepath.Dir(path)
-
-	// Translate enabledWhenMCP to enabledWhen CEL expression for backward compatibility.
-	// Processors do not support enabledWhenACP, so pass empty string for that parameter.
-	if proc.EnabledWhenMCP != "" {
-		proc.EnabledWhen = config.TranslateShorthandToEnabledWhen("", proc.EnabledWhenMCP, proc.EnabledWhen)
-	}
 
 	return &proc, nil
 }

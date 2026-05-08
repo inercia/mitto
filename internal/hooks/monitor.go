@@ -177,7 +177,7 @@ func (m *HealthMonitor) run(ctx context.Context) {
 
 		// Apply backoff if we've hit max consecutive restarts
 		if consecutiveFailures >= monitorMaxConsecutiveRestarts {
-			checkInterval = checkInterval * 2
+			checkInterval *= 2
 			if checkInterval > monitorMaxCheckInterval {
 				checkInterval = monitorMaxCheckInterval
 			}

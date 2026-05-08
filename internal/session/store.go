@@ -496,6 +496,7 @@ func (s *Store) List() ([]Metadata, error) {
 }
 
 // FindAutoChildrenRecursive returns all auto-child session IDs recursively.
+//
 // Deprecated: Use FindAllChildrenRecursive instead, which finds children of all origins.
 func (s *Store) FindAutoChildrenRecursive(sessionID string) ([]string, error) {
 	s.mu.RLock()

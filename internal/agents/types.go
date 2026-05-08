@@ -58,6 +58,12 @@ type InstallMethod struct {
 	Args    []string `yaml:"args,omitempty" json:"args,omitempty"`
 }
 
+// MCPMetadata describes MCP installation capabilities for an agent.
+type MCPMetadata struct {
+	// Scopes lists the supported MCP installation scopes (e.g., "user", "project", "local").
+	Scopes []string `yaml:"scopes" json:"scopes"`
+}
+
 // AgentMetadata holds the parsed content of a metadata.yaml file.
 type AgentMetadata struct {
 	Name        string         `yaml:"name" json:"name"`
@@ -68,6 +74,7 @@ type AgentMetadata struct {
 	Repository  string         `yaml:"repository,omitempty" json:"repository,omitempty"`
 	License     string         `yaml:"license,omitempty" json:"license,omitempty"`
 	Install     *InstallMethod `yaml:"install,omitempty" json:"install,omitempty"`
+	MCP         *MCPMetadata   `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 }
 
 // AgentDefinition represents a fully resolved agent definition with its
@@ -134,6 +141,10 @@ type MCPInstallInput struct {
 	URL string `json:"url,omitempty"`
 	// Path is an optional workspace path for project-local MCP config
 	Path string `json:"path,omitempty"`
+	// Env is an optional map of environment variables for the MCP server
+	Env map[string]string `json:"env,omitempty"`
+	// Scope is the MCP installation scope (e.g., "user", "project", "local")
+	Scope string `json:"scope,omitempty"`
 }
 
 // MCPListInput is the expected JSON input for mcp-list.sh.

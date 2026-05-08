@@ -233,6 +233,7 @@ type Metadata struct {
 	// (via auto_children workspace config). Auto-children are cascade-deleted
 	// when their parent is deleted. MCP-created children (this field is false)
 	// are orphaned instead (ParentSessionID cleared).
+	//
 	// Deprecated: Use ChildOrigin instead. Kept for backward compatibility with existing metadata files.
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
 	// ChildOrigin indicates how a child conversation was created.

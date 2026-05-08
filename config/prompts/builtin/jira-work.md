@@ -14,6 +14,17 @@ Existing children: `@mitto:children`
 
 # JIRA: Start Work on a Ticket
 
+## Step 0 — Check for prior ticket context
+
+Before doing anything else, review the current conversation history to check whether a specific JIRA ticket has already been discussed (e.g., a ticket key like `PROJ-1234` was mentioned, ticket details were fetched, or a ticket was previously selected).
+
+- If a ticket **has** been discussed in this conversation:
+  Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask the user whether to:
+  - **Option 1**: `"Start working on [TICKET-KEY]: [summary]"` — if the user chooses this, skip directly to Step 3 (fetch full ticket details) using that ticket key.
+  - **Option 2**: `"Work on a different ticket"` — if the user chooses this, continue to Step 1 (the normal ticket selection flow).
+
+- If **no** ticket has been previously discussed in this conversation: skip this step and proceed directly to Step 1.
+
 ## Step 1 — Find tickets to work on
 
 1. Use `jira_get_agile_boards_jira` to find the relevant board (ask the user if there are multiple boards and you're not sure which one to use).
@@ -76,7 +87,7 @@ For each work item in the approved plan:
 
 1. Call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
    - `title`: the work item title prefixed with the JIRA ticket key (e.g., `"CGW-1234 · Add database migration"`)
-   - `acp_server`: use `"Auggie (Sonnet 4.6)"` unless the task is particularly complex, in which case use `"Auggie (Opus 4.6)"`
+   - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
    - `initial_prompt`: a **self-contained** prompt that includes:
      - The full JIRA ticket key, title, and description
      - The acceptance criteria from the ticket

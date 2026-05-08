@@ -323,6 +323,7 @@ export function UserDataPanel({ isOpen, onClose, sessionId, sessionInfo }) {
                                   title=${value}
                                   onClick=${(e) => {
                                     e.preventDefault();
+                                    e.stopPropagation();
                                     if (!viewerUrl) return;
                                     if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
                                       const fullUrl = new URL(viewerUrl, window.location.origin).href;

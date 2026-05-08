@@ -26,7 +26,8 @@ Communication Protocol (ACP).
 - [Web Interface](config/web.md) - Authentication, hooks, security, themes
 - [macOS App](config/mac.md) - Hotkeys, notifications, desktop app
 - [Workspaces](config/workspace.md) - Project-specific `.mittorc` files
-- [Conversations](config/conversations.md) - Message processing rules
+- [Conversations](config/conversations.md) - Auto-approve, auto-archive, external images
+- [Processors](config/processors.md) - Message transformation (text, command, prompt modes)
 - [Command Processors](config/processors.md) - External command-based message processors
 
 ### Architecture

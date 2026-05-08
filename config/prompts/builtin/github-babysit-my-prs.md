@@ -1,0 +1,392 @@
+---
+name: "GitHub: babysit my PRs"
+description: "Periodically check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments"
+group: "CI"
+backgroundColor: "#BBDEFB"
+tags: ["periodic", "github"]
+enabledWhen: 'fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh"))'
+---
+
+Monitor your own open pull requests for the current repository, keeping them
+up-to-date and reporting issues. Only acts on PRs where you are the author.
+Designed to be run periodically via `mitto_conversation_set_periodic`.
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+Available ACP servers:
+@mitto:available_acp_servers
+
+When spawning new conversations to fix issues, prefer `"coding"` or `"fast"`
+tagged servers for straightforward fixes. **Never** configure spawned conversations
+as periodic — they are one-off tasks.
+
+## Spawn Deduplication
+
+Existing child conversations (spawned by previous runs):
+@mitto:mcp_children
+
+Before spawning any new conversation, **check the list above**. Search for a
+child whose title matches the PR you are about to spawn for (e.g., title
+contains "PR #<number>"). If a child conversation already exists for that PR
+and check type, **skip spawning** — the previous run already created one and
+it may still be working.
+
+**Spawn cap:** spawn at most **3 conversations per run**. If more PRs need
+attention, prioritize by severity: rebase conflicts > CI failures > unresolved
+comments. Notify the user about any remaining items that were not spawned.
+
+## Interaction Mode
+
+- **Periodic run**: `@mitto:periodic` = is this a scheduled periodic execution?
+- **Force-triggered**: `@mitto:periodic_forced` = was this periodic run manually triggered by the user?
+
+**If this is a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+- Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
+- Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
+  interactive/blocking UI tool. The user is not watching.
+- Act autonomously when safe (e.g., clean rebases), otherwise just notify.
+
+**If this is a force-triggered run** (`@mitto:periodic_forced` = "true") **or a
+non-periodic conversation** (`@mitto:periodic` = "false"):
+- You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
+  and other interactive tools in addition to `mitto_ui_notify`.
+- For example: ask the user whether to proceed with a risky rebase, which failing
+  PRs to investigate, or whether to spawn fix conversations.
+
+## Step 1 — Identify the repository
+
+```bash
+git remote -v
+git rev-parse --show-toplevel
+gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+```
+
+If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
+
+Identify the current GitHub user:
+
+```bash
+gh api user -q '.login'
+```
+
+Store this login — you will use it to verify PR ownership throughout this
+prompt. **Only act on PRs where `author.login` matches this value.** The
+`--author @me` flag in Step 2 should handle this, but always double-check the
+author before taking any action (rebase, merge, spawn fix conversations).
+
+Once you have the `nameWithOwner` (e.g., `some-org/some-repo`), rename this
+conversation so it's easy to identify — but only if the current name
+(`@mitto:session_name`) doesn't already start with "Babysit my PRs":
+
+```
+mitto_conversation_update(self_id: "@mitto:session_id",
+  conversation_id: "@mitto:session_id",
+  name: "Babysit my PRs in <nameWithOwner>")
+```
+
+## Step 2 — List my open PRs
+
+Only process PRs authored by the current user (`--author @me`). Do **not**
+rebase, merge, or spawn fix conversations for other people's PRs.
+
+```bash
+gh pr list --state open --author @me --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,updatedAt,isDraft,reviewDecision,author,reviewRequests,labels --limit 50
+```
+
+If no open PRs, skip to the Summary (Step 4).
+
+## Step 3 — Process each of my PRs
+
+For each of your open PRs (order doesn't matter), perform all applicable checks
+below. **Before acting on any PR, verify that `author.login` matches your GitHub
+username** (obtained in Step 1). If it doesn't, skip the PR entirely.
+
+### 3a. Merge/rebase check
+
+Determine whether the PR branch is behind its target (base) branch and cannot
+be cleanly merged.
+
+```bash
+gh pr view <number> --json mergeStateStatus,mergeable,baseRefName,headRefName
+```
+
+**If the PR is behind its target branch and needs rebasing:**
+
+1. **In interactive mode** (force-triggered or non-periodic), ask the user first:
+   ```
+   mitto_ui_options(self_id: "@mitto:session_id",
+     question: "PR #<number> (<title>) is behind <baseRefName>. Rebase now?",
+     options: [
+       { label: "Yes, rebase now" },
+       { label: "Skip this PR" },
+       { label: "Spawn a conversation to handle it" }
+     ])
+   ```
+   If the user chooses "Skip", move to the next PR. If "Spawn a conversation",
+   go to the spawn step below. Otherwise proceed.
+
+   **In scheduled mode**, notify and proceed automatically:
+   ```
+   mitto_ui_notify(self_id: "@mitto:session_id",
+     title: "Rebasing PR #<number>",
+     message: "<title> — branch <headRefName> is behind <baseRefName>, rebasing now",
+     style: "info")
+   ```
+
+2. **Important**: Do NOT modify the local checkout — the user may be working there.
+   Use a temporary worktree or bare operations:
+
+   ```bash
+   # Fetch latest from remote
+   git fetch origin <baseRefName>
+   git fetch origin <headRefName>
+
+   # Create a temporary worktree for the rebase
+   TMPDIR=$(mktemp -d)
+   git worktree add "$TMPDIR" origin/<headRefName> --detach
+
+   # Rebase in the temporary worktree
+   cd "$TMPDIR"
+   git rebase origin/<baseRefName>
+   ```
+
+3. If the rebase has conflicts or fails:
+   - Abort the rebase (`git rebase --abort`)
+   - Clean up the temporary worktree (`git worktree remove "$TMPDIR" --force`)
+   - Notify the user that manual intervention is needed:
+     ```
+     mitto_ui_notify(self_id: "@mitto:session_id",
+       title: "⚠️ PR #<number> needs manual rebase",
+       message: "<title> — rebase onto <baseRefName> has conflicts, please rebase manually",
+       style: "warning",
+       sound: true,
+       native: true)
+     ```
+   - **If `mitto_conversation_new` is available**, spawn a one-off conversation
+     to resolve the conflicts (**in scheduled mode**, do this automatically;
+     **in interactive mode**, only if the user chose "Spawn" above or confirm now):
+     ```
+     mitto_conversation_new(self_id: "@mitto:session_id",
+       title: "Rebase PR #<number>: <title>",
+       initial_prompt: "PR #<number> (<title>) needs rebasing onto <baseRefName> but has conflicts.
+         Please check out branch <headRefName>, rebase it onto origin/<baseRefName>,
+         resolve the conflicts, and force-push with --force-with-lease.
+         The repo is at: <repo path>",
+       acp_server: <prefer "coding" or "fast" tagged server>)
+     ```
+   - Skip to the next PR.
+
+4. If the rebase succeeds:
+   ```bash
+   git push --force-with-lease origin HEAD:refs/heads/<headRefName>
+   ```
+   Then clean up the temporary worktree:
+   ```bash
+   cd -
+   git worktree remove "$TMPDIR" --force
+   ```
+
+5. Notify the user of the successful rebase:
+   ```
+   mitto_ui_notify(self_id: "@mitto:session_id",
+     title: "✅ PR #<number> rebased",
+     message: "<title> — successfully rebased onto <baseRefName> and pushed",
+     style: "success")
+   ```
+
+### 3b. CI status check
+
+Check whether CI checks are failing on the PR:
+
+```bash
+gh pr checks <number> --json name,state,description,detailsUrl
+```
+
+**If any checks are failing:**
+
+1. Attempt to retrieve failure logs:
+   ```bash
+   # Find the failing run
+   gh run list --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
+   # Get failure details
+   gh run view <run-id> --log-failed 2>/dev/null | tail -80
+   ```
+
+2. Notify the user with failure details:
+   ```
+   mitto_ui_notify(self_id: "@mitto:session_id",
+     title: "❌ CI failing on PR #<number>",
+     message: "<title>\nFailing checks: <check names>\n<brief failure summary if available>",
+     style: "error",
+     sound: true,
+     native: true)
+   ```
+
+3. **If `mitto_conversation_new` is available:**
+
+   **In interactive mode**, ask the user whether to spawn a fix conversation:
+   ```
+   mitto_ui_options(self_id: "@mitto:session_id",
+     question: "PR #<number> (<title>) has CI failures. Spawn a conversation to fix?",
+     options: [
+       { label: "Yes, spawn a fix conversation" },
+       { label: "No, just notify" }
+     ])
+   ```
+
+   **In scheduled mode**, spawn automatically:
+   ```
+   mitto_conversation_new(self_id: "@mitto:session_id",
+     title: "Fix CI for PR #<number>: <title>",
+     initial_prompt: "PR #<number> (<title>) has failing CI checks on branch <headRefName>.
+       Failing checks: <check names>
+       Error summary: <brief failure details from logs>
+
+       Please check out branch <headRefName>, diagnose and fix the CI failures,
+       then push the fixes.
+       The repo is at: <repo path>",
+     acp_server: <prefer "coding" or "fast" tagged server>)
+   ```
+
+**If all checks are passing**, no notification is needed.
+
+### 3c. Ready-to-merge check
+
+If a PR has **all approvals** (`reviewDecision == "APPROVED"`) **and** all CI
+checks are passing **and** it is not a draft:
+
+**In interactive mode**, offer to merge:
+```
+mitto_ui_options(self_id: "@mitto:session_id",
+  question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
+  options: [
+    { label: "Yes, merge now" },
+    { label: "No, just notify" }
+  ])
+```
+If the user selects "Yes": `gh pr merge <number> --merge` (or `--squash`/`--rebase`
+based on repo settings). Then notify success.
+
+**In scheduled mode**, just notify:
+```
+mitto_ui_notify(self_id: "@mitto:session_id",
+  title: "🚀 PR #<number> is ready to merge",
+  message: "<title> — approved with passing CI, waiting to be merged",
+  style: "success")
+```
+
+### 3d. Unresolved review comments
+
+Check for unresolved review threads:
+
+```bash
+gh pr view <number> --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
+```
+
+**If there are unresolved threads:**
+
+```
+mitto_ui_notify(self_id: "@mitto:session_id",
+  title: "💬 PR #<number> has unresolved comments",
+  message: "<title> — <count> unresolved review threads need attention",
+  style: "warning")
+```
+
+**If `mitto_conversation_new` is available:**
+
+**In interactive mode**, ask whether to spawn a conversation to address the feedback:
+```
+mitto_ui_options(self_id: "@mitto:session_id",
+  question: "PR #<number> (<title>) has <count> unresolved review threads. Spawn a conversation to address them?",
+  options: [
+    { label: "Yes, address review comments" },
+    { label: "No, just notify" }
+  ])
+```
+
+**In scheduled mode**, spawn automatically:
+```
+mitto_conversation_new(self_id: "@mitto:session_id",
+  title: "Address review comments on PR #<number>: <title>",
+  initial_prompt: "PR #<number> (<title>) has <count> unresolved review threads.
+    Please check out branch <headRefName>, read the review comments with
+    `gh pr view <number> --json reviewThreads`, address each comment with
+    code changes and replies, then push the fixes.
+    The repo is at: <repo path>",
+  acp_server: <prefer "coding" or "fast" tagged server>)
+```
+
+### 3e. Stale PR detection
+
+If a non-draft PR has not been updated in **14+ days** (based on `updatedAt`),
+collect it. After processing all PRs, **batch stale PRs into a single
+notification** rather than one per PR:
+
+```
+mitto_ui_notify(self_id: "@mitto:session_id",
+  title: "🕸️ <count> stale PRs",
+  message: "PRs not updated in 14+ days:\n• #<N> <title> (<days> days)\n• #<M> <title> (<days> days)\n...",
+  style: "warning")
+```
+
+### 3f. Long-lived draft PRs
+
+If a draft PR (`isDraft == true`) has not been updated in **21+ days**,
+collect it. After processing all PRs, **batch into a single notification:**
+
+```
+mitto_ui_notify(self_id: "@mitto:session_id",
+  title: "📝 <count> long-lived draft PRs",
+  message: "Drafts open 21+ days:\n• #<N> <title> (<days> days)\n• #<M> <title> (<days> days)\n...",
+  style: "info")
+```
+
+## Step 4 — Summary
+
+After processing everything, produce a brief summary:
+
+```console
+📊 PR Babysit Summary
+
+| PR | Title | Rebase | CI | Review | Notes |
+|----|-------|--------|----|--------|-------|
+| #1 | Fix bug | ✅ Rebased | ✅ Passing | Approved | 🚀 Ready to merge |
+| #2 | Add feature | — Up to date | ❌ Failing | Changes requested | 3 unresolved threads |
+| #3 | Refactor | ⚠️ Conflicts | ✅ Passing | Pending | 🕸️ Stale (18 days) |
+
+Next check: <if periodic, mention the schedule>
+```
+
+## Guidelines
+
+- **Never modify the local checkout** — the user may have uncommitted work there.
+  Always use temporary worktrees for rebase operations.
+- Use `--force-with-lease` when force-pushing (never `--force`).
+- If `gh` authentication fails, stop immediately and inform the user.
+- **Interaction mode** (see "Interaction Mode" section above):
+  - **Scheduled periodic** (`@mitto:periodic` = "true", `@mitto:periodic_forced` = "false"):
+    Use only `mitto_ui_notify`. No interactive UI. Act autonomously when safe,
+    otherwise notify. Skip the summary table — only send notifications for
+    actionable items.
+  - **Force-triggered or non-periodic**: You may use `mitto_ui_options`,
+    `mitto_ui_form`, and other interactive tools. Ask the user before risky
+    actions (merges). Show the full summary table at the end.
+- **Spawn deduplication** (see "Spawn Deduplication" section above):
+  Check `@mitto:mcp_children` for existing child conversations before spawning.
+  Skip if a child for the same PR already exists. Max 3 spawns per run.
+- **Spawned conversations must never be periodic.** They are one-off tasks that
+  should complete and stop. Do not call `mitto_conversation_set_periodic` on them.
+- Only spawn conversations when `mitto_conversation_new` is available. If Mitto
+  MCP tools are not present, just send notifications and let the user act.
+- **Notification batching**: batch repetitive informational items (stale PRs,
+  draft PRs) into a single notification per category to avoid spamming the
+  user — especially important in periodic mode.
+- Use `sound: true, native: true` for critical notifications (CI failures,
+  rebase conflicts) so the user notices immediately.
+- In **scheduled mode**: do not merge PRs automatically — only notify.
+  In **interactive mode**: offer to merge with user confirmation.
+- If a PR has draft status, still check CI and staleness but skip merge-readiness.
+- **Only act on your own PRs** (`--author @me`). Do not rebase, merge, spawn
+  fix conversations, or take any modifying action on PRs authored by others.

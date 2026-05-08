@@ -42,19 +42,6 @@ type PromptFile struct {
 	// Tags is an optional list of categorization tags for future use.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 
-	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
-	// If empty, the prompt works with all ACP servers.
-	// Example: "enabledWhenACP: auggie, claude-code" means only show this prompt for those ACP servers.
-	// Legacy key "acps" is also supported for backward compatibility.
-	EnabledWhenACP string `yaml:"enabledWhenACP,omitempty" json:"-"`
-
-	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
-	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
-	// If specified, the prompt is only shown when all required tool patterns are satisfied
-	// (at least one matching tool exists for each pattern).
-	// If empty, the prompt is always shown (no tool requirements).
-	EnabledWhenMCP string `yaml:"enabledWhenMCP,omitempty" json:"-"`
-
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
 
@@ -86,16 +73,6 @@ func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 		return false
 	}
 
-	// Check legacy enabledWhenACP field (backward compat for user configs)
-	if p.EnabledWhenACP != "" {
-		for _, acp := range strings.Split(p.EnabledWhenACP, ",") {
-			acp = strings.TrimSpace(acp)
-			if strings.EqualFold(acp, acpServer) {
-				return true
-			}
-		}
-	}
-
 	// Check enabledWhen CEL expression for acp.matchesServerType("serverType")
 	if p.EnabledWhen != "" {
 		lowerExpr := strings.ToLower(p.EnabledWhen)
@@ -118,8 +95,6 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Description:     p.Description,
 		Group:           p.Group,
 		Source:          PromptSourceFile,
-		EnabledWhenACP:  p.EnabledWhenACP,
-		EnabledWhenMCP:  p.EnabledWhenMCP,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
 	}
@@ -128,29 +103,6 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 // HasVisibilityCondition returns true if the prompt has a enabledWhen expression.
 func (p *PromptFile) HasVisibilityCondition() bool {
 	return strings.TrimSpace(p.EnabledWhen) != ""
-}
-
-// promptLegacyFields holds fields from legacy prompt YAML keys for backward compatibility.
-// These field names were used before the rename to enabledWhenACP / enabledWhenMCP.
-type promptLegacyFields struct {
-	ACPs          string `yaml:"acps"`
-	RequiredTools string `yaml:"required_tools"`
-}
-
-// migratePromptLegacyFields copies legacy field values into the current field names
-// if the current fields are empty. This provides backward compatibility for existing
-// prompt files that still use the old YAML keys "acps" and "required_tools".
-func migratePromptLegacyFields(p *PromptFile, frontMatterData []byte) {
-	var legacy promptLegacyFields
-	if err := yaml.Unmarshal(frontMatterData, &legacy); err != nil {
-		return
-	}
-	if p.EnabledWhenACP == "" && legacy.ACPs != "" {
-		p.EnabledWhenACP = legacy.ACPs
-	}
-	if p.EnabledWhenMCP == "" && legacy.RequiredTools != "" {
-		p.EnabledWhenMCP = legacy.RequiredTools
-	}
 }
 
 // frontMatterDelimiter is the YAML front-matter delimiter.
@@ -202,16 +154,6 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 			frontMatterBytes := []byte(frontMatter)
 			if err := yaml.Unmarshal(frontMatterBytes, prompt); err != nil {
 				return nil, fmt.Errorf("failed to parse front-matter in %s: %w", path, err)
-			}
-
-			// Apply legacy field name migrations for backward compatibility.
-			// Handles "acps" → EnabledWhenACP and "required_tools" → EnabledWhenMCP.
-			migratePromptLegacyFields(prompt, frontMatterBytes)
-
-			// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
-			// Users may still use enabledWhenACP/enabledWhenMCP in their prompt files.
-			if prompt.EnabledWhenACP != "" || prompt.EnabledWhenMCP != "" {
-				prompt.EnabledWhen = TranslateShorthandToEnabledWhen(prompt.EnabledWhenACP, prompt.EnabledWhenMCP, prompt.EnabledWhen)
 			}
 
 			// Extract content after front-matter
@@ -392,7 +334,7 @@ func extractToolPatternsFromCEL(expr string) []string {
 }
 
 // CollectRequiredToolPatterns extracts all unique required tool patterns from a list of prompts.
-// Patterns may come from the legacy enabledWhenMCP field or from enabledWhen CEL expressions.
+// Patterns come from enabledWhen CEL expressions (tools.hasPattern, tools.hasAllPatterns, etc.).
 func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 	seen := make(map[string]bool)
 	var patterns []string
@@ -405,12 +347,6 @@ func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 	}
 
 	for _, p := range prompts {
-		// From legacy enabledWhenMCP field
-		if p.EnabledWhenMCP != "" {
-			for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
-				addPattern(strings.TrimSpace(pattern))
-			}
-		}
 		// From enabledWhen CEL expression
 		for _, pattern := range extractToolPatternsFromCEL(p.EnabledWhen) {
 			addPattern(pattern)
@@ -420,7 +356,7 @@ func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 }
 
 // CollectRequiredToolPatternsFromWebPrompts extracts all unique required tool patterns from WebPrompts.
-// Patterns may come from the legacy enabledWhenMCP field or from enabledWhen CEL expressions.
+// Patterns come from enabledWhen CEL expressions (tools.hasPattern, tools.hasAllPatterns, etc.).
 func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	seen := make(map[string]bool)
 	var patterns []string
@@ -433,75 +369,12 @@ func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	}
 
 	for _, p := range prompts {
-		// From legacy enabledWhenMCP field
-		if p.EnabledWhenMCP != "" {
-			for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
-				addPattern(strings.TrimSpace(pattern))
-			}
-		}
 		// From enabledWhen CEL expression
 		for _, pattern := range extractToolPatternsFromCEL(p.EnabledWhen) {
 			addPattern(pattern)
 		}
 	}
 	return patterns
-}
-
-// TranslateShorthandToEnabledWhen merges enabledWhenACP and enabledWhenMCP
-// into an enabledWhen CEL expression using convenience functions.
-// If enabledWhen is already set, the shorthand conditions are ANDed with it.
-// The shorthand fields are syntactic sugar for the underlying CEL functions:
-//   - enabledWhenACP: "augment" → acp.matchesServerType("augment")
-//   - enabledWhenACP: "augment, claude-code" → acp.matchesServerType(["augment", "claude-code"])
-//   - enabledWhenMCP: "mitto_*" → tools.hasPattern("mitto_*")
-//   - enabledWhenMCP: "mitto_*, jira_*" → tools.hasAllPatterns(["mitto_*", "jira_*"])
-func TranslateShorthandToEnabledWhen(enabledWhenACP, enabledWhenMCP, existingEnabledWhen string) string {
-	var parts []string
-
-	if enabledWhenACP != "" {
-		servers := splitAndTrimCSV(enabledWhenACP)
-		if len(servers) == 1 {
-			parts = append(parts, fmt.Sprintf("acp.matchesServerType(%q)", servers[0]))
-		} else if len(servers) > 1 {
-			quoted := make([]string, len(servers))
-			for i, s := range servers {
-				quoted[i] = fmt.Sprintf("%q", s)
-			}
-			parts = append(parts, fmt.Sprintf("acp.matchesServerType([%s])", strings.Join(quoted, ", ")))
-		}
-	}
-
-	if enabledWhenMCP != "" {
-		patterns := splitAndTrimCSV(enabledWhenMCP)
-		if len(patterns) == 1 {
-			parts = append(parts, fmt.Sprintf("tools.hasPattern(%q)", patterns[0]))
-		} else if len(patterns) > 1 {
-			quoted := make([]string, len(patterns))
-			for i, p := range patterns {
-				quoted[i] = fmt.Sprintf("%q", p)
-			}
-			parts = append(parts, fmt.Sprintf("tools.hasAllPatterns([%s])", strings.Join(quoted, ", ")))
-		}
-	}
-
-	if existingEnabledWhen != "" {
-		parts = append(parts, existingEnabledWhen)
-	}
-
-	return strings.Join(parts, " && ")
-}
-
-// splitAndTrimCSV splits a comma-separated string and trims whitespace from each element.
-func splitAndTrimCSV(s string) []string {
-	parts := strings.Split(s, ",")
-	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
 }
 
 // init registers a custom YAML unmarshaler for handling the enabled field.

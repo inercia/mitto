@@ -84,15 +84,6 @@ type WebPrompt struct {
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
 	Source PromptSource `json:"source,omitempty"`
-	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
-	// If empty, the prompt works with all ACP servers.
-	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
-	// Filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
-	EnabledWhenACP string `json:"-"`
-	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
-	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
-	// Filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
-	EnabledWhenMCP string `json:"-"`
 	// EnabledWhen is an optional CEL expression for conditional visibility.
 	// Actual filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
 	EnabledWhen string `json:"-"`
@@ -1021,8 +1012,6 @@ type rawACPServerConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		EnabledWhenACP  string `yaml:"enabledWhenACP"`
-		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1039,8 +1028,6 @@ type rawConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		EnabledWhenACP  string `yaml:"enabledWhenACP"`
-		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1233,13 +1220,7 @@ func Parse(data []byte) (*Config, error) {
 					BackgroundColor: p.BackgroundColor,
 					Description:     p.Description,
 					Group:           p.Group,
-					EnabledWhenACP:  p.EnabledWhenACP,
-					EnabledWhenMCP:  p.EnabledWhenMCP,
 					EnabledWhen:     p.EnabledWhen,
-				}
-				// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
-				if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
-					wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
 			}
@@ -1264,14 +1245,8 @@ func Parse(data []byte) (*Config, error) {
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
-			EnabledWhenACP:  p.EnabledWhenACP,
-			EnabledWhenMCP:  p.EnabledWhenMCP,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-		}
-		// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
-		if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
-			wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
 	}

@@ -1270,9 +1270,9 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 	for _, child := range children {
 		childID := child.SessionID
 
-		// Find auto-grandchildren before deletion — store.Delete will cascade-delete them,
+		// Find all grandchildren before deletion — store.Delete will cascade-delete them,
 		// so we need their IDs now to close their ACP processes and broadcast deletions.
-		autoGrandchildIDs, _ := store.FindAutoChildrenRecursive(childID)
+		grandchildIDs, _ := store.FindAllChildrenRecursive(childID)
 
 		// Gracefully close ACP process for the child
 		if !sm.CloseSessionGracefully(childID, "parent_archived", childArchiveTimeout) {
@@ -1280,7 +1280,7 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 		}
 
 		// Close ACP processes for auto-grandchildren (they will be cascade-deleted)
-		for _, gcID := range autoGrandchildIDs {
+		for _, gcID := range grandchildIDs {
 			sm.CloseSession(gcID, "ancestor_archived")
 		}
 
@@ -1297,7 +1297,7 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 
 		// Broadcast deletion for child and any cascade-deleted auto-grandchildren
 		sm.BroadcastSessionDeleted(childID)
-		for _, gcID := range autoGrandchildIDs {
+		for _, gcID := range grandchildIDs {
 			sm.BroadcastSessionDeleted(gcID)
 		}
 
@@ -1306,7 +1306,7 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 				"parent_session_id", parentID,
 				"child_session_id", childID,
 				"child_name", child.Name,
-				"auto_grandchildren_deleted", len(autoGrandchildIDs))
+				"auto_grandchildren_deleted", len(grandchildIDs))
 		}
 	}
 }
@@ -2728,7 +2728,7 @@ func (sm *SessionManager) ClearMCPToolsFetched(workspaceUUID string) {
 }
 
 // ensureMCPToolsFetch triggers an asynchronous MCP tools fetch for the given workspace
-// if not already fetched. This warms the cache so that processor enabledWhenMCP checks
+// if not already fetched. This warms the cache so that processor enabledWhen CEL checks
 // have tool names available by the time the first message is processed.
 // Safe to call multiple times — only the first call for a workspace triggers the fetch.
 func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {

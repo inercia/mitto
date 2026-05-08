@@ -4,9 +4,33 @@ Prompts (also called Quick Actions) are predefined text snippets that appear as 
 in the chat interface. Clicking a prompt button sends its content to the AI agent,
 saving you from typing common requests.
 
-![](prompts-1.png)
+![Prompts dropdown in the chat interface](screenshots/05-prompts-dropdown.png)
 
-## Overview
+## Configuration in the UI
+
+Prompts are managed per-workspace in the **Workspaces → Prompts** tab:
+
+![Workspaces — Prompts tab](screenshots/04-workspace-prompts.png)
+
+From this tab you can:
+
+- **Enable/disable** any prompt (including built-in ones) using the checkbox
+- **Edit** workspace prompts by clicking the ✏️ icon
+- **Delete** workspace prompts using the 🗑️ icon
+- **Add** new prompts with the **+** button
+
+Each prompt shows its **source** as a badge:
+- **built-in** — Shipped with Mitto (read-only, can be disabled)
+- **workspace** — Defined in the project's `.mitto/prompts/` directory or `.mittorc`
+- **global** — From the global prompts directory
+
+Changes take effect immediately — prompts are hot-reloaded when the dropdown opens.
+
+---
+
+## YAML Configuration
+
+### Overview
 
 Prompts appear in a dropdown menu above the chat input. All prompt sources are
 **merged server-side** into a single list per workspace. Higher-priority sources
@@ -878,7 +902,7 @@ You don't need to restart Mitto after adding or modifying prompt files.
 
 ## Related Documentation
 
-- [Workspace Configuration](web/workspace.md) - Workspace-specific prompts in `.mittorc`
+- [Workspace Configuration](workspace.md) - Workspace-specific prompts in `.mittorc`
 - [Configuration Overview](overview.md) - Global settings including prompts
 - [Message Processors](processors.md) - Dynamic message transformation
 - [Web Interface Configuration](web/README.md) - Web interface settings

@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -130,6 +132,35 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.BoolType,
 			),
 		),
+
+		// Custom function: commandExists(name) bool
+		// Returns true if the given command name is found in the system PATH and is executable.
+		cel.Function("commandExists",
+			cel.Overload("commandExists_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+		),
+
+		// Custom function: fileExists(path) bool
+		// Returns true if the given path exists and is a file (not a directory).
+		// Relative paths are resolved against the workspace folder.
+		cel.Function("fileExists",
+			cel.Overload("fileExists_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+		),
+
+		// Custom function: dirExists(path) bool
+		// Returns true if the given path exists and is a directory.
+		// Relative paths are resolved against the workspace folder.
+		cel.Function("dirExists",
+			cel.Overload("dirExists_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cel: failed to create environment: %w", err)
@@ -218,6 +249,27 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 				[]*cel.Type{cel.ListType(cel.StringType)},
 				cel.BoolType,
 				cel.FunctionBinding(toolsHasAnyPatternImpl(ctx.Tools.Names)),
+			),
+		),
+		cel.Function("commandExists",
+			cel.Overload("commandExists_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(commandExistsImpl()),
+			),
+		),
+		cel.Function("fileExists",
+			cel.Overload("fileExists_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(fileExistsImpl(ctx.Workspace.Folder)),
+			),
+		),
+		cel.Function("dirExists",
+			cel.Overload("dirExists_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(dirExistsImpl(ctx.Workspace.Folder)),
 			),
 		),
 	)
@@ -375,6 +427,67 @@ func toolsHasAnyPatternImpl(names []string) func(args ...ref.Val) ref.Val {
 			}
 		}
 		return types.Bool(false)
+	}
+}
+
+// commandExistsImpl returns a CEL UnaryOp that checks whether a command
+// is available in the system PATH using exec.LookPath.
+func commandExistsImpl() func(ref.Val) ref.Val {
+	return func(nameVal ref.Val) ref.Val {
+		name, ok := nameVal.(types.String)
+		if !ok {
+			return types.Bool(false)
+		}
+		_, err := exec.LookPath(string(name))
+		return types.Bool(err == nil)
+	}
+}
+
+// fileExistsImpl returns a CEL UnaryOp that checks whether a file (not directory) exists
+// at the given path. Relative paths are resolved against the provided workspace folder.
+func fileExistsImpl(workspaceFolder string) func(ref.Val) ref.Val {
+	return func(pathVal ref.Val) ref.Val {
+		p, ok := pathVal.(types.String)
+		if !ok {
+			return types.Bool(false)
+		}
+		path := string(p)
+		if path == "" {
+			return types.Bool(false)
+		}
+		// Resolve relative paths against workspace folder
+		if !filepath.IsAbs(path) && workspaceFolder != "" {
+			path = filepath.Join(workspaceFolder, path)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return types.Bool(false)
+		}
+		return types.Bool(!info.IsDir())
+	}
+}
+
+// dirExistsImpl returns a CEL UnaryOp that checks whether a directory exists
+// at the given path. Relative paths are resolved against the provided workspace folder.
+func dirExistsImpl(workspaceFolder string) func(ref.Val) ref.Val {
+	return func(pathVal ref.Val) ref.Val {
+		p, ok := pathVal.(types.String)
+		if !ok {
+			return types.Bool(false)
+		}
+		path := string(p)
+		if path == "" {
+			return types.Bool(false)
+		}
+		// Resolve relative paths against workspace folder
+		if !filepath.IsAbs(path) && workspaceFolder != "" {
+			path = filepath.Join(workspaceFolder, path)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return types.Bool(false)
+		}
+		return types.Bool(info.IsDir())
 	}
 }
 

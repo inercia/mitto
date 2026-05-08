@@ -130,9 +130,9 @@ func TestParseMCPToolsList(t *testing.T) {
 	}
 }
 
-func TestParseEnabledWhenMCPCheck_ValidJSON(t *testing.T) {
+func TestParseToolPatternsCheck_ValidJSON(t *testing.T) {
 	input := `{"patterns": {"jira_*": true, "slack_*": false}}`
-	got, err := parseEnabledWhenMCPCheck(input)
+	got, err := parseToolPatternsCheck(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,9 +142,9 @@ func TestParseEnabledWhenMCPCheck_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestParseEnabledWhenMCPCheck_JSONWithSurroundingText(t *testing.T) {
+func TestParseToolPatternsCheck_JSONWithSurroundingText(t *testing.T) {
 	input := `Here is the result: {"patterns": {"jira_*": true}} - done`
-	got, err := parseEnabledWhenMCPCheck(input)
+	got, err := parseToolPatternsCheck(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,17 +154,17 @@ func TestParseEnabledWhenMCPCheck_JSONWithSurroundingText(t *testing.T) {
 	}
 }
 
-func TestParseEnabledWhenMCPCheck_InvalidJSON(t *testing.T) {
+func TestParseToolPatternsCheck_InvalidJSON(t *testing.T) {
 	input := `not valid json at all`
-	_, err := parseEnabledWhenMCPCheck(input)
+	_, err := parseToolPatternsCheck(input)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-func TestParseEnabledWhenMCPCheck_EmptyPatterns(t *testing.T) {
+func TestParseToolPatternsCheck_EmptyPatterns(t *testing.T) {
 	input := `{"patterns": {}}`
-	got, err := parseEnabledWhenMCPCheck(input)
+	got, err := parseToolPatternsCheck(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
