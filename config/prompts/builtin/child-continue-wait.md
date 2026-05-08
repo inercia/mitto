@@ -36,15 +36,13 @@ options: <children formatted as "Title - ACP Server (running/idle)">
 
 On timeout: abort. Do not send without explicit selection.
 
-## Phase 3: Prepare and Send Instructions
+## Phase 3: Prepare Instructions
 
 Choose a short, descriptive `task_id` for this work or iteration (e.g., `"investigate-bug-1"`, `"iter2-fix-tests"`).
 
-Prepare continuation instructions for the current goals but in another conversation.
-Think about what we were trying to accomplish.
-Add some meaningful context for the other agent.
+Based on the conversation context, prepare continuation instructions for the child. Think about what we were trying to accomplish and add meaningful context for the other agent.
 
-Append the following text to these instructions:
+Append the following reporting block to the instructions:
 
 ```
 When complete, report via
@@ -59,11 +57,38 @@ mitto_children_tasks_report:
 Do this as your final action.
 ```
 
-Send the instructions with:
+Present to user:
 
-`mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id: <child_id>, prompt: <instructions>)`
+```markdown
+## Continue Child Work (with wait)
 
-## Phase 4: Wait for Results
+**Child:** <title> (<id>)
+**Task ID:** <task_id>
+
+**Proposed Instructions:**
+---
+<continuation prompt including the reporting block>
+---
+```
+
+Confirm via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 120s):
+
+```
+question: "Send these instructions to <child title>?"
+options:
+  - label: "Send as proposed"
+    description: "<one-line summary of the proposed instructions>"
+allow_free_text: true
+free_text_placeholder: "Describe what to do differently..."
+```
+
+On timeout: abort. Do not send without explicit confirmation.
+
+## Phase 4: Send Instructions
+
+`mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id: <child_id>, prompt: <confirmed instructions>)`
+
+## Phase 5: Wait for Results
 
 Wait for the results from the child conversation with:
 

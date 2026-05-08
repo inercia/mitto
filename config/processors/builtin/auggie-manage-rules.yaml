@@ -9,12 +9,12 @@
 # Fire-and-forget: the auxiliary agent works in the background while the main
 # conversation continues normally.
 #
-# Disabled by default — enable per workspace in the Workspaces dialog or .mittorc.
+# Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 # Only activates when the ACP server is Auggie.
 ##########################################################################################
 name: auggie-manage-rules
 description: "Generate and maintain .augment/rules/ files from workspace analysis and conversations"
-enabled: false
+enabled: true
 when: first
 priority: 200
 timeout: 300s

@@ -9,8 +9,8 @@
 # This is a fire-and-forget processor: the prompt is dispatched to a workspace-scoped
 # auxiliary ACP session and the pipeline continues immediately without waiting.
 #
-# Disabled by default — enable in the Workspaces dialog or .mittorc if you want
-# automatic preference tracking.
+# Enabled by default — disable in the Workspaces dialog or .mittorc if you want
+# to turn off automatic preference tracking.
 #
 # What it captures:
 #   - Code style preferences (naming, formatting, patterns)
@@ -26,7 +26,7 @@
 ##########################################################################################
 name: memorize-preferences
 description: "Extracts user preferences from conversations and saves them to AGENTS.md"
-enabled: false
+enabled: true
 when: first
 priority: 200
 timeout: 120s
