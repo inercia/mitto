@@ -968,7 +968,11 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Description: "List all existing Mitto conversations with metadata including title, dates, message count, prompting status, last sequence, and session folder. " +
 			"Use this to find conversation IDs for other tools like 'mitto_conversation_get' or 'mitto_conversation_send_prompt'. " +
 			"To CREATE a new conversation, use 'mitto_conversation_new' instead. Always available. " +
-			"All parameters are optional filters — omit them to list all conversations.",
+			"All parameters are optional filters — omit them to list all conversations. " +
+			"Optionally filter by workspace UUID using the 'workspace' parameter to list only conversations in a specific workspace. " +
+			"Optionally provide 'self_id' for permission-aware listing: without it, all conversations are returned (backward compatible); " +
+			"with 'self_id' but without the 'Can interact with other workspaces' flag, only the caller's own workspace conversations are returned. " +
+			selfIDNote,
 	}, s.createListConversationsHandler(deps.SessionManager))
 
 	// mitto_get_config tool - always available
@@ -999,8 +1003,9 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 // For ACP-routed agents (like Auggie), the self_id is automatically correlated via the ACP layer,
 // so any stable value works. For external MCP clients, the real session_id must be discovered first.
 const selfIDNote = "The self_id parameter identifies YOUR current session (not the target conversation). " +
-	"Call 'mitto_conversation_get_current' first to discover your real session_id, then use that value for all subsequent tool calls. " +
-	"Your session_id is required to verify permissions for this tool."
+	"If your session_id was already provided in the conversation context (e.g., in a '[Session Context]' block), use that value directly — " +
+	"do NOT call 'mitto_conversation_get_current' first. " +
+	"Only call 'mitto_conversation_get_current' if you do not already know your session_id."
 
 // registerSessionScopedTools registers session-scoped MCP tools.
 // These tools operate on specific conversations using automatic session detection via session_id correlation.
@@ -1010,10 +1015,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get_current",
 		Description: "Get information about YOUR current conversation/session, including your real session ID, title, working directory, and message count. " +
-			"CALL THIS FIRST to discover your session_id before using other Mitto tools that require permissions. " +
+			"Only call this if you do NOT already know your session_id (e.g., it was not provided as part of the prompt). " +
 			"You can pass any value for self_id (e.g., 'init') - this tool auto-detects your session and returns the real session_id. " +
-			// Note: selfIDNote is appended here for consistency, but for get_current specifically,
-			// any self_id value works since the tool auto-detects the session via ACP correlation.
 			selfIDNote,
 	}, s.handleGetCurrentSession)
 
@@ -1034,6 +1037,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Present a list of options to the user as an expandable menu and wait for their selection. " +
 			"Each option can have a short label and an optional longer description. " +
 			"Option labels should be short (max 80 characters) and descriptions concise (max 200 characters); longer values will be truncated. " +
+			"The question text must be concise (max 500 characters); if you need to provide detailed context, print it as a regular message first. " +
 			"Optionally allows the user to type free text instead of selecting a predefined option. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
@@ -1070,6 +1074,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"it sends the notification and returns immediately without waiting for user interaction. " +
 			"Useful for informing the user about progress, completion, errors, or other events. " +
 			"style can be: 'info' (default, blue), 'success' (green), 'warning' (amber), 'error' (red). " +
+			"native=true shows a native OS notification (macOS only) in addition to the in-app toast. " +
+			"sound=true plays a notification sound. " +
+			"sticky=true keeps the native notification in Notification Center until the user dismisses it (default: false, auto-removes after 5s). " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleUINotify)
@@ -1357,6 +1364,79 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 			return nil, ListConversationsOutput{}, fmt.Errorf("session store not available")
 		}
 
+		// A) Build workspace lookup maps for enriching results with workspace identity.
+		// Composite key (workingDir+"|"+acpServer) → WorkspaceSettings for exact matching;
+		// fallback key workingDir → WorkspaceSettings (first match) for partial matching.
+		var wsCompositeMap map[string]config.WorkspaceSettings
+		var wsFallbackMap map[string]config.WorkspaceSettings
+		if sm != nil {
+			workspaces := sm.GetWorkspaces()
+			wsCompositeMap = make(map[string]config.WorkspaceSettings, len(workspaces))
+			wsFallbackMap = make(map[string]config.WorkspaceSettings, len(workspaces))
+			for _, ws := range workspaces {
+				compositeKey := ws.WorkingDir + "|" + ws.ACPServer
+				wsCompositeMap[compositeKey] = ws
+				if _, exists := wsFallbackMap[ws.WorkingDir]; !exists {
+					wsFallbackMap[ws.WorkingDir] = ws
+				}
+			}
+		}
+
+		// B) Permission-gated workspace filtering.
+		// workingDirFilter, if non-empty, restricts results to a specific working directory
+		// and takes precedence over input.WorkingDir.
+		var workingDirFilter string
+
+		if input.SelfID != "" {
+			// Resolve caller's session ID.
+			realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+			if realSessionID == "" {
+				return nil, ListConversationsOutput{}, fmt.Errorf(
+					"session not found: the self_id '%s' could not be resolved", input.SelfID)
+			}
+
+			// Get caller's metadata to determine their workspace.
+			callerMeta, err := store.GetMetadata(realSessionID)
+			if err != nil {
+				return nil, ListConversationsOutput{}, fmt.Errorf(
+					"failed to get caller metadata: %w", err)
+			}
+
+			hasXWPermissions := s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces)
+
+			if input.Workspace != nil {
+				// Explicit workspace requested — resolve and check permissions.
+				if sm == nil {
+					return nil, ListConversationsOutput{}, fmt.Errorf("session manager not available")
+				}
+				targetWS := sm.GetWorkspaceByUUID(*input.Workspace)
+				if targetWS == nil {
+					return nil, ListConversationsOutput{}, fmt.Errorf("workspace not found: %s", *input.Workspace)
+				}
+				if targetWS.WorkingDir != callerMeta.WorkingDir && !hasXWPermissions {
+					return nil, ListConversationsOutput{}, fmt.Errorf(
+						"cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+						session.FlagCanInteractOtherWorkspaces)
+				}
+				workingDirFilter = targetWS.WorkingDir
+			} else {
+				// No explicit workspace: scope to caller's own workspace unless they have cross-workspace permissions.
+				if !hasXWPermissions {
+					workingDirFilter = callerMeta.WorkingDir
+				}
+				// If caller has cross-workspace permissions and no workspace filter, list all.
+			}
+		} else if input.Workspace != nil {
+			// No self_id but workspace UUID provided — resolve without permission checks (backward compat).
+			if sm != nil {
+				targetWS := sm.GetWorkspaceByUUID(*input.Workspace)
+				if targetWS == nil {
+					return nil, ListConversationsOutput{}, fmt.Errorf("workspace not found: %s", *input.Workspace)
+				}
+				workingDirFilter = targetWS.WorkingDir
+			}
+		}
+
 		sessions, err := store.List()
 		if err != nil {
 			return nil, ListConversationsOutput{}, fmt.Errorf("failed to list sessions: %w", err)
@@ -1364,8 +1444,13 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 
 		conversations := make([]ConversationInfo, 0, len(sessions))
 		for _, meta := range sessions {
-			// Apply filters before building full info
-			if input.WorkingDir != nil && meta.WorkingDir != *input.WorkingDir {
+			// C) Apply filters.
+			// workspace-derived filter takes precedence over explicit input.WorkingDir.
+			if workingDirFilter != "" {
+				if meta.WorkingDir != workingDirFilter {
+					continue
+				}
+			} else if input.WorkingDir != nil && meta.WorkingDir != *input.WorkingDir {
 				continue
 			}
 			if input.Archived != nil && meta.Archived != *input.Archived {
@@ -1393,7 +1478,19 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				SessionFolder:     store.SessionDir(meta.SessionID),
 			}
 
-			// Check lock status
+			// D) Enrich with workspace identity using composite key, falling back to working-dir-only lookup.
+			if wsCompositeMap != nil {
+				compositeKey := meta.WorkingDir + "|" + meta.ACPServer
+				if ws, ok := wsCompositeMap[compositeKey]; ok {
+					info.WorkspaceUUID = ws.UUID
+					info.WorkspaceName = ws.Name
+				} else if ws, ok := wsFallbackMap[meta.WorkingDir]; ok {
+					info.WorkspaceUUID = ws.UUID
+					info.WorkspaceName = ws.Name
+				}
+			}
+
+			// Check lock status.
 			lockInfo, err := store.GetLockInfo(meta.SessionID)
 			if err == nil && lockInfo != nil {
 				info.IsLocked = true
@@ -1402,7 +1499,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				info.IsPrompting = lockInfo.Status == session.LockStatusProcessing
 			}
 
-			// Get running session info if available
+			// Get running session info if available.
 			if sm != nil {
 				if bs := sm.GetSession(meta.SessionID); bs != nil {
 					info.IsRunning = true
@@ -1411,12 +1508,12 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				}
 			}
 
-			// Check if conversation has an active periodic prompt
+			// Check if conversation has an active periodic prompt.
 			if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
 				info.IsPeriodic = p.Enabled
 			}
 
-			// Apply is_running filter after runtime status is resolved
+			// Apply is_running filter after runtime status is resolved.
 			if input.IsRunning != nil && info.IsRunning != *input.IsRunning {
 				continue
 			}
@@ -1771,7 +1868,9 @@ func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 	const maxQuestionLen = 500
 	if len([]rune(question)) > maxQuestionLen {
-		question = string([]rune(question)[:maxQuestionLen-1]) + "…"
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf(
+			"the question text is too long (%d characters, max %d). Print the detailed context to the user as a regular message first, then call mitto_ui_options with a concise question",
+			len([]rune(question)), maxQuestionLen)
 	}
 
 	// Generate unique internal request ID for UI prompt
@@ -2155,6 +2254,7 @@ func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, inp
 		Style:   style,
 		Sound:   input.Sound,
 		Native:  input.Native,
+		Sticky:  input.Sticky,
 	}
 
 	s.logger.Debug("UI notify dispatched",

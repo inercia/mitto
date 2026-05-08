@@ -2271,6 +2271,236 @@ func TestListConversationsFiltering(t *testing.T) {
 }
 
 // =============================================================================
+// ListConversations Workspace Enrichment and Permission Tests
+// =============================================================================
+
+// setupListConversationsTestServer creates a server with 3 sessions across two workspaces:
+// - 2 sessions in /workspace-a (source session + one extra)
+// - 1 session in /workspace-b
+// The source session is registered with the MCP server for self_id resolution.
+// Returns (srv, store, sourceSessionID).
+func setupListConversationsTestServer(t *testing.T, flags map[string]bool) (*Server, *session.Store, string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sourceID := session.GenerateSessionID()
+	extraAID := session.GenerateSessionID()
+	sessionBID := session.GenerateSessionID()
+
+	sessionsData := []session.Metadata{
+		{SessionID: sourceID, Name: "Source Session", ACPServer: "server-a", WorkingDir: "/workspace-a", AdvancedSettings: flags},
+		{SessionID: extraAID, Name: "Extra A Session", ACPServer: "server-a", WorkingDir: "/workspace-a"},
+		{SessionID: sessionBID, Name: "Session B", ACPServer: "server-b", WorkingDir: "/workspace-b"},
+	}
+	for _, meta := range sessionsData {
+		if err := store.Create(meta); err != nil {
+			t.Fatalf("Failed to create session %s: %v", meta.SessionID, err)
+		}
+	}
+
+	mockSM := &mockSessionManagerCrossWorkspace{
+		workspaces: map[string]*config.WorkspaceSettings{
+			"ws-a-uuid": {UUID: "ws-a-uuid", Name: "Workspace A", ACPServer: "server-a", WorkingDir: "/workspace-a"},
+			"ws-b-uuid": {UUID: "ws-b-uuid", Name: "Workspace B", ACPServer: "server-b", WorkingDir: "/workspace-b"},
+		},
+		workspaceFolders: []config.WorkspaceSettings{
+			{UUID: "ws-a-uuid", Name: "Workspace A", ACPServer: "server-a", WorkingDir: "/workspace-a"},
+			{UUID: "ws-b-uuid", Name: "Workspace B", ACPServer: "server-b", WorkingDir: "/workspace-b"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sourceID, nil, logger); err != nil {
+		t.Fatalf("Failed to register source session: %v", err)
+	}
+
+	return srv, store, sourceID
+}
+
+func TestListConversations_WorkspaceEnrichment(t *testing.T) {
+	srv, _, _ := setupListConversationsTestServer(t, nil)
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	_, output, err := handler(ctx, nil, ListConversationsInput{})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if len(output.Conversations) != 3 {
+		t.Fatalf("expected 3 conversations, got %d", len(output.Conversations))
+	}
+	for _, c := range output.Conversations {
+		if c.WorkspaceUUID == "" {
+			t.Errorf("expected workspace_uuid to be set for session %s (workingDir=%s)", c.SessionID, c.WorkingDir)
+		}
+		if c.WorkspaceName == "" {
+			t.Errorf("expected workspace_name to be set for session %s (workingDir=%s)", c.SessionID, c.WorkingDir)
+		}
+		switch c.WorkingDir {
+		case "/workspace-a":
+			if c.WorkspaceUUID != "ws-a-uuid" {
+				t.Errorf("expected ws-a-uuid for /workspace-a, got %s", c.WorkspaceUUID)
+			}
+			if c.WorkspaceName != "Workspace A" {
+				t.Errorf("expected 'Workspace A', got %q", c.WorkspaceName)
+			}
+		case "/workspace-b":
+			if c.WorkspaceUUID != "ws-b-uuid" {
+				t.Errorf("expected ws-b-uuid for /workspace-b, got %s", c.WorkspaceUUID)
+			}
+			if c.WorkspaceName != "Workspace B" {
+				t.Errorf("expected 'Workspace B', got %q", c.WorkspaceName)
+			}
+		}
+	}
+}
+
+func TestListConversations_WorkspaceFilter(t *testing.T) {
+	srv, _, _ := setupListConversationsTestServer(t, nil)
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	wsUUID := "ws-b-uuid"
+	_, output, err := handler(ctx, nil, ListConversationsInput{Workspace: &wsUUID})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if len(output.Conversations) != 1 {
+		t.Fatalf("expected 1 conversation in workspace-b, got %d", len(output.Conversations))
+	}
+	if output.Conversations[0].WorkingDir != "/workspace-b" {
+		t.Errorf("expected /workspace-b, got %s", output.Conversations[0].WorkingDir)
+	}
+}
+
+func TestListConversations_SelfID_NoPermissions_DefaultsToOwnWorkspace(t *testing.T) {
+	srv, _, sourceID := setupListConversationsTestServer(t, nil) // no flags
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	_, output, err := handler(ctx, nil, ListConversationsInput{SelfID: sourceID})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	// Should only see workspace-a sessions (source + extra = 2)
+	if len(output.Conversations) != 2 {
+		t.Fatalf("expected 2 conversations (own workspace only), got %d", len(output.Conversations))
+	}
+	for _, c := range output.Conversations {
+		if c.WorkingDir != "/workspace-a" {
+			t.Errorf("expected /workspace-a only, got %s for session %s", c.WorkingDir, c.SessionID)
+		}
+	}
+}
+
+func TestListConversations_SelfID_WithPermissions_ListsAll(t *testing.T) {
+	srv, _, sourceID := setupListConversationsTestServer(t, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	_, output, err := handler(ctx, nil, ListConversationsInput{SelfID: sourceID})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	// Should see all 3 sessions across both workspaces
+	if len(output.Conversations) != 3 {
+		t.Fatalf("expected 3 conversations (all workspaces), got %d", len(output.Conversations))
+	}
+}
+
+func TestListConversations_SelfID_NoPermissions_ExplicitOtherWorkspace_Error(t *testing.T) {
+	srv, _, sourceID := setupListConversationsTestServer(t, nil) // no flags
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	wsUUID := "ws-b-uuid" // different workspace from caller (/workspace-b vs /workspace-a)
+	_, _, err := handler(ctx, nil, ListConversationsInput{
+		SelfID:    sourceID,
+		Workspace: &wsUUID,
+	})
+	if err == nil {
+		t.Fatal("expected error for cross-workspace without permissions, got nil")
+	}
+	if !strings.Contains(err.Error(), "Can interact with other workspaces") {
+		t.Errorf("expected flag error message, got: %v", err)
+	}
+}
+
+func TestListConversations_SelfID_NoPermissions_ExplicitOwnWorkspace_OK(t *testing.T) {
+	srv, _, sourceID := setupListConversationsTestServer(t, nil) // no flags
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	wsUUID := "ws-a-uuid" // same workspace as source session
+	_, output, err := handler(ctx, nil, ListConversationsInput{
+		SelfID:    sourceID,
+		Workspace: &wsUUID,
+	})
+	if err != nil {
+		t.Fatalf("expected no error for own workspace, got: %v", err)
+	}
+	if len(output.Conversations) != 2 {
+		t.Fatalf("expected 2 conversations in workspace-a, got %d", len(output.Conversations))
+	}
+	for _, c := range output.Conversations {
+		if c.WorkingDir != "/workspace-a" {
+			t.Errorf("expected /workspace-a, got %s", c.WorkingDir)
+		}
+	}
+}
+
+func TestListConversations_SelfID_WithPermissions_ExplicitOtherWorkspace_OK(t *testing.T) {
+	srv, _, sourceID := setupListConversationsTestServer(t, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	wsUUID := "ws-b-uuid" // different workspace
+	_, output, err := handler(ctx, nil, ListConversationsInput{
+		SelfID:    sourceID,
+		Workspace: &wsUUID,
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if len(output.Conversations) != 1 {
+		t.Fatalf("expected 1 conversation in workspace-b, got %d", len(output.Conversations))
+	}
+	if output.Conversations[0].WorkingDir != "/workspace-b" {
+		t.Errorf("expected /workspace-b, got %s", output.Conversations[0].WorkingDir)
+	}
+}
+
+func TestListConversations_WorkspaceNotFound(t *testing.T) {
+	srv, _, _ := setupListConversationsTestServer(t, nil)
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(srv.sessionManager)
+
+	wsUUID := "nonexistent-uuid"
+	_, _, err := handler(ctx, nil, ListConversationsInput{Workspace: &wsUUID})
+	if err == nil {
+		t.Fatal("expected error for nonexistent workspace, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace not found") {
+		t.Errorf("expected 'workspace not found' error, got: %v", err)
+	}
+}
+
+// =============================================================================
 // Workspace List Tests
 // =============================================================================
 
@@ -4844,9 +5074,8 @@ func TestHandleUIOptions_MissingSessionID(t *testing.T) {
 }
 
 func TestHandleUIOptions_TruncatesLongLabels(t *testing.T) {
-	longLabel := strings.Repeat("a", 100)    // 100 chars, exceeds 80
-	longDesc := strings.Repeat("b", 250)     // 250 chars, exceeds 200
-	longQuestion := strings.Repeat("q", 600) // 600 chars, exceeds 500
+	longLabel := strings.Repeat("a", 100) // 100 chars, exceeds 80
+	longDesc := strings.Repeat("b", 250)  // 250 chars, exceeds 200
 
 	mock := &mockUIPrompter{
 		response: UIPromptResponse{
@@ -4860,7 +5089,7 @@ func TestHandleUIOptions_TruncatesLongLabels(t *testing.T) {
 	ctx := context.Background()
 	input := UIOptionsInput{
 		SelfID:   sessionID,
-		Question: longQuestion,
+		Question: "Short question?", // within limit
 		Options: []UIOptionsItem{
 			{Label: longLabel, Description: longDesc},
 		},
@@ -4872,15 +5101,6 @@ func TestHandleUIOptions_TruncatesLongLabels(t *testing.T) {
 	}
 
 	call := mock.lastCall()
-
-	// Verify question was truncated to 500 runes (499 + ellipsis)
-	questionRunes := []rune(call.Question)
-	if len(questionRunes) > 500 {
-		t.Errorf("Expected question truncated to ≤500 runes, got %d", len(questionRunes))
-	}
-	if questionRunes[len(questionRunes)-1] != '…' {
-		t.Errorf("Expected question to end with ellipsis, got: %q", string(questionRunes[len(questionRunes)-1]))
-	}
 
 	// Verify label was truncated to 80 runes (79 + ellipsis)
 	if len(call.Options) == 0 {
@@ -4901,6 +5121,34 @@ func TestHandleUIOptions_TruncatesLongLabels(t *testing.T) {
 	}
 	if descRunes[len(descRunes)-1] != '…' {
 		t.Errorf("Expected description to end with ellipsis, got: %q", string(descRunes[len(descRunes)-1]))
+	}
+}
+
+func TestHandleUIOptions_QuestionTooLong(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:   sessionID,
+		Question: strings.Repeat("q", 600), // 600 chars, exceeds max 500
+		Options: []UIOptionsItem{
+			{Label: "Option A"},
+		},
+	}
+
+	_, output, err := srv.handleUIOptions(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for question exceeding max length, got nil")
+	}
+	if !strings.Contains(err.Error(), "too long") {
+		t.Errorf("Expected error to mention 'too long', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("Expected error to mention max of '500', got: %v", err)
+	}
+	if output.Index != -1 {
+		t.Errorf("Expected Index=-1 on error, got=%d", output.Index)
 	}
 }
 
