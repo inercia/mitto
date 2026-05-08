@@ -2889,7 +2889,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					ID:          child.SessionID,
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
-					IsAutoChild: child.IsAutoChild,
+					IsAutoChild: child.ChildOrigin == session.ChildOriginAuto,
 					ChildOrigin: string(child.ChildOrigin),
 				})
 			}

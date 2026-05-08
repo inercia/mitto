@@ -1342,7 +1342,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Session.ID = meta.SessionID
 	ctx.Session.Name = meta.Name
 	ctx.Session.IsChild = meta.ParentSessionID != ""
-	ctx.Session.IsAutoChild = meta.IsAutoChild
+	ctx.Session.IsAutoChild = meta.ChildOrigin == session.ChildOriginAuto
 	ctx.Session.ParentID = meta.ParentSessionID
 
 	// Parent context (if this is a child)
