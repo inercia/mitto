@@ -24,7 +24,7 @@ keywords:
 ## Technology Stack
 
 - **No build step**: Preact + HTM loaded from local vendor files
-- **Styling**: Tailwind CSS via Play CDN
+- **Styling**: Pre-built Tailwind CSS (`make tailwind` to regenerate). **Must rebuild** when adding new Tailwind classes not already in `tailwind.css`
 - **Markdown**: marked.js + DOMPurify for user message rendering
 - **Diagrams**: Mermaid.js loaded dynamically from CDN when needed
 - **Single binary**: All assets embedded via `go:embed` in `web/embed.go`
@@ -97,6 +97,18 @@ if (value && looksLikeFilePath(value)) {
   }
   // render <a class="file-link" href=${viewerUrl}>
 }
+```
+
+**Critical**: `app.js` has a global `document.addEventListener("click", ...)` (~line 161) that matches `/viewer.html?` URLs. Component-level onClick handlers on file links MUST call both `e.preventDefault()` AND `e.stopPropagation()` — omitting `stopPropagation()` causes a double viewer window to open.
+
+```javascript
+// CORRECT: prevents bubbling to global handler
+onClick=${(e) => {
+  e.preventDefault();
+  e.stopPropagation();  // required — without this, global handler also fires
+  if (!viewerUrl) return;
+  openViewer(viewerUrl);
+}}
 ```
 
 ## Context Menu: Use useMemo Not useState+useEffect

@@ -1,5 +1,5 @@
 ---
-description: Frontend UI components, custom hooks (useResizeHandle, useSwipeNavigation), ChatInput, QueueDropdown, Icons, side panels, component patterns
+description: Frontend UI components, custom hooks (useResizeHandle, useSwipeNavigation, useToast), ChatInput, QueueDropdown, ToastContainer, Icons, side panels, component patterns
 globs:
   - "web/static/components/*.js"
   - "web/static/components/**/*"
@@ -23,6 +23,9 @@ keywords:
   - UserDataPanel
   - side panel
   - overlay
+  - useToast
+  - ToastContainer
+  - toast
   - component
   - hook
 ---
@@ -43,6 +46,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `Icons`                      | `Icons.js`                        | SVG icon components                                  |
 | `ConversationPropertiesPanel`| `ConversationPropertiesPanel.js`  | Right-side overlay panel for session properties      |
 | `UserDataPanel`              | `UserDataPanel.js`                | Right-side overlay panel for user data / metadata    |
+| `ToastContainer`             | `ToastContainer.js`               | Renders toast stack, color-coded by severity         |
 | `ContextMenu`                | `app.js`                          | Right-click menus with viewport-aware positioning    |
 | `SessionItem`                | `app.js`                          | Session list item with swipe, context menu, status   |
 
@@ -115,32 +119,29 @@ CSS classes `properties-panel` and `properties-backdrop` control slide-in/fade-i
 
 Use `TagIcon` for user data / metadata panels (defined in `Icons.js`).
 
-## useResizeHandle Hook
+## useToast Hook (Unified Notification System)
+
+**All in-app notifications must go through `useToast`** — never add standalone toast state/timers in `app.js`.
 
 ```javascript
-const { height, isDragging, handleProps } = useResizeHandle({
-    initialHeight: 256, minHeight: 100, maxHeight: 500,
-    onDragStart: () => { /* pause timers */ },
-    onDragEnd: (finalHeight) => { /* persist */ },
-});
-// Spread handleProps on resize handle element
+const { showToast, dismissToast, toasts } = useToast();
+showToast({ message: "Saved", style: "success" }); // auto-dismiss 5s
+showToast({ message: "Failed", style: "error" });   // auto-dismiss 10s
+showToast({ message: "Pinned", sticky: true });      // no auto-dismiss
 ```
 
-Mouse + touch support. Dragging up increases height. Sets `user-select: none` and `cursor: ns-resize` during drag.
+Severity durations: info/success=5s, warning/error=10s. Max 5 simultaneous (oldest evicted). Render via `<ToastContainer toasts=${toasts} onDismiss=${dismissToast} />`.
 
-## useSwipeNavigation Hook
+**Style selection**: `error` (red) = actual errors only. Use `info` for neutral events. **Anti-pattern**: never use `error` for non-error notifications — red implies urgency.
 
-```javascript
-useSwipeNavigation(containerRef, onSwipeLeft, onSwipeRight, {
-    threshold: 80, maxVertical: 80, edgeWidth: 40, onEdgeSwipeRight: openSidebar,
-});
-```
+**v2 theme CSS anti-pattern**: `styles-v2.css` globally remaps `.text-white` → near-black and `bg-blue-600` → red. Components with semantic colors (info=blue, not red) need scoped overrides using their wrapper class. Toast fixes use `.v2-theme .toast-enter .bg-*` and `.v2-theme .toast-enter .text-white`. See existing patterns at `styles-v2.css` ~lines 836–910.
 
-Swipe completes within 500ms; horizontal > threshold, vertical < maxVertical; edge swipes by start position within `edgeWidth`.
+## useResizeHandle / useSwipeNavigation / New Hooks
 
-## Creating New Hooks
+- `useResizeHandle`: mouse+touch drag for height. Spread `handleProps` on handle element.
+- `useSwipeNavigation`: swipe left/right with threshold, edge detection. 500ms window.
+- **New hooks**: `use[Name].js`, export from `hooks/index.js`, use `window.preact` globals, cleanup in useEffect.
 
-File naming: `use[Name].js`. Export from `hooks/index.js`. Use `window.preact` globals. Return cleanup from useEffect. Include touch events for mobile.
 ## Session List: Parent-Child UI Rules
 
 - Children accordion: only one parent's children expanded at a time (accordion mode always on for `parent:*` groups)

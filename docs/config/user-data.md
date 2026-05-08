@@ -4,14 +4,32 @@ User data allows you to attach custom metadata to conversations. This is useful 
 tracking project-specific information like JIRA tickets, task descriptions, or any
 other contextual data relevant to your work.
 
-## Overview
+## Configuration in the UI
+
+User data schema is defined in the **Workspaces → Metadata** tab, under **User Data Schema**:
+
+![Workspaces — Metadata tab](screenshots/04-workspace-metadata.png)
+
+From this tab you can:
+
+- **Add fields** with the **+ Add Field** button
+- Set each field's **name**, **type** (string or URL), and **description**
+- Remove fields you no longer need
+
+Once a schema is defined, users can set values on individual conversations via the conversation properties panel.
+
+---
+
+## YAML Configuration
+
+### Overview
 
 User data consists of named attributes that you can define per workspace. Each
 attribute has a name and a type that determines validation rules. The schema is
 defined in your workspace's `.mittorc` file, and users can then set values for
 these attributes on individual conversations.
 
-## Configuration Schema
+### Configuration Schema
 
 Define the allowed user data fields in your workspace `.mittorc` file:
 
@@ -182,6 +200,7 @@ The file format:
 
 ## Related Documentation
 
-- [Conversation Processing](conversations.md) - Message processing rules
-- [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
+- [Conversation Settings](conversations.md) - Auto-approve, auto-archive, external images
+- [Processors](processors.md) - Message transformation (text, command, prompt modes)
+- [Workspace Configuration](workspace.md) - Project-specific `.mittorc` files
 - [Configuration Overview](overview.md) - Global configuration options

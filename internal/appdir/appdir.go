@@ -456,5 +456,3 @@ func RCFilePath() (string, error) {
 
 	return "", nil
 }
-
-

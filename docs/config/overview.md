@@ -64,14 +64,14 @@ See [ACP Servers](acp.md) for detailed documentation including:
 
 ### Web Interface
 
-Configure the web server, authentication, hooks, and more. See [Web Configuration](web.md) for details.
+Configure the web server, authentication, hooks, and more. See [Web Configuration](web/README.md) for details.
 
 ```yaml
 web:
   host: 127.0.0.1
   port: 8080
   theme: v2
-  # ... see web.md for full options
+  # ... see web/README.md for full options
 ```
 
 ### UI Settings
@@ -92,7 +92,7 @@ ui:
     # "jetbrains-mono", "sf-mono", "cascadia-code"
     input_font_family: "system"
 
-  # macOS desktop app settings (see mac.md for details)
+  # macOS desktop app settings (see mac/README.md for details)
   mac:
     hotkeys:
       show_hide:
@@ -118,7 +118,7 @@ ui:
 | `sf-mono`        | SF Mono (macOS/iOS only)                                             |
 | `cascadia-code`  | Cascadia Code (Windows Terminal default)                             |
 
-See [macOS Configuration](mac.md) for macOS-specific settings like hotkeys and notifications.
+See [macOS Configuration](mac/README.md) for macOS-specific settings like hotkeys and notifications.
 
 ## Complete Example
 
@@ -165,8 +165,9 @@ ui:
 ## Related Documentation
 
 - [ACP Servers](acp.md) - Agent setup, multiple configurations, per-server prompts
-- [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
-- [Conversation Processing](conversations.md) - Message processing rules
+- [Workspace Configuration](workspace.md) - Project-specific `.mittorc` files
+- [Conversation Settings](conversations.md) - Auto-approve, auto-archive, external images
+- [Processors](processors.md) - Message transformation (text, command, prompt modes)
 - [Web Interface Configuration](web/README.md) - Web server, authentication, hooks, security
 - [macOS App Configuration](mac/README.md) - Hotkeys, notifications, desktop app settings
 - [Architecture](../devel/README.md) - System design and internals

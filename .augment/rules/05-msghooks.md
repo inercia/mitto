@@ -80,13 +80,13 @@ New substitution variables (e.g. `@mitto:periodic_forced`) require changes in fo
 
 ## Builtin Processors (`config/processors/builtin/`)
 
-All builtins are **`enabled: false` by default**. Enable per workspace in the Workspaces dialog or `.mittorc`:
+All builtins are **`enabled: true` by default**. Disable per workspace in the Workspaces dialog or `.mittorc`:
 
 ```yaml
 # .mittorc
 processors:
   - name: memorize-preferences
-    enabled: true
+    enabled: false
 ```
 
 | Processor             | Mode    | `enabledWhen` condition                                         | Purpose                            |
@@ -113,12 +113,15 @@ processors:
 
 Key CEL variables/functions (full reference in `docs/config/processors.md`):
 
-| Context            | Examples                                                                    |
-| ------------------ | --------------------------------------------------------------------------- |
-| `acp.*`            | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
-| `session.*`        | `session.isPeriodic`, `session.isChild`, `session.id`                       |
-| `workspace.*`      | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
-| `tools.*`          | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
+| Context                 | Examples                                                                    |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `acp.*`                 | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
+| `session.*`             | `session.isPeriodic`, `session.isChild`, `session.id`                       |
+| `workspace.*`           | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
+| `tools.*`               | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
+| `commandExists(cmd)`    | `commandExists("git")`, `commandExists("docker")` — checks system PATH |
+| `fileExists(path)`    | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
+| `dirExists(path)`     | `dirExists(".github")`, `dirExists("src")` — checks if directory exists; workspace-relative |
 
 ## Skip Reason Reference
 

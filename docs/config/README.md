@@ -1,103 +1,111 @@
 # Mitto Configuration
 
-This directory contains configuration documentation for Mitto, organized by platform and
-topic.
+Mitto can be configured through the **Web UI** (recommended) or via **YAML configuration files**. Both approaches are fully supported and can be used together.
 
-## Table of Contents
+## Getting Started
 
-### Platform-Specific Documentation
+### 1. First Run: Agent Discovery
 
-| Platform             | Documentation                  | Description                                        |
-| -------------------- | ------------------------------ | -------------------------------------------------- |
-| 🌐 **Web Interface** | [web/README.md](web/README.md) | Web server, auth, security (works on any platform) |
-| 🍎 **macOS App**     | [mac/README.md](mac/README.md) | Native macOS Desktop App features                  |
+When you start Mitto for the first time, the **Agent Discovery** dialog appears automatically:
 
-### Web Interface Topics
+![Agent Discovery — initial screen](screenshots/01-agent-discovery-initial.png)
 
-| Topic                  | Document                                     | Description                                  |
-| ---------------------- | -------------------------------------------- | -------------------------------------------- |
-| 🤖 **ACP Servers**     | [acp.md](acp.md)                             | Claude Code, Auggie, GitHub Copilot setup    |
-| 📁 **Workspace**       | [web/workspace.md](web/workspace.md)         | Project-specific `.mittorc` files            |
-| 👥 **Auto-Children**   | [web/auto-children.md](web/auto-children.md) | Auto-spawn helper conversations              |
-| 🌐 **External Access** | [ext-access.md](ext-access.md)               | Tailscale, ngrok, Cloudflare tunneling setup |
+Click **Scan for Agents** to detect AI coding agents installed on your system. Mitto will find agents like Augment (Auggie), Claude Code, Gemini CLI, and others:
 
-### Common Configuration (All Platforms)
+![Agent Discovery — scan results](screenshots/01-agent-discovery-results.png)
 
-| Topic                | Document                             | Description                                   |
-| -------------------- | ------------------------------------ | --------------------------------------------- |
-| 📋 **Overview**      | [overview.md](overview.md)           | File locations, formats, complete examples    |
-| ⚡ **Prompts**       | [prompts.md](prompts.md)             | Quick actions and predefined prompts          |
-| 💬 **Conversations** | [conversations.md](conversations.md) | Message processors (prepend/append)           |
-| 📝 **User Data**     | [user-data.md](user-data.md)         | Custom metadata for conversations             |
-| 🔗 **Processors**    | [processors.md](processors.md)       | External command-based message transformation |
-| 🔌 **MCP Server**    | [mcp.md](mcp.md)                     | MCP server for AI agent integration           |
+Select the agents you want to use and click **Confirm** to save them.
 
-## Quick Reference
+> **Tip:** You can always re-run agent discovery from **Settings → ACP Servers → Discover Agents**.
 
-| Topic               | Document                          | Key Sections                   |
-| ------------------- | --------------------------------- | ------------------------------ |
-| File locations      | [Overview](overview.md)           | Configuration Files            |
-| Claude Code setup   | [ACP Servers](acp.md)             | Claude Code                    |
-| Auggie setup        | [ACP Servers](acp.md)             | Auggie                         |
-| GitHub Copilot      | [ACP Servers](acp.md)             | GitHub Copilot                 |
-| Authentication      | [Web Interface](web/README.md)    | Authentication                 |
-| Lifecycle hooks     | [Web Interface](web/README.md)    | Lifecycle Hooks                |
-| External access     | [External Access](ext-access.md)  | Tailscale, ngrok, Cloudflare   |
-| Global hotkeys      | [macOS App](mac/README.md)        | Global Hotkeys                 |
-| Notification sounds | [macOS App](mac/README.md)        | Notification Sounds            |
-| Quick actions       | [Prompts](prompts.md)             | Prompt Sources, File Format    |
-| Global prompts      | [Prompts](prompts.md)             | Global Prompts Directory       |
-| Project prompts     | [Workspace](web/workspace.md)     | Prompts                        |
-| System prompts      | [Conversations](conversations.md) | System Prompt on First Message |
-| User data schema    | [User Data](user-data.md)         | Schema, Types, Validation      |
-| Command processors  | [Processors](processors.md)       | Processor Configuration Schema |
-| MCP server setup    | [MCP Server](mcp.md)              | Auggie, Claude, Cursor, Gemini |
+### 2. Configure ACP Servers
+
+After discovery, your agents appear in **Settings → ACP Servers**:
+
+![Settings — ACP Servers tab](screenshots/02-settings-servers.png)
+
+Here you can edit server names, commands, tags, and types. See [ACP Servers](acp.md) for details on each supported agent.
+
+### 3. Set Up Workspaces
+
+Open the **Workspaces** dialog (📁 icon in the sidebar footer) to configure project folders:
+
+![Workspaces dialog](screenshots/03-workspaces-overview.png)
+
+Each workspace connects a **project folder** to an **ACP server**. You can have multiple workspaces for the same folder (e.g., one with Claude Code, another with Auggie).
+
+Click a folder name (e.g., "Mitto") to access folder-level settings:
+
+![Workspace folder — General tab](screenshots/04-workspace-general.png)
+
+### 4. Customize Your Setup
+
+Use the remaining Settings tabs to fine-tune Mitto:
+
+| Tab | Screenshot | What it configures |
+|-----|------------|--------------------|
+| **Runners** | ![](screenshots/02-settings-runners.png) | Sandbox execution (sandbox-exec, docker, firejail) |
+| **Conversations** | ![](screenshots/02-settings-conversations.png) | Auto-approve, auto-archive, auto-delete |
+| **Web** | ![](screenshots/02-settings-web.png) | External access, access logging |
+| **UI** | ![](screenshots/02-settings-ui.png) | Theme, fonts, prompt sorting |
+
+## Configuration Topics
+
+### Features & Customization
+
+| Topic | Document | UI Location | Description |
+|-------|----------|-------------|-------------|
+| 🤖 **ACP Servers** | [acp.md](acp.md) | Settings → ACP Servers | Claude Code, Auggie, Gemini, Copilot setup |
+| ⚡ **Prompts** | [prompts.md](prompts.md) | Workspaces → Prompts tab | Quick actions and predefined prompts |
+| 🔗 **Processors** | [processors.md](processors.md) | Workspaces → Processors tab | Message transformation (text, command, prompt modes) |
+| 💬 **Conversations** | [conversations.md](conversations.md) | Settings → Conversations | Auto-approve, auto-archive, external images |
+| 📝 **User Data** | [user-data.md](user-data.md) | Workspaces → Metadata tab | Custom metadata for conversations |
+| 👥 **Auto-Children** | [auto-children.md](auto-children.md) | Workspaces → Children tab | Auto-spawn helper conversations |
+| 🔌 **MCP Server** | [mcp.md](mcp.md) | Workspaces → MCP tab | MCP server for AI agent integration |
+| 🔒 **Restricted Execution** | [restricted.md](restricted.md) | Workspaces → Runner tab | Sandbox agents for security |
+
+### Platform & Deployment
+
+| Topic | Document | Description |
+|-------|----------|-------------|
+| 🌐 **Web Interface** | [web/README.md](web/README.md) | Web server, auth, security, reverse proxy |
+| 🍎 **macOS App** | [mac/README.md](mac/README.md) | Native macOS Desktop App features |
+| 🌍 **External Access** | [ext-access.md](ext-access.md) | Tailscale, ngrok, Cloudflare tunneling |
+| 📁 **Workspace Files** | [workspace.md](workspace.md) | Workspace management and `.mittorc` files |
+| 📋 **Config Overview** | [overview.md](overview.md) | File locations, formats, complete examples |
 
 ## Configuration File Locations
 
-### Settings File (Recommended)
+Mitto uses two configuration approaches:
 
-The primary configuration is stored in `settings.json`:
+### Settings (UI-managed)
+
+The Settings UI writes to `settings.json` — this is the recommended way to configure Mitto:
 
 | Platform    | Location                                            |
 | ----------- | --------------------------------------------------- |
 | **macOS**   | `~/Library/Application Support/Mitto/settings.json` |
 | **Linux**   | `~/.local/share/mitto/settings.json`                |
-| **Windows** | `%APPDATA%\Mitto\settings.json`                     |
 
 ### YAML Configuration
 
-You can also use a YAML configuration file (`.mittorc`):
+For advanced users or automation, you can use YAML configuration files:
 
-| Source                         | Priority |
-| ------------------------------ | -------- |
-| `MITTORC` environment variable | Highest  |
-| `~/.mittorc`                   | Default  |
-| `--config` flag                | Override |
+| Source                         | Priority | Description |
+| ------------------------------ | -------- | ----------- |
+| `--config` flag                | Highest  | CLI override |
+| `MITTORC` environment variable | High     | Environment override |
+| `~/.mittorc`                   | Default  | Global YAML config |
+| `<project>/.mittorc`           | Per-project | Workspace-specific settings |
 
-### Workspace Configuration
-
-Project-specific settings in `<project>/.mittorc`:
-
-```
-my-project/
-├── .mittorc          # Workspace-specific configuration
-├── src/
-└── ...
-```
-
-## Creating a Configuration File
-
-To create a default configuration file, run:
+To create a default YAML configuration file:
 
 ```bash
 mitto config create
 ```
 
-This creates `~/.mittorc` with sensible defaults. Review and customize it for your environment.
-
 ## Related Documentation
 
-- [Usage Guide](../usage.md) - Commands, flags, and usage examples
-- [Development](../development.md) - Building, testing, and contributing
-- [Architecture](../devel/README.md) - System design and internals
+- [Usage Guide](../usage.md) — Commands, flags, and usage examples
+- [Development](../development.md) — Building, testing, and contributing
+- [Architecture](../devel/README.md) — System design and internals

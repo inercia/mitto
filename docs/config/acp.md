@@ -315,7 +315,7 @@ You can configure multiple workspaces for the same project folder with different
 ## Related Documentation
 
 - [Configuration Overview](overview.md) - Main configuration documentation
-- [Workspaces](web/workspace.md) - Workspace configuration and management
+- [Workspaces](workspace.md) - Workspace configuration and management
 - [Prompts](prompts.md) - Predefined prompts and quick actions
 - [Restricted Runners](restricted.md) - Sandboxing agent execution
 - [Web Interface](web/README.md) - Web server settings

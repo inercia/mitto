@@ -88,46 +88,11 @@ func (bs *BackgroundSession) isFeatureEnabled() bool {
 
 ## API Endpoints
 
-### GET /api/advanced-flags
-
-Returns all available flags (for UI to render settings):
-
-```json
-[
-  {
-    "name": "can_do_introspection",
-    "label": "Can do introspection",
-    "description": "Allow this conversation to access Mitto's MCP server",
-    "default": false
-  }
-]
-```
-
-### GET /api/sessions/{id}/settings
-
-Returns current settings for a session:
-
-```json
-{
-  "settings": {
-    "can_do_introspection": true
-  }
-}
-```
-
-Returns `{"settings": {}}` if no settings exist (never null).
-
-### PATCH /api/sessions/{id}/settings
-
-Partial update - merges with existing settings:
-
-```json
-// Request
-{ "settings": { "can_do_introspection": true } }
-
-// Response - returns full settings after merge
-{ "settings": { "can_do_introspection": true, "other_flag": false } }
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/advanced-flags` | List all available flags (for UI rendering) |
+| GET | `/api/sessions/{id}/settings` | Get session settings (`{"settings": {}}` if none) |
+| PATCH | `/api/sessions/{id}/settings` | Partial update — merges with existing |
 
 ## WebSocket Broadcast
 
@@ -157,41 +122,15 @@ Message type: `session_settings_updated`
 4. **Session archived**: Settings preserved in metadata
 5. **Session unarchived**: Settings restored, flags take effect
 
-## Best Practices
 
-### ✅ Do: Default to False (Opt-In)
+## Key Rules
 
-```go
-// GOOD: All new flags default to false
-{
-    Name:    "new_feature",
-    Default: false,  // User must explicitly enable
-}
-```
-
-### ❌ Don't: Assume Settings Map Exists
-
-```go
-// BAD: Will panic if AdvancedSettings is nil
-if meta.AdvancedSettings["flag"] {
-    // ...
-}
-
-// GOOD: Use helper function that handles nil
-if session.GetFlagValue(meta.AdvancedSettings, session.FlagName) {
-    // ...
-}
-```
-
-### ✅ Do: Broadcast Settings Changes
-
-```go
-// After updating settings, always broadcast
-s.BroadcastSessionSettingsUpdated(sessionID, meta.AdvancedSettings)
-```
+- **Default to false**: All new flags must default to `false` (opt-in)
+- **Use `GetFlagValue`**: Never access `AdvancedSettings["flag"]` directly — it can be nil
+- **Broadcast after update**: Always call `BroadcastSessionSettingsUpdated` after PATCH
+- **Flags take effect on restart**: Archive+unarchive the session after changing flags
 
 ## Related Documentation
 
-- [MCP Servers](../../docs/devel/mcp.md) - How flags control MCP server behavior
-- [Session Management](../../docs/devel/session-management.md) - Metadata structure
-
+- [MCP Servers](../../docs/devel/mcp.md) — How flags control MCP server behavior
+- [Session Management](../../docs/devel/session-management.md) — Metadata structure

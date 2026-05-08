@@ -7,6 +7,26 @@ server. There are three modes:
 - **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output.
 - **Prompt-mode** — Send a prompt (with conversation history) to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately without waiting for the agent's response.
 
+## Configuration in the UI
+
+Processors are managed per-workspace in the **Workspaces → Processors** tab:
+
+![Workspaces — Processors tab](screenshots/04-workspace-processors.png)
+
+From this tab you can:
+
+- **Enable/disable** any processor using the checkbox — global processors can be disabled per workspace
+- See each processor's **source** (workspace, global, or built-in), **mode** (text, command, or prompt), and **trigger** (when: first, all, etc.)
+
+Each processor shows badges indicating:
+- **Source**: `global` (orange), `workspace` (green), or `built-in` (blue)
+- **Mode**: `prompt` badge for prompt-mode processors
+- **Trigger**: `when: first`, `when: all`, etc.
+
+---
+
+## YAML Configuration
+
 All modes are configured via YAML files and share the same triggering, priority, and conditional enablement features.
 
 > **Note:** The old `hooks/` directory name is still supported for backward compatibility.
@@ -49,6 +69,34 @@ version overrides the global one. All processors are sorted by priority after me
 
 Use `mitto processors list --dir .mitto/processors` to preview how workspace processors
 merge with global ones.
+
+### Inline Processors in `.mittorc`
+
+For simple text-mode processors, you can define them inline in your `.mittorc` file instead of creating separate YAML files:
+
+```yaml
+conversations:
+  processing:
+    # Optional: if true, workspace processors replace global processors entirely
+    # Default: false (merge with global)
+    override: false
+
+    processors:
+      - when: first        # "first", "all", or "all-except-first"
+        position: prepend   # "prepend" or "append"
+        text: |
+          You are a helpful AI coding assistant.
+          Follow best practices and be concise.
+
+          ---
+```
+
+Inline processors are merged with standalone processor files (see merge behavior above). They support the same `when`, `position`, and `text` fields as text-mode processor files, plus `@mitto:variable` substitution.
+
+When both global and workspace `.mittorc` files define inline processors:
+
+1. **Default (merge)**: Global processors run first, then workspace processors
+2. **Override mode**: Only workspace processors run (set `override: true`)
 
 ### Enabling and Disabling Processors per Workspace
 
@@ -93,11 +141,11 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | text   | Yes (only activates for matching ACP servers)      |
 | `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | `first` | text   | Yes (requires smart model + `browser_*` MCP tools) |
 | `cleanup-children`    | Reminds the agent to clean up child conversations it no longer needs                                     | `first` | text   | Yes (requires ≥2 MCP-created children + delete tool) |
-| `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | `first` | prompt | **No** (opt-in; enable in Workspaces dialog or `.mittorc`) |
-| `auggie-manage-rules` | Generates and maintains `.augment/rules/` from workspace analysis and conversations (every 15 messages)   | `first` | prompt | **No** (opt-in; Auggie only)                       |
-| `claude-manage-memory`| Generates and maintains Claude Code memory files from workspace analysis and conversations (every 15 msgs)| `first` | prompt | **No** (opt-in; Claude Code only)                  |
-| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 5 messages)                      | `first` | prompt | **No** (opt-in; requires `user_data` schema in `.mittorc`) |
-| `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | `first` | prompt | **No** (opt-in; only fires when `.mittorc` exists but lacks a description) |
+| `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | `first` | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
+| `auggie-manage-rules` | Generates and maintains `.augment/rules/` from workspace analysis and conversations (every 15 messages)   | `first` | prompt | **Yes** (Auggie only; disable per workspace if unwanted) |
+| `claude-manage-memory`| Generates and maintains Claude Code memory files from workspace analysis and conversations (every 15 msgs)| `first` | prompt | **Yes** (Claude Code only; disable per workspace if unwanted) |
+| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 5 messages)                      | `first` | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
+| `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | `first` | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description) |
 
 ### Managing Builtin Processors
 
@@ -253,7 +301,7 @@ prompt: |
 
 #### Track user preferences automatically
 
-The built-in `memorize-preferences` processor (disabled by default) demonstrates this
+The built-in `memorize-preferences` processor (enabled by default) demonstrates this
 pattern — see [Builtin Processors](#builtin-processors).
 
 #### Summarize progress every 15 messages
@@ -371,6 +419,9 @@ expression must evaluate to `true`.
 - `tools.available`, `tools.names`
 - `tools.hasPattern("glob_*")`, `tools.hasAllPatterns(["g1", "g2"])`, `tools.hasAnyPattern(["g1", "g2"])`
 - `permissions.canDoIntrospection`, `permissions.canSendPrompt`, `permissions.canPromptUser`, `permissions.canStartConversation`, `permissions.canInteractOtherWorkspaces`, `permissions.autoApprovePermissions`
+- `commandExists("git")` — returns true if the given command is found in the system PATH and is executable
+- `fileExists("Makefile")` — returns true if the path exists and is a file (not directory); relative paths resolved against workspace folder
+- `dirExists(".github/workflows")` — returns true if the path exists and is a directory; relative paths resolved against workspace folder
 
 ### Automatic Re-run (`rerun`)
 

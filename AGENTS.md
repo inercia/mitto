@@ -89,4 +89,7 @@ bd close <id>         # Complete work
 - **Preact event handlers**: Use `onInput` (not `onChange`) for text input event handlers to match Preact conventions
 - **Frontend templating**: Use `html` tagged template literals (Preact/HTM style), not JSX, for all frontend component code
 - **Go nil vs empty slices in ACP JSON**: Always initialize slices that are JSON-serialized to the ACP server as empty slices (`[]T{}`) rather than nil (`var x []T`). Go encodes nil slices as JSON `null`, which the ACP server rejects. Use the comment pattern `// Must be empty array, not nil — ACP validates this` to document these fields.
+- **Prompt enabledWhen fields**: `enabledWhenACP` and `enabledWhenMCP` must be completely removed (not just deprecated) from all code, docs, and prompt files. Replace with equivalent `enabledWhen` CEL expressions everywhere.
+- **Prompt design: skip `mitto_conversation_get_summary`**: In prompts and processors, agents already know the conversation context — never instruct them to call `mitto_conversation_get_summary` to recall it. Use existing knowledge directly.
+- **Cross-session confirmation pattern**: Agents should propose their single best plan (based on conversation context) and confirm via `mitto_ui_options` with `allow_free_text: true`. Do NOT force a "propose 3–5 options" step — one clear proposal with a free-text override is the preferred pattern.
 <!-- END USER PREFERENCES -->
