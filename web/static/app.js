@@ -1,6 +1,5 @@
 // Mitto Web Interface - Preact Application
 const {
-  h,
   render,
   Fragment,
   useState,
@@ -14,18 +13,9 @@ const {
 
 // Import shared library functions
 import {
-  ROLE_USER,
-  ROLE_AGENT,
-  ROLE_THOUGHT,
-  ROLE_TOOL,
-  ROLE_ERROR,
-  ROLE_SYSTEM,
-  INITIAL_EVENTS_LIMIT,
   computeAllSessions,
-  convertEventsToMessages,
   coalesceAgentMessages,
   COALESCE_DEFAULTS,
-  safeJsonParse,
   limitMessages,
   getWorkspaceVisualInfo,
   getBasename,
@@ -4086,7 +4076,6 @@ function App() {
     if (workingDir === workspacePromptsDir) {
       fetchWorkspacePrompts(workingDir, true); // Force to bypass conditional request (304)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId]);
 
   // Set current workspace for file URL conversion (used in web browser mode)
