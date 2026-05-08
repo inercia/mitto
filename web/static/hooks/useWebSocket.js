@@ -1540,6 +1540,7 @@ export function useWebSocket() {
               sessionName,
               question,
               sessionId,
+              true, // sticky — user input required, keep until dismissed
             );
           }
         }
@@ -3285,13 +3286,35 @@ export function useWebSocket() {
       // (`parent:<parent_session_id>`) for nested child sessions, so if a child
       // session is selected while its parent group is collapsed it would remain hidden.
       if (groupingMode === "folder") {
-        const storedSession = (storedSessionsRef.current || []).find(
+        const storedSessions = storedSessionsRef.current || [];
+        const storedSession = storedSessions.find(
           (s) => s.session_id === sessionId,
         );
         if (storedSession?.parent_session_id) {
           const parentGroupKey = `parent:${storedSession.parent_session_id}`;
           if (!isGroupExpanded(parentGroupKey)) {
             setGroupExpanded(parentGroupKey, true);
+          }
+
+          // For cross-workspace children: resolve the root parent's working_dir so
+          // the folder group key matches where the child is actually displayed.
+          // app.js uses resolveRootParent() to group children under their root parent's
+          // folder, so we must use the root parent's working_dir for the groupKey
+          // rather than the child's own working_dir.
+          let rootParent = storedSessions.find(
+            (s) => s.session_id === storedSession.parent_session_id,
+          );
+          let depth = 0;
+          while (rootParent?.parent_session_id && depth < 10) {
+            const next = storedSessions.find(
+              (s) => s.session_id === rootParent.parent_session_id,
+            );
+            if (!next) break;
+            rootParent = next;
+            depth++;
+          }
+          if (rootParent) {
+            groupKey = rootParent.working_dir || "Unknown";
           }
         }
       }

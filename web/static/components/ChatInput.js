@@ -1963,7 +1963,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Question -->
                         <div class="px-4 pt-2 pb-2 flex-shrink-0">
-                          <p class="ui-prompt-question text-sm font-medium">
+                          <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                             ${activeUIPrompt.question}
                           </p>
                         </div>

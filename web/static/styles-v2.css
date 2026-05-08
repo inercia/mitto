@@ -873,6 +873,42 @@ a:hover {
   color: #ffffff !important;
 }
 
+/* =============================================================================
+   Toast Notifications: preserve semantic colors (don't remap to accent)
+   ============================================================================= */
+
+/* Toast background colors: override accent remapping so toasts keep their
+   semantic meaning (info=blue, success=green, error=red, warning=amber) */
+.v2-theme .toast-enter .bg-blue-600 {
+  background: #2563eb !important;  /* Original blue-600 */
+}
+.v2-theme .toast-enter .bg-green-600 {
+  background: #16a34a !important;  /* Original green-600 */
+}
+.v2-theme .toast-enter .bg-red-600 {
+  background: #dc2626 !important;  /* Original red-600 */
+}
+.v2-theme .toast-enter .bg-amber-500 {
+  background: #f59e0b !important;  /* Original amber-500 */
+}
+
+/* Toast text color: preserve white text on colored toast backgrounds
+   (overrides the light-theme .text-white → near-black rule) */
+.v2-theme .toast-enter .text-white,
+.v2-theme .toast-enter div[class*="bg-blue-"].text-white,
+.v2-theme .toast-enter div[class*="bg-red-"].text-white,
+.v2-theme .toast-enter div[class*="bg-green-"].text-white,
+.v2-theme .toast-enter div[class*="bg-amber-"].text-white {
+  color: #ffffff !important;
+}
+/* Also preserve partial-opacity white text inside toasts */
+.v2-theme .toast-enter .text-white\/80 {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+.v2-theme .toast-enter .text-white\/90 {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
 .v2-theme .bg-yellow-400 {
   background: #facc15 !important;
 }

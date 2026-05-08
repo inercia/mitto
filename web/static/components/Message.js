@@ -164,6 +164,7 @@ export function Message({ message, isLast, isStreaming }) {
             class="file-link hover:underline"
             onClick=${(e) => {
               e.preventDefault();
+              e.stopPropagation();
               if (!viewerUrl) return;
               if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
                 const fullUrl = new URL(viewerUrl, window.location.origin).href;

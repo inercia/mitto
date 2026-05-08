@@ -68,6 +68,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   const [mcpToolsError, setMcpToolsError] = useState("");
 
+  const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
+  const [mcpInstallJson, setMcpInstallJson] = useState("");
+  const [mcpInstallScope, setMcpInstallScope] = useState("");
+  const [mcpInstallLoading, setMcpInstallLoading] = useState(false);
+  const [mcpInstallError, setMcpInstallError] = useState("");
+  const [mcpInstallSuccess, setMcpInstallSuccess] = useState("");
+
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
 
@@ -337,6 +344,69 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     }
   }, []);
 
+  const handleMcpInstall = useCallback(async () => {
+    // Client-side JSON validation
+    let parsed;
+    try {
+      parsed = JSON.parse(mcpInstallJson);
+    } catch (e) {
+      setMcpInstallError("Invalid JSON: " + e.message);
+      return;
+    }
+
+    // Validate structure
+    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Object.keys(parsed.mcpServers).length === 0) {
+      setMcpInstallError('JSON must contain a non-empty "mcpServers" object.');
+      return;
+    }
+
+    setMcpInstallLoading(true);
+    setMcpInstallError("");
+    setMcpInstallSuccess("");
+
+    try {
+      const acpServer = editAcpServer || selectedWorkspace?.acp_server;
+      const res = await secureFetch(apiUrl("/api/workspace-mcp-install"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          acp_server: acpServer,
+          dir: selectedWorkspace?.working_dir || "",
+          scope: mcpInstallScope,
+          definition: parsed,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+
+      const data = await res.json();
+      const results = data.results || [];
+      const failed = results.filter(r => !r.success);
+
+      if (failed.length > 0) {
+        setMcpInstallError(failed.map(r => `${r.name}: ${r.message}`).join("\n"));
+      } else {
+        const names = results.map(r => r.name).join(", ");
+        setMcpInstallSuccess(`Successfully installed: ${names}`);
+        // Reload MCP tools list after successful install
+        setTimeout(() => {
+          loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+          setMcpInstallOpen(false);
+          setMcpInstallJson("");
+          setMcpInstallSuccess("");
+          setMcpInstallError("");
+        }, 1500);
+      }
+    } catch (err) {
+      setMcpInstallError("Installation failed: " + err.message);
+    } finally {
+      setMcpInstallLoading(false);
+    }
+  }, [mcpInstallJson, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools]);
+
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
@@ -385,7 +455,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       const res = await secureFetch(apiUrl("/api/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...config, workspaces: updated }),
+        body: JSON.stringify({ ...config, workspaces: updated, prompts: [] }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Failed to save configuration");
@@ -1494,9 +1564,26 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                   <!-- Workspace MCP tab -->
                   ${activeTab === "mcp" && html`
                     <div class="space-y-4">
-                      <p class="text-sm text-gray-400">
-                        MCP servers configured for this workspace's ACP agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
-                      </p>
+                      <div class="flex items-center justify-between">
+                        <p class="text-sm text-gray-400">
+                          MCP servers configured for this workspace's ACP agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
+                        </p>
+                        ${mcpTools?.has_mcp_install && html`
+                          <button
+                            onClick=${() => {
+                              setMcpInstallOpen(true);
+                              setMcpInstallJson("");
+                              setMcpInstallScope(mcpTools?.mcp_scopes?.[0] || "");
+                              setMcpInstallError("");
+                              setMcpInstallSuccess("");
+                            }}
+                            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                            title="Install MCP server"
+                          >
+                            <${PlusIcon} className="w-4 h-4" />
+                          </button>
+                        `}
+                      </div>
                       ${mcpToolsLoading
                         ? html`<div class="flex items-center justify-center p-8"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
                         : mcpToolsError
@@ -1568,5 +1655,57 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       onConfirm=${confirmDialog?.onConfirm}
       onCancel=${() => setConfirmDialog(null)}
     />
+
+    <!-- MCP Install Dialog -->
+    <${ConfirmDialog}
+      isOpen=${mcpInstallOpen}
+      title="Install MCP Server"
+      confirmLabel="Install"
+      cancelLabel="Cancel"
+      isLoading=${mcpInstallLoading}
+      onConfirm=${handleMcpInstall}
+      onCancel=${() => {
+        if (!mcpInstallLoading) {
+          setMcpInstallOpen(false);
+          setMcpInstallError("");
+          setMcpInstallSuccess("");
+        }
+      }}
+    >
+      <div class="space-y-4 mt-3">
+        <p class="text-sm text-gray-400">
+          Paste an MCP server definition as JSON.
+        </p>
+        <textarea
+          value=${mcpInstallJson}
+          onInput=${(e) => { setMcpInstallJson(e.target.value); setMcpInstallError(""); setMcpInstallSuccess(""); }}
+          placeholder=${'{\n  "mcpServers": {\n    "server-name": {\n      "command": "...",\n      "args": ["..."]\n    }\n  }\n}'}
+          class="w-full h-48 bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm font-mono text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+          disabled=${mcpInstallLoading}
+          spellcheck="false"
+        />
+        ${mcpTools?.mcp_scopes?.length > 0 && html`
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">Scope</label>
+            <select
+              value=${mcpInstallScope}
+              onChange=${(e) => setMcpInstallScope(e.target.value)}
+              class="w-full bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              disabled=${mcpInstallLoading}
+            >
+              ${mcpTools.mcp_scopes.map(scope => html`
+                <option key=${scope} value=${scope}>${scope}</option>
+              `)}
+            </select>
+          </div>
+        `}
+        ${mcpInstallError && html`
+          <p class="text-sm text-red-400 whitespace-pre-wrap">${mcpInstallError}</p>
+        `}
+        ${mcpInstallSuccess && html`
+          <p class="text-sm text-green-400">${mcpInstallSuccess}</p>
+        `}
+      </div>
+    <//>
   `;
 }
