@@ -2728,7 +2728,7 @@ func (sm *SessionManager) ClearMCPToolsFetched(workspaceUUID string) {
 }
 
 // ensureMCPToolsFetch triggers an asynchronous MCP tools fetch for the given workspace
-// if not already fetched. This warms the cache so that processor enabledWhenMCP checks
+// if not already fetched. This warms the cache so that processor enabledWhen CEL checks
 // have tool names available by the time the first message is processed.
 // Safe to call multiple times — only the first call for a workspace triggers the fetch.
 func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {

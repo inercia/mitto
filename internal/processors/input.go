@@ -38,7 +38,7 @@ type ProcessorInput struct {
 	// Each entry includes the session ID, name, and ACP server.
 	ChildSessions []ChildSession `json:"child_sessions,omitempty"`
 	// MCPToolNames is the list of MCP tool names available in the current workspace.
-	// Used for enabledWhenMCP pattern matching and tools.* CEL context.
+	// Used for tools.* CEL context in enabledWhen expressions.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
 	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.

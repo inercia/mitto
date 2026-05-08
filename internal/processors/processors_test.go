@@ -229,7 +229,7 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhenMCP all patterns satisfied",
+			name: "tools.hasAllPatterns all patterns satisfied",
 			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "jira_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list", "jira_search"},
@@ -238,7 +238,7 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhenMCP some patterns not satisfied",
+			name: "tools.hasAllPatterns some patterns not satisfied",
 			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "slack_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
@@ -247,14 +247,14 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name:           "enabledWhenMCP no tools available",
+			name:           "tools.hasPattern no tools available",
 			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_*")`},
 			input:          &ProcessorInput{MCPToolNames: []string{}},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
-			name: "enabledWhenMCP empty means all",
+			name: "enabledWhen empty tools means all",
 			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: ""},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"anything"},
@@ -263,7 +263,7 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhenMCP exact tool match",
+			name: "tools.hasPattern exact tool match",
 			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_conversation_new")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},

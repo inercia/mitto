@@ -89,8 +89,6 @@ type rawWorkspaceRC struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		EnabledWhenACP  string `yaml:"enabledWhenACP"`
-		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -652,14 +650,8 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
-			EnabledWhenACP:  p.EnabledWhenACP,
-			EnabledWhenMCP:  p.EnabledWhenMCP,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-		}
-		// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
-		if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
-			wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
 		}
 		rc.Prompts = append(rc.Prompts, wp)
 	}

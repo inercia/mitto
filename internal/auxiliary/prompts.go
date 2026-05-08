@@ -142,11 +142,11 @@ The "tools" value MUST be a JSON array of objects, one per available tool.
 Do NOT call any tools: just list them. Return ONLY the JSON object, with no extra text.
 `
 
-	// CheckEnabledWhenMCPPromptTemplate asks the agent to check if specific tool patterns
+	// CheckToolPatternsPromptTemplate asks the agent to check if specific tool patterns
 	// have matching MCP tools available. Use with fmt.Sprintf, passing the comma-separated patterns.
 	// This is sent to the same PurposeMCPTools auxiliary session, so the agent already has
 	// context from the initial FetchMCPTools query.
-	CheckEnabledWhenMCPPromptTemplate = `Check if you have any MCP tools matching each of these name patterns.
+	CheckToolPatternsPromptTemplate = `Check if you have any MCP tools matching each of these name patterns.
 Patterns use * as a wildcard (e.g., "jira_*" matches any tool starting with "jira_").
 
 Patterns to check: %s

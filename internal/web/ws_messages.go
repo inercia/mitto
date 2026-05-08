@@ -391,20 +391,19 @@ const (
 
 	// WSMsgTypeNotification sends a fire-and-forget notification to the client.
 	// Triggered by the mitto_ui_notify MCP tool. No response is expected from the client.
-	// Data: { "session_id": string, "title": string, "message": string, "style": string, "sound": bool, "native": bool }
+	// Data: { "session_id": string, "title": string, "message": string, "style": string, "sound": bool, "native": bool, "sticky": bool }
 	// style is one of: "info", "success", "warning", "error"
+	// sticky=true keeps the native notification in Notification Center until dismissed (default false, auto-removes after 5s)
 	WSMsgTypeNotification = "notification"
 
-	// WSMsgTypeEnabledWhenMCPStatus notifies the frontend about required tool pattern availability.
+	// WSMsgTypeRequiredToolsStatus notifies the frontend about required tool pattern availability.
 	// Sent after checking which required tool patterns are satisfied in the workspace.
 	// This is sent progressively as retries discover newly-available tools.
-	// Renamed from "enabledWhenMCP_status" to "required_tools_status" for consistency
-	// with the snake_case WebSocket message naming convention used throughout the protocol.
 	// Data: {
 	//   "workspace_uuid": string,
 	//   "patterns": map[string]bool  // e.g., {"jira_*": true, "slack_*": false}
 	// }
-	WSMsgTypeEnabledWhenMCPStatus = "required_tools_status"
+	WSMsgTypeRequiredToolsStatus = "required_tools_status"
 )
 
 // =============================================================================

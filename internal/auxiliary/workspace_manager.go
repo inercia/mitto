@@ -402,7 +402,7 @@ func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Contex
 			"patterns", patternsStr)
 	}
 
-	prompt := fmt.Sprintf(CheckEnabledWhenMCPPromptTemplate, patternsStr)
+	prompt := fmt.Sprintf(CheckToolPatternsPromptTemplate, patternsStr)
 
 	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, prompt)
 	if err != nil {
@@ -421,7 +421,7 @@ func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Contex
 			"response", truncateForLog(response, 300))
 	}
 
-	result, err := parseEnabledWhenMCPCheck(response)
+	result, err := parseToolPatternsCheck(response)
 	if err != nil {
 		if m.logger != nil {
 			m.logger.Warn("required tools check: failed to parse response",

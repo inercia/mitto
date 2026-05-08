@@ -2895,7 +2895,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			}
 		}
 	}
-	// Get cached MCP tool names for enabledWhenMCP and tools.* CEL context
+	// Get cached MCP tool names for tools.* CEL context
 	var mcpToolNames []string
 	if bs.auxiliaryManager != nil && bs.workspaceUUID != "" {
 		if tools, ok := bs.auxiliaryManager.GetCachedMCPTools(bs.workspaceUUID); ok {
