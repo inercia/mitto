@@ -1,6 +1,9 @@
 package config
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -252,6 +255,132 @@ func TestCELConvenienceFunctions(t *testing.T) {
 	}
 }
 
+// TestCELEvaluator_CommandExists validates the commandExists() CEL function.
+func TestCELEvaluator_CommandExists(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	// Use a minimal context — commandExists doesn't depend on any context fields
+	ctx := &PromptEnabledContext{
+		Session: SessionContext{ID: "test"},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		// "ls" should always be available on any Unix/macOS system
+		{"available command", `commandExists("ls")`, true},
+		// A nonsense command should not be available
+		{"unavailable command", `commandExists("nonexistent_command_xyz_123456")`, false},
+		// Empty string should return false
+		{"empty string", `commandExists("")`, false},
+		// Can be combined with other expressions
+		{"combined expression", `commandExists("ls") && !session.isChild`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCELEvaluator_FileExists validates the fileExists() CEL function.
+func TestCELEvaluator_FileExists(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	// Create a temp directory with a known file and subdirectory
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "testfile.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	testSubDir := filepath.Join(tmpDir, "subdir")
+	if err := os.Mkdir(testSubDir, 0755); err != nil {
+		t.Fatalf("failed to create test subdir: %v", err)
+	}
+
+	ctx := &PromptEnabledContext{
+		Session:   SessionContext{ID: "test"},
+		Workspace: WorkspaceContext{Folder: tmpDir},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{"existing file", `fileExists("testfile.txt")`, true},
+		{"existing directory returns false", `fileExists("subdir")`, false},
+		{"nonexistent file", `fileExists("no_such_file.xyz")`, false},
+		{"empty string", `fileExists("")`, false},
+		{"absolute path exists", fmt.Sprintf(`fileExists(%q)`, testFile), true},
+		{"absolute path not exists", `fileExists("/nonexistent/path/xyz")`, false},
+		{"combined expression", `fileExists("testfile.txt") && !session.isChild`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCELEvaluator_DirExists validates the dirExists() CEL function.
+func TestCELEvaluator_DirExists(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	// Create a temp directory with a known file and subdirectory
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "testfile.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	testSubDir := filepath.Join(tmpDir, "subdir")
+	if err := os.Mkdir(testSubDir, 0755); err != nil {
+		t.Fatalf("failed to create test subdir: %v", err)
+	}
+
+	ctx := &PromptEnabledContext{
+		Session:   SessionContext{ID: "test"},
+		Workspace: WorkspaceContext{Folder: tmpDir},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{"existing directory", `dirExists("subdir")`, true},
+		{"file returns false", `dirExists("testfile.txt")`, false},
+		{"nonexistent directory", `dirExists("no_such_dir")`, false},
+		{"empty string", `dirExists("")`, false},
+		{"absolute path exists", fmt.Sprintf(`dirExists(%q)`, testSubDir), true},
+		{"absolute path not exists", `dirExists("/nonexistent/path/xyz")`, false},
+		{"combined expression", `dirExists("subdir") && !session.isChild`, true},
+		{"file and dir combined", `fileExists("testfile.txt") && dirExists("subdir")`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestCELEvaluator_AllContextFields exercises every variable in the context.
 func TestCELEvaluator_AllContextFields(t *testing.T) {
 	e := newTestEvaluator(t)
@@ -296,6 +425,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`tools.available`,
 		`"tool_a" in tools.names`,
 		`tools.hasPattern("tool_*")`,
+		`commandExists("ls")`,
 		`permissions.canDoIntrospection`,
 		`permissions.canSendPrompt`,
 		`permissions.canPromptUser`,
