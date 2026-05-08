@@ -1,6 +1,6 @@
 // web/static/hooks/useToast.js
 // Central toast notification manager for Mitto Web Interface.
-const { useState, useCallback, useRef } = window.preact;
+const { useState, useCallback, useRef, useEffect } = window.preact;
 
 let toastIdCounter = 0;
 
@@ -22,6 +22,15 @@ const DURATION_BY_STYLE = {
 export function useToast({ maxToasts = 5 } = {}) {
   const [toasts, setToasts] = useState([]);
   const timersRef = useRef({});
+
+  // Cleanup all pending timers on unmount
+  useEffect(() => {
+    return () => {
+      const timers = timersRef.current;
+      Object.keys(timers).forEach((id) => clearTimeout(timers[id]));
+      timersRef.current = {};
+    };
+  }, []);
 
   const dismissToast = useCallback((id) => {
     // Clear timer if any

@@ -1128,7 +1128,11 @@ func (s *Server) handleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Validate scope if the agent declares supported scopes
-	if agent.Metadata.MCP != nil && len(agent.Metadata.MCP.Scopes) > 0 && req.Scope != "" {
+	if agent.Metadata.MCP != nil && len(agent.Metadata.MCP.Scopes) > 0 {
+		if req.Scope == "" {
+			http.Error(w, fmt.Sprintf("scope is required; valid scopes for %s: %v", agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			return
+		}
 		validScope := false
 		for _, s := range agent.Metadata.MCP.Scopes {
 			if s == req.Scope {
