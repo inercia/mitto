@@ -8,3 +8,5 @@ license: "Apache-2.0"
 install:
   method: "binary"
   note: "Download from https://github.com/tao12345666333/amp-acp/releases"
+mcp:
+  scopes: ["user"]

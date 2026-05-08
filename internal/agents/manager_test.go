@@ -23,6 +23,8 @@ func setupTestAgent(t *testing.T, source, name string) string {
 displayName: "Test Agent"
 acpId: "test-agent"
 description: "A test agent"
+mcp:
+  scopes: ["user", "project"]
 `
 	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
 		t.Fatalf("failed to write metadata: %v", err)

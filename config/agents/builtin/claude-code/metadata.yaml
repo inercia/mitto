@@ -8,3 +8,5 @@ license: "proprietary"
 install:
   method: "npx"
   package: "@agentclientprotocol/claude-agent-acp"
+mcp:
+  scopes: ["user", "project", "local"]
