@@ -44,25 +44,51 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `ConfirmDialog`              | `ConfirmDialog.js`                | Reusable modal confirmation dialog; supports `children` prop for extra content below message |
 | `SettingsDialog`             | `SettingsDialog.js`               | Configuration, workspaces, auth                      |
 | `Icons`                      | `Icons.js`                        | SVG icon components                                  |
-| `ConversationPropertiesPanel`| `ConversationPropertiesPanel.js`  | Right-side overlay panel for session properties      |
-| `UserDataPanel`              | `UserDataPanel.js`                | Right-side overlay panel for user data / metadata    |
+| `SessionPanel`               | `SessionPanel.js`                 | Unified right-side overlay with tabs (Changes + Properties + User Data) |
 | `ToastContainer`             | `ToastContainer.js`               | Renders toast stack, color-coded by severity         |
 | `ContextMenu`                | `app.js`                          | Right-click menus with viewport-aware positioning    |
 | `SessionItem`                | `app.js`                          | Session list item with swipe, context menu, status   |
 
 ## ChatInput
 
-### Button Group Layout
+### Layout: "Contained Composition" (GitHub-style)
+
+Single bordered container with textarea at top and an integrated bottom toolbar row with three sections:
 
 ```
-[Send/Stop/Full] | [^] Prompts     ← Top row
-[+ Add to Queue] | [≡] Queue Panel ← Bottom row
+┌─────────────────────────────────────────────┐
+│ Textarea (no own border, full-width)        │
+│ "Ask anything..."                           │
+│ ┌─────────────────────────────────────────┐ │
+│ │ 🖼️ 📎 ✨ 💾  │  [model▼]  │  + ≡  ⌃  ▶  │ │
+│ │  (left)        │  (center)  │  (right)   │ │
+│ └─────────────────────────────────────────┘ │
+└─────────────────────────────────────────────┘
 ```
 
 - **Outer container**: provides the border and rounded corners — textarea has no own border
 - **Bottom toolbar left**: attach-image, attach-file, improve-prompt, save-prompt
-- **Bottom toolbar center**: config selectors (all `type === "select"` configOptions)
+- **Bottom toolbar center**: model selector (only shown when `configOptions` contains a `type === "select"` option)
 - **Bottom toolbar right**: queue-add, queue-toggle, **prompts-toggle**, send/stop/lock
+- **No floating action-toolbar** — all actions are in the always-visible bottom bar
+
+> **Anti-pattern**: Do NOT use the old "textarea + external button column" layout. The floating toolbar that appeared on focus has been removed.
+
+### Config Selectors (configOptions)
+
+ChatInput accepts `configOptions` (array) and `onSetConfigOption` (callback) props from `app.js`. The center bar shows **all** `type === "select"` options (e.g. "Mode" and "Model"):
+
+```javascript
+const selectConfigOptions = useMemo(() => {
+  return configOptions?.filter(o => o.type === "select" && o.options?.length > 0) || [];
+}, [configOptions]);
+// Renders one <select> per option; hidden when array is empty
+// Each: <select disabled=${isStreaming} onInput=${e => onSetConfigOption?.(opt.id, e.target.value)}>
+```
+
+- Disabled while streaming; hidden when no select-type config options exist
+- CSS classes: `chat-input-model-selector` (container) / `chat-input-model-select` (each `<select>`)
+- **Anti-pattern**: Do NOT use `find()` to show only the first option — use `filter()` to show all
 
 ### Keyboard Shortcuts
 
@@ -98,44 +124,22 @@ Naming: `[Name]Icon` (e.g., `TrashIcon`, `GripIcon`, `QueueIcon`, `TagIcon`). Al
 
 ## Side Panel Overlay Pattern
 
-`ConversationPropertiesPanel` and `UserDataPanel` share the same fixed-overlay structure. **Only one panel may be open at a time** — the parent (`app.js`) manages `activePanel` state and passes `isOpen` accordingly.
+`SessionPanel` is a unified tabbed panel that replaced the old separate `ConversationPropertiesPanel` and `UserDataPanel`. It has three tabs: **Changes**, **Properties**, and **User Data** (in that order). The parent (`app.js`) manages open/close state; default tab is `"changes"`.
 
-### Animation Pattern (isClosing / shouldRender)
+### Changes Tab
+Fetches `GET /api/sessions/{id}/changes` when active. Displays branch name, file count, refresh button, and file list with color-coded status badges (A=green, M=amber, D=red, R=blue, ?=gray) and `+N/-N` stats. Clicking a file opens the viewer in diff mode (`view=diff` param).
 
-```javascript
-const [isClosing, setIsClosing] = useState(false);
-const [shouldRender, setShouldRender] = useState(isOpen);
+### Animation & DOM
 
-useEffect(() => {
-  if (isOpen) { setShouldRender(true); setIsClosing(false); }
-  else if (shouldRender) {
-    setIsClosing(true);
-    const t = setTimeout(() => { setShouldRender(false); setIsClosing(false); }, 150);
-    return () => clearTimeout(t);
-  }
-}, [isOpen, shouldRender]);
-
-if (!shouldRender) return null;
-```
-
-### DOM Structure
-
-```javascript
-// Fixed right-side overlay: backdrop left, panel right
-html`<div class="fixed inset-0 z-50 flex">
-  <div class="flex-1 bg-black/50 properties-backdrop ${isClosing ? 'closing' : ''}"
-       onClick=${handleClose} />
-  <div class="w-80 bg-mitto-sidebar ... properties-panel ${isClosing ? 'closing' : ''}">
-    ${renderPanelContent()}
-  </div>
-</div>`
-```
-
-CSS classes `properties-panel` and `properties-backdrop` control slide-in/fade-in animations. Adding `closing` triggers the exit animation (150ms).
+Uses `isClosing`/`shouldRender` state pair for slide-in/slide-out (150ms). CSS classes `properties-panel`/`properties-backdrop` with `closing` variant. Fixed right-side overlay: backdrop on left, panel on right.
 
 ### Icon Convention
 
 Use `TagIcon` for user data / metadata panels (defined in `Icons.js`).
+
+## Header Status Dot
+
+The connection status dot in the header is a **plain indicator only** (not a clickable button). Style matches the status dots in the session list.
 
 ## useToast Hook (Unified Notification System)
 
