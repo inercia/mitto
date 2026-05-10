@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	webHost         string
 	webPort         int
 	webPortExternal int
 	webStaticDir    string
@@ -47,6 +48,7 @@ func init() {
 	rootCmd.AddCommand(webCmd)
 
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "HTTP server port for local access (127.0.0.1). Use 0 for random port")
+	webCmd.Flags().StringVar(&webHost, "host", "127.0.0.1", "Host/IP to bind the local listener (default: 127.0.0.1 for security)")
 	webCmd.Flags().IntVar(&webPortExternal, "port-external", 0, "HTTP server port for external access when enabled (0.0.0.0). Use 0 for random port")
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
 	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
@@ -131,9 +133,11 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Local listener always binds to 127.0.0.1 for security
-	// External access uses a separate listener on 0.0.0.0 when enabled
-	localAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	// Local listener binds to webHost (default: 127.0.0.1 for security).
+	// Use --host 0.0.0.0 when the listener must be reachable from outside the process
+	// (e.g. inside a Docker container where the host port mapping requires 0.0.0.0).
+	// External access uses a separate listener on 0.0.0.0 when enabled.
+	localAddr := fmt.Sprintf("%s:%d", webHost, localPort)
 
 	fmt.Printf("🌐 Starting web interface...\n")
 	switch len(webWorkspaces) {
@@ -151,6 +155,10 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Source: %s\n", workspaceSource)
 	if staticDir != "" {
 		fmt.Printf("   Static files: %s (hot-reload enabled)\n", staticDir)
+	}
+	if webHost != "127.0.0.1" && webHost != "localhost" {
+		fmt.Printf("   ⚠️  WARNING: Binding to %s with no authentication.\n", webHost)
+		fmt.Printf("      Anyone who can reach port %d has full access to this instance.\n", localPort)
 	}
 
 	// Initialize auxiliary session manager for utility tasks (auto-title, etc.)
@@ -210,7 +218,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Set external port configuration (used when external access is enabled)
 	srv.SetExternalPort(externalPort)
 
-	// Start local listener (always on 127.0.0.1 for security)
+	// Start local listener
 	listener, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", localAddr, err)
@@ -218,8 +226,8 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	// Get actual port (may differ if we requested port 0 for random)
 	actualPort := listener.Addr().(*net.TCPAddr).Port
-	slog.Info("Local listener started", "address", fmt.Sprintf("127.0.0.1:%d", actualPort), "port", actualPort)
-	fmt.Printf("   Local URL: http://127.0.0.1:%d\n", actualPort)
+	slog.Info("Local listener started", "address", fmt.Sprintf("%s:%d", webHost, actualPort), "port", actualPort)
+	fmt.Printf("   Local URL: http://%s:%d\n", webHost, actualPort)
 
 	// Start external listener if auth is configured (for external access)
 	// Track the actual external port for the up hook
