@@ -1,0 +1,15 @@
+services:
+  mitto:
+    build:
+      context: ../..
+      dockerfile: tests/smoke/Dockerfile
+    ports:
+      - "${SMOKE_PORT:-8089}:8089"
+    environment:
+      - MITTO_DIR=/home/mitto/.mitto
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8089/mitto/api/health"]
+      interval: 3s
+      timeout: 2s
+      start_period: 10s
+      retries: 5

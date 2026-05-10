@@ -59,6 +59,11 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 [+ Add to Queue] | [≡] Queue Panel ← Bottom row
 ```
 
+- **Outer container**: provides the border and rounded corners — textarea has no own border
+- **Bottom toolbar left**: attach-image, attach-file, improve-prompt, save-prompt
+- **Bottom toolbar center**: config selectors (all `type === "select"` configOptions)
+- **Bottom toolbar right**: queue-add, queue-toggle, **prompts-toggle**, send/stop/lock
+
 ### Keyboard Shortcuts
 
 | Keys             | Action       |
@@ -67,16 +72,29 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `Shift+Enter`    | New line     |
 | `Cmd/Ctrl+Enter` | Add to queue |
 
+### Config Selectors (configOptions)
+
+ChatInput accepts `configOptions` (array) and `onSetConfigOption` (callback) props from `app.js`. The center bar shows **all** `type === "select"` options (e.g. "Mode" and "Model"):
+
+```javascript
+const selectConfigOptions = useMemo(() => {
+  return configOptions?.filter(o => o.type === "select" && o.options?.length > 0) || [];
+}, [configOptions]);
+// Renders one <select> per option; hidden when array is empty
+// Each: <select disabled=${isStreaming} onInput=${e => onSetConfigOption?.(opt.id, e.target.value)}>
+```
+
+- Disabled while streaming; hidden when no select-type config options exist
+- CSS classes: `chat-input-model-selector` (container) / `chat-input-model-select` (each `<select>`)
+- **Anti-pattern**: Do NOT use `find()` to show only the first option — use `filter()` to show all
+
 ## QueueDropdown
 
 Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min: 100, max: 500). Auto-closes after 5s inactivity; paused on hover and drag.
 
 ## Icons
 
-Naming: `[Name]Icon` (e.g., `TrashIcon`, `GripIcon`, `QueueIcon`, `TagIcon`).
-
-- Always use `CloseIcon` SVG — never plain text `✕`. Small: `w-4 h-4` (toasts), Large: `w-5 h-5` (dialogs)
-- `TagIcon` = user data / metadata panels
+Naming: `[Name]Icon` (e.g., `TrashIcon`, `GripIcon`, `QueueIcon`, `TagIcon`). Always use `CloseIcon` SVG — never plain text `✕`. Small: `w-4 h-4` (toasts), Large: `w-5 h-5` (dialogs).
 
 ## Side Panel Overlay Pattern
 
@@ -138,7 +156,7 @@ Severity durations: info/success=5s, warning/error=10s. Max 5 simultaneous (olde
 
 ## useResizeHandle / useSwipeNavigation / New Hooks
 
-- `useResizeHandle`: mouse+touch drag for height. Spread `handleProps` on handle element.
+- `useResizeHandle`: mouse+touch drag for height. Spread `handleProps` on handle element. ChatInput uses **two instances**: one for QueueDropdown panel height, one for textarea max-height (min: 80px, default: 200px, max: 500px, persisted in `mitto_ui_textarea_max_height` localStorage key).
 - `useSwipeNavigation`: swipe left/right with threshold, edge detection. 500ms window.
 - **New hooks**: `use[Name].js`, export from `hooks/index.js`, use `window.preact` globals, cleanup in useEffect.
 
