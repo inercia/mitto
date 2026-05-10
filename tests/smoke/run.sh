@@ -22,8 +22,8 @@ mkdir -p tests/smoke/.build
 # Detect host architecture (Apple Silicon → arm64, x86 → amd64)
 SMOKE_GOARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
 echo "Target architecture: linux/${SMOKE_GOARCH}"
-GOOS=linux GOARCH="${SMOKE_GOARCH}" go build -o tests/smoke/.build/mitto ./cmd/mitto
-GOOS=linux GOARCH="${SMOKE_GOARCH}" go build -o tests/smoke/.build/mock-acp-server ./tests/mocks/acp-server
+CGO_ENABLED=0 GOOS=linux GOARCH="${SMOKE_GOARCH}" go build -o tests/smoke/.build/mitto ./cmd/mitto
+CGO_ENABLED=0 GOOS=linux GOARCH="${SMOKE_GOARCH}" go build -o tests/smoke/.build/mock-acp-server ./tests/mocks/acp-server
 echo "✅ Binaries compiled"
 
 echo ""
