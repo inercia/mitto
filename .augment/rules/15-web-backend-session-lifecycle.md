@@ -70,26 +70,11 @@ Both `BackgroundSession` and `SharedACPProcess` attempt automatic restart with e
 
 ### Auxiliary Session Invalidation
 
-Two mechanisms keep auxiliary sessions fresh after process crashes:
+Two mechanisms keep auxiliary sessions fresh after crashes:
+- **On `SharedACPProcess.Restart()`**: `onRestart` callback calls `m.invalidateAuxiliarySessions(wuuid)` — removes ALL aux sessions for the workspace.
+- **On connection error in `PromptAuxiliary()`**: `m.invalidateAuxSession(workspaceUUID, purpose)` — removes just the one session, waits 1s, retries once.
 
-**1. On `SharedACPProcess.Restart()`** — `onRestart` callback (workspace-wide invalidation):
-```go
-p.SetOnRestart(func() {
-    m.invalidateAuxiliarySessions(wuuid)  // removes ALL aux sessions for workspace
-})
-```
-
-**2. On connection error in `PromptAuxiliary()`** — surgical single-session invalidation + retry:
-```go
-if isACPConnectionError(err) {
-    m.invalidateAuxSession(workspaceUUID, purpose)  // removes just this purpose's session
-    // wait 1s for process restart, then retry once via getOrCreateAuxiliarySession
-}
-```
-
-- `invalidateAuxiliarySessions(uuid)` — removes all aux sessions for a workspace (called on restart)
-- `invalidateAuxSession(uuid, purpose)` — removes single aux session entry (called on connection error)
-- Lock ordering: both must be called WITHOUT holding `m.mu`; they acquire `auxMu` internally
+Lock ordering: both must be called WITHOUT holding `m.mu`; they acquire `auxMu` internally.
 
 ### ACP Process Death Detection (Three-Layer)
 
@@ -147,3 +132,15 @@ When a client connects to a deleted session, send `session_gone` (NOT a generic 
 `DeleteChildSessions`: lists children → gracefully stops each (30s timeout) → `store.Delete` → broadcasts `session_deleted`.
 
 **Anti-patterns**: Never archive a child directly. Never allow periodic config on a child.
+
+## Auto-Resume Guard (Race Condition)
+
+**Bug**: GC-closed sessions become `SessionStatusCompleted` but are NOT archived. Auto-resume guards that only check `!Archived` will re-create a new `BackgroundSession`, causing a second `session_end` event when the session is later deleted.
+
+**Fix**: Always check BOTH conditions in `internal/mcpserver/server.go`:
+```go
+// handleChildrenTasksWait and handleSendPrompt — must check both:
+if bs == nil && !meta.Archived && meta.Status != session.SessionStatusCompleted {
+    // safe to auto-resume
+}
+```

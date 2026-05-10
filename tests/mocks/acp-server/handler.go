@@ -273,7 +273,15 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 		}
 	}
 
-	s.log("Prompt received: %s", message)
+	s.log("Prompt received (session=%s): %s", params.SessionID, message)
+
+	// Route notifications to the correct session.
+	// When multiple sessions share this ACP process (e.g. main + auxiliary sessions),
+	// s.sessionID may point to the last-created session rather than the prompting one.
+	// Use the session ID from the prompt params to ensure correct routing.
+	if params.SessionID != "" {
+		s.sessionID = params.SessionID
+	}
 
 	// If image blocks are present, respond acknowledging them
 	if imageBlockCount > 0 {

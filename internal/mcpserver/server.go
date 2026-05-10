@@ -1095,6 +1095,10 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
+			"Optionally configure the conversation as periodic by providing 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit'. " +
+			"This is equivalent to configuring periodic via 'mitto_conversation_update' after creation, but done in one step. " +
+			"For periodic with days, optionally specify 'periodic_frequency_at' (HH:MM in UTC). " +
+			"Set 'periodic_enabled' to false to create the periodic configuration in a paused state. " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
@@ -1110,19 +1114,6 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
 	}, s.handleGetConversation)
-
-	// mitto_conversation_set_periodic - Configure periodic prompts for a conversation
-	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_conversation_set_periodic",
-		Description: "Configure a conversation to run periodically with a scheduled prompt. " +
-			"This makes the conversation automatically receive the specified prompt at regular intervals. " +
-			"Useful for setting up recurring tasks like daily reports, periodic checks, or scheduled automation. " +
-			"Frequency can be specified in minutes, hours, or days. For days, you can optionally specify a time (HH:MM in UTC). " +
-			"Examples: every 30 minutes, every 2 hours, every day at 09:00 UTC. " +
-			"Set enabled=false to pause periodic execution without deleting the configuration. " +
-			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
-			selfIDNote,
-	}, s.handleSetPeriodic)
 
 	// mitto_conversation_run_periodic_now - Trigger immediate periodic run
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -1162,9 +1153,14 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_conversation_update",
 		Description: "Update properties of a conversation. " +
 			"Supports partial updates — only specified fields are changed, others are left untouched. " +
-			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes). " +
+			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes), " +
+			"'periodic' (periodic prompt configuration). " +
 			"User data is validated against the workspace's schema defined in .mittorc. " +
 			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
+			"Periodic configuration: provide 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit' " +
+			"to configure or update periodic prompts. Use 'periodic_frequency_at' (HH:MM UTC) for daily schedules. " +
+			"Set 'periodic_enabled' to false to pause periodic execution without deleting the configuration. " +
+			"To disable periodic entirely, set 'periodic_enabled' to false. " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
 
@@ -1767,7 +1763,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	// If the session is not running (stored), auto-resume it first.
 	if s.sessionManager != nil {
 		bs := s.sessionManager.GetSession(input.ConversationID)
-		if bs == nil && !targetMeta.Archived {
+		if bs == nil && !targetMeta.Archived && targetMeta.Status != session.SessionStatusCompleted {
 			// Session is stored (not running) — try to resume it so the queue gets processed.
 			s.logger.Info("Auto-resuming stored session to process queued prompt",
 				"target_session", input.ConversationID,
@@ -2346,13 +2342,21 @@ type ConversationStartInput struct {
 	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
 	ACPServer     string `json:"acp_server,omitempty"`     // Optional ACP server name (defaults to parent's server)
 	Workspace     string `json:"workspace,omitempty"`      // Optional workspace UUID for cross-workspace operations
+	// Periodic configuration (optional) - creates the conversation as periodic
+	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
+	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
+	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
+	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
+	PeriodicEnabled        *bool  `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
 // Embeds ConversationDetails for the newly created conversation.
 type ConversationStartOutput struct {
 	ConversationDetails        // Embedded conversation details
-	QueuePosition       int    `json:"queue_position,omitempty"` // Queue position if initial prompt was provided
+	QueuePosition       int    `json:"queue_position,omitempty"`      // Queue position if initial prompt was provided
+	PeriodicConfigured  bool   `json:"periodic_configured,omitempty"` // Whether periodic was configured
+	PeriodicNextRun     string `json:"periodic_next_run,omitempty"`   // Next scheduled run (RFC3339)
 	Error               string `json:"error,omitempty"`
 }
 
@@ -2603,9 +2607,73 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		)
 	}
 
+	// If periodic configuration provided, set it up
+	var periodicConfigured bool
+	var periodicNextRun string
+	if input.PeriodicPrompt != "" {
+		// Validate frequency value
+		if input.PeriodicFrequencyValue < 1 {
+			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_value must be >= 1 when periodic_prompt is provided")
+		}
+
+		var freqUnit session.FrequencyUnit
+		switch input.PeriodicFrequencyUnit {
+		case "minutes":
+			freqUnit = session.FrequencyMinutes
+		case "hours":
+			freqUnit = session.FrequencyHours
+		case "days":
+			freqUnit = session.FrequencyDays
+		default:
+			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_unit must be 'minutes', 'hours', or 'days'")
+		}
+
+		freq := session.Frequency{
+			Value: input.PeriodicFrequencyValue,
+			Unit:  freqUnit,
+			At:    input.PeriodicFrequencyAt,
+		}
+		if err := freq.Validate(); err != nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("invalid periodic frequency: %v", err)
+		}
+
+		enabled := true
+		if input.PeriodicEnabled != nil {
+			enabled = *input.PeriodicEnabled
+		}
+
+		periodic := &session.PeriodicPrompt{
+			Prompt:    input.PeriodicPrompt,
+			Frequency: freq,
+			Enabled:   enabled,
+		}
+
+		periodicStore := store.Periodic(newSessionID)
+		if err := periodicStore.Set(periodic); err != nil {
+			s.logger.Error("Failed to set periodic on new conversation",
+				"session_id", newSessionID,
+				"error", err)
+			// Don't fail the whole creation - just log the error
+		} else {
+			periodicConfigured = true
+			updated, err := periodicStore.Get()
+			if err == nil && updated.NextScheduledAt != nil {
+				periodicNextRun = updated.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
+			}
+			s.logger.Info("Periodic prompt configured on new conversation",
+				"session_id", newSessionID,
+				"periodic_prompt", input.PeriodicPrompt,
+				"frequency_value", input.PeriodicFrequencyValue,
+				"frequency_unit", input.PeriodicFrequencyUnit,
+				"enabled", enabled)
+		}
+	}
+
 	// Build unified conversation details
 	output := ConversationStartOutput{
 		ConversationDetails: s.buildConversationDetails(createdMeta, store.SessionDir(newSessionID)),
+		PeriodicConfigured:  periodicConfigured,
+		PeriodicNextRun:     periodicNextRun,
 	}
 	// Update runtime status to reflect the running ACP session
 	if bs != nil {
@@ -2726,167 +2794,6 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 		"target_conversation", input.ConversationID,
 		"is_running", output.IsRunning,
 		"is_prompting", output.IsPrompting)
-
-	return nil, output, nil
-}
-
-// SetPeriodicInput is the input for mitto_conversation_set_periodic tool.
-type SetPeriodicInput struct {
-	SelfID         string `json:"self_id"`                // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"`        // Target conversation to configure
-	Prompt         string `json:"prompt"`                 // The prompt to send periodically
-	FrequencyValue int    `json:"frequency_value"`        // Number of units between sends (e.g., 30 for "every 30 minutes")
-	FrequencyUnit  string `json:"frequency_unit"`         // Time unit: "minutes", "hours", or "days"
-	FrequencyAt    string `json:"frequency_at,omitempty"` // Time of day in HH:MM format (UTC), only for "days" unit
-	Enabled        *bool  `json:"enabled,omitempty"`      // Whether periodic is active (defaults to true)
-}
-
-// SetPeriodicOutput is the output for mitto_conversation_set_periodic tool.
-type SetPeriodicOutput struct {
-	Success         bool   `json:"success"`
-	ConversationID  string `json:"conversation_id,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	FrequencyValue  int    `json:"frequency_value,omitempty"`
-	FrequencyUnit   string `json:"frequency_unit,omitempty"`
-	FrequencyAt     string `json:"frequency_at,omitempty"`
-	Enabled         bool   `json:"enabled,omitempty"`
-	NextScheduledAt string `json:"next_scheduled_at,omitempty"` // RFC3339 format
-	Error           string `json:"error,omitempty"`
-}
-
-func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest, input SetPeriodicInput) (*mcp.CallToolResult, SetPeriodicOutput, error) {
-	// Validate self_id
-	if input.SelfID == "" {
-		return nil, SetPeriodicOutput{Success: false, Error: "self_id is required"}, nil
-	}
-
-	// Validate conversation_id
-	if input.ConversationID == "" {
-		return nil, SetPeriodicOutput{Success: false, Error: "conversation_id is required"}, nil
-	}
-
-	// Validate prompt
-	if input.Prompt == "" {
-		return nil, SetPeriodicOutput{Success: false, Error: "prompt is required"}, nil
-	}
-
-	// Validate frequency_value
-	if input.FrequencyValue < 1 {
-		return nil, SetPeriodicOutput{Success: false, Error: "frequency_value must be >= 1"}, nil
-	}
-
-	// Validate frequency_unit
-	var freqUnit session.FrequencyUnit
-	switch input.FrequencyUnit {
-	case "minutes":
-		freqUnit = session.FrequencyMinutes
-	case "hours":
-		freqUnit = session.FrequencyHours
-	case "days":
-		freqUnit = session.FrequencyDays
-	default:
-		return nil, SetPeriodicOutput{Success: false, Error: "frequency_unit must be 'minutes', 'hours', or 'days'"}, nil
-	}
-
-	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
-	if realSessionID == "" {
-		return nil, SetPeriodicOutput{
-			Success: false,
-			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
-		}, nil
-	}
-
-	// Check if source session is registered (must be running to use this tool)
-	reg := s.getSession(realSessionID)
-	if reg == nil {
-		return nil, SetPeriodicOutput{Success: false, Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
-	}
-
-	s.mu.RLock()
-	store := s.store
-	s.mu.RUnlock()
-
-	if store == nil {
-		return nil, SetPeriodicOutput{Success: false, Error: "session store not available"}, nil
-	}
-
-	// Verify target conversation exists
-	meta, err := store.GetMetadata(input.ConversationID)
-	if err != nil {
-		return nil, SetPeriodicOutput{
-			Success: false,
-			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
-		}, nil
-	}
-
-	// Prevent setting periodic on child sessions
-	if meta.ParentSessionID != "" {
-		return nil, SetPeriodicOutput{
-			Success: false,
-			Error:   "cannot set periodic on a child conversation; only parent or top-level conversations can be periodic",
-		}, nil
-	}
-
-	// Build frequency configuration
-	freq := session.Frequency{
-		Value: input.FrequencyValue,
-		Unit:  freqUnit,
-		At:    input.FrequencyAt,
-	}
-
-	// Validate frequency
-	if err := freq.Validate(); err != nil {
-		return nil, SetPeriodicOutput{Success: false, Error: err.Error()}, nil
-	}
-
-	// Determine enabled state (default to true)
-	enabled := true
-	if input.Enabled != nil {
-		enabled = *input.Enabled
-	}
-
-	// Create periodic prompt configuration
-	periodic := &session.PeriodicPrompt{
-		Prompt:    input.Prompt,
-		Frequency: freq,
-		Enabled:   enabled,
-	}
-
-	// Get the periodic store for the target conversation
-	periodicStore := store.Periodic(input.ConversationID)
-
-	// Set the periodic configuration
-	if err := periodicStore.Set(periodic); err != nil {
-		return nil, SetPeriodicOutput{Success: false, Error: fmt.Sprintf("failed to set periodic: %v", err)}, nil
-	}
-
-	// Get the updated configuration to return
-	updated, err := periodicStore.Get()
-	if err != nil {
-		return nil, SetPeriodicOutput{Success: false, Error: fmt.Sprintf("failed to read updated periodic: %v", err)}, nil
-	}
-
-	s.logger.Info("Periodic prompt configured via MCP",
-		"source_session", realSessionID,
-		"target_conversation", input.ConversationID,
-		"frequency_value", input.FrequencyValue,
-		"frequency_unit", input.FrequencyUnit,
-		"enabled", enabled)
-
-	output := SetPeriodicOutput{
-		Success:        true,
-		ConversationID: input.ConversationID,
-		Prompt:         updated.Prompt,
-		FrequencyValue: updated.Frequency.Value,
-		FrequencyUnit:  string(updated.Frequency.Unit),
-		FrequencyAt:    updated.Frequency.At,
-		Enabled:        updated.Enabled,
-	}
-
-	if updated.NextScheduledAt != nil {
-		output.NextScheduledAt = updated.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
-	}
 
 	return nil, output, nil
 }
@@ -3401,11 +3308,143 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			"merge", merge)
 	}
 
+	// Update periodic configuration if any periodic fields provided
+	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil {
+		periodicStore := store.Periodic(input.ConversationID)
+
+		// Check if this is an update to existing periodic config or a new setup
+		existing, existErr := periodicStore.Get()
+		isNew := existErr != nil || existing == nil
+
+		if isNew {
+			// Creating new periodic config — require all mandatory fields
+			if input.PeriodicPrompt == nil || *input.PeriodicPrompt == "" {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   "periodic_prompt is required when creating new periodic configuration",
+				}, nil
+			}
+			if input.PeriodicFrequencyValue == nil || *input.PeriodicFrequencyValue < 1 {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   "periodic_frequency_value (>= 1) is required when creating new periodic configuration",
+				}, nil
+			}
+			if input.PeriodicFrequencyUnit == nil || *input.PeriodicFrequencyUnit == "" {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   "periodic_frequency_unit is required when creating new periodic configuration",
+				}, nil
+			}
+
+			var freqUnit session.FrequencyUnit
+			switch *input.PeriodicFrequencyUnit {
+			case "minutes":
+				freqUnit = session.FrequencyMinutes
+			case "hours":
+				freqUnit = session.FrequencyHours
+			case "days":
+				freqUnit = session.FrequencyDays
+			default:
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   "periodic_frequency_unit must be 'minutes', 'hours', or 'days'",
+				}, nil
+			}
+
+			freq := session.Frequency{
+				Value: *input.PeriodicFrequencyValue,
+				Unit:  freqUnit,
+			}
+			if input.PeriodicFrequencyAt != nil {
+				freq.At = *input.PeriodicFrequencyAt
+			}
+			if err := freq.Validate(); err != nil {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("invalid periodic frequency: %v", err),
+				}, nil
+			}
+
+			enabled := true
+			if input.PeriodicEnabled != nil {
+				enabled = *input.PeriodicEnabled
+			}
+
+			periodic := &session.PeriodicPrompt{
+				Prompt:    *input.PeriodicPrompt,
+				Frequency: freq,
+				Enabled:   enabled,
+			}
+
+			if err := periodicStore.Set(periodic); err != nil {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("failed to set periodic: %v", err),
+				}, nil
+			}
+		} else {
+			// Updating existing periodic config — use partial update
+			var prompt *string
+			var freq *session.Frequency
+			var enabled *bool
+
+			if input.PeriodicPrompt != nil {
+				prompt = input.PeriodicPrompt
+			}
+
+			if input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicFrequencyAt != nil {
+				// Build frequency from existing + overrides
+				f := existing.Frequency
+				if input.PeriodicFrequencyValue != nil {
+					f.Value = *input.PeriodicFrequencyValue
+				}
+				if input.PeriodicFrequencyUnit != nil {
+					switch *input.PeriodicFrequencyUnit {
+					case "minutes":
+						f.Unit = session.FrequencyMinutes
+					case "hours":
+						f.Unit = session.FrequencyHours
+					case "days":
+						f.Unit = session.FrequencyDays
+					default:
+						return nil, ConversationUpdateOutput{
+							Success: false,
+							Error:   "periodic_frequency_unit must be 'minutes', 'hours', or 'days'",
+						}, nil
+					}
+				}
+				if input.PeriodicFrequencyAt != nil {
+					f.At = *input.PeriodicFrequencyAt
+				}
+				freq = &f
+			}
+
+			if input.PeriodicEnabled != nil {
+				enabled = input.PeriodicEnabled
+			}
+
+			if err := periodicStore.Update(prompt, freq, enabled); err != nil {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("failed to update periodic: %v", err),
+				}, nil
+			}
+		}
+
+		updated = append(updated, "periodic")
+
+		s.logger.Info("Periodic configuration updated via MCP",
+			"source_session", realSessionID,
+			"target_conversation", input.ConversationID,
+			"is_new", isNew)
+	}
+
 	// Check if anything was actually updated
 	if len(updated) == 0 {
 		return nil, ConversationUpdateOutput{
 			Success: false,
-			Error:   "no properties to update: specify at least one of 'name', 'user_data'",
+			Error:   "no properties to update: specify at least one of 'name', 'user_data', or periodic fields",
 		}, nil
 	}
 
@@ -3425,6 +3464,18 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if currentData, err := store.GetUserData(input.ConversationID); err == nil && currentData != nil {
 		for _, a := range currentData.Attributes {
 			output.UserData = append(output.UserData, UserDataAttributeUpdate{Name: a.Name, Value: a.Value})
+		}
+	}
+
+	// Read back current periodic config
+	if p, err := store.Periodic(input.ConversationID).Get(); err == nil && p != nil {
+		output.PeriodicPrompt = p.Prompt
+		output.PeriodicFrequencyValue = p.Frequency.Value
+		output.PeriodicFrequencyUnit = string(p.Frequency.Unit)
+		output.PeriodicFrequencyAt = p.Frequency.At
+		output.PeriodicEnabled = p.Enabled
+		if p.NextScheduledAt != nil {
+			output.PeriodicNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 		}
 	}
 
@@ -3706,7 +3757,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		// Check if the child is currently running (registered with MCP server).
 		// If not running and not archived, try to auto-resume it.
 		childReg := s.getSession(childID)
-		if childReg == nil && !childMeta.Archived && s.sessionManager != nil {
+		if childReg == nil && !childMeta.Archived && childMeta.Status != session.SessionStatusCompleted && s.sessionManager != nil {
 			// Session is stored (not running) — try to resume it.
 			s.logger.Info("Auto-resuming stored child session",
 				"parent_session", realSessionID,
@@ -3721,6 +3772,12 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				// Re-check registration after resume
 				childReg = s.getSession(childID)
 			}
+		} else if childReg == nil && childMeta.Status == session.SessionStatusCompleted {
+			// Session completed (e.g. GC-closed after idle timeout) — skip auto-resume to avoid
+			// creating a new BackgroundSession that would record a duplicate session_end event.
+			s.logger.Info("Skipping auto-resume of completed child session",
+				"parent_session", realSessionID,
+				"child_session", childID)
 		}
 		if childReg == nil {
 			notRunningChildren = append(notRunningChildren, childID)

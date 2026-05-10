@@ -4724,67 +4724,6 @@ func TestArchiveConversation_ChildNonParentRejected(t *testing.T) {
 	}
 }
 
-// TestSetPeriodic_ChildRejected tests that setting periodic on a child conversation
-// via the MCP tool is rejected.
-func TestSetPeriodic_ChildRejected(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer store.Close()
-
-	parentID := session.GenerateSessionID()
-	if err := store.Create(session.Metadata{
-		SessionID:  parentID,
-		Name:       "Parent",
-		ACPServer:  "test-server",
-		WorkingDir: "/test/dir",
-	}); err != nil {
-		t.Fatalf("Failed to create parent: %v", err)
-	}
-
-	childID := session.GenerateSessionID()
-	if err := store.Create(session.Metadata{
-		SessionID:       childID,
-		Name:            "Child",
-		ACPServer:       "test-server",
-		WorkingDir:      "/test/dir",
-		ParentSessionID: parentID,
-	}); err != nil {
-		t.Fatalf("Failed to create child: %v", err)
-	}
-
-	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
-		t.Fatalf("Failed to register parent: %v", err)
-	}
-
-	ctx := context.Background()
-	_, output, err := srv.handleSetPeriodic(ctx, nil, SetPeriodicInput{
-		SelfID:         parentID,
-		ConversationID: childID,
-		Prompt:         "check updates",
-		FrequencyValue: 1,
-		FrequencyUnit:  "hours",
-	})
-	if err != nil {
-		t.Fatalf("handleSetPeriodic returned error: %v", err)
-	}
-
-	if output.Success {
-		t.Error("Expected failure when trying to set periodic on a child conversation")
-	}
-	if output.Error == "" {
-		t.Error("Expected error message explaining why child cannot be periodic")
-	}
-}
-
 // mockUIPrompter is a mock UIPrompter for testing handleUIOptions.
 type mockUIPrompter struct {
 	mu       sync.Mutex

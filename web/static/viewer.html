@@ -502,6 +502,7 @@
       const legacyWorkspace = params.get("workspace");
       const path = params.get("path");
       const wsPath = params.get("ws_path");
+      const viewMode = params.get("view"); // "diff" to open in diff mode by default
 
       // Show "Open in System App" button in native macOS app.
       // The native viewer injects mittoOpenFileURL via WKScriptMessageHandler,
@@ -906,6 +907,11 @@
           } else {
             // Plain source code
             showSource();
+          }
+
+          // Override default view if view=diff is specified in URL
+          if (viewMode === "diff") {
+            showDiff();
           }
 
           // Font size management (shared across all modes)

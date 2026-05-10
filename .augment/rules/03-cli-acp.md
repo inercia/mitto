@@ -42,6 +42,12 @@ mitto web --dir /path/to/project1 --dir /path/to/project2
 mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
 ```
 
+### `--host` Flag (Security-Sensitive)
+
+`mitto web --host 0.0.0.0` binds to all interfaces (needed for Docker). Default is `127.0.0.1`.
+
+**Security**: The local listener runs without authentication. When `--host` is not a loopback address, a runtime warning is printed. Never expose to untrusted networks.
+
 ## ACP Protocol
 
 ### SDK: `github.com/coder/acp-go-sdk`
@@ -132,13 +138,4 @@ install:
 
 ### ACP Connection Testing
 
-| Method              | Test Scenarios                                                     |
-| ------------------- | ------------------------------------------------------------------ |
-| `NewConnection()`   | Empty command, invalid command, valid command with mock ACP        |
-| `Initialize()`      | Successful handshake, output callback receives "Connected" message |
-| `NewSession()`      | Session creation, session ID populated                             |
-| `Prompt()`          | With session, without session (error), response handling           |
-| `Cancel()`          | With/without active session                                        |
-| `Close()`           | Normal close, double close, nil cmd edge case                      |
-| `Done()`            | Returns valid channel, not closed while active                     |
-| `HasImageSupport()` | Before/after Initialize                                            |
+Test each method of `internal/acp/`: `NewConnection`, `Initialize`, `NewSession`, `Prompt`, `Cancel`, `Close`, `Done`, `HasImageSupport`. Cover error paths (empty/invalid command, prompt without session, double-close).

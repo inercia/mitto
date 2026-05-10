@@ -142,6 +142,9 @@ debug
 # Test Artifacts
 # -----------------------------------------------------------------------------
 tests/ui/test-results/
+
+# Smoke test build artifacts
+tests/smoke/.build/
 /mitto-app
 /mitto-test
 tests/mocks/acp-server/mock-acp-server

@@ -4,6 +4,7 @@ globs:
   - "internal/**/*_test.go"
   - "tests/integration/**/*"
   - "tests/mocks/**/*"
+  - "tests/smoke/**/*"
   - "internal/client/**/*"
   - "web/static/**/*.test.js"
   - "web/static/lib.js"
@@ -12,6 +13,7 @@ globs:
 keywords:
   - unit test
   - integration test
+  - smoke test
   - mock ACP
   - httptest
   - SetupTestServer
@@ -29,6 +31,10 @@ make test              # All unit tests
 make test-go           # Go unit tests only
 make test-js           # JavaScript unit tests (cd web/static && npm test)
 make test-integration  # Integration tests
+make smoke-build       # Cross-compile binaries + build Docker image
+make smoke-test-cli    # CLI-only smoke tests inside Docker (fast, no browser)
+make smoke-test        # Full smoke tests (CLI + Playwright via Docker)
+make smoke-clean       # Clean up Docker image and .build/ artifacts
 ```
 
 ## Test Isolation for Global State
@@ -103,58 +109,30 @@ go test -tags integration -coverprofile=coverage.out \
 
 ## JavaScript Tests
 
-### Mocking Browser Globals
-
-Functions depending on browser globals should gracefully handle their absence:
-
-```javascript
-export function renderUserMarkdown(text) {
-    if (typeof window === "undefined" || !window.marked || !window.DOMPurify) {
-        return null;  // Graceful fallback - testable in Node.js
-    }
-}
-```
-
-### Mocking localStorage
-
-```javascript
-const localStorageMock = (() => {
-    let store = {};
-    return {
-        getItem: (key) => store[key] || null,
-        setItem: (key, value) => { store[key] = value; },
-        removeItem: (key) => { delete store[key]; },
-        clear: () => { store = {}; },
-    };
-})();
-Object.defineProperty(global, "localStorage", { value: localStorageMock });
-```
+- Browser globals (`window.marked`, `window.DOMPurify`): check `typeof window === "undefined"` and return `null` as graceful fallback — makes code testable in Node.js
+- `localStorage`: mock with a plain object implementing `getItem/setItem/removeItem/clear`, assigned via `Object.defineProperty(global, "localStorage", { value: mock })`
 
 ## Text Processing Testing Strategy
 
-Three levels for features that process text/HTML:
+Use `contains`/`excludes` fields in table-driven tests for HTML output assertions (see `internal/conversion/*_test.go` for examples).
 
-1. **Unit tests**: HTML input/output, edge cases, security
-2. **Integration tests**: Full markdown-to-HTML pipeline with sanitization
-3. **Example tests**: Real-world usage as documentation
+## Smoke Tests (Docker / Linux)
 
-### Contains/Excludes Pattern
+Smoke tests verify Mitto works in a pristine Linux environment using Docker + cross-compiled binaries.
 
-```go
-tests := []struct {
-    name     string
-    input    string
-    contains []string
-    excludes []string
-}{
-    {
-        name:  "URL linkified",
-        input: "<code>https://example.com</code>",
-        contains: []string{`<a href="https://example.com"`},
-        excludes: []string{},
-    },
-}
-```
+**Location**: `tests/smoke/` — Dockerfile, entrypoint.sh, smoke-test.sh, docker-compose.yml, run.sh
+
+**Key architecture**:
+- Mitto binds to `0.0.0.0:8089` via `mitto web --host 0.0.0.0 --port 8089`
+- Docker maps host `8089 → container 8089` directly (no socat needed)
+- Cross-compiled binaries are staged in `tests/smoke/.build/` (gitignored)
+- `MITTO_DIR` env var controls Mitto's data directory inside the container
+
+**entrypoint.sh** writes `settings.json` + `workspaces.json`, then `exec mitto web --host 0.0.0.0`
+
+**Health check**: `GET /mitto/api/health` → `{"status":"healthy",...}`
+
+**Full Playwright smoke run** uses `MITTO_EXTERNAL_SERVER=1` and `MITTO_TEST_URL=http://localhost:8089`
 
 ## Lessons Learned
 

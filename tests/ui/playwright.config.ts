@@ -76,7 +76,8 @@ export default defineConfig({
   // Web server configuration - starts mitto automatically for tests
   // Note: The webServer starts BEFORE globalSetup runs, so we use a helper script
   // to create the settings file before starting mitto.
-  webServer: {
+  // Set MITTO_EXTERNAL_SERVER=1 to disable auto-start (e.g. when testing against Docker).
+  webServer: process.env.MITTO_EXTERNAL_SERVER ? undefined : {
     command:
       'bash -c "cd ../.. && make build build-mock-acp && ./tests/ui/start-test-server.sh"',
     port: 8089,

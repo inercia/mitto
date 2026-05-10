@@ -250,6 +250,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isCallbackRequest := len(parts) > 1 && parts[1] == "callback"
 	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
 	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
+	isChangesRequest := len(parts) > 1 && parts[1] == "changes"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -322,6 +323,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// Handle prune operations
 	if isPruneRequest {
 		s.handleSessionPrune(w, r, sessionID)
+		return
+	}
+
+	// Handle git changes operations
+	if isChangesRequest {
+		s.handleSessionChanges(w, r, sessionID)
 		return
 	}
 

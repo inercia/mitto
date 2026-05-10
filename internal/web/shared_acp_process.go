@@ -867,6 +867,23 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 	return err
 }
 
+// SetSessionModel sets the model for a specific session.
+func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error {
+	p.mu.RLock()
+	conn := p.conn
+	p.mu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("shared ACP process is not running")
+	}
+
+	_, err := conn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
+		SessionId: sessionID,
+		ModelId:   acp.UnstableModelId(modelID),
+	})
+	return err
+}
+
 // SetSessionConfigOption sets a config option for a specific session.
 // TODO: Implement when SDK supports SetSessionConfigOption
 func (p *SharedACPProcess) SetSessionConfigOption(ctx context.Context, sessionID acp.SessionId, configID, value string) error {

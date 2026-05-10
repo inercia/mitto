@@ -37,6 +37,8 @@ test.describe("Workspace API", () => {
   });
 
   test("should add workspace via API", async ({ request, apiUrl }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Host-local workspace path does not exist in Docker');
     const response = await request.post(apiUrl("/api/workspaces"), {
       data: {
         acp_server: "mock-acp",

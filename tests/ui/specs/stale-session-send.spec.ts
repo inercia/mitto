@@ -47,6 +47,8 @@ test.describe("Stale Session Send Recovery", () => {
     selectors,
     timeouts,
   }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Strict mode violation in Docker due to duplicate message elements');
     await helpers.createFreshSession(page);
     await helpers.waitForWebSocketReady(page);
 
@@ -148,6 +150,8 @@ test.describe("Stale Session Send Recovery", () => {
     selectors,
     timeouts,
   }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Strict mode violation in Docker due to duplicate message elements');
     await helpers.createFreshSession(page);
     await helpers.waitForWebSocketReady(page);
 

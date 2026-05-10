@@ -64,50 +64,35 @@ test.describe("Feature Name", () => {
 
 ## Manual Testing with Playwright MCP
 
-**Use Playwright MCP tools instead of playwright-cli for manual browser testing.**
-
-### Setup
+**Use Playwright MCP tools** (`browser_navigate_playwright`, `browser_snapshot_playwright`, `browser_click_playwright`, `browser_type_playwright`, `browser_take_screenshot_playwright`).
 
 ```bash
 make build-mock-acp
-
-TEST_DIR=/tmp/mitto-test-$$
-mkdir -p "$TEST_DIR/workspace"
-
-cat > "$TEST_DIR/.mittorc" << 'EOF'
-acp:
-  - mock-acp:
-      command: ./tests/mocks/acp-server/mock-acp-server
-web:
-  host: 127.0.0.1
-  port: 8089
-  external_port: -1
-  theme: v2
-EOF
-
+TEST_DIR=/tmp/mitto-test-$$; mkdir -p "$TEST_DIR/workspace"
+# Write .mittorc with host:127.0.0.1, external_port:-1, theme:v2, mock-acp server
 mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace --debug &
 ```
 
-### Playwright MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `browser_navigate_playwright` | Navigate to a URL |
-| `browser_snapshot_playwright` | Capture accessibility snapshot |
-| `browser_click_playwright` | Click on an element by ref |
-| `browser_type_playwright` | Type text into an element |
-| `browser_press_key_playwright` | Press a key |
-| `browser_take_screenshot_playwright` | Take a screenshot |
-| `browser_console_messages_playwright` | Get console messages |
-| `browser_close_playwright` | Close the browser |
-
 ## Environment Variables
 
-| Variable          | Description                                           |
-| ----------------- | ----------------------------------------------------- |
-| `MITTO_TEST_URL`  | Base URL for tests (default: `http://127.0.0.1:8089`) |
-| `MITTO_DIR`       | Data directory for test (default: `/tmp/mitto-test`)  |
-| `MITTO_TEST_MODE` | Set to `1` when running Playwright tests              |
+| Variable                | Description                                           |
+| ----------------------- | ----------------------------------------------------- |
+| `MITTO_TEST_URL`        | Base URL for tests (default: `http://127.0.0.1:8089`) |
+| `MITTO_DIR`             | Data directory for test (default: `/tmp/mitto-test`)  |
+| `MITTO_TEST_MODE`       | Set to `1` when running Playwright tests              |
+| `MITTO_EXTERNAL_SERVER` | Set to `1` for Docker/CI runs — enables test skips    |
+
+## Docker/CI Skip Annotations
+
+Tests that fail in Docker/CI (timing-sensitive, host-path-dependent, multi-tab) must use:
+
+```typescript
+test.skip(!!process.env.MITTO_EXTERNAL_SERVER, 'Reason why this fails in Docker');
+```
+
+- **Local runs**: 0 skips — full suite runs
+- **Docker/CI** (`MITTO_EXTERNAL_SERVER=1`): known-flaky tests skipped
+- `make smoke-test` sets `MITTO_EXTERNAL_SERVER=1` automatically
 
 ## Mock ACP Server Scenarios
 
@@ -121,21 +106,21 @@ Scenarios in `tests/fixtures/responses/*.json`:
 | `error-response.json` | `(?i)error` | Error message |
 | `tool-calls-interleaved.json` | `(?i)tool` | Tool usage simulation |
 
-### Adding New Scenarios
+New scenarios: add JSON files to `tests/fixtures/responses/` with `trigger.pattern` (regex) and `actions` array.
 
-```json
-{
-  "scenario": "my-scenario",
-  "description": "Description of what this tests",
-  "responses": [
-    {
-      "trigger": { "type": "prompt", "pattern": "(?i)my.*pattern" },
-      "actions": [
-        { "type": "agent_message", "delay_ms": 50, "chunks": ["Response ", "content"] }
-      ]
-    }
-  ]
-}
+## Test Fixture Patterns
+
+### Auto-Cleanup (session accumulation prevention)
+
+`test-fixtures.ts` includes an `autoCleanup` fixture with `{ auto: true }` — runs before **every** test automatically when session count exceeds `MAX_SESSIONS_THRESHOLD` (10). No manual call needed. Don't remove the explicit `cleanupSessions` fixture — tests that need manual control can still use it.
+
+### `createFreshSession` Race Condition
+
+In Docker, ACP connections take ~1.1s. After clicking new-session, **wait for `mitto_last_session_id` localStorage to update to a new non-empty value** before checking WebSocket readiness — otherwise `waitForWebSocketReady` may attach to the old session's textarea.
+
+```typescript
+// After clicking new session button, poll localStorage until ID changes:
+await page.waitForFunction(() => !!localStorage.getItem("mitto_last_session_id"));
 ```
 
 ## Browser-Specific Issues

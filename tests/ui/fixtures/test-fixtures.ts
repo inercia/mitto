@@ -30,6 +30,8 @@ type MittoFixtures = {
   cleanupSessions: () => Promise<number>;
   /** Session ID for the current test (set after createFreshSession) */
   testSessionId: string | null;
+  /** Auto-cleanup that runs before every test (no manual call needed) */
+  autoCleanup: void;
 };
 
 /**
@@ -65,6 +67,11 @@ export const test = base.extend<MittoFixtures>({
     // Placeholder - set by individual tests using createFreshSession
     await use(null);
   },
+  autoCleanup: [async ({ request }, use) => {
+    // Auto-cleanup: delete old sessions if count exceeds threshold
+    await helpers.cleanupSessionsToLimit(request, MAX_SESSIONS_THRESHOLD);
+    await use();
+  }, { auto: true }],
 });
 
 /**
@@ -108,6 +115,11 @@ export const testWithCleanup = base.extend<MittoFixtures>({
   testSessionId: async ({}, use) => {
     await use(null);
   },
+  autoCleanup: [async ({ request }, use) => {
+    // Auto-cleanup: delete old sessions if count exceeds threshold
+    await helpers.cleanupSessionsToLimit(request, MAX_SESSIONS_THRESHOLD);
+    await use();
+  }, { auto: true }],
 });
 
 export { expect };

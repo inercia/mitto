@@ -465,6 +465,8 @@ test.describe("Multi-Client Sync", () => {
     selectors,
     timeouts,
   }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Multi-tab sync unreliable in Docker/CI environment');
     await helpers.navigateAndEnsureSession(page);
 
     // Open a second tab

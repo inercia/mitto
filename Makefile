@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind build-mac-app clean-mac-app test-webviewlog build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind build-mac-app clean-mac-app test-webviewlog build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -397,6 +397,44 @@ homebrew-test: homebrew-clean
 	@echo "✅ All Homebrew packaging tests passed!"
 	@echo "=============================================="
 	@$(MAKE) homebrew-clean
+
+# =============================================================================
+# Smoke Tests (Docker-based Linux verification)
+# =============================================================================
+# These tests compile mitto for linux (matching host architecture) and run it inside Docker
+# to verify the binary works correctly on Linux.
+#
+# Usage:
+#   make smoke-build        # Compile Linux binaries and build Docker image
+#   make smoke-test-cli     # Run CLI-only smoke tests inside Docker (fast)
+#   make smoke-test         # Run full smoke tests including Playwright UI tests
+#   make smoke-clean        # Clean up smoke test artifacts
+# =============================================================================
+
+# Detect host architecture for Docker compatibility (Apple Silicon → arm64, x86 → amd64)
+SMOKE_GOARCH ?= $(shell uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
+
+# Cross-compile binaries and build Docker image for smoke tests
+smoke-build:
+	@echo "Compiling mitto for linux/$(SMOKE_GOARCH) (static)..."
+	@mkdir -p tests/smoke/.build
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(SMOKE_GOARCH) $(GOBUILD) $(LDFLAGS) -o tests/smoke/.build/mitto ./cmd/mitto
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(SMOKE_GOARCH) $(GOBUILD) -o tests/smoke/.build/mock-acp-server ./tests/mocks/acp-server
+	@echo "Building Docker image..."
+	docker compose -f tests/smoke/docker-compose.yml build
+
+# Run CLI-only smoke tests inside Docker (fast, no browser needed)
+smoke-test-cli: smoke-build
+	docker compose -f tests/smoke/docker-compose.yml run --rm mitto /home/mitto/smoke-test.sh
+
+# Run full smoke tests including Playwright UI tests from host
+smoke-test: smoke-build
+	bash tests/smoke/run.sh
+
+# Clean up smoke test artifacts
+smoke-clean:
+	docker compose -f tests/smoke/docker-compose.yml down --rmi local 2>/dev/null || true
+	rm -rf tests/smoke/.build
 
 # Clean up Homebrew test artifacts
 homebrew-clean:

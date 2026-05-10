@@ -747,6 +747,13 @@ func (c *SessionWSClient) handleSync(afterSeq int64) {
 // The server tracks lastSentSeq to prevent sending duplicates. After loading events,
 // lastSentSeq is updated to the highest seq in the response.
 
+// loadEventsResult carries the data that postLoadProcessing needs after the lock
+// is released. Only populated when handleLoadEvents succeeds (ok == true).
+type loadEventsResult struct {
+	isPrepend bool
+	lastSeq   int64
+}
+
 // handleLoadEventsAsync wraps handleLoadEvents with a TryLock guard to prevent
 // concurrent executions. If another load is already in progress, this call is
 // silently dropped — the client will receive the results from the in-flight load.
@@ -755,6 +762,10 @@ func (c *SessionWSClient) handleSync(afterSeq int64) {
 // - c.seqMu protects lastSentSeq
 // - c.initialLoadMu protects initialLoadDone and AddObserver
 // - c.sendMessage writes to a buffered channel (thread-safe)
+//
+// The lock is released BEFORE postLoadProcessing so that a second load_events
+// request (e.g. prepend/pagination) sent immediately after the client receives
+// events_loaded is not silently dropped by TryLock.
 func (c *SessionWSClient) handleLoadEventsAsync(limit int, beforeSeq, afterSeq int64) {
 	if !c.loadEventsMu.TryLock() {
 		if c.logger != nil {
@@ -765,14 +776,22 @@ func (c *SessionWSClient) handleLoadEventsAsync(limit int, beforeSeq, afterSeq i
 		}
 		return
 	}
-	defer c.loadEventsMu.Unlock()
-	c.handleLoadEvents(limit, beforeSeq, afterSeq)
+	result, ok := c.handleLoadEvents(limit, beforeSeq, afterSeq)
+	c.loadEventsMu.Unlock() // Release BEFORE post-processing — see comment above.
+	if ok {
+		c.postLoadProcessing(result)
+	}
 }
 
-func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64) {
+// handleLoadEvents performs the core event loading and sends the events_loaded
+// WebSocket message. It returns a loadEventsResult and true on success, or
+// (zero, false) when it returns early due to an error or missing session.
+// Post-load processing (observer registration, MCP checks, etc.) is intentionally
+// NOT done here — it is done by the caller after the loadEventsMu lock is released.
+func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64) (loadEventsResult, bool) {
 	if c.store == nil {
 		c.sendError("Session store not available")
-		return
+		return loadEventsResult{}, false
 	}
 
 	// Default limit
@@ -787,7 +806,7 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 	// Validate mutually exclusive parameters
 	if beforeSeq > 0 && afterSeq > 0 {
 		c.sendError("before_seq and after_seq are mutually exclusive")
-		return
+		return loadEventsResult{}, false
 	}
 
 	var events []session.Event
@@ -800,7 +819,7 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		meta, metaErr := c.store.GetMetadata(c.sessionID)
 		if metaErr != nil && metaErr != session.ErrSessionNotFound {
 			c.sendError("Failed to read session metadata: " + metaErr.Error())
-			return
+			return loadEventsResult{}, false
 		}
 
 		// Use the higher of MaxSeq (highest persisted streaming seq) and EventCount
@@ -884,10 +903,10 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 				"session_id": c.sessionID,
 				"reason":     "session not found in store",
 			})
-			return
+			return loadEventsResult{}, false
 		}
 		c.sendError("Failed to read session events: " + err.Error())
-		return
+		return loadEventsResult{}, false
 	}
 
 	// Get metadata for total count
@@ -1046,6 +1065,20 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		"is_prompting": isPrompting,
 	})
 
+	// Return the result so handleLoadEventsAsync can release loadEventsMu and then
+	// call postLoadProcessing without holding the lock.
+	return loadEventsResult{isPrepend: isPrepend, lastSeq: lastSeq}, true
+}
+
+// postLoadProcessing performs the work that must happen after events_loaded is sent
+// but does NOT need the loadEventsMu lock. It is called by handleLoadEventsAsync
+// after the lock has been released, which allows concurrent load_events requests
+// (e.g. a prepend/pagination request triggered immediately after events_loaded) to
+// proceed rather than being silently dropped by TryLock.
+func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
+	isPrepend := result.isPrepend
+	lastSeq := result.lastSeq
+
 	// Send cached plan state if available (for conversation switch restoration).
 	// This is done after events_loaded so the frontend can restore the agent plan panel.
 	// Only send for initial load or sync (not prepend/pagination).
@@ -1079,7 +1112,6 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			if c.logger != nil {
 				c.logger.Debug("Added client as observer after load_events",
 					"session_id", c.sessionID,
-					"after_seq", afterSeq,
 					"observer_count", c.bgSession.ObserverCount())
 			}
 			// Re-send any active UI prompt to the newly connected client.
@@ -1133,16 +1165,6 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			}
 		}
 	}
-
-	// If session has buffered events, we need to replay any that haven't been
-	// persisted yet. This handles multiple cases:
-	//
-	// 1. Initial load (afterSeq == 0): Client connects mid-stream while agent messages
-	//    are still being coalesced in the buffer.
-	//
-	// Note: With immediate persistence, all events are persisted as soon as they're
-	// received from ACP. There's no buffer to replay from. Events are available in
-	// storage immediately after they're assigned a sequence number.
 }
 
 // syncMissedEventsDuringRegistration checks for events that were persisted

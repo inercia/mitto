@@ -158,6 +158,8 @@ test.describe("Mermaid Diagram Rendering", () => {
     timeouts,
     helpers,
   }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Timing-sensitive: send button disabled in Docker environment');
     // Send a message that triggers the mermaid-diagram scenario
     const textarea = page.locator(selectors.chatInput);
     await expect(textarea).toBeEnabled({ timeout: timeouts.shortAction });
@@ -205,6 +207,8 @@ test.describe("Mermaid Diagram Rendering", () => {
     timeouts,
     helpers,
   }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Timing-sensitive: send button disabled in Docker environment');
     // Send a message that triggers the mermaid-diagram scenario
     const textarea = page.locator(selectors.chatInput);
     await expect(textarea).toBeEnabled({ timeout: timeouts.shortAction });

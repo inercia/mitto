@@ -519,7 +519,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
 
       setNewFolderKey(null);
       onSave?.();
-      onClose?.();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1631,7 +1630,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             ${error && html`<p class="text-xs text-red-400">${error}</p>`}
           </div>
           <div class="flex gap-2">
-            <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors">Cancel</button>
+            <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors">Close</button>
             <button
               onClick=${handleSave}
               disabled=${saving || loading}

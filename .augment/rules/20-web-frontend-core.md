@@ -52,6 +52,7 @@ App
 | `components/QueueDropdown.js`  | Queue panel with roll-up animation            |
 | `components/Message.js`        | Message rendering component                   |
 | `components/Icons.js`          | SVG icon components                           |
+| `components/SessionPanel.js`   | Unified side panel (Properties + User Data tabs) |
 | `components/SettingsDialog.js` | Settings modal                                |
 | `hooks/useWebSocket.js`        | WebSocket connection management               |
 | `hooks/useResizeHandle.js`     | Drag-to-resize with mouse and touch           |

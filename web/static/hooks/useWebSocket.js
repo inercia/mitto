@@ -320,10 +320,9 @@ export function useWebSocket() {
   // Array of { name: string, description: string, input_hint?: string }
   const [availableCommands, setAvailableCommands] = useState([]);
 
-  // Session config options from the ACP agent (unified format for modes and other settings)
+  // Config options are derived from the active session's info (per-session, not global)
   // Array of { id: string, name: string, description?: string, category?: string, type: string, current_value: string, options: [] }
   // See https://agentclientprotocol.com/protocol/session-config-options
-  const [configOptions, setConfigOptions] = useState([]);
 
   const eventsWsRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -1100,6 +1099,12 @@ export function useWebSocket() {
     return result;
   }, [sessions, storedSessions, workingDirMap]);
 
+  // Derive configOptions from the active session's info (per-session, not global)
+  const configOptions = useMemo(() => {
+    if (!activeSessionId) return [];
+    return sessions[activeSessionId]?.info?.config_options || [];
+  }, [activeSessionId, sessions]);
+
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
     switch (msg.type) {
@@ -1130,15 +1135,6 @@ export function useWebSocket() {
         // Update available slash commands from agent
         if (msg.data.available_commands) {
           setAvailableCommands(msg.data.available_commands);
-        }
-
-        // Update session config options from agent
-        // This is the unified format that includes modes and other settings
-        if (msg.data.config_options) {
-          setConfigOptions(msg.data.config_options);
-        } else {
-          // Clear config options if not provided
-          setConfigOptions([]);
         }
 
         // Store last confirmed prompt info for delivery verification on reconnect
@@ -1197,6 +1193,9 @@ export function useWebSocket() {
                 processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
+                // Config options (model, mode, etc.) - per-session
+                // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
+                config_options: msg.data.config_options ?? session.info?.config_options ?? [],
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -2634,10 +2633,6 @@ export function useWebSocket() {
         // Also updates config_options and agent_models that weren't available in the
         // initial "connected" message due to the async ACP initialization timing race.
         console.log("ACP started for session (per-session WS):", sessionId);
-        // Update config options if provided in the acp_started message
-        if (msg.data.config_options) {
-          setConfigOptions(msg.data.config_options);
-        }
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -2664,6 +2659,8 @@ export function useWebSocket() {
                 processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
                 processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
                 processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                // Update config options if provided
+                config_options: msg.data.config_options || session.info?.config_options || [],
               },
             },
           };
@@ -2835,19 +2832,29 @@ export function useWebSocket() {
 
       case "config_option_changed":
         // Config option changed (by user or agent)
-        // Update the current_value for the specified config option
+        // Update the current_value for the specified config option in session info
         // Use !== undefined to allow falsy values like empty strings
         if (msg.data?.config_id && msg.data?.value !== undefined) {
           console.log(
             `Config option changed: ${msg.data.config_id} = ${msg.data.value}`,
           );
-          setConfigOptions((prev) =>
-            prev.map((opt) =>
-              opt.id === msg.data.config_id
-                ? { ...opt, current_value: msg.data.value }
-                : opt,
-            ),
-          );
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            const updatedOptions = (session.info?.config_options || []).map(
+              (opt) =>
+                opt.id === msg.data.config_id
+                  ? { ...opt, current_value: msg.data.value }
+                  : opt,
+            );
+            return {
+              ...prev,
+              [sessionId]: {
+                ...session,
+                info: { ...session.info, config_options: updatedOptions },
+              },
+            };
+          });
         }
         break;
     }

@@ -93,8 +93,7 @@ import {
   AgentPlanPanel,
   AgentPlanIndicator,
 } from "./components/AgentPlanPanel.js";
-import { ConversationPropertiesPanel } from "./components/ConversationPropertiesPanel.js";
-import { UserDataPanel } from "./components/UserDataPanel.js";
+import { SessionPanel } from "./components/SessionPanel.js";
 import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -131,6 +130,7 @@ import {
   ChatBubbleIcon,
   LayersIcon,
   TagIcon,
+  SidePanelIcon,
 } from "./components/Icons.js";
 
 // Import constants
@@ -395,7 +395,7 @@ function WorkspacePill({
 }
 
 // NOTE: SessionPropertiesDialog has been removed.
-// Session properties are now edited via the ConversationPropertiesPanel (right sidebar).
+// Session properties are now edited via the SessionPanel (right sidebar, Properties tab).
 
 // =============================================================================
 // Delete Confirmation Dialog
@@ -3109,8 +3109,8 @@ function App() {
   const { showToast, dismissToast, toasts } = useToast();
 
   const [showSidebar, setShowSidebar] = useState(false);
-  const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
-  const [showUserDataPanel, setShowUserDataPanel] = useState(false);
+  const [showSidePanel, setShowSidePanel] = useState(false);
+  const [sidePanelTab, setSidePanelTab] = useState("changes");
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
   const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
@@ -5269,28 +5269,18 @@ function App() {
     setPlanUserPinned(false);
   }, []);
 
-  // Properties panel handlers
-  const handleTogglePropertiesPanel = useCallback(() => {
-    setShowPropertiesPanel((prev) => {
-      if (!prev) setShowUserDataPanel(false); // Close user data if opening properties
-      return !prev;
-    });
+  // Unified side panel handlers
+  const handleToggleSidePanel = useCallback(() => {
+    setShowSidePanel((prev) => !prev);
   }, []);
 
-  const handleClosePropertiesPanel = useCallback(() => {
-    setShowPropertiesPanel(false);
+  const handleCloseSidePanel = useCallback(() => {
+    setShowSidePanel(false);
   }, []);
 
-  // User data panel handlers
-  const handleToggleUserDataPanel = useCallback(() => {
-    setShowUserDataPanel((prev) => {
-      if (!prev) setShowPropertiesPanel(false); // Close properties if opening user data
-      return !prev;
-    });
-  }, []);
-
-  const handleCloseUserDataPanel = useCallback(() => {
-    setShowUserDataPanel(false);
+  const handleOpenSidePanelTab = useCallback((tab) => {
+    setSidePanelTab(tab);
+    setShowSidePanel(true);
   }, []);
 
   // Track user messages for plan expiration - called when user sends a prompt
@@ -5380,8 +5370,7 @@ function App() {
   const handleSelectSession = (sessionId) => {
     switchSession(sessionId);
     setShowSidebar(false);
-    setShowPropertiesPanel(false);
-    setShowUserDataPanel(false);
+    setShowSidePanel(false);
   };
 
   // Handle badge click action - calls API to execute configured command
@@ -5415,8 +5404,9 @@ function App() {
         switchSession(session.session_id);
         setShowSidebar(false);
       }
-      // Open the properties panel
-      setShowPropertiesPanel(true);
+      // Open the side panel on the properties tab
+      setSidePanelTab("properties");
+      setShowSidePanel(true);
     },
     [activeSessionId, switchSession],
   );
@@ -5703,7 +5693,7 @@ function App() {
             class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
               ? "text-gray-500"
               : "cursor-pointer hover:text-blue-400 transition-colors"}"
-            onClick=${activeSessionId ? handleTogglePropertiesPanel : undefined}
+            onClick=${activeSessionId ? handleToggleSidePanel : undefined}
             title=${activeSessionId ? "Click to view properties" : ""}
           >
             ${activeSessionId
@@ -5711,40 +5701,19 @@ function App() {
               : "No Active Session"}
           </h1>
           <div class="ml-auto flex items-center gap-2">
-            ${activeSessionId && html`
-              <button
-                onClick=${handleToggleUserDataPanel}
-                class="p-1.5 rounded-full ring-1 ring-slate-600 hover:ring-slate-500 hover:bg-slate-700 transition-colors ${showUserDataPanel ? "bg-slate-700 ring-slate-500" : ""}"
-                title="User Data"
-              >
-                <${TagIcon} className="w-3.5 h-3.5 text-slate-400" />
-              </button>
-            `}
-            ${isStreaming
-              ? html`
-                  <button
-                    onClick=${handleTogglePropertiesPanel}
-                    class="p-1.5 rounded-full ring-1 ring-slate-600 hover:ring-slate-500 hover:bg-slate-700 transition-colors"
-                    title="Streaming — click to open properties"
-                  >
-                    <span
-                      class="w-3.5 h-3.5 bg-blue-400 rounded-full animate-pulse block"
-                    ></span>
-                  </button>
-                `
-              : html`
-                  <button
-                    onClick=${handleTogglePropertiesPanel}
-                    class="p-1.5 rounded-full ring-1 ring-slate-600 hover:ring-slate-500 hover:bg-slate-700 transition-colors"
-                    title="${connected ? "Connected — click to open properties" : "Not connected — click to open properties"}"
-                  >
-                    <span
-                      class="w-3.5 h-3.5 rounded-full block ${connected
-                        ? "bg-green-400"
-                        : "bg-amber-400"}"
-                    ></span>
-                  </button>
-                `}
+            <!-- Status indicator dot (matches session list style) -->
+            <span
+              class="w-2 h-2 rounded-full flex-shrink-0 ${isStreaming ? "bg-blue-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
+              title=${isStreaming ? "Streaming" : connected ? "Connected" : "Not connected"}
+            ></span>
+            <!-- Unified side panel toggle -->
+            <button
+              onClick=${handleToggleSidePanel}
+              class="p-1.5 rounded hover:bg-slate-700 transition-colors ${showSidePanel ? "bg-slate-700 text-blue-400" : "text-slate-400 hover:text-slate-200"}"
+              title="Session details"
+            >
+              <${SidePanelIcon} className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
@@ -6028,14 +5997,18 @@ function App() {
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText)}
             workingDir=${sessionInfo?.working_dir || ""}
             sendKeyMode=${sendKeyMode}
+            configOptions=${configOptions}
+            onSetConfigOption=${setConfigOption}
           />
         </div>
       </div>
 
-      <!-- Conversation Properties Panel (fixed overlay on left) -->
-      <${ConversationPropertiesPanel}
-        isOpen=${showPropertiesPanel}
-        onClose=${handleClosePropertiesPanel}
+      <!-- Unified Session Panel (fixed overlay on right) -->
+      <${SessionPanel}
+        isOpen=${showSidePanel}
+        onClose=${handleCloseSidePanel}
+        activeTab=${sidePanelTab}
+        onTabChange=${setSidePanelTab}
         sessionId=${activeSessionId}
         sessionInfo=${sessionInfo}
         onRename=${renameSession}
@@ -6043,14 +6016,6 @@ function App() {
         configOptions=${configOptions}
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
-      />
-
-      <!-- User Data Panel (fixed overlay on right) -->
-      <${UserDataPanel}
-        isOpen=${showUserDataPanel}
-        onClose=${handleCloseUserDataPanel}
-        sessionId=${activeSessionId}
-        sessionInfo=${sessionInfo}
       />
     </div>
   `;

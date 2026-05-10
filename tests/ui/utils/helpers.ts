@@ -28,6 +28,14 @@ export async function createFreshSession(page: Page): Promise<string> {
   // Click new session button
   await page.locator(selectors.newSessionButton).click();
 
+  // Wait for the new session to be selected (localStorage gets set when the
+  // WebSocket sends the "connected" message for the new session). This prevents
+  // the race condition where the UI still points to the old session in Docker
+  // environments where ACP connection establishment takes >1 second.
+  await expect.poll(async () => {
+    return await page.evaluate(() => localStorage.getItem("mitto_last_session_id"));
+  }, { timeout: timeouts.appReady }).toBeTruthy();
+
   // Wait for the textarea to be enabled (indicates session is ready)
   await expect(page.locator(selectors.chatInput)).toBeEnabled({
     timeout: timeouts.appReady,
