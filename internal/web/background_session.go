@@ -4496,8 +4496,7 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 		// Use UNSTABLE SetSessionModel API
 		var err error
 		if bs.sharedProcess != nil {
-			// Shared process doesn't support model switching yet
-			return fmt.Errorf("model switching is not supported on shared process sessions")
+			err = bs.sharedProcess.SetSessionModel(ctx, acp.SessionId(bs.acpID), value)
 		} else if bs.acpConn != nil {
 			_, err = bs.acpConn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
 				SessionId: acp.SessionId(bs.acpID),
