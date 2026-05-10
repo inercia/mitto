@@ -4980,10 +4980,6 @@ function App() {
 
   // Queue dropdown handlers
   const handleToggleQueueDropdown = useCallback(() => {
-    console.log(
-      "[DEBUG] handleToggleQueueDropdown called, current showQueueDropdown:",
-      showQueueDropdown,
-    );
     // Cancel any auto-close timer when user manually toggles
     if (queuePanelAutoCloseTimerRef.current) {
       clearTimeout(queuePanelAutoCloseTimerRef.current);
@@ -4993,10 +4989,7 @@ function App() {
       // Opening - fetch latest queue messages
       fetchQueueMessages();
     }
-    setShowQueueDropdown((prev) => {
-      console.log("[DEBUG] setShowQueueDropdown: prev=", prev, "new=", !prev);
-      return !prev;
-    });
+    setShowQueueDropdown((prev) => !prev);
   }, [showQueueDropdown, fetchQueueMessages]);
 
   const handleCloseQueueDropdown = useCallback(() => {
