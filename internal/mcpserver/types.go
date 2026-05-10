@@ -359,7 +359,7 @@ type ConversationUpdateOutput struct {
 	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"`
 	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`
 	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`
-	PeriodicEnabled        bool   `json:"periodic_enabled,omitempty"`
+	PeriodicEnabled        bool   `json:"periodic_enabled"`
 	PeriodicNextRun        string `json:"periodic_next_run,omitempty"` // RFC3339 format
 	Error                  string `json:"error,omitempty"`
 }

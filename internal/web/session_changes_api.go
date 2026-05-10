@@ -96,9 +96,8 @@ func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request, se
 		fileOrder = append(fileOrder, filePath)
 	}
 
-	// Get additions/deletions using git diff HEAD --numstat
+	// Get additions/deletions using git diff HEAD --numstat (covers both staged and unstaged)
 	mergeNumstat(ctx, workDir, fileMap, "HEAD", "--numstat")
-	mergeNumstat(ctx, workDir, fileMap, "--cached", "--numstat")
 
 	// Build ordered result
 	files := make([]ChangedFile, 0, len(fileOrder))

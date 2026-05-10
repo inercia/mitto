@@ -1194,7 +1194,8 @@ export function useWebSocket() {
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
                 // Config options (model, mode, etc.) - per-session
-                config_options: msg.data.config_options || [],
+                // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
+                config_options: msg.data.config_options ?? session.info?.config_options ?? [],
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
