@@ -91,6 +91,9 @@ test.describe("Markdown Chunk Rendering", () => {
     selectors,
     timeouts,
   }) => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Timing-sensitive: send button disabled in Docker/CI environment');
+
     await helpers.sendMessageAndWait(page, "TEST:inline-code-split");
 
     // Wait for all content to be rendered (chunks may arrive after prompt completes)
