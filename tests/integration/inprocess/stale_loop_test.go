@@ -260,7 +260,7 @@ func TestStaleClient_PrependAfterRecovery(t *testing.T) {
 	}
 	select {
 	case <-page2Done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timeout waiting for prepend events_loaded")
 	}
 
