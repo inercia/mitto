@@ -332,6 +332,13 @@ type ConversationUpdateInput struct {
 	// User data — optional, only applied if non-nil
 	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
 	UserDataMerge *bool                     `json:"user_data_merge,omitempty"` // If true (default), merge with existing; if false, replace all
+
+	// Periodic configuration — optional, only applied if any periodic field is non-nil
+	PeriodicPrompt         *string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
+	PeriodicFrequencyValue *int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
+	PeriodicFrequencyUnit  *string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
+	PeriodicFrequencyAt    *string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
+	PeriodicEnabled        *bool   `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.
@@ -347,7 +354,14 @@ type ConversationUpdateOutput struct {
 	Updated        []string                  `json:"updated,omitempty"`   // List of property names that were changed
 	Name           string                    `json:"name,omitempty"`      // Current name after update
 	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"` // Current user data after update
-	Error          string                    `json:"error,omitempty"`
+	// Periodic configuration (returned when periodic is configured)
+	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`
+	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"`
+	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`
+	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`
+	PeriodicEnabled        bool   `json:"periodic_enabled,omitempty"`
+	PeriodicNextRun        string `json:"periodic_next_run,omitempty"` // RFC3339 format
+	Error                  string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.

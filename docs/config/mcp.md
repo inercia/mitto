@@ -69,11 +69,10 @@ These tools require the **"Can Send Prompt"** flag or appropriate permissions:
 
 | Tool                              | Description                                                                            |
 | --------------------------------- | -------------------------------------------------------------------------------------- |
-| `mitto_conversation_set_periodic` | Configure a conversation to run periodically with a scheduled prompt                   |
 | `mitto_conversation_archive`      | Archive or unarchive a conversation                                                    |
 | `mitto_conversation_delete`       | Delete a child conversation (caller must be parent)                                    |
 | `mitto_conversation_wait`         | Wait until an event occurs in a conversation (e.g., agent finishes responding)         |
-| `mitto_conversation_update`       | Update conversation properties such as title and user-defined metadata attributes.     |
+| `mitto_conversation_update`       | Update conversation properties: title, user-defined metadata, and periodic prompt configuration. |
 
 ### Parent-Child Task Coordination Tools
 
