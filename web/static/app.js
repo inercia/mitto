@@ -1782,13 +1782,13 @@ function SessionList({
   const getGroupingIcon = () => {
     switch (groupingMode) {
       case "server":
-        return html`<${ServerIcon} className="w-5 h-5" />`;
+        return html`<${ServerIcon} className="w-4 h-4" />`;
       case "folder":
-        return html`<${FolderIcon} className="w-5 h-5" />`;
+        return html`<${FolderIcon} className="w-4 h-4" />`;
       case "workspace":
-        return html`<${LayersIcon} className="w-5 h-5" />`;
+        return html`<${LayersIcon} className="w-4 h-4" />`;
       default:
-        return html`<${ListIcon} className="w-5 h-5" />`;
+        return html`<${ListIcon} className="w-4 h-4" />`;
     }
   };
 
@@ -2864,29 +2864,29 @@ function SessionList({
         class="p-4 border-b border-slate-700 flex items-center justify-between"
       >
         <h2 class="font-semibold text-lg">Conversations</h2>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-0.5">
           <button
             onClick=${handleToggleGrouping}
-            class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+            class="p-1.5 hover:bg-slate-700 rounded transition-colors"
             title=${getGroupingTooltip()}
           >
             ${getGroupingIcon()}
           </button>
           <button
             onClick=${() => onNewSession(null, null, filterTab)}
-            class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+            class="p-1.5 hover:bg-slate-700 rounded transition-colors"
             title="New Conversation"
           >
-            <${PlusIcon} className="w-5 h-5" />
+            <${PlusIcon} className="w-4 h-4" />
           </button>
           ${onClose &&
           html`
             <button
               onClick=${onClose}
-              class="p-2 hover:bg-slate-700 rounded-lg transition-colors md:hidden"
+              class="p-1.5 hover:bg-slate-700 rounded transition-colors md:hidden"
               title="Close"
             >
-              <${CloseIcon} className="w-5 h-5" />
+              <${CloseIcon} className="w-4 h-4" />
             </button>
           `}
         </div>
@@ -2963,17 +2963,17 @@ function SessionList({
           <!-- Settings | Workspaces segmented button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
           ${!configReadonly
             ? html`
-                <div class="flex items-center">
+                <div class="flex items-center gap-0.5">
                   <button
                     onClick=${onShowSettings}
-                    class="p-2 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                    class="p-1.5 hover:bg-slate-700 rounded transition-colors text-gray-400 hover:text-white"
                     title="Settings"
                   >
                     <${SettingsIcon} className="w-4 h-4" />
                   </button>
                   <button
                     onClick=${onShowWorkspaces}
-                    class="p-2 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                    class="p-1.5 hover:bg-slate-700 rounded transition-colors text-gray-400 hover:text-white"
                     title="Workspaces"
                   >
                     <${FolderIcon} className="w-4 h-4" />

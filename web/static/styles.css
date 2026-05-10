@@ -1521,11 +1521,11 @@ mitto-action {
   color: #e2e8f0;
 }
 
-/* Flat inline action button */
+/* Flat inline action button — matches p-1.5 rounded (28px, 4px radius) */
 .chat-input-action {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
   background: transparent;
   border: none;
   color: #64748b;
@@ -1564,7 +1564,6 @@ mitto-action {
 .chat-input-action.send-active {
   background: #dc2626;
   color: #ffffff;
-  border-radius: 6px;
 }
 
 .chat-input-action.send-active:hover {
@@ -1582,7 +1581,6 @@ mitto-action {
 .chat-input-action.stop-active {
   background: #dc2626;
   color: #ffffff;
-  border-radius: 6px;
 }
 
 .chat-input-action.stop-active:hover {
@@ -1733,14 +1731,6 @@ mitto-action {
   background: #2563eb;
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-
-/* Mobile: compact action buttons */
-@media (max-width: 768px) {
-  .chat-input-action {
-    width: 28px;
-    height: 28px;
-  }
 }
 
 /* Workspace pill clickable hover effect - uses filter instead of opacity

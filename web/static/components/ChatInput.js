@@ -2741,26 +2741,13 @@ ${activeUIPrompt.text || ""}</textarea
                 </div>
               `}
 
-              <!-- Right action buttons: queue-add, queue-toggle, prompts-toggle, send/stop/lock -->
+              <!-- Right action buttons: queue-toggle, prompts, enqueue, send/stop/lock -->
               <div class="chat-input-actions-right">
-                <!-- Add to Queue button -->
-                <button
-                  type="button"
-                  onClick=${handleAddToQueueClick}
-                  disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicEnabled}
-                  class="chat-input-action"
-                  title=${periodicEnabled ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
-
-                <!-- Toggle Queue Panel button -->
+                <!-- Queue toggle button: only shown when queue has items -->
+                ${queueLength > 0 && html`
                 <button
                   type="button"
                   onClick=${() => {
-                    console.log("[DEBUG] Queue toggle button clicked, onToggleQueue=", typeof onToggleQueue);
                     if (!periodicEnabled && onToggleQueue) onToggleQueue();
                   }}
                   disabled=${periodicEnabled}
@@ -2774,8 +2761,9 @@ ${activeUIPrompt.text || ""}</textarea
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
                   </svg>
-                  ${queueLength > 0 && !periodicEnabled && html`<span class="queue-badge">${queueLength}</span>`}
+                  ${!periodicEnabled && html`<span class="queue-badge">${queueLength}</span>`}
                 </button>
+                `}
 
                 <!-- Prompts Toggle Button -->
                 ${hasPrompts &&
@@ -2797,6 +2785,21 @@ ${activeUIPrompt.text || ""}</textarea
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
                     </svg>
                   </button>
+                `}
+
+                <!-- Enqueue button: shown when streaming (so user can enqueue while agent works) -->
+                ${isStreaming && html`
+                <button
+                  type="button"
+                  onClick=${handleAddToQueueClick}
+                  disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicEnabled}
+                  class="chat-input-action"
+                  title=${periodicEnabled ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
                 `}
 
                 <!-- Send/Stop/Lock button -->
