@@ -58,7 +58,7 @@ Single bordered container: textarea (no own border) + bottom toolbar with left/c
 - **Outer container**: provides border and rounded corners — textarea has no own border
 - **Bottom toolbar left**: attach-image, attach-file, improve-prompt, save-prompt
 - **Bottom toolbar center**: model selector (only shown when `configOptions` contains a `type === "select"` option)
-- **Bottom toolbar right**: queue-add, queue-toggle, **prompts-toggle**, send/stop/lock
+- **Bottom toolbar right**: prompts-toggle, queue-toggle (visible when queue non-empty or dropdown open), enqueue (visible while streaming), send/stop/lock
 - **No floating action-toolbar** — all actions are in the always-visible bottom bar
 
 > **Anti-pattern**: Do NOT use the old "textarea + external button column" layout. The floating toolbar that appeared on focus has been removed.

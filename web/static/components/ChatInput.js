@@ -2743,8 +2743,8 @@ ${activeUIPrompt.text || ""}</textarea
 
               <!-- Right action buttons: queue-toggle, prompts, enqueue, send/stop/lock -->
               <div class="chat-input-actions-right">
-                <!-- Queue toggle button: only shown when queue has items -->
-                ${queueLength > 0 && html`
+                <!-- Queue toggle button: shown when queue has items OR dropdown is open -->
+                ${(queueLength > 0 || showQueueDropdown) && html`
                 <button
                   type="button"
                   onClick=${() => {
