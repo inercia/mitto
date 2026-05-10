@@ -1982,9 +1982,6 @@ export function SettingsDialog({
       setServerRenames({});
 
       onSave?.();
-
-      // Close dialog after short delay
-      setTimeout(() => onClose?.(), 500);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -4281,7 +4278,7 @@ export function SettingsDialog({
                 onClick=${handleClose}
                 class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors"
               >
-                Cancel
+                Close
               </button>
             `}
             <button
@@ -4294,7 +4291,7 @@ export function SettingsDialog({
                     <${SpinnerIcon} className="w-4 h-4" />
                     Saving...
                   `
-                : "Save Changes"}
+                : "Save"}
             </button>
           </div>
         </div>

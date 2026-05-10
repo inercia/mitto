@@ -1334,6 +1334,24 @@ a:hover {
 }
 
 /* =============================================================================
+   Error Message Bubble
+   ============================================================================= */
+
+/* Light theme: dark red text on very subtle red background */
+.v2-theme:not(.dark) .error-message-bubble {
+  background: #fef2f2 !important;
+  color: #991b1b !important;
+  border-color: #fecaca !important;
+}
+
+/* Dark theme: light red text on dark red background */
+.v2-theme.dark .error-message-bubble {
+  background: rgba(127, 29, 29, 0.3) !important;
+  color: #fca5a5 !important;
+  border-color: #991b1b !important;
+}
+
+/* =============================================================================
    UI Form (mitto_ui_form) - Form Element Styling
    ============================================================================= */
 
@@ -1467,4 +1485,152 @@ a:hover {
 
 .v2-theme:not(.dark) .properties-panel .text-slate-500 {
   color: var(--muted) !important;
+}
+
+
+/* =============================================================================
+   Chat Input Box (contained composition layout)
+   ============================================================================= */
+
+/* Light theme */
+.v2-theme:not(.dark) .chat-input-box {
+  border-color: #e2e8f0 !important;
+  background: #ffffff !important;
+}
+
+.v2-theme:not(.dark) .chat-input-box:focus-within {
+  border-color: #cbd5e1 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-textarea {
+  color: #18181b !important;
+}
+
+.v2-theme:not(.dark) .chat-input-textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-bottom-bar {
+  border-top-color: #f1f5f9 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-action {
+  color: #94a3b8 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-action:hover {
+  background: rgba(203, 213, 225, 0.5) !important;
+  color: #334155 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-action:disabled {
+  color: #cbd5e1 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-action:disabled:hover {
+  background: transparent !important;
+  color: #cbd5e1 !important;
+}
+
+/* Dark theme */
+.v2-theme.dark .chat-input-box {
+  border-color: var(--border) !important;
+  background: var(--mitto-input) !important;
+}
+
+.v2-theme.dark .chat-input-box:focus-within {
+  border-color: var(--border-strong, #475569) !important;
+}
+
+.v2-theme.dark .chat-input-textarea {
+  color: var(--text) !important;
+}
+
+.v2-theme.dark .chat-input-textarea::placeholder {
+  color: var(--muted) !important;
+}
+
+.v2-theme.dark .chat-input-bottom-bar {
+  border-top-color: var(--border) !important;
+}
+
+.v2-theme.dark .chat-input-action {
+  color: var(--muted-strong, #64748b) !important;
+}
+
+.v2-theme.dark .chat-input-action:hover {
+  background: rgba(71, 85, 105, 0.4) !important;
+  color: var(--text-muted, #cbd5e1) !important;
+}
+
+.v2-theme.dark .chat-input-action:disabled {
+  color: var(--border, #334155) !important;
+}
+
+.v2-theme.dark .chat-input-action:disabled:hover {
+  background: transparent !important;
+  color: var(--border, #334155) !important;
+}
+
+/* Model selector v2 theme overrides */
+.v2-theme:not(.dark) .chat-input-model-select {
+  color: #64748b !important;
+}
+
+.v2-theme:not(.dark) .chat-input-model-select:hover {
+  color: #334155 !important;
+}
+
+.v2-theme:not(.dark) .chat-input-model-select option {
+  background: #ffffff !important;
+  color: #1e293b !important;
+}
+
+.v2-theme.dark .chat-input-model-select {
+  color: var(--muted-strong, #64748b) !important;
+}
+
+.v2-theme.dark .chat-input-model-select:hover {
+  color: var(--text-muted, #cbd5e1) !important;
+}
+
+.v2-theme.dark .chat-input-model-select option {
+  background: var(--bg-offset, #1e293b) !important;
+  color: var(--text, #e2e8f0) !important;
+}
+
+/* Small screens: model selector row separator */
+@media (max-width: 640px) {
+  .v2-theme:not(.dark) .chat-input-model-selector {
+    border-bottom-color: #f1f5f9 !important;
+  }
+
+  .v2-theme.dark .chat-input-model-selector {
+    border-bottom-color: var(--border, #27272a) !important;
+  }
+}
+
+/* Send/Stop buttons — filled accent in both v2 themes */
+.v2-theme:not(.dark) .chat-input-action.send-active,
+.v2-theme:not(.dark) .chat-input-action.stop-active {
+  background: var(--accent, #dc2626) !important;
+  color: var(--accent-foreground, #ffffff) !important;
+}
+
+.v2-theme:not(.dark) .chat-input-action.send-active:hover,
+.v2-theme:not(.dark) .chat-input-action.stop-active:hover {
+  background: var(--accent-hover, #ef4444) !important;
+  color: var(--accent-foreground, #ffffff) !important;
+}
+
+.v2-theme.dark .chat-input-action.send-active,
+.v2-theme.dark .chat-input-action.stop-active {
+  background: var(--accent, #ff5c5c) !important;
+  color: var(--accent-foreground, #fafafa) !important;
+}
+
+.v2-theme.dark .chat-input-action.send-active:hover,
+.v2-theme.dark .chat-input-action.stop-active:hover {
+  background: var(--accent-hover, #ff7070) !important;
+  color: var(--accent-foreground, #fafafa) !important;
 }

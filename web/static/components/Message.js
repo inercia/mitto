@@ -1,7 +1,7 @@
 // Mitto Web Interface - Message Component
 // Renders different types of messages (user, agent, thought, tool, error, system)
 
-const { html, useMemo, useEffect, useRef } = window.preact;
+const { html, useMemo, useEffect, useRef, useState } = window.preact;
 
 import {
   ROLE_USER,
@@ -196,32 +196,54 @@ export function Message({ message, isLast, isStreaming }) {
 
   // Thought display (plain text with URL linkification)
   if (isThought) {
+    const [isCollapsed, setIsCollapsed] = useState(true);
     const showCursor = isLast && isStreaming && !message.complete;
-    // Linkify URLs in thought text
     const linkedText = useMemo(() => linkifyUrls(message.text), [message.text]);
     const isModelError = useMemo(
       () => isModelErrorThought(message.text),
       [message.text],
     );
 
+    // Compute first line for collapsed preview
+    const firstLine = useMemo(() => {
+      if (!message.text) return "";
+      const newlineIdx = message.text.indexOf("\n");
+      const line = newlineIdx > 0 ? message.text.substring(0, newlineIdx) : message.text;
+      // Truncate long first lines
+      const maxLen = 120;
+      return line.length > maxLen ? line.substring(0, maxLen) : line;
+    }, [message.text]);
+
+    // Check if the thought is multi-line or long enough to need collapsing
+    const isCollapsible = useMemo(() => {
+      if (!message.text) return false;
+      return message.text.includes("\n") || message.text.length > 120;
+    }, [message.text]);
+
+    // Show full text when expanded or not collapsible
+    const displayHtml = useMemo(() => {
+      if (!isCollapsible || !isCollapsed) return linkedText;
+      return linkifyUrls(firstLine) + "…";
+    }, [isCollapsed, isCollapsible, linkedText, firstLine]);
+
     const bubbleClass = isModelError
       ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-amber-900/20 text-gray-400 border border-amber-700/50 border-l-4 border-l-amber-500"
-      : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-gray-400 border border-slate-700";
+      : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-gray-400";
 
     return html`
       <div class="message-enter flex justify-start mb-3">
-        <div class="${bubbleClass}">
-          <div class="flex items-start gap-2">
+        <div class="${bubbleClass} ${isCollapsible ? 'thought-bubble-collapsible' : ''}">
+          <div
+            class="flex items-start gap-2 ${isCollapsible ? 'cursor-pointer select-none' : ''}"
+            onClick=${isCollapsible ? () => setIsCollapsed(!isCollapsed) : undefined}
+          >
             <span
-              class="${isModelError
-                ? "text-amber-400"
-                : "text-purple-400"} mt-0.5"
-              >${isModelError ? "⚠️" : "💭"}</span
-            >
+              class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 flex-shrink-0"
+              >${isModelError ? "⚠️" : "💭"}</span>
             <div class="min-w-0">
               <span
-                class="italic ${showCursor ? "streaming-cursor" : ""}"
-                dangerouslySetInnerHTML=${{ __html: linkedText }}
+                class="italic ${showCursor ? 'streaming-cursor' : ''}"
+                dangerouslySetInnerHTML=${{ __html: displayHtml }}
               />
               ${isModelError &&
               html`<div class="text-xs text-amber-400/70 mt-1">
@@ -244,7 +266,7 @@ export function Message({ message, isLast, isStreaming }) {
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
-          class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-red-900/30 text-red-200 rounded-bl-sm border border-red-800"
+          class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl error-message-bubble rounded-bl-sm"
         >
           <div class="flex items-start gap-2">
             <span>❌</span>
