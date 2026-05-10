@@ -240,6 +240,26 @@ case "events_loaded": {
 
 All streaming messages include `max_seq`. Call `checkAndFillGap` in all message handlers to detect missed events without waiting for keepalive.
 
+## `connected` Handler: Preserve Existing Values with `??`
+
+The `connected` message is sent on every (re)connect, but may omit fields that weren't yet available (e.g., before `acp_started`). Using `||` overwrites existing values with `[]`/`false`/etc., causing UI flicker. Always use `??` to preserve existing session info:
+
+```javascript
+// BAD: wipes existing config_options when server omits the field on reconnect
+case "connected":
+    updateSession(sessionId, { info: {
+        config_options: msg.data.config_options || [],   // [] overwrites existing!
+    }});
+
+// GOOD: preserve existing value when server omits the field
+case "connected":
+    updateSession(sessionId, { info: {
+        config_options: msg.data.config_options ?? session.info?.config_options ?? [],
+    }});
+```
+
+**Rule:** In the `connected` handler, use `??` (nullish coalescing) for all optional fields, falling back to the existing `session.info` value before the default.
+
 ## Timeout Anti-Pattern
 
 ```javascript

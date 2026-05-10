@@ -66,20 +66,14 @@ func (bs *BackgroundSession) GetNextSeq() int64 {
 
 ## Deadlock Prevention
 
-```go
-// WRONG: Calling method that acquires lock while holding lock
-func (r *Recorder) Start() error {
-    r.mu.Lock()
-    defer r.mu.Unlock()
-    r.recordEvent(...)  // recordEvent also locks r.mu!
-}
+**Rule**: Never call a method that acquires `r.mu` while already holding `r.mu`.
 
-// RIGHT: Call store directly or release lock first
-func (r *Recorder) Start() error {
-    r.mu.Lock()
-    defer r.mu.Unlock()
-    r.store.AppendEvent(...)  // Store has its own lock
-}
+```go
+// WRONG — recordEvent also locks r.mu → deadlock
+r.mu.Lock(); defer r.mu.Unlock(); r.recordEvent(...)
+
+// RIGHT — call store directly (has its own lock)
+r.mu.Lock(); defer r.mu.Unlock(); r.store.AppendEvent(...)
 ```
 
 ## Explicit Lock Management in Retry Loops
@@ -88,13 +82,23 @@ func (r *Recorder) Start() error {
 
 **Rule**: In retry loops that release and reacquire a lock, use **explicit `mu.Unlock()` on every exit path** instead of `defer`. Extract goroutine+select lock-acquisition into a helper (e.g. `acquireAuxLock`) to keep all retry paths clean. See `internal/web/acp_process_manager.go` for a real example.
 
-## PID Checking
+### TryLock: Release Before Post-Processing
+
+`defer mu.Unlock()` holds the lock through ALL post-response work. If a response is sent mid-function and the caller immediately sends a follow-up using `TryLock`, the follow-up is silently dropped.
+
+**Rule**: Use explicit `mu.Unlock()` after the core response send; do slow post-processing after unlocking.
 
 ```go
-func isPIDRunning(pid int) bool {
-    process, _ := os.FindProcess(pid)
-    return process.Signal(syscall.Signal(0)) == nil
-}
+// BAD: defer holds lock through slow post-processing; TryLock from follow-up fails
+c.loadEventsMu.Lock()
+defer c.loadEventsMu.Unlock()
+c.handleLoadEvents(req)   // sends response; client immediately sends follow-up → TryLock fails
+
+// GOOD: explicit unlock after response, before post-processing
+c.loadEventsMu.Lock()
+result := c.handleLoadEvents(req)
+c.loadEventsMu.Unlock()         // release here
+c.postLoadProcessing(result)    // follow-up can now acquire lock
 ```
 
 ## Structured Logging
@@ -125,21 +129,7 @@ if strings.Contains(err.Error(), "session not started") {
 }
 ```
 
-## JSON Marshaling: Nil vs Empty Slices
+## JSON Marshaling
 
-`json.Marshal` encodes a nil slice as `null` and an empty slice as `[]`. ACP and other APIs that validate with JSON Schema will reject `null` where an array is required.
-
-```go
-// BAD — marshals as "mcpServers": null
-type SessionParams struct {
-    MCPServers []MCPServer `json:"mcpServers"`
-}
-params := SessionParams{} // MCPServers is nil
-
-// GOOD — marshals as "mcpServers": []
-params := SessionParams{
-    MCPServers: []MCPServer{}, // or: make([]MCPServer, 0)
-}
-```
-
-**Rule:** Always initialize slice fields that appear in JSON-serialized API request structs, even when empty. Do not rely on zero values for outbound JSON payloads. Mark intentional empty-slice inits with `// Must be empty array, not nil — ACP validates this`.
+- **Nil vs empty slices**: `json.Marshal` encodes nil as `null`, empty as `[]`. ACP rejects `null` where array is required. Always initialize: `MCPServers: []MCPServer{}`. Mark with `// Must be empty array, not nil — ACP validates this`.
+- **`omitempty` on bool**: Never use `omitempty` on `bool` fields where `false` is meaningful — Go omits `false` as zero value. Example: `PeriodicEnabled bool` must NOT have `omitempty`.
