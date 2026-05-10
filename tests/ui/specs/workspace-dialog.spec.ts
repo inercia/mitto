@@ -30,6 +30,12 @@ const TEST_WORKSPACES = [
 ];
 
 test.describe("Workspace Dialog", () => {
+  // Skip entire suite in Docker — requires 7 host-local workspace paths
+  test.beforeEach(() => {
+    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
+      'Requires host-local workspace paths unavailable in Docker');
+  });
+
   // Setup: Add all test workspaces before tests
   test.beforeAll(async ({ request, apiUrl }) => {
     for (const ws of TEST_WORKSPACES) {
