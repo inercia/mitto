@@ -30,6 +30,18 @@ func generateClientID() string {
 	return hex.EncodeToString(b)
 }
 
+// buildContextUsageMap creates a JSON-serialisable map for context window usage.
+// Returns nil when both size and used are zero (no data available).
+func buildContextUsageMap(size, used int) map[string]interface{} {
+	if size == 0 && used == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"size": size,
+		"used": used,
+	}
+}
+
 // buildUsageMap converts an acp.Usage value into a JSON-serialisable map
 // suitable for embedding in WebSocket messages.  Returns nil when usage is nil.
 func buildUsageMap(usage *acp.Usage) map[string]interface{} {
@@ -462,6 +474,10 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	if bs != nil {
 		if usageMap := buildUsageMap(bs.GetLastUsage()); usageMap != nil {
 			data["usage"] = usageMap
+		}
+		// Include context window usage if available.
+		if ctxUsageMap := buildContextUsageMap(bs.GetContextUsage()); ctxUsageMap != nil {
+			data["context_usage"] = ctxUsageMap
 		}
 	}
 
@@ -2118,8 +2134,21 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 		if usageMap := buildUsageMap(c.bgSession.GetLastUsage()); usageMap != nil {
 			data["usage"] = usageMap
 		}
+		// Include context window usage if available.
+		if ctxUsageMap := buildContextUsageMap(c.bgSession.GetContextUsage()); ctxUsageMap != nil {
+			data["context_usage"] = ctxUsageMap
+		}
 	}
 	c.sendMessage(WSMsgTypePromptComplete, data)
+}
+
+// OnContextUsageUpdate is called when context window usage data is updated.
+func (c *SessionWSClient) OnContextUsageUpdate(size, used int) {
+	c.sendMessage(WSMsgTypeContextUsageUpdate, map[string]interface{}{
+		"session_id": c.sessionID,
+		"size":       size,
+		"used":       used,
+	})
 }
 
 // OnActionButtons is called when action buttons are extracted from the agent's response.
