@@ -1193,6 +1193,8 @@ export function useWebSocket() {
                 processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
+                // Context window usage (size/used from ACP)
+                context_usage: msg.data.context_usage ?? session.info?.context_usage ?? null,
                 // Config options (model, mode, etc.) - per-session
                 // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
                 config_options: msg.data.config_options ?? session.info?.config_options ?? [],
@@ -1669,6 +1671,8 @@ export function useWebSocket() {
                 processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
+                // Context window usage (updated with each prompt)
+                context_usage: msg.data.context_usage ?? session.info?.context_usage ?? null,
               },
             },
           };
@@ -2829,6 +2833,28 @@ export function useWebSocket() {
           setAvailableCommands(msg.data.commands);
         }
         break;
+
+      case "context_usage_update": {
+        // Context window usage updated by the agent
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              info: {
+                ...session.info,
+                context_usage: {
+                  size: msg.data.size,
+                  used: msg.data.used,
+                },
+              },
+            },
+          };
+        });
+        break;
+      }
 
       case "config_option_changed":
         // Config option changed (by user or agent)

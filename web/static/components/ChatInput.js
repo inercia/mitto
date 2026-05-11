@@ -13,6 +13,7 @@ import {
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
+import { getContextWindowSize } from "../utils/models.js";
 import {
   getPromptSortMode,
   getUIPromptPanelHeight,
@@ -190,6 +191,8 @@ export function ChatInput({
   sendKeyMode = "enter",
   configOptions = [],
   onSetConfigOption,
+  contextUsage = null,
+  tokenUsage = null,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -217,6 +220,29 @@ export function ChatInput({
   const selectConfigOptions = useMemo(() => {
     return configOptions?.filter((o) => o.type === "select" && o.options?.length > 0) || [];
   }, [configOptions]);
+
+  // Compute context window usage percentage (null when no data available).
+  // Prefers context_usage from ACP SessionUsageUpdate (exact size/used).
+  // Falls back to input_tokens from PromptResponse.Usage + static model context window.
+  const contextPct = useMemo(() => {
+    // Primary: use SessionUsageUpdate data if available
+    if (contextUsage?.size && contextUsage?.used) {
+      return Math.min(Math.round((contextUsage.used / contextUsage.size) * 100), 100);
+    }
+    // Fallback: compute from input_tokens + known model context window
+    if (tokenUsage?.input_tokens) {
+      // Find current model ID from config options
+      const modelOpt = configOptions?.find((o) => o.category === "model");
+      const modelId = modelOpt?.current_value;
+      if (modelId) {
+        const ctxWindow = getContextWindowSize(modelId);
+        if (ctxWindow) {
+          return Math.min(Math.round((tokenUsage.input_tokens / ctxWindow) * 100), 100);
+        }
+      }
+    }
+    return null;
+  }, [contextUsage, tokenUsage, configOptions]);
 
   // Compute flat ordered prompt list for keyboard navigation
   const flatFilteredPrompts = useMemo(() => {
@@ -2631,8 +2657,31 @@ ${activeUIPrompt.text || ""}</textarea
 
             <!-- Bottom toolbar bar -->
             <div class="chat-input-bottom-bar">
-              <!-- Left action buttons: attach-image, attach-file, improve, save, clear -->
+              <!-- Left action buttons: improve, attach-image, attach-file, save, clear -->
               <div class="chat-input-actions-left">
+                <!-- Magic Wand / Improve Prompt Button -->
+                <button
+                  type="button"
+                  onClick=${handleImprovePrompt}
+                  onMouseDown=${(e) => e.preventDefault()}
+                  disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
+                  class="chat-input-action ${isImproving ? "loading" : ""}"
+                  title="Improve prompt with AI (Ctrl+P)"
+                >
+                  ${isImproving
+                    ? html`
+                        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                      `
+                    : html`
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                        </svg>
+                      `}
+                </button>
+
                 <!-- Attach Image Button -->
                 <button
                   type="button"
@@ -2659,29 +2708,6 @@ ${activeUIPrompt.text || ""}</textarea
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                   </svg>
-                </button>
-
-                <!-- Magic Wand / Improve Prompt Button -->
-                <button
-                  type="button"
-                  onClick=${handleImprovePrompt}
-                  onMouseDown=${(e) => e.preventDefault()}
-                  disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                  class="chat-input-action ${isImproving ? "loading" : ""}"
-                  title="Improve prompt with AI (Ctrl+P)"
-                >
-                  ${isImproving
-                    ? html`
-                        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                      `
-                    : html`
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                        </svg>
-                      `}
                 </button>
 
                 <!-- Save Prompt Button (macOS native only) -->
@@ -2721,8 +2747,8 @@ ${activeUIPrompt.text || ""}</textarea
                 </button>
               </div>
 
-              <!-- Center: Config selectors (shown when select-type options are available) -->
-              ${selectConfigOptions.length > 0 && html`
+              <!-- Center: Config selectors and context usage (shown when either is available) -->
+              ${(selectConfigOptions.length > 0 || contextPct !== null) && html`
                 <div class="chat-input-model-selector">
                   ${selectConfigOptions.map((configOpt) => html`
                     <select
@@ -2738,6 +2764,15 @@ ${activeUIPrompt.text || ""}</textarea
                       `)}
                     </select>
                   `)}
+                  ${contextPct !== null && html`
+                    <span
+                      class="chat-input-context-pct"
+                      style=${"color: " + (contextPct > 80 ? "#ef4444" : contextPct > 50 ? "#f59e0b" : "#64748b")}
+                      title=${contextUsage?.size
+                        ? "Context: " + (contextUsage.used || 0).toLocaleString() + " / " + contextUsage.size.toLocaleString() + " tokens"
+                        : "Context: ~" + (tokenUsage?.input_tokens || 0).toLocaleString() + " input tokens"}
+                    >${contextPct}%</span>
+                  `}
                 </div>
               `}
 

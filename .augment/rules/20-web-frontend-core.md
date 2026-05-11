@@ -60,6 +60,7 @@ App
 | `utils/api.js`                 | API URL helpers with prefix handling          |
 | `utils/storage.js`             | localStorage utilities                        |
 | `utils/native.js`              | macOS app detection and native functions      |
+| `utils/models.js`              | Model context window sizes (`MODEL_CONTEXT_WINDOWS`, `getContextWindowSize`) |
 
 ## lib.js Core Functions
 
@@ -146,5 +147,3 @@ useEffect(() => {
 1. **`useWebSocket.js`** — In `case "connected":` handler, add to session.info
 2. **`app.js`** — Pass as prop: `myCapability=${sessionInfo?.my_capability ?? false}`
 3. **Component** — Accept prop with default, use for conditional rendering
-
-
