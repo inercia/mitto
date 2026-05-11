@@ -1610,6 +1610,12 @@ a:hover {
   }
 }
 
+.v2-theme .chat-input-context-pct {
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 1px 4px;
+}
+
 /* Send/Stop buttons — filled accent in both v2 themes */
 .v2-theme:not(.dark) .chat-input-action.send-active,
 .v2-theme:not(.dark) .chat-input-action.stop-active {
