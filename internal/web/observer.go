@@ -150,4 +150,8 @@ type SessionObserver interface {
 	// play a sound or show a native OS notification.
 	// Unlike OnUIPrompt, no response is expected from the observer.
 	OnNotification(req UINotifyRequest)
+
+	// OnContextUsageUpdate is called when the agent sends a context window usage update.
+	// size is the total context window size in tokens, used is how many tokens are currently in context.
+	OnContextUsageUpdate(size, used int)
 }

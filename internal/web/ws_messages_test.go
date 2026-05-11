@@ -371,6 +371,7 @@ func (m *replayTestObserver) OnACPStarted()                                     
 func (m *replayTestObserver) OnUIPrompt(_ UIPromptRequest)                        {}
 func (m *replayTestObserver) OnUIPromptDismiss(_ string, _ string)                {}
 func (m *replayTestObserver) OnNotification(_ UINotifyRequest)                    {}
+func (m *replayTestObserver) OnContextUsageUpdate(_ int, _ int)                   {}
 
 func TestBufferedEvent_ReplayTo(t *testing.T) {
 	observer := &replayTestObserver{}
@@ -830,6 +831,7 @@ func (o *testReplayObserver) OnACPStarted()                                     
 func (o *testReplayObserver) OnUIPrompt(req UIPromptRequest)                         {}
 func (o *testReplayObserver) OnUIPromptDismiss(requestID string, reason string)      {}
 func (o *testReplayObserver) OnNotification(req UINotifyRequest)                     {}
+func (o *testReplayObserver) OnContextUsageUpdate(size, used int)                    {}
 func (o *testReplayObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
 }
