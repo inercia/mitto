@@ -404,6 +404,11 @@ const (
 	//   "patterns": map[string]bool  // e.g., {"jira_*": true, "slack_*": false}
 	// }
 	WSMsgTypeRequiredToolsStatus = "required_tools_status"
+
+	// WSMsgTypeContextUsageUpdate notifies the client of context window usage changes.
+	// Sent when the agent sends a SessionUsageUpdate notification.
+	// Data: { "session_id": string, "size": int, "used": int }
+	WSMsgTypeContextUsageUpdate = "context_usage_update"
 )
 
 // =============================================================================

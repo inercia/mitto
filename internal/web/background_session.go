@@ -188,6 +188,11 @@ type BackgroundSession struct {
 	lastUsage   *acp.Usage
 	lastUsageMu sync.Mutex
 
+	// Context window usage — updated from SessionUsageUpdate notifications.
+	contextSize    int
+	contextUsed    int
+	contextUsageMu sync.Mutex
+
 	// sharedProcess is set when this session uses workspace-scoped process sharing.
 	// When non-nil, this session does not own the OS process — it only owns a session
 	// slot on the shared process. nil = legacy per-session process ownership.
@@ -1352,6 +1357,27 @@ func (bs *BackgroundSession) GetLastUsage() *acp.Usage {
 	return bs.lastUsage
 }
 
+// GetContextUsage returns the last known context window usage.
+// Returns (0, 0) if no usage update has been received yet.
+// This method is thread-safe.
+func (bs *BackgroundSession) GetContextUsage() (size, used int) {
+	bs.contextUsageMu.Lock()
+	defer bs.contextUsageMu.Unlock()
+	return bs.contextSize, bs.contextUsed
+}
+
+// onContextUsageUpdate stores the latest context window usage and notifies all observers.
+func (bs *BackgroundSession) onContextUsageUpdate(size, used int) {
+	bs.contextUsageMu.Lock()
+	bs.contextSize = size
+	bs.contextUsed = used
+	bs.contextUsageMu.Unlock()
+
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnContextUsageUpdate(size, used)
+	})
+}
+
 // GetRestartStats returns statistics about ACP process restarts for telemetry.
 // This method is thread-safe.
 func (bs *BackgroundSession) GetRestartStats() RestartStats {
@@ -2205,6 +2231,7 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 		OnAvailableCommands:  bs.onAvailableCommands,
 		OnCurrentModeChanged: bs.onCurrentModeChanged,
 		OnMittoToolCall:      bs.onMittoToolCall,
+		OnContextUsageUpdate: bs.onContextUsageUpdate,
 	}
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{

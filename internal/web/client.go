@@ -47,6 +47,8 @@ type WebClient struct {
 	onCurrentModeChanged func(modeID string)
 	// onMittoToolCall is called when any mitto_* tool call is detected.
 	onMittoToolCall func(selfID string)
+	// onContextUsageUpdate is called when the agent sends a context window usage update.
+	onContextUsageUpdate func(size, used int)
 
 	// Stream buffer for all streaming events (markdown, thoughts, tool calls, etc.)
 	// This ensures correct ordering even when markdown content is buffered.
@@ -140,6 +142,8 @@ type WebClientConfig struct {
 	// The callback receives the self_id extracted from the tool call arguments.
 	// All mitto_* tools use self_id for automatic session detection.
 	OnMittoToolCall func(selfID string)
+	// OnContextUsageUpdate is called when the agent sends context window usage data.
+	OnContextUsageUpdate func(size, used int)
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
@@ -157,6 +161,7 @@ func NewWebClient(config WebClientConfig) *WebClient {
 		onAvailableCommands:  config.OnAvailableCommands,
 		onCurrentModeChanged: config.OnCurrentModeChanged,
 		onMittoToolCall:      config.OnMittoToolCall,
+		onContextUsageUpdate: config.OnContextUsageUpdate,
 	}
 
 	// Create stream buffer that handles all streaming events.
@@ -233,6 +238,8 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		eventType = "available_commands"
 	case u.CurrentModeUpdate != nil:
 		eventType = "current_mode"
+	case u.UsageUpdate != nil:
+		eventType = "usage_update"
 	default:
 		eventType = "unknown"
 	}
@@ -333,6 +340,12 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		// Current mode changed; notify immediately.
 		if c.onCurrentModeChanged != nil {
 			c.onCurrentModeChanged(string(u.CurrentModeUpdate.CurrentModeId))
+		}
+
+	case u.UsageUpdate != nil:
+		// Context window usage update; notify immediately.
+		if c.onContextUsageUpdate != nil {
+			c.onContextUsageUpdate(u.UsageUpdate.Size, u.UsageUpdate.Used)
 		}
 	}
 
