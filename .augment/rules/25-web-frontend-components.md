@@ -56,9 +56,9 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 Single bordered container: textarea (no own border) + bottom toolbar with left/center/right sections.
 
 - **Outer container**: provides border and rounded corners — textarea has no own border
-- **Bottom toolbar left**: attach-image, attach-file, improve-prompt, save-prompt
-- **Bottom toolbar center**: model selector (only shown when `configOptions` contains a `type === "select"` option)
-- **Bottom toolbar right**: prompts-toggle, queue-toggle (visible when queue non-empty or dropdown open), enqueue (visible while streaming), send/stop/lock
+- **Bottom toolbar left**: improve-prompt (magic wand), attach-image, attach-file, save-prompt (native only), clear/delete
+- **Bottom toolbar center**: config selectors (model, mode — only when `configOptions` has `type === "select"`) + context usage percentage
+- **Bottom toolbar right**: queue-toggle (visible when queue non-empty or dropdown open), prompts-toggle, enqueue (visible while streaming), send/stop/lock
 - **No floating action-toolbar** — all actions are in the always-visible bottom bar
 
 > **Anti-pattern**: Do NOT use the old "textarea + external button column" layout. The floating toolbar that appeared on focus has been removed.
@@ -79,13 +79,15 @@ const selectConfigOptions = useMemo(() => {
 - CSS classes: `chat-input-model-selector` (container) / `chat-input-model-select` (each `<select>`)
 - **Anti-pattern**: Do NOT use `find()` to show only the first option — use `filter()` to show all
 
+### Context Usage Percentage (center bar)
+
+**Primary**: `context_usage` from ACP `SessionUsageUpdate` — UNSTABLE; most agents don't send it.
+**Fallback**: `tokenUsage.input_tokens ÷ getContextWindowSize(modelId)` from `utils/models.js`.
+Always implement both: the primary path will silently produce nothing if the agent doesn't support it.
+
 ### Keyboard Shortcuts
 
-| Keys             | Action       |
-| ---------------- | ------------ |
-| `Enter`          | Send message |
-| `Shift+Enter`    | New line     |
-| `Cmd/Ctrl+Enter` | Add to queue |
+**Shortcuts**: `Enter`=send · `Shift+Enter`=new line · `Cmd/Ctrl+Enter`=queue
 
 ## QueueDropdown
 

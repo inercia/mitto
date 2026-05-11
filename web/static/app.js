@@ -5992,6 +5992,8 @@ function App() {
             sendKeyMode=${sendKeyMode}
             configOptions=${configOptions}
             onSetConfigOption=${setConfigOption}
+            contextUsage=${sessionInfo?.context_usage ?? null}
+            tokenUsage=${sessionInfo?.usage ?? null}
           />
         </div>
       </div>
