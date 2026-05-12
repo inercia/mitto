@@ -2956,10 +2956,10 @@ func buildProcessorYAML(cadence *CadenceConfig) string {
 	if cadence != nil {
 		sb.WriteString("  cadence:\n")
 		// Always write all fields explicitly so the block is not parsed as null.
-		sb.WriteString(fmt.Sprintf("    everyNTurns: %d\n", cadence.EveryNTurns))
-		sb.WriteString(fmt.Sprintf("    everyNTokens: %d\n", cadence.EveryNTokens))
+		fmt.Fprintf(&sb, "    everyNTurns: %d\n", cadence.EveryNTurns)
+		fmt.Fprintf(&sb, "    everyNTokens: %d\n", cadence.EveryNTokens)
 		if cadence.AfterInterval != "" {
-			sb.WriteString(fmt.Sprintf("    afterInterval: %q\n", cadence.AfterInterval))
+			fmt.Fprintf(&sb, "    afterInterval: %q\n", cadence.AfterInterval)
 		} else {
 			sb.WriteString("    afterInterval: \"\"\n")
 		}
