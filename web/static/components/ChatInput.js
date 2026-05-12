@@ -2290,8 +2290,8 @@ ${activeUIPrompt.text || ""}</textarea
             hasPrompts &&
             html`
               <div
-                class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 max-h-80 flex flex-col"
-                style="box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+                class="absolute bottom-full right-0 mb-2 w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
+                style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
               >
                 <!-- Filter input -->
                 <div class="px-2 pt-2 pb-1 flex-shrink-0">
