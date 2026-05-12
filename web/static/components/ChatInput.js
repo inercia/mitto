@@ -22,8 +22,9 @@ import {
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
+import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { LockIcon, UnlockIcon, GripIcon } from "./Icons.js";
+import { GripIcon } from "./Icons.js";
 
 /**
  * Calculate contrasting text color (black or white) for a given background color.
@@ -376,9 +377,10 @@ export function ChatInput({
   // When locked, the prompt is saved to the periodic config and textarea is read-only
   const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
   const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
+  const [periodicPromptName, setPeriodicPromptName] = useState("");
 
-  // Max height for textarea: collapsed when periodic is locked, full otherwise
-  const textareaMaxHeight = periodicEnabled && isPeriodicLocked ? 80 : 200;
+  // Max height for textarea
+  const textareaMaxHeight = 200;
 
   // Scroll selected prompt into view when keyboard selection changes
   useEffect(() => {
@@ -437,6 +439,7 @@ export function ChatInput({
     setIsPeriodicLocked(false);
     setIsPeriodicSaving(false);
     setPeriodicPrompt("");
+    setPeriodicPromptName("");
     setPeriodicFrequency({ value: 1, unit: "hours" });
     setPeriodicNextScheduledAt(null);
   }, [sessionId]);
@@ -454,21 +457,25 @@ export function ChatInput({
       setIsPromptCollapsed(true); // Collapse prompt area when textbox appears
     } else if (activeUIPrompt?.promptType === "form") {
       setIsPromptCollapsed(true); // Collapse prompt area when form appears
-    } else {
-      setIsPromptCollapsed(false); // Expand when textbox/form disappears
+    } else if (!periodicEnabled) {
+      setIsPromptCollapsed(false); // Expand when textbox/form disappears (but not for periodic)
     }
-  }, [activeUIPrompt?.requestId]);
+  }, [activeUIPrompt?.requestId, periodicEnabled]);
 
   // Fetch periodic config when periodic is enabled for this session
   useEffect(() => {
     if (!periodicEnabled || !sessionId) {
       setIsPeriodicLocked(false);
       setPeriodicPrompt("");
+      setPeriodicPromptName("");
       setPeriodicFrequency({ value: 1, unit: "hours" });
       setPeriodicNextScheduledAt(null);
       // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
+
+    // Default to collapsed prompt area for periodic conversations
+    setIsPromptCollapsed(true);
 
     const fetchPeriodicConfig = async () => {
       try {
@@ -487,24 +494,17 @@ export function ChatInput({
           } else {
             setPeriodicNextScheduledAt(null);
           }
-          // Set prompt and locked state based on the enabled field
-          // Treat "(pending)" placeholder as unlocked - user needs to set a real prompt
+          // Update prompt name from config
+          setPeriodicPromptName(config.prompt_name || "");
+          // Set lock state based on the enabled field
+          const isLocked = config.enabled === true;
+          setIsPeriodicLocked(isLocked);
+          // Set prompt state based on config
           const isPendingPlaceholder = config.prompt === "(pending)";
           if (config.prompt && !isPendingPlaceholder) {
             setPeriodicPrompt(config.prompt);
-            // Lock state is based on enabled field from backend
-            const isLocked = config.enabled === true;
-            setIsPeriodicLocked(isLocked);
-            // Only set the draft to the periodic prompt if it's LOCKED
-            // If unlocked, preserve the user's current draft
-            if (isLocked && onDraftChange) {
-              onDraftChange(sessionId, config.prompt);
-            }
           } else {
             setPeriodicPrompt("");
-            setIsPeriodicLocked(false);
-            // Don't clear the draft for pending placeholder
-            // The user may have been typing - preserve their text
           }
         }
       } catch (err) {
@@ -513,7 +513,7 @@ export function ChatInput({
     };
 
     fetchPeriodicConfig();
-  }, [periodicEnabled, sessionId, onDraftChange]);
+  }, [periodicEnabled, sessionId]);
 
   // Listen for periodic config updates from other clients via WebSocket
   useEffect(() => {
@@ -555,17 +555,15 @@ export function ChatInput({
         if (nextScheduledAt) {
           setPeriodicNextScheduledAt(nextScheduledAt);
         }
-        // Fetch the full config to get the prompt
+        // Fetch the full config to get the prompt name
         authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
           .then((response) => response.json())
           .then((config) => {
+            setPeriodicPromptName(config.prompt_name || "");
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
               setIsPeriodicLocked(true);
-              if (onDraftChange) {
-                onDraftChange(sessionId, config.prompt);
-              }
             }
           })
           .catch((err) =>
@@ -584,7 +582,7 @@ export function ChatInput({
         handlePeriodicConfigUpdated,
       );
     };
-  }, [sessionId, onDraftChange]);
+  }, [sessionId]);
 
   // Compute slash command filter from current text (text after '/' when text starts with '/')
   const slashFilter =
@@ -861,6 +859,34 @@ export function ChatInput({
       }
     } catch (err) {
       console.error("Failed to unlock periodic prompt:", err);
+    } finally {
+      setIsPeriodicSaving(false);
+    }
+  }, [sessionId, isPeriodicSaving]);
+
+  // Handle periodic prompt selection from PeriodicPromptSelector
+  const handlePeriodicPromptSelect = useCallback(async (promptName) => {
+    if (!sessionId || isPeriodicSaving) return;
+    setIsPeriodicSaving(true);
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt_name: promptName, enabled: true }),
+        },
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setPeriodicPromptName(promptName);
+        setIsPeriodicLocked(true);
+        if (data.next_scheduled_at) {
+          setPeriodicNextScheduledAt(data.next_scheduled_at);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to save periodic prompt selection:", err);
     } finally {
       setIsPeriodicSaving(false);
     }
@@ -1698,6 +1724,19 @@ export function ChatInput({
         />
       </div>
 
+      <!-- Periodic Prompt Selector (Row 2, shown when periodic is enabled) -->
+      <div class="max-w-4xl mx-auto">
+        <${PeriodicPromptSelector}
+          isOpen=${periodicEnabled}
+          prompts=${predefinedPrompts}
+          selectedPromptName=${periodicPromptName}
+          disabled=${false}
+          onSelect=${handlePeriodicPromptSelect}
+          isPromptAreaVisible=${!isPromptCollapsed}
+          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
+        />
+      </div>
+
       <!-- UI Prompt from MCP tool (unified menu or permission) -->
       ${hasActiveUIPrompt &&
       html`
@@ -2268,7 +2307,8 @@ ${activeUIPrompt.text || ""}</textarea
       `}
       ${!(
         isPromptCollapsed &&
-        (activeUIPrompt?.promptType === "textbox" ||
+        (periodicEnabled ||
+          activeUIPrompt?.promptType === "textbox" ||
           activeUIPrompt?.promptType === "form")
       ) &&
       html`
@@ -2515,24 +2555,16 @@ ${activeUIPrompt.text || ""}</textarea
                 onPaste=${handlePaste}
                 onFocus=${handleTextareaFocus}
                 onBlur=${handleTextareaBlur}
-                placeholder=${periodicEnabled
-                  ? isPeriodicLocked
-                    ? "Periodic prompt locked — click 🔓 to edit"
-                    : "Type your recurring prompt, then click 🔒 to activate"
-                  : getPlaceholder()}
+                placeholder=${getPlaceholder()}
                 rows="3"
-                class="chat-input-textarea ${periodicEnabled && isPeriodicLocked
-                  ? "max-h-[80px] overflow-y-auto"
-                  : "max-h-[200px] overflow-y-auto"} ${isFullyDisabled ||
+                class="chat-input-textarea max-h-[200px] overflow-y-auto ${isFullyDisabled ||
                 isReadOnly ||
-                isImproving ||
-                (periodicEnabled && isPeriodicLocked)
+                isImproving
                   ? "opacity-50 cursor-not-allowed"
                   : ""}"
                 disabled=${isFullyDisabled ||
                 isReadOnly ||
-                isImproving ||
-                (periodicEnabled && isPeriodicLocked)}
+                isImproving}
               />
 
               <!-- Improving prompt overlay with spinner -->
@@ -2807,7 +2839,7 @@ ${activeUIPrompt.text || ""}</textarea
                     type="button"
                     onClick=${handleTogglePrompts}
                     onMouseDown=${(e) => e.preventDefault()}
-                    disabled=${isFullyDisabled || isReadOnly || (periodicEnabled && isPeriodicLocked)}
+                    disabled=${isFullyDisabled || isReadOnly}
                     class="chat-input-action"
                     title="Insert predefined prompt"
                   >
@@ -2837,44 +2869,8 @@ ${activeUIPrompt.text || ""}</textarea
                 </button>
                 `}
 
-                <!-- Send/Stop/Lock button -->
-                ${periodicEnabled
-                  ? isPeriodicSaving
-                    ? html`
-                        <!-- Saving spinner -->
-                        <button type="button" disabled class="chat-input-action">
-                          <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                        </button>
-                      `
-                    : isPeriodicLocked
-                      ? html`
-                          <!-- Locked state: click to unlock -->
-                          <button
-                            type="button"
-                            onClick=${handleUnlockPeriodicPrompt}
-                            class="chat-input-action"
-                            style="background: #2563eb !important; color: white !important;"
-                            title="Unlock to edit periodic prompt"
-                          >
-                            <${LockIcon} className="w-4 h-4" />
-                          </button>
-                        `
-                      : html`
-                          <!-- Unlocked state: click to lock -->
-                          <button
-                            type="button"
-                            onClick=${handleLockPeriodicPrompt}
-                            disabled=${!text.trim()}
-                            class="chat-input-action"
-                            title=${!text.trim() ? "Enter a prompt to lock" : "Lock periodic prompt"}
-                          >
-                            <${UnlockIcon} className="w-4 h-4" />
-                          </button>
-                        `
-                  : isStreaming
+                <!-- Send/Stop button -->
+                ${isStreaming
                     ? html`
                         <!-- Stop button -->
                         <button

@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -35,6 +36,9 @@ type PeriodicStartedCallback func(sessionID, sessionName string)
 // It should handle broadcasting the archive state change and stopping ACP.
 type AutoArchiveCallback func(sessionID string)
 
+// PromptResolverFunc resolves a prompt name to its full text for a given working directory.
+type PromptResolverFunc func(promptName string, workingDir string) (string, error)
+
 // PeriodicRunner manages scheduled periodic prompt delivery and session housekeeping.
 // It polls all sessions at regular intervals and:
 // - Delivers periodic prompts that are due
@@ -60,6 +64,9 @@ type PeriodicRunner struct {
 	// archiveRetentionPeriod, when non-empty, causes archived sessions older than this
 	// to be permanently deleted during each poll cycle (not just at startup).
 	archiveRetentionPeriod string
+
+	// promptResolver resolves a prompt name to its text at execution time.
+	promptResolver PromptResolverFunc
 
 	// consecutiveFailures tracks how many times in a row a session's periodic
 	// prompt delivery failed due to ACP resume errors. After MaxPeriodicResumeFailures
@@ -115,6 +122,11 @@ func (r *PeriodicRunner) SetArchiveRetentionPeriod(period string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.archiveRetentionPeriod = period
+}
+
+// SetPromptResolver sets the function used to resolve prompt names to their text at execution time.
+func (r *PeriodicRunner) SetPromptResolver(resolver PromptResolverFunc) {
+	r.promptResolver = resolver
 }
 
 // Start begins the periodic polling loop in a background goroutine.
@@ -410,7 +422,7 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 						"consecutive_failures", failures)
 				}
 				disabled := false
-				if updateErr := periodicStore.Update(nil, nil, &disabled); updateErr != nil {
+				if updateErr := periodicStore.Update(nil, nil, nil, &disabled); updateErr != nil {
 					if r.logger != nil {
 						r.logger.Error("Failed to disable periodic schedule",
 							"session_id", sessionID,
@@ -466,12 +478,32 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool, forced bool) error {
 	sessionID := bs.GetSessionID()
 
+	// Resolve prompt text from name if needed
+	promptText := periodic.Prompt
+	if periodic.PromptName != "" && r.promptResolver != nil {
+		sessionMeta, err := r.store.GetMetadata(sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to get session metadata for prompt resolution: %w", err)
+		}
+		resolved, err := r.promptResolver(periodic.PromptName, sessionMeta.WorkingDir)
+		if err != nil {
+			return fmt.Errorf("failed to resolve prompt %q: %w", periodic.PromptName, err)
+		}
+		promptText = resolved
+		if r.logger != nil {
+			r.logger.Debug("Resolved periodic prompt name to text",
+				"session_id", sessionID,
+				"prompt_name", periodic.PromptName,
+				"prompt_preview", truncatePrompt(promptText, 100))
+		}
+	}
+
 	if r.logger != nil {
 		r.logger.Debug("Delivering periodic prompt",
 			"session_id", sessionID,
 			"session_name", sessionName,
 			"reset_timer", resetTimer,
-			"prompt_preview", truncatePrompt(periodic.Prompt, 100))
+			"prompt_preview", truncatePrompt(promptText, 100))
 	}
 
 	// Use OnComplete callback to defer RecordSent until the prompt actually finishes.
@@ -523,7 +555,7 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 		},
 	}
 
-	if err := bs.PromptWithMeta(periodic.Prompt, meta); err != nil {
+	if err := bs.PromptWithMeta(promptText, meta); err != nil {
 		return err
 	}
 
