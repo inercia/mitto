@@ -40,6 +40,16 @@ const (
 	OutputAppend OutputType = "append"
 	// OutputDiscard ignores stdout (side-effect only).
 	OutputDiscard OutputType = "discard"
+
+	// OutputNotify parses stdout as a UI notification (agentResponded phase only).
+	// Accepts JSON {"title","message","style"} or plain text (first line = title).
+	OutputNotify OutputType = "notify"
+	// OutputActionButtons parses stdout as follow-up action buttons (agentResponded phase only).
+	// Accepts JSON array [{label,prompt},...] or a single object.
+	OutputActionButtons OutputType = "actionButtons"
+	// OutputUserData parses stdout as user-data key→value patch (agentResponded phase only).
+	// Accepts JSON object of string→string entries.
+	OutputUserData OutputType = "userData"
 )
 
 // WorkingDirType defines the working directory for processor execution.
@@ -92,6 +102,86 @@ const (
 // (fire-and-forget). Returns error only if the prompt couldn't be dispatched.
 type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt string) error
 
+// Phase defines when in the conversation lifecycle a processor fires.
+type Phase string
+
+const (
+	// PhaseUserPrompt fires processors before the user's message is sent to the ACP server.
+	PhaseUserPrompt Phase = "userPrompt"
+	// PhaseAgentResponded fires processors after the agent has finished responding.
+	// Only command-mode and prompt-mode processors are allowed for this phase.
+	PhaseAgentResponded Phase = "agentResponded"
+)
+
+// Match defines which messages in the sequence a processor applies to.
+type Match string
+
+const (
+	// MatchFirst applies only to the first-ever message in the conversation.
+	MatchFirst Match = "first"
+	// MatchAll applies to every message.
+	MatchAll Match = "all"
+	// MatchAllExceptFirst applies to all messages except the first.
+	MatchAllExceptFirst Match = "allExceptFirst"
+)
+
+// CadenceConfig throttles how often an agentResponded processor fires.
+// All specified thresholds must be met simultaneously (AND logic).
+// Only valid for when.on: agentResponded and when.match: all or allExceptFirst.
+//
+// Example:
+//
+//	when:
+//	  on:    agentResponded
+//	  match: all
+//	  cadence:
+//	    everyNTurns:  5      # fire every 5 agent responses
+//	    everyNTokens: 10000  # AND only after 10k cumulative tokens
+//	    afterInterval: 30m   # AND only if 30 minutes have passed
+type CadenceConfig struct {
+	// EveryNTurns fires the processor every N agent responses (1 = every turn).
+	// Must be ≥ 1 when specified.
+	EveryNTurns int `yaml:"everyNTurns,omitempty" json:"every_n_turns,omitempty"`
+	// EveryNTokens fires once N cumulative tokens have been used since the last firing.
+	// Must be ≥ 1 when specified.
+	EveryNTokens int64 `yaml:"everyNTokens,omitempty" json:"every_n_tokens,omitempty"`
+	// AfterInterval is the minimum wall-clock gap between firings (e.g. "5m", "1h").
+	// Uses Go duration syntax. Must be > 0 when specified.
+	AfterInterval string `yaml:"afterInterval,omitempty" json:"after_interval,omitempty"`
+}
+
+// GetAfterIntervalDuration parses the AfterInterval string into a time.Duration.
+// Returns 0 if the field is unset or unparseable.
+func (c *CadenceConfig) GetAfterIntervalDuration() time.Duration {
+	if c == nil || c.AfterInterval == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(c.AfterInterval)
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
+// WhenConfig specifies when a processor triggers and optional rerun configuration.
+// Only the block form is accepted:
+//
+//	when:
+//	  on:    userPrompt | agentResponded   # required
+//	  match: first | all | allExceptFirst  # required
+//	  rerun:                               # optional; only valid with on:userPrompt + match:first
+//	    afterSentMsgs: 15
+//	  cadence:                             # optional; only valid with on:agentResponded + match:all or allExceptFirst
+//	    everyNTurns: 5
+type WhenConfig struct {
+	On             Phase          `yaml:"on" json:"on"`
+	Match          Match          `yaml:"match" json:"match"`
+	Rerun          *RerunConfig   `yaml:"rerun,omitempty" json:"rerun,omitempty"`
+	Cadence        *CadenceConfig `yaml:"cadence,omitempty" json:"cadence,omitempty"`
+	StopReasons    []string       `yaml:"stopReasons,omitempty" json:"stop_reasons,omitempty"`
+	ExcludeOrigins []string       `yaml:"excludeOrigins,omitempty" json:"exclude_origins,omitempty"`
+}
+
 // Processor represents a loaded processor definition.
 type Processor struct {
 	// Name is a human-readable identifier for the processor.
@@ -101,10 +191,10 @@ type Processor struct {
 	// Enabled controls whether the processor is active. Default: true.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 
-	// When specifies when the processor triggers: "first", "all", "all-except-first".
-	When config.ProcessorWhen `yaml:"when" json:"when"`
-	// Position specifies where in the pipeline: "prepend" or "append".
-	Position config.ProcessorPosition `yaml:"position,omitempty" json:"position,omitempty"`
+	// When specifies when the processor triggers and optional rerun configuration.
+	When WhenConfig `yaml:"when" json:"when"`
+	// Mutate specifies where in the pipeline: "prepend" or "append".
+	Mutate config.ProcessorMutate `yaml:"mutate,omitempty" json:"mutate,omitempty"`
 	// Priority determines execution order (lower = earlier). Default: 100.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
@@ -140,13 +230,6 @@ type Processor struct {
 	// OnError defines error handling: "skip" or "fail". Default: "skip".
 	OnError ErrorHandling `yaml:"on_error,omitempty" json:"on_error,omitempty"`
 
-	// Rerun configures automatic re-run for "when: first" processors.
-	// Allows a first-only processor to fire again after a time interval or message count,
-	// refreshing context for the LLM. Only used with when: first.
-	// If both AfterTime, AfterSentMsgs, and AfterTokens are set, whichever threshold is reached first
-	// triggers the re-run.
-	Rerun *RerunConfig `yaml:"rerun,omitempty" json:"rerun,omitempty"`
-
 	// EnabledWhen is an optional CEL expression that determines whether this processor applies.
 	// Uses the same CEL context as prompt enabledWhen expressions (acp.*, session.*, parent.*,
 	// children.*, workspace.*, tools.*). If empty, the processor always applies (subject to
@@ -162,7 +245,7 @@ type Processor struct {
 	Source ProcessorSource `yaml:"-" json:"source,omitempty"`
 }
 
-// RerunConfig configures automatic re-run for "when: first" processors.
+// RerunConfig configures automatic re-run for "when.sent: first" processors.
 type RerunConfig struct {
 	// AfterTime is the duration after which the processor should re-run.
 	// Supports Go duration strings: "10m", "1h", "30s", "2h30m".
@@ -218,6 +301,11 @@ func (h *Processor) IsPromptMode() bool {
 	return h.Command == "" && h.Text == "" && h.Prompt != ""
 }
 
+// GetRerun returns the processor's rerun configuration (from When.Rerun).
+func (p *Processor) GetRerun() *RerunConfig {
+	return p.When.Rerun
+}
+
 // Duration is a wrapper for time.Duration that supports YAML unmarshaling.
 type Duration time.Duration
 
@@ -242,4 +330,84 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // Duration returns the time.Duration value.
 func (d Duration) Duration() time.Duration {
 	return time.Duration(d)
+}
+
+// AfterProcessorInput captures the agent's completed turn for agentResponded processors.
+// Fields are serialized to JSON (camelCase) for the processor's stdin payload.
+// SessionDir is excluded from JSON serialization — it is used internally for state persistence.
+type AfterProcessorInput struct {
+	// SessionID is the current session identifier.
+	SessionID string `json:"sessionId"`
+	// SessionDir is the on-disk directory for this session (used for processor state persistence).
+	// This field is NOT serialized to JSON — it is for internal use only.
+	SessionDir string `json:"-"`
+	// WorkingDir is the session's working directory (used for WorkingDirSession processors).
+	WorkingDir string `json:"workingDir,omitempty"`
+	// Origin is the source of the prompt: "user", "queue", "periodic-runner", "mcp-send-prompt".
+	Origin string `json:"origin"`
+	// StopReason is the ACP stop reason string (e.g. "end_turn", "max_tokens").
+	// These match the ACP SDK StopReason constants (snake_case).
+	StopReason string `json:"stopReason"`
+	// UserPrompt is the text of the user prompt that triggered this turn.
+	UserPrompt string `json:"userPrompt"`
+	// AgentMessages contains the concatenated text chunks from the agent's response.
+	AgentMessages []string `json:"agentMessages"`
+	// ToolCalls contains lightweight snapshots of tool calls made during the turn.
+	ToolCalls []AfterToolCallSnapshot `json:"toolCalls"`
+	// TokenUsage reports token consumption for the turn (may be nil if not reported).
+	TokenUsage *AfterTokenUsage `json:"tokenUsage,omitempty"`
+	// StartedAt is when the prompt was sent to the agent.
+	StartedAt time.Time `json:"startedAt"`
+	// EndedAt is when the agent's response was fully received.
+	EndedAt time.Time `json:"endedAt"`
+}
+
+// AfterToolCallSnapshot is a lightweight snapshot of one tool call from an agent turn.
+type AfterToolCallSnapshot struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+	Title  string `json:"title"`
+}
+
+// AfterTokenUsage captures token consumption for the agent's turn.
+type AfterTokenUsage struct {
+	Input  int64 `json:"input"`
+	Output int64 `json:"output"`
+	Total  int64 `json:"total"`
+}
+
+// ApplyAfterResult contains the aggregated side-effects from all agentResponded processors.
+// BackgroundSession (Task 4) consumes this to trigger UI notifications, enqueue action
+// buttons, and patch workspace user_data.
+type ApplyAfterResult struct {
+	// Notifications collects entries from processors with output: notify.
+	Notifications []AfterNotification `json:"notifications,omitempty"`
+	// ActionButtons collects entries from processors with output: actionButtons.
+	ActionButtons []AfterActionButton `json:"actionButtons,omitempty"`
+	// UserDataPatch is the merged key→value patch from processors with output: userData.
+	// Later processors override earlier ones on key collision.
+	UserDataPatch map[string]string `json:"userDataPatch,omitempty"`
+	// Errors holds non-fatal errors. A failing processor does not block later processors.
+	Errors []ProcessorError `json:"errors,omitempty"`
+}
+
+// AfterNotification is a UI notification produced by an agentResponded processor.
+type AfterNotification struct {
+	Title   string `json:"title"`
+	Message string `json:"message"`
+	// Style is one of "info", "success", "warning", "error". Defaults to "info".
+	Style string `json:"style,omitempty"`
+}
+
+// AfterActionButton is a suggested follow-up action produced by an agentResponded processor.
+type AfterActionButton struct {
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+}
+
+// ProcessorError records a non-fatal error from a single processor in the after-phase pipeline.
+type ProcessorError struct {
+	ProcessorName string `json:"processorName"`
+	Error         string `json:"error"`
 }

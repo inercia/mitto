@@ -136,8 +136,10 @@ prompts:
 conversations:
   # Message processing
   processing:
-    - when: first
-      position: prepend
+    - when:
+        on: userPrompt
+        match: first
+      mutate: prepend
       text: |
         This is the MyProject workspace.
         Follow our coding standards.

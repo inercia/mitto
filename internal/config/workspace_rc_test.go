@@ -492,11 +492,15 @@ conversations:
   processing:
     override: false
     processors:
-      - when: first
-        position: prepend
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: "System context\n\n"
-      - when: all
-        position: append
+      - when:
+          on: userPrompt
+          match: all
+        mutate: append
         text: "\n\n[Be concise]"
 `
 	rc, err := parseWorkspaceRC([]byte(yaml))
@@ -528,22 +532,28 @@ conversations:
 	}
 
 	p0 := rc.Conversations.Processing.Processors[0]
-	if p0.When != ProcessorWhenFirst {
-		t.Errorf("Processor[0].When = %q, want %q", p0.When, ProcessorWhenFirst)
+	if p0.When.On != ProcessorPhaseUserPrompt {
+		t.Errorf("Processor[0].When.On = %q, want %q", p0.When.On, ProcessorPhaseUserPrompt)
 	}
-	if p0.Position != ProcessorPositionPrepend {
-		t.Errorf("Processor[0].Position = %q, want %q", p0.Position, ProcessorPositionPrepend)
+	if p0.When.Match != ProcessorMatchFirst {
+		t.Errorf("Processor[0].When.Match = %q, want %q", p0.When.Match, ProcessorMatchFirst)
+	}
+	if p0.Mutate != ProcessorMutatePrepend {
+		t.Errorf("Processor[0].Mutate = %q, want %q", p0.Mutate, ProcessorMutatePrepend)
 	}
 	if p0.Text != "System context\n\n" {
 		t.Errorf("Processor[0].Text = %q, want %q", p0.Text, "System context\n\n")
 	}
 
 	p1 := rc.Conversations.Processing.Processors[1]
-	if p1.When != ProcessorWhenAll {
-		t.Errorf("Processor[1].When = %q, want %q", p1.When, ProcessorWhenAll)
+	if p1.When.On != ProcessorPhaseUserPrompt {
+		t.Errorf("Processor[1].When.On = %q, want %q", p1.When.On, ProcessorPhaseUserPrompt)
 	}
-	if p1.Position != ProcessorPositionAppend {
-		t.Errorf("Processor[1].Position = %q, want %q", p1.Position, ProcessorPositionAppend)
+	if p1.When.Match != ProcessorMatchAll {
+		t.Errorf("Processor[1].When.Match = %q, want %q", p1.When.Match, ProcessorMatchAll)
+	}
+	if p1.Mutate != ProcessorMutateAppend {
+		t.Errorf("Processor[1].Mutate = %q, want %q", p1.Mutate, ProcessorMutateAppend)
 	}
 }
 
@@ -553,8 +563,10 @@ conversations:
   processing:
     override: true
     processors:
-      - when: first
-        position: prepend
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: "Override only"
 `
 	rc, err := parseWorkspaceRC([]byte(yaml))
@@ -604,8 +616,10 @@ prompts:
 conversations:
   processing:
     processors:
-      - when: first
-        position: prepend
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: "Project context: This is a test project.\n\n"
 `
 	rcPath := filepath.Join(tmpDir, WorkspaceRCFileName)
@@ -775,8 +789,10 @@ func TestParseWorkspaceRC_UserDataSchemaWithProcessors(t *testing.T) {
 conversations:
   processing:
     processors:
-      - when: first
-        position: before
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: "System context"
 metadata:
   user_data:

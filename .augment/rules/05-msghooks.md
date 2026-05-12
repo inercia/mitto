@@ -31,52 +31,62 @@ Prompt-mode processor auxiliary sessions have access to Mitto's MCP tools (e.g.,
 
 ```yaml
 name: my-processor
-when: first            # first | all | all-except-first
+when:                  # required block — BOTH on: and match: are required
+  on: userPrompt       # required: userPrompt | agentResponded
+  match: first         # required: first | all | allExceptFirst (NOT all-except-first)
+  rerun:               # optional; only valid with on:userPrompt + match:first
+    afterSentMsgs: 15
+    afterTokens: 50000
+    afterTime: 1h
+  # agentResponded-only (forbidden on userPrompt):
+  stopReasons: [end_turn]   # default ["end_turn"]; valid: end_turn max_tokens max_turn_requests refusal cancelled
+  excludeOrigins: []        # origins to skip: user queue periodic-runner mcp-send-prompt
+  cadence:             # optional throttle; only valid with on:agentResponded + match:all/allExceptFirst
+    everyNTurns: 3     # fire every N agent responses (pre-increment; everyNTurns:3 → turns 3,6,9,…)
+    everyNTokens: 15000 # AND: after N cumulative tokens since last firing
+    afterInterval: 5m  # AND: after this wall-clock duration since last firing
 priority: 100          # lower = earlier
 enabled: true          # false = never loads (build-time gate)
 enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'  # CEL runtime gate
 on_error: skip         # skip | fail
 
+# Text-mode only (forbidden for agentResponded):
+text: "static text"
+mutate: prepend        # prepend | append — REQUIRED when text: is set
+
 # Command-mode only:
 command: ./script.sh
 input: message         # message | conversation | none
 output: prepend        # transform | prepend | append | discard
+                       # transform/prepend/append FORBIDDEN for agentResponded
 
 # Prompt-mode only:
 prompt: |
   Analyze these messages: @mitto:messages   # legacy; see note below
 timeout: 300s
-
-# Auto re-run for when:first processors (whichever threshold fires first):
-rerun:
-  afterSentMsgs: 15    # message count since last run
-  afterTokens: 50000   # token usage since last run (falls back to char estimation)
-  afterTime: 1h        # elapsed time since last run
 ```
 
-## Two Enable Layers
+## Phase/Field Rules
 
-| Layer         | Field          | Skip reason logged      | Effect                                 |
-| ------------- | -------------- | ----------------------- | -------------------------------------- |
-| Build-time    | `enabled: false` | not loaded at all      | Processor never appears in pipeline    |
-| Runtime (CEL) | `enabledWhen`  | `enabledWhen_false`     | Processor is loaded but skipped        |
+| Field / output              | `on: userPrompt`      | `on: agentResponded`         |
+| --------------------------- | --------------------- | ---------------------------- |
+| `text:`                     | ✅                    | ❌ forbidden                 |
+| `mutate:` (req w/ text)     | ✅                    | ❌ forbidden                 |
+| `command:` / `prompt:`      | ✅                    | ✅                           |
+| `when.rerun:`               | ✅ (match:first only) | ❌ forbidden                 |
+| `when.stopReasons:`         | ❌ forbidden          | ✅ default `[end_turn]`      |
+| `when.excludeOrigins:`      | ❌ forbidden          | ✅                           |
+| `output: transform/prepend/append` | ✅           | ❌ forbidden                 |
+| `output: discard`           | ✅                    | ✅                           |
+| `output: notify`            | ❌                    | ✅ JSON `{title,message,style}` or plain text |
+| `output: actionButtons`     | ❌                    | ✅ JSON `[{label,prompt},…]` |
+| `output: userData`          | ❌                    | ✅ JSON `{key:value}` patch  |
 
-When a processor has both `enabled: false` and `enabledWhen`, it is never loaded regardless of the CEL result.
+`Manager.ApplyAfter()` runs agentResponded processors; results (`ApplyAfterResult`) are consumed by `BackgroundSession.applyAfterProcessors()` → notifications via `OnNotification`, action buttons via the existing store, user-data via atomic write.
 
-## `@mitto:messages` Substitution
+**Enable layers**: `enabled: false` → never loaded; `enabledWhen` (CEL) → loaded but skipped at runtime. Both together = never loaded.
 
-The `@mitto:messages` placeholder (plus `messages:` YAML block) is **supported for backward compatibility** in user-defined processors. Builtin processors have migrated to using the `mitto_conversation_history` MCP tool instead — the agent calls the tool directly to fetch filtered history. Do NOT add new `messages:` blocks to builtin YAML files.
-
-## Adding New `@mitto:` Variables (Checklist)
-
-New substitution variables (e.g. `@mitto:periodic_forced`) require changes in four files:
-
-| File | Change |
-|------|--------|
-| `internal/web/background_session.go` | Add field to `PromptMeta` struct; wire it in `PromptWithMeta` → `processorInput` |
-| `internal/processors/input.go` | Add field to `ProcessorInput` struct (with json tag) |
-| `internal/processors/variables.go` | Add substitution case in `SubstituteVariables`; update doc comment |
-| Callers (e.g. `periodic_runner.go`) | Pass the value when constructing `PromptMeta` |
+**`@mitto:messages`**: legacy substitution; builtins use `mitto_conversation_history` MCP tool directly instead. Do NOT add new `messages:` blocks to builtin YAML files.
 
 ## Builtin Processors (`config/processors/builtin/`)
 
@@ -98,16 +108,9 @@ processors:
 | `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
 | `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic`       | Maintain `.augment/rules/` files   |
 | `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic`   | Maintain `CLAUDE.md` / `.claude/`  |
-| `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md`     |
-| `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields|
+| `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md` (agentResponded, cadence: every 5 turns/30k tokens/5m) |
+| `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields (agentResponded, cadence: every 3 turns/15k tokens) |
 | `identify-workspace-metadata` | prompt | `workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic` | Auto-fill `metadata.description` and `metadata.url` in `.mittorc` |
-
-**Common skip reasons:**
-- `enabledWhen_false` — CEL expression evaluated to false (e.g., wrong server type, tools already present)
-- `check-mcp-tools` skipped when mitto tools already available → `tools.hasPattern("mitto_*")` is true
-- `auggie-manage-rules` skipped when using Claude Code → `acp.matchesServerType("augment")` is false
-- `identify-user-data` skipped when no user data schema in `.mittorc` → `workspace.hasUserDataSchema` is false
-- `identify-workspace-metadata` skipped when no `.mittorc` or description already set → `workspace.hasMittoRC && !workspace.hasMetadataDescription`
 
 ## CEL Context for `enabledWhen`
 
@@ -123,28 +126,29 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | `fileExists(path)`    | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
 | `dirExists(path)`     | `dirExists(".github")`, `dirExists("src")` — checks if directory exists; workspace-relative |
 
-## Skip Reason Reference
+## Skip Reasons & Common Pitfalls
 
-| Log `reason=`       | Cause                                                   |
-| ------------------- | ------------------------------------------------------- |
-| `enabled_false`     | `enabled: false` in YAML and no workspace override      |
-| `enabledWhen_false` | CEL expression evaluated to false                       |
-| `when_mismatch`     | `when: first` processor on a non-first message          |
+| Log `reason=`       | Cause                                               |
+| ------------------- | --------------------------------------------------- |
+| `enabled_false`     | `enabled: false` in YAML, no workspace override     |
+| `enabledWhen_false` | CEL expression evaluated to false                   |
+| `when_mismatch`     | `match: first` processor on a non-first message     |
 
-## Command Resolution
+Common mistakes rejected by the loader:
+- **Missing `on:` or `match:`** — both required
+- **`sent:` key** — old syntax; use `on: userPrompt` + `match: <value>`
+- **`all-except-first`** (kebab) — use `allExceptFirst` (camelCase)
+- **Text-mode without `mutate:`** — required; `prepend` or `append`
+- **`rerun:` with `match: all`** — only valid with `match: first`
+- **`cadence:` with `on: userPrompt`** — only valid with `agentResponded` (rule 12)
+- **`cadence:` with `match: first`** — not valid; firing once needs no cadence (rule 13)
+- **`cadence:` with no threshold fields** — at least one must be set (rule 14)
+- **Negative `everyNTurns`/`everyNTokens`** — must be non-negative (rule 15)
+- **Unparseable `afterInterval`** — must be a valid Go duration string like `"5m"` (rule 16)
 
-- `./` or `../` prefix → relative to processor file directory
-- Absolute path → used as-is
-- Otherwise → PATH lookup
+`cadence` and `rerun` are mutually exclusive by construction: `rerun` only applies to `on:
+userPrompt` and `cadence` only applies to `on: agentResponded`.
 
 ## Defaults
 
-| Field         | Default   |
-| ------------- | --------- |
-| `enabled`     | true      |
-| `timeout`     | 5s (300s for prompt-mode) |
-| `priority`    | 100       |
-| `input`       | message   |
-| `output`      | transform |
-| `working_dir` | session   |
-| `on_error`    | skip      |
+`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `working_dir=session`, `on_error=skip`.

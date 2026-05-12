@@ -421,11 +421,15 @@ func (c *WebConfig) GetAPIPrefix() string {
 //	conversations:
 //	  processing:
 //	    processors:
-//	      - when: first
-//	        position: prepend
+//	      - when:
+//	          on:    userPrompt
+//	          match: first
+//	        mutate: prepend
 //	        text: "You are a helpful assistant.\n\n"
-//	      - when: all
-//	        position: append
+//	      - when:
+//	          on:    userPrompt
+//	          match: all
+//	        mutate: append
 //	        text: "\n\n[Be concise]"
 //
 // Example usage in code:
@@ -434,41 +438,81 @@ func (c *WebConfig) GetAPIPrefix() string {
 //	procMgr.AddTextProcessors(procs, 0) // priority 0 → runs before command-mode processors
 // ============================================================================
 
-// ProcessorWhen defines when a message processor should be applied.
-// Valid values: "first", "all", "all-except-first"
-type ProcessorWhen string
+// ProcessorPhase defines when in the conversation lifecycle a processor fires.
+// Valid values: "userPrompt", "agentResponded"
+type ProcessorPhase string
 
 const (
-	// ProcessorWhenFirst applies only to the first message in a conversation.
-	// Use this for initial context or system prompts.
-	ProcessorWhenFirst ProcessorWhen = "first"
-	// ProcessorWhenAll applies to all messages in the conversation.
-	// Use this for reminders or constraints that should always be present.
-	ProcessorWhenAll ProcessorWhen = "all"
-	// ProcessorWhenAllExceptFirst applies to all messages except the first.
-	// Use this for continuation markers or follow-up context.
-	ProcessorWhenAllExceptFirst ProcessorWhen = "all-except-first"
+	// ProcessorPhaseUserPrompt fires processors before the user's message is sent to the agent.
+	ProcessorPhaseUserPrompt ProcessorPhase = "userPrompt"
+	// ProcessorPhaseAgentResponded fires processors after the agent has finished responding.
+	ProcessorPhaseAgentResponded ProcessorPhase = "agentResponded"
 )
 
-// ProcessorPosition defines where the processor text is inserted relative to the message.
+// ProcessorMatch defines which messages in the sequence a processor applies to.
+// Valid values: "first", "all", "allExceptFirst"
+type ProcessorMatch string
+
+const (
+	// ProcessorMatchFirst applies only to the first-ever message in a conversation.
+	ProcessorMatchFirst ProcessorMatch = "first"
+	// ProcessorMatchAll applies to every message.
+	ProcessorMatchAll ProcessorMatch = "all"
+	// ProcessorMatchAllExceptFirst applies to all messages except the first.
+	ProcessorMatchAllExceptFirst ProcessorMatch = "allExceptFirst"
+)
+
+// ProcessorMutate defines where the processor text is inserted relative to the message.
 // Valid values: "prepend", "append"
-type ProcessorPosition string
+type ProcessorMutate string
 
 const (
-	// ProcessorPositionPrepend inserts text before the user's message.
-	ProcessorPositionPrepend ProcessorPosition = "prepend"
-	// ProcessorPositionAppend inserts text after the user's message.
-	ProcessorPositionAppend ProcessorPosition = "append"
+	// ProcessorMutatePrepend inserts text before the user's message.
+	ProcessorMutatePrepend ProcessorMutate = "prepend"
+	// ProcessorMutateAppend inserts text after the user's message.
+	ProcessorMutateAppend ProcessorMutate = "append"
 )
+
+// ProcessorWhenBlock is the block form of the when condition used in inline .mittorc processors.
+// Inline processors support on: and match: only — no rerun, stopReasons, or excludeOrigins.
+//
+//	when:
+//	  on:    userPrompt | agentResponded
+//	  match: first | all | allExceptFirst
+type ProcessorWhenBlock struct {
+	On    ProcessorPhase `yaml:"on" json:"on"`
+	Match ProcessorMatch `yaml:"match" json:"match"`
+}
+
+// UnmarshalYAML enforces the block form for `when` in inline .mittorc processors.
+// The scalar form (`when: first`) and the old `sent:` key are rejected.
+func (w *ProcessorWhenBlock) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		return fmt.Errorf("processor 'when' must be a block (got scalar %q); use:\n  when:\n    on: userPrompt\n    match: %s", value.Value, value.Value)
+	}
+	// Check for legacy `sent:` key and provide a clear migration message.
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == "sent" {
+			return fmt.Errorf("processor 'when.sent' is no longer supported; replace with 'on:' + 'match:' (e.g., on: userPrompt, match: %s)", value.Content[i+1].Value)
+		}
+	}
+	type rawBlock ProcessorWhenBlock // avoid infinite recursion
+	var raw rawBlock
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*w = ProcessorWhenBlock(raw)
+	return nil
+}
 
 // MessageProcessor defines a single message transformation rule.
 // Processors are applied in order to transform user messages before sending to the ACP server.
 // Each processor specifies when it applies, where to insert text, and what text to insert.
 type MessageProcessor struct {
-	// When specifies when this processor applies: "first", "all", or "all-except-first"
-	When ProcessorWhen `json:"when" yaml:"when"`
-	// Position specifies where to insert the text: "prepend" (before) or "append" (after)
-	Position ProcessorPosition `json:"position" yaml:"position"`
+	// When specifies when this processor applies.
+	When ProcessorWhenBlock `json:"when" yaml:"when"`
+	// Mutate specifies where to insert the text: "prepend" (before) or "append" (after)
+	Mutate ProcessorMutate `json:"mutate" yaml:"mutate"`
 	// Text is the content to insert at the specified position
 	Text string `json:"text" yaml:"text"`
 }
@@ -1108,9 +1152,9 @@ type rawConfig struct {
 		Processing *struct {
 			Override   bool `yaml:"override"`
 			Processors []struct {
-				When     string `yaml:"when"`
-				Position string `yaml:"position"`
-				Text     string `yaml:"text"`
+				When   ProcessorWhenBlock `yaml:"when"`
+				Mutate string             `yaml:"mutate"`
+				Text   string             `yaml:"text"`
 			} `yaml:"processors"`
 		} `yaml:"processing"`
 		Queue *struct {
@@ -1372,9 +1416,9 @@ func Parse(data []byte) (*Config, error) {
 			processors := make([]MessageProcessor, 0, len(raw.Conversations.Processing.Processors))
 			for _, p := range raw.Conversations.Processing.Processors {
 				processors = append(processors, MessageProcessor{
-					When:     ProcessorWhen(p.When),
-					Position: ProcessorPosition(p.Position),
-					Text:     p.Text,
+					When:   p.When,
+					Mutate: ProcessorMutate(p.Mutate),
+					Text:   p.Text,
 				})
 			}
 			if len(processors) > 0 || raw.Conversations.Processing.Override {

@@ -96,4 +96,7 @@ bd close <id>         # Complete work
 - **Prompt auto-rename**: Prompts that run in a named context (e.g., a specific repo or project) should auto-rename the conversation with `mitto_conversation_update` at the start. Use `@mitto:conversation_title` to check the current title and skip the update if it's already correct.
 - **Terminology consistency**: Use "conversation" (not "session") in all user-facing UI text, labels, and headings. Keep "session" only in internal code identifiers and API paths where it's already established.
 - **Dialog button conventions**: Use "Save" (not "Save changes") as the save button label. Use "Close" (not "Cancel") to dismiss dialogs. "Save" should save without closing — the user must press "Close" separately. This enables flows that require saving settings before continuing.
+- **UI button consistency**: All toolbar buttons and button groups must use the same size, border style, and spacing. When multiple button groups appear in a row, maintain uniform appearance across all of them.
+- **YAML enum naming**: Use camelCase (not kebab-case) for YAML enum values and field names in processor/prompt configuration (e.g., `allExceptFirst` not `all-except-first`, `afterSentMsgs` not `after-sent-msgs`).
+- **No backwards compatibility shims**: When changing configuration syntax or field names, migrate all code, tests, docs, and definitions in one pass. Do not add backwards compatibility layers or fallback parsing for old formats.
 <!-- END USER PREFERENCES -->

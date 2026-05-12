@@ -1513,15 +1513,18 @@ func boolPtr(b bool) *bool {
 func TestMessageProcessor_Fields(t *testing.T) {
 	// Verify the struct fields are correct (used for config parsing).
 	p := &MessageProcessor{
-		When:     ProcessorWhenFirst,
-		Position: ProcessorPositionPrepend,
-		Text:     "hello",
+		When:   ProcessorWhenBlock{On: ProcessorPhaseUserPrompt, Match: ProcessorMatchFirst},
+		Mutate: ProcessorMutatePrepend,
+		Text:   "hello",
 	}
-	if p.When != ProcessorWhenFirst {
-		t.Errorf("When = %q, want %q", p.When, ProcessorWhenFirst)
+	if p.When.On != ProcessorPhaseUserPrompt {
+		t.Errorf("When.On = %q, want %q", p.When.On, ProcessorPhaseUserPrompt)
 	}
-	if p.Position != ProcessorPositionPrepend {
-		t.Errorf("Position = %q, want %q", p.Position, ProcessorPositionPrepend)
+	if p.When.Match != ProcessorMatchFirst {
+		t.Errorf("When.Match = %q, want %q", p.When.Match, ProcessorMatchFirst)
+	}
+	if p.Mutate != ProcessorMutatePrepend {
+		t.Errorf("Mutate = %q, want %q", p.Mutate, ProcessorMutatePrepend)
 	}
 	if p.Text != "hello" {
 		t.Errorf("Text = %q, want %q", p.Text, "hello")
@@ -1530,10 +1533,10 @@ func TestMessageProcessor_Fields(t *testing.T) {
 
 func TestMergeProcessors(t *testing.T) {
 	globalProcessors := []MessageProcessor{
-		{When: ProcessorWhenAll, Position: ProcessorPositionAppend, Text: ":GLOBAL"},
+		{When: ProcessorWhenBlock{On: ProcessorPhaseUserPrompt, Match: ProcessorMatchAll}, Mutate: ProcessorMutateAppend, Text: ":GLOBAL"},
 	}
 	workspaceProcessors := []MessageProcessor{
-		{When: ProcessorWhenFirst, Position: ProcessorPositionPrepend, Text: "WORKSPACE:"},
+		{When: ProcessorWhenBlock{On: ProcessorPhaseUserPrompt, Match: ProcessorMatchFirst}, Mutate: ProcessorMutatePrepend, Text: "WORKSPACE:"},
 	}
 
 	global := &ConversationsConfig{
@@ -1558,10 +1561,10 @@ func TestMergeProcessors(t *testing.T) {
 
 func TestMergeProcessors_Override(t *testing.T) {
 	globalProcessors := []MessageProcessor{
-		{When: ProcessorWhenAll, Position: ProcessorPositionAppend, Text: ":GLOBAL"},
+		{When: ProcessorWhenBlock{On: ProcessorPhaseUserPrompt, Match: ProcessorMatchAll}, Mutate: ProcessorMutateAppend, Text: ":GLOBAL"},
 	}
 	workspaceProcessors := []MessageProcessor{
-		{When: ProcessorWhenFirst, Position: ProcessorPositionPrepend, Text: "WORKSPACE:"},
+		{When: ProcessorWhenBlock{On: ProcessorPhaseUserPrompt, Match: ProcessorMatchFirst}, Mutate: ProcessorMutatePrepend, Text: "WORKSPACE:"},
 	}
 
 	global := &ConversationsConfig{
@@ -1623,11 +1626,15 @@ conversations:
   processing:
     override: false
     processors:
-      - when: first
-        position: prepend
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: "System prompt\n\n"
-      - when: all
-        position: append
+      - when:
+          on: userPrompt
+          match: all
+        mutate: append
         text: "\n\n[Be concise]"
 `
 	cfg, err := Parse([]byte(yaml))
@@ -1649,22 +1656,28 @@ conversations:
 	}
 
 	p0 := cfg.Conversations.Processing.Processors[0]
-	if p0.When != ProcessorWhenFirst {
-		t.Errorf("Processor[0].When = %q, want %q", p0.When, ProcessorWhenFirst)
+	if p0.When.On != ProcessorPhaseUserPrompt {
+		t.Errorf("Processor[0].When.On = %q, want %q", p0.When.On, ProcessorPhaseUserPrompt)
 	}
-	if p0.Position != ProcessorPositionPrepend {
-		t.Errorf("Processor[0].Position = %q, want %q", p0.Position, ProcessorPositionPrepend)
+	if p0.When.Match != ProcessorMatchFirst {
+		t.Errorf("Processor[0].When.Match = %q, want %q", p0.When.Match, ProcessorMatchFirst)
+	}
+	if p0.Mutate != ProcessorMutatePrepend {
+		t.Errorf("Processor[0].Mutate = %q, want %q", p0.Mutate, ProcessorMutatePrepend)
 	}
 	if p0.Text != "System prompt\n\n" {
 		t.Errorf("Processor[0].Text = %q, want %q", p0.Text, "System prompt\n\n")
 	}
 
 	p1 := cfg.Conversations.Processing.Processors[1]
-	if p1.When != ProcessorWhenAll {
-		t.Errorf("Processor[1].When = %q, want %q", p1.When, ProcessorWhenAll)
+	if p1.When.On != ProcessorPhaseUserPrompt {
+		t.Errorf("Processor[1].When.On = %q, want %q", p1.When.On, ProcessorPhaseUserPrompt)
 	}
-	if p1.Position != ProcessorPositionAppend {
-		t.Errorf("Processor[1].Position = %q, want %q", p1.Position, ProcessorPositionAppend)
+	if p1.When.Match != ProcessorMatchAll {
+		t.Errorf("Processor[1].When.Match = %q, want %q", p1.When.Match, ProcessorMatchAll)
+	}
+	if p1.Mutate != ProcessorMutateAppend {
+		t.Errorf("Processor[1].Mutate = %q, want %q", p1.Mutate, ProcessorMutateAppend)
 	}
 }
 

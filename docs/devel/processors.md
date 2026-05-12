@@ -1,16 +1,19 @@
 # Message Processing Pipeline
 
-Mitto has a unified message processing pipeline that transforms user messages before sending them to the ACP agent. All processors run **before** the message reaches the agent, and the **original** (untransformed) message is what gets recorded in session history.
+Mitto has a unified message processing pipeline. Processors can run at two points in the conversation lifecycle:
+
+- **`userPrompt` phase** — fires *before* the user's message is sent to the ACP agent. All three modes (text, command, prompt) are valid. The original (untransformed) message is what gets recorded in session history.
+- **`agentResponded` phase** — fires *after* the agent finishes a turn. Only command-mode and prompt-mode are valid. Data-extraction processors (e.g., `identify-user-data`, `memorize-preferences`) run here because they benefit from seeing the agent's reply.
 
 ## Architecture Overview
 
-The pipeline is managed by a single `processors.Manager` that merges three types of processors into a priority-sorted(stable) list:
+The pipeline is managed by a single `processors.Manager` that merges three types of processors into a priority-sorted (stable) list:
 
-1. **Text-mode Processors** (from `config.MessageProcessor`) — Lightweight, declarative text prepend/append rules defined in YAML configuration. These run at priority 0 by default.
-2. **Command-mode Processors** (from `internal/processors/`) — External command-based transformations that can run arbitrary scripts, produce attachments, and fully replace messages. These run at priority 100 by default.
-3. **Prompt-mode Processors** (from `internal/processors/`) — Fire-and-forget prompts dispatched to a workspace-scoped auxiliary AI agent. They do not modify the outgoing message. The prompt template uses standard `@mitto:variable` substitution; the auxiliary agent retrieves conversation history at runtime via the `mitto_conversation_history` MCP tool. These typically run at priority 200.
+1. **Text-mode Processors** (from `config.MessageProcessor`) — Lightweight, declarative text prepend/append rules defined in YAML configuration. Only valid for `on: userPrompt`. Run at priority 0 by default.
+2. **Command-mode Processors** (from `internal/processors/`) — External command-based transformations that can run arbitrary scripts, produce attachments, and fully replace messages. Valid for both phases. Run at priority 100 by default.
+3. **Prompt-mode Processors** (from `internal/processors/`) — Fire-and-forget prompts dispatched to a workspace-scoped auxiliary AI agent. They do not modify the outgoing message. Valid for both phases. Run at priority 200 by default.
 
-All types share the same `when` condition types (`first`, `all`, `all-except-first`) from the `config.ProcessorWhen` type. Text-mode processors from config are merged into the unified pipeline via `Manager.CloneWithTextProcessors()`, which returns a per-session copy to avoid data races on the shared Manager instance.
+All processors use the same `when:` block schema with `on:` (phase) and `match:` fields. Text-mode processors from config are merged into the unified pipeline via `Manager.CloneWithTextProcessors()`, which returns a per-session copy to avoid data races on the shared Manager instance.
 
 ## Processing Flow
 
@@ -67,10 +70,14 @@ conversations:
   processing:
     override: false # true = replace global processors entirely
     processors:
-      - when: first # first | all | all-except-first
-        position: prepend # prepend | append
+      - when:
+          on: userPrompt    # required: userPrompt | agentResponded
+          match: first      # required: first | all | allExceptFirst
+        mutate: prepend     # prepend | append (required for text mode)
         text: "System prompt.\n\n"
 ```
+
+> **Note:** Inline `.mittorc` processors support `on:` and `match:` only — `rerun:`, `stopReasons:`, and `excludeOrigins:` are not available inline. Use standalone YAML processor files for those features.
 
 ### Merge Behavior
 
@@ -93,7 +100,11 @@ Each processor is checked with `ShouldApply(isFirstMessage)` and applied with `A
 
 | Type                     | Package           | Purpose                                     |
 | ------------------------ | ----------------- | ------------------------------------------- |
-| `MessageProcessor`       | `internal/config` | Single prepend/append rule                  |
+| `MessageProcessor`       | `internal/config` | Single prepend/append rule (inline `.mittorc`) |
+| `ProcessorPhase`         | `internal/config` | Phase enum: `"userPrompt"` / `"agentResponded"` |
+| `ProcessorMatch`         | `internal/config` | Match enum: `"first"` / `"all"` / `"allExceptFirst"` |
+| `ProcessorMutate`        | `internal/config` | Mutate enum: `"prepend"` / `"append"` |
+| `ProcessorWhenBlock`     | `internal/config` | `when:` block for inline processors (On + Match only) |
 | `ConversationProcessing` | `internal/config` | Processor list + override flag              |
 | `ConversationsConfig`    | `internal/config` | Top-level config (processors + queue + ...) |
 
@@ -108,15 +119,17 @@ Command processors are YAML files in `MITTO_DIR/processors/*.yaml` (typically `~
 ```yaml
 name: code-context
 description: Adds project context from a script
-when: first
+when:
+  on: userPrompt    # userPrompt | agentResponded
+  match: first      # first | all | allExceptFirst
 command: ./gather-context.sh
-input: message # message | conversation | none
-output: prepend # transform | prepend | append | discard
-priority: 50 # Lower = runs first (default: 100)
+input: message      # message | conversation | none
+output: prepend     # transform | prepend | append | discard
+priority: 50        # Lower = runs first (default: 100)
 timeout: 5s
 working_dir: session # session | hook
-on_error: skip # skip | fail
-workspaces: # Optional: limit to specific projects
+on_error: skip      # skip | fail
+workspaces:         # Optional: limit to specific projects
   - /path/to/project
 ```
 
@@ -239,7 +252,9 @@ With its processor YAML (`MITTO_DIR/processors/gather-context.yaml`):
 ```yaml
 name: gather-context
 description: Adds project and branch info on the first message
-when: first
+when:
+  on: userPrompt
+  match: first
 command: ./gather-context.sh
 output: prepend
 priority: 10
@@ -260,14 +275,141 @@ source "$MITTO_PROCESSOR_DIR/helpers.sh"
 | Type              | File             | Purpose                                   |
 | ----------------- | ---------------- | ----------------------------------------- |
 | `Processor`       | `types.go`       | Processor definition (parsed from YAML)   |
+| `Phase`           | `types.go`       | Phase enum (`PhaseUserPrompt`, `PhaseAgentResponded`) |
+| `Match`           | `types.go`       | Match enum (`MatchFirst`, `MatchAll`, `MatchAllExceptFirst`) |
+| `WhenConfig`      | `types.go`       | `when:` block (On, Match, Rerun, Cadence, StopReasons, ExcludeOrigins) |
+| `RerunConfig`     | `types.go`       | Rerun thresholds (AfterTime, AfterSentMsgs, AfterTokens) |
+| `CadenceConfig`   | `types.go`       | Cadence thresholds (EveryNTurns, EveryNTokens, AfterInterval) |
+| `ProcessorStateData` | `state.go`    | Persisted state (AgentResponseCount + per-processor cadence map) |
+| `ProcessorCadenceState` | `state.go` | Per-processor cadence state (TurnsSinceLastFire, TokensSinceLastFire, LastFiredAt) |
+| `StateStore`      | `state.go`       | Interface: Load/Save ProcessorStateData by session dir |
+| `FileStateStore`  | `state.go`       | Prod implementation: atomic JSON writes to `processor_state.json` |
+| `MemoryStateStore`| `state.go`       | Test implementation: in-memory map |
 | `ProcessorSource` | `types.go`       | Source enum: `global`, `builtin`, `workspace`, `config` |
 | `Manager`         | `apply.go`       | High-level load + apply interface         |
-| `Loader`          | `loader.go`      | Discovers and parses processor YAML files |
+| `Loader`          | `loader.go`      | Discovers, parses, and validates processor YAML files |
 | `Executor`        | `executor.go`    | Runs a single processor as subprocess     |
 | `ProcessorInput`  | `input.go`       | Context sent to processor stdin           |
 | `ProcessorOutput` | `input.go`       | Parsed result from processor stdout       |
 | `Attachment`      | `input.go`       | File attachment from processor            |
 | `WebProcessor`    | `session_api.go` | API response type for workspace processors endpoint |
+
+## Validation Rules (`internal/processors/loader.go`)
+
+The loader enforces 16 strict rules. Processors that fail any rule are skipped with a WARN log.
+
+| # | Rule                                                                                 |
+|---|--------------------------------------------------------------------------------------|
+| 1 | `when.on` is required — must be `"userPrompt"` or `"agentResponded"`                |
+| 2 | `when.match` is required — must be `"first"`, `"all"`, or `"allExceptFirst"`        |
+| 3 | `when.match: "all-except-first"` (kebab-case) is explicitly rejected                |
+| 4 | `on: agentResponded` forbids `text:` (text mode not meaningful post-response)        |
+| 5 | `on: agentResponded` forbids `mutate:`                                               |
+| 6 | `on: agentResponded` forbids `when.rerun:`                                           |
+| 7 | `on: agentResponded` forbids `output: transform/prepend/append`                     |
+| 8 | `on: agentResponded` defaults `stopReasons` to `["end_turn"]` if not specified       |
+| 9 | `on: userPrompt` forbids `when.stopReasons:`                                         |
+| 10| `on: userPrompt` forbids `when.excludeOrigins:`                                     |
+| 11| Text-mode processors (`text:` set, `command:` empty) require `mutate: prepend` or `mutate: append` |
+| 12| `when.cadence` is only valid with `on: agentResponded`                               |
+| 13| `when.cadence` is not valid with `match: first` (firing once needs no cadence)       |
+| 14| `when.cadence` requires at least one threshold field to be set                       |
+| 15| `when.cadence.everyNTurns` and `when.cadence.everyNTokens` must be non-negative      |
+| 16| `when.cadence.afterInterval` must be a parseable Go duration string (e.g. `"5m"`)    |
+
+Additionally, `when.rerun:` is only allowed with `match: first` — combining with `match: all` or `match: allExceptFirst` is rejected.
+
+## Cadence and Persisted State
+
+`on: agentResponded` processors with `match: all` can use the `cadence:` block to throttle
+how frequently they fire. All specified thresholds are evaluated with AND logic — every
+specified threshold must be met simultaneously.
+
+### `CadenceConfig` struct (`internal/processors/types.go`)
+
+```go
+type CadenceConfig struct {
+    EveryNTurns  int    // fire every N agent responses since last firing
+    EveryNTokens int    // AND: only after N cumulative tokens since last firing
+    AfterInterval string // AND: only after this wall-clock duration since last firing
+}
+```
+
+`GetAfterIntervalDuration()` parses `AfterInterval` via `time.ParseDuration`.
+
+### Pre-increment semantics
+
+The turn counter is incremented **before** the gate check, so `everyNTurns: 3` fires on
+agent responses 3, 6, 9, … (every 3rd response), not 4, 7, 10, … This is the most
+intuitive interpretation of "every N turns".
+
+### `StateStore` interface (`internal/processors/state.go`)
+
+```go
+type StateStore interface {
+    Load(sessionDir string) (*ProcessorStateData, error)
+    Save(sessionDir string, state *ProcessorStateData) error
+}
+```
+
+| Implementation    | Used when          | Behavior                                         |
+| ----------------- | ------------------ | ------------------------------------------------ |
+| `FileStateStore`  | Production         | Reads/writes `<session_dir>/processor_state.json` via `fileutil.WriteJSONAtomic` |
+| `MemoryStateStore`| Tests              | In-memory map keyed by `sessionDir`; never hits disk |
+
+### Persisted state shape (`ProcessorStateData`)
+
+```go
+type ProcessorStateData struct {
+    AgentResponseCount int                          // global response counter
+    Processors         map[string]*ProcessorCadenceState // per-processor cadence state
+}
+
+type ProcessorCadenceState struct {
+    TurnsSinceLastFire  int       // how many turns since this processor last fired
+    TokensSinceLastFire int       // cumulative tokens since last firing
+    LastFiredAt         time.Time // wall-clock time of last firing (zero = never)
+}
+```
+
+State file location: `<session_dir>/processor_state.json`
+(e.g., `~/Library/Application Support/Mitto/sessions/{id}/processor_state.json`)
+
+### Q1 resolution: `match: first` across session restarts
+
+The old in-memory `agentResponseCount` on `Manager` was replaced by the persisted
+`AgentResponseCount` field in `ProcessorStateData`. On session resume, `ApplyAfter`
+loads the state file and checks whether `AgentResponseCount > 0` — if so, the processor
+has already fired and `match: first` is honoured correctly across restarts.
+
+### Clock injection for tests
+
+`Manager` exposes `SetClock(func() time.Time)` to allow deterministic time-based testing:
+
+```go
+fakeNow := time.Now()
+mgr.SetClock(func() time.Time { return fakeNow })
+// Advance time in tests:
+fakeNow = fakeNow.Add(10 * time.Minute)
+```
+
+### Crash safety
+
+State is saved at the **end** of `ApplyAfter`. A crash mid-flight may lose one turn
+increment, which is acceptable — the cadence will fire one turn later at worst. Atomic
+writes via `fileutil.WriteJSONAtomic` prevent partial writes from corrupting the file.
+
+## Two-Phase Architecture
+
+```mermaid
+flowchart TD
+    Prompt[User sends prompt] --> PhaseA[Phase: userPrompt\nText / Command / Prompt processors]
+    PhaseA --> ACP[ACP Agent responds]
+    ACP --> PhaseB[Phase: agentResponded\nCommand / Prompt processors only]
+    PhaseB --> Done[Turn complete]
+
+    style PhaseB stroke-dasharray: 5 5
+```
 
 ## Variable Substitution
 
@@ -362,8 +504,10 @@ A declarative processor in `.mittorc`:
 conversations:
   processing:
     processors:
-      - when: first
-        position: prepend
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n"
 ```
 

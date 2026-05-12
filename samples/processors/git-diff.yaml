@@ -16,8 +16,10 @@ name: git-diff
 description: "Attaches git diff when message contains @git:diff"
 enabled: true
 
-when: all
-position: prepend
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 priority: 100
 
 command: ./git-diff.sh

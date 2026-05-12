@@ -119,6 +119,12 @@ func (l *Loader) Load() ([]*Processor, error) {
 	return procs, nil
 }
 
+// LoadFile loads and validates a single processor from a YAML file.
+// Exported for use in tests that need to validate individual processor definitions.
+func (l *Loader) LoadFile(path string) (*Processor, error) {
+	return l.loadProcessorFile(path)
+}
+
 // loadProcessorFile loads a single processor from a YAML file.
 func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 	data, err := os.ReadFile(path)
@@ -143,17 +149,97 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 	if proc.Prompt != "" && (proc.Command != "" || proc.Text != "") {
 		return nil, fmt.Errorf("processor with 'prompt' must not specify 'command' or 'text'")
 	}
-	if proc.When == "" {
-		return nil, fmt.Errorf("processor 'when' is required")
+
+	// Validate when.on
+	if proc.When.On == "" {
+		return nil, fmt.Errorf("processor 'when.on' is required (must be 'userPrompt' or 'agentResponded')")
+	}
+	if proc.When.On != PhaseUserPrompt && proc.When.On != PhaseAgentResponded {
+		return nil, fmt.Errorf("processor 'when.on' has invalid value %q; must be 'userPrompt' or 'agentResponded'", proc.When.On)
 	}
 
-	// Validate rerun config
-	if proc.Rerun != nil {
-		if proc.When != "first" {
-			return nil, fmt.Errorf("'rerun' is only supported with 'when: first', got 'when: %s'", proc.When)
+	// Validate when.match
+	if proc.When.Match == "" {
+		return nil, fmt.Errorf("processor 'when.match' is required (must be 'first', 'all', or 'allExceptFirst')")
+	}
+	switch proc.When.Match {
+	case MatchFirst, MatchAll, MatchAllExceptFirst:
+		// valid
+	case "all-except-first":
+		return nil, fmt.Errorf("processor 'when.match' value %q is no longer accepted; use 'allExceptFirst' (camelCase) — kebab-case is no longer accepted", proc.When.Match)
+	default:
+		return nil, fmt.Errorf("processor 'when.match' has invalid value %q; must be 'first', 'all', or 'allExceptFirst'", proc.When.Match)
+	}
+
+	// Phase-specific validation
+	switch proc.When.On {
+	case PhaseAgentResponded:
+		// Text mode forbidden for agentResponded
+		if proc.Text != "" {
+			return nil, fmt.Errorf("processor 'text' is not allowed for 'when.on: agentResponded' (use command or prompt mode)")
 		}
-		if err := proc.Rerun.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid rerun config: %w", err)
+		// mutate forbidden for agentResponded
+		if proc.Mutate != "" {
+			return nil, fmt.Errorf("processor 'mutate' is not allowed for 'when.on: agentResponded'")
+		}
+		// rerun forbidden for agentResponded
+		if proc.When.Rerun != nil {
+			return nil, fmt.Errorf("processor 'when.rerun' is not allowed for 'when.on: agentResponded'")
+		}
+		// output transform/prepend/append forbidden for agentResponded
+		if proc.Output == OutputTransform || proc.Output == OutputPrepend || proc.Output == OutputAppend {
+			return nil, fmt.Errorf("processor 'output: %s' is not allowed for 'when.on: agentResponded'; use 'discard', 'notify', 'actionButtons', or 'userData'", proc.Output)
+		}
+		// Default stopReasons to ["end_turn"] if not specified.
+		// These match the ACP SDK StopReason constants (snake_case).
+		if len(proc.When.StopReasons) == 0 {
+			proc.When.StopReasons = []string{"end_turn"}
+		}
+		// cadence validation (rules 12-15)
+		if proc.When.Cadence != nil {
+			c := proc.When.Cadence
+			// Rule 12: cadence + match:first is disallowed (first-response semantics are implicit)
+			if proc.When.Match == MatchFirst {
+				return nil, fmt.Errorf("processor 'when.cadence' is not allowed with 'when.match: first' (first-response semantics are already built-in)")
+			}
+			// Rule 13: at least one threshold must be specified
+			if c.EveryNTurns == 0 && c.EveryNTokens == 0 && c.AfterInterval == "" {
+				return nil, fmt.Errorf("processor 'when.cadence' must specify at least one of: everyNTurns, everyNTokens, afterInterval")
+			}
+			// Rule 14: EveryNTurns must be ≥ 1 when specified
+			if c.EveryNTurns < 0 {
+				return nil, fmt.Errorf("processor 'when.cadence.everyNTurns' must be ≥ 1, got %d", c.EveryNTurns)
+			}
+			// Rule 15: EveryNTokens must be ≥ 1 when specified
+			if c.EveryNTokens < 0 {
+				return nil, fmt.Errorf("processor 'when.cadence.everyNTokens' must be ≥ 1, got %d", c.EveryNTokens)
+			}
+			// Rule 16: AfterInterval must be a valid Go duration string
+			if c.AfterInterval != "" && c.GetAfterIntervalDuration() == 0 {
+				return nil, fmt.Errorf("processor 'when.cadence.afterInterval' has invalid duration %q (use Go duration syntax, e.g. '5m', '1h')", c.AfterInterval)
+			}
+		}
+
+	case PhaseUserPrompt:
+		// stopReasons and excludeOrigins are only for agentResponded
+		if len(proc.When.StopReasons) > 0 {
+			return nil, fmt.Errorf("processor 'when.stopReasons' is only valid for 'when.on: agentResponded'")
+		}
+		if len(proc.When.ExcludeOrigins) > 0 {
+			return nil, fmt.Errorf("processor 'when.excludeOrigins' is only valid for 'when.on: agentResponded'")
+		}
+		// rerun only valid with match:first
+		if proc.When.Rerun != nil {
+			if proc.When.Match != MatchFirst {
+				return nil, fmt.Errorf("'when.rerun' is only supported with 'when.match: first', got 'when.match: %s'", proc.When.Match)
+			}
+			if err := proc.When.Rerun.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid rerun config: %w", err)
+			}
+		}
+		// Text mode requires mutate
+		if proc.IsTextMode() && proc.Mutate == "" {
+			return nil, fmt.Errorf("text-mode processor requires 'mutate: prepend' or 'mutate: append'")
 		}
 	}
 

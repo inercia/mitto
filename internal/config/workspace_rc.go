@@ -110,9 +110,9 @@ type rawWorkspaceRC struct {
 		Processing *struct {
 			Override   bool `yaml:"override"`
 			Processors []struct {
-				When     string `yaml:"when"`
-				Position string `yaml:"position"`
-				Text     string `yaml:"text"`
+				When   ProcessorWhenBlock `yaml:"when"`
+				Mutate string             `yaml:"mutate"`
+				Text   string             `yaml:"text"`
 			} `yaml:"processors"`
 		} `yaml:"processing"`
 		// UserData defines the schema for custom user data attributes (legacy location)
@@ -696,9 +696,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 		processors := make([]MessageProcessor, 0, len(raw.Conversations.Processing.Processors))
 		for _, p := range raw.Conversations.Processing.Processors {
 			processors = append(processors, MessageProcessor{
-				When:     ProcessorWhen(p.When),
-				Position: ProcessorPosition(p.Position),
-				Text:     p.Text,
+				When:   p.When,
+				Mutate: ProcessorMutate(p.Mutate),
+				Text:   p.Text,
 			})
 		}
 		if len(processors) > 0 || raw.Conversations.Processing.Override {

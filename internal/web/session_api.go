@@ -1686,7 +1686,8 @@ type WebProcessor struct {
 	Description string                     `json:"description,omitempty"`
 	Enabled     bool                       `json:"enabled"`
 	Source      processors.ProcessorSource `json:"source"`
-	When        string                     `json:"when,omitempty"`
+	On          string                     `json:"on,omitempty"`
+	Match       string                     `json:"match,omitempty"`
 	Priority    int                        `json:"priority,omitempty"`
 	FilePath    string                     `json:"file_path,omitempty"`
 	Mode        string                     `json:"mode,omitempty"` // "text", "command", or "prompt"
@@ -1746,7 +1747,8 @@ func (s *Server) handleWorkspaceProcessors(w http.ResponseWriter, r *http.Reques
 			Description: p.Description,
 			Enabled:     enabled,
 			Source:      p.Source,
-			When:        string(p.When),
+			On:          string(p.When.On),
+			Match:       string(p.When.Match),
 			Priority:    p.Priority,
 			FilePath:    p.FilePath,
 			Mode:        mode,

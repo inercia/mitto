@@ -20,8 +20,10 @@ name: attach-image
 description: "Attaches images when message contains @image:path"
 enabled: true
 
-when: all
-position: prepend
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 priority: 80  # Run early to process image attachments
 
 command: ./attach-image.sh
