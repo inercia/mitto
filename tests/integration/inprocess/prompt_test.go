@@ -4,6 +4,9 @@ package inprocess
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -153,4 +156,104 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen]
+}
+
+// TestAfterPhaseProcessor_SentinelFile verifies that an on: agentResponded processor
+// fires after a prompt completes and produces a side effect (sentinel file).
+//
+// Strategy:
+//  1. Write a processor YAML to the workspace's .mitto/processors/ directory before
+//     creating any session (processors are loaded lazily at session-creation time).
+//  2. Send a prompt and wait for prompt_complete.
+//  3. Assert the sentinel file exists.
+func TestAfterPhaseProcessor_SentinelFile(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	// Determine sentinel path inside the test's temp dir (auto-cleaned).
+	sentinelPath := filepath.Join(ts.TempDir, "after-phase-fired.txt")
+
+	// Write the processor YAML before creating a session.
+	// The processor runs sh -c '...' and writes to the sentinel path.
+	processorsDir := filepath.Join(ts.TempDir, "workspace", ".mitto", "processors")
+	if err := os.MkdirAll(processorsDir, 0755); err != nil {
+		t.Fatalf("Failed to create processors dir: %v", err)
+	}
+
+	processorYAML := fmt.Sprintf(`name: after-test-sentinel
+when:
+  on: agentResponded
+  match: all
+command: sh
+args: ["-c", "echo fired >> %s"]
+output: discard
+`, sentinelPath)
+
+	yamlPath := filepath.Join(processorsDir, "after-test-sentinel.yaml")
+	if err := os.WriteFile(yamlPath, []byte(processorYAML), 0644); err != nil {
+		t.Fatalf("Failed to write processor YAML: %v", err)
+	}
+	t.Logf("Processor YAML written to %s", yamlPath)
+	t.Logf("Sentinel path: %s", sentinelPath)
+
+	// Create a session (processor is loaded at this point).
+	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	defer ts.Client.DeleteSession(sess.SessionID)
+
+	var (
+		mu             sync.Mutex
+		promptComplete bool
+	)
+
+	callbacks := client.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			mu.Lock()
+			defer mu.Unlock()
+			promptComplete = true
+			t.Logf("Prompt complete: %d events", eventCount)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, callbacks)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if err := ws.SendPrompt("Hello, test the after-phase processor"); err != nil {
+		t.Fatalf("SendPrompt failed: %v", err)
+	}
+
+	// Wait for prompt_complete.
+	waitFor(t, 20*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return promptComplete
+	}, "prompt complete")
+
+	// Give the after-phase processor a moment to finish writing the file.
+	// The processor runs synchronously in the prompt goroutine, so by the time
+	// prompt_complete is broadcast the processor should already be done.
+	// A brief sleep guards against any timing edge cases.
+	time.Sleep(500 * time.Millisecond)
+
+	// Assert the sentinel file was created.
+	if _, err := os.Stat(sentinelPath); os.IsNotExist(err) {
+		t.Errorf("After-phase processor did not fire: sentinel file %s does not exist", sentinelPath)
+	} else if err != nil {
+		t.Errorf("Error checking sentinel file: %v", err)
+	} else {
+		content, _ := os.ReadFile(sentinelPath)
+		t.Logf("Sentinel file content: %q", string(content))
+	}
 }

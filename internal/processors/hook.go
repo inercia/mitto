@@ -76,32 +76,42 @@ func (h *Processor) GetOnError() ErrorHandling {
 	return h.OnError
 }
 
-// GetPosition returns the processor's position, using prepend as default.
-func (h *Processor) GetPosition() config.ProcessorPosition {
-	if h.Position == "" {
-		return config.ProcessorPositionPrepend
+// GetMutate returns the processor's mutate setting, using prepend as default.
+func (h *Processor) GetMutate() config.ProcessorMutate {
+	if h.Mutate == "" {
+		return config.ProcessorMutatePrepend
 	}
-	return h.Position
+	return h.Mutate
 }
 
 // SkipReason describes why a processor was not applied.
 type SkipReason string
 
 const (
-	SkipReasonNone            SkipReason = ""
-	SkipReasonDisabled        SkipReason = "disabled"
-	SkipReasonEnabledWhen     SkipReason = "enabledWhen_false"
-	SkipReasonWhenFirst       SkipReason = "when=first_not_first_message"
-	SkipReasonWhenExceptFirst SkipReason = "when=all-except-first_is_first_message"
-	SkipReasonWhenUnknown     SkipReason = "unknown_when_condition"
-	SkipReasonRerunNotDue     SkipReason = "rerun_not_due"
+	SkipReasonNone             SkipReason = ""
+	SkipReasonDisabled         SkipReason = "disabled"
+	SkipReasonEnabledWhen      SkipReason = "enabledWhen_false"
+	SkipReasonMatchFirst       SkipReason = "match=first_not_first_message"
+	SkipReasonMatchAllExcFirst SkipReason = "match=allExceptFirst_is_first_message"
+	SkipReasonMatchUnknown     SkipReason = "unknown_match_condition"
+	SkipReasonRerunNotDue      SkipReason = "rerun_not_due"
+	// SkipReasonAgentRespondedPhase is applied to agentResponded processors in the
+	// userPrompt pipeline. These processors are only executed via Manager.ApplyAfter.
+	SkipReasonAgentRespondedPhase SkipReason = "agentResponded_phase"
 )
 
 // ShouldApply returns true if the processor should apply given the message context.
 // When it returns false, the SkipReason describes why.
+// Note: PhaseAgentResponded processors are always skipped here — they run in a separate path (Task 3).
 func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (bool, SkipReason) {
 	if !h.IsEnabled() {
 		return false, SkipReasonDisabled
+	}
+
+	// agentResponded processors are always skipped in the userPrompt pipeline.
+	// They are executed exclusively via Manager.ApplyAfter after the agent responds.
+	if h.When.On == PhaseAgentResponded {
+		return false, SkipReasonAgentRespondedPhase
 	}
 
 	// Check CEL expression (enabledWhen)
@@ -130,22 +140,22 @@ func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (boo
 		}
 	}
 
-	// Check when condition
-	switch h.When {
-	case config.ProcessorWhenFirst:
+	// Check match condition
+	switch h.When.Match {
+	case MatchFirst:
 		if !isFirstMessage {
-			return false, SkipReasonWhenFirst
+			return false, SkipReasonMatchFirst
 		}
 		return true, SkipReasonNone
-	case config.ProcessorWhenAll:
+	case MatchAll:
 		return true, SkipReasonNone
-	case config.ProcessorWhenAllExceptFirst:
+	case MatchAllExceptFirst:
 		if isFirstMessage {
-			return false, SkipReasonWhenExceptFirst
+			return false, SkipReasonMatchAllExcFirst
 		}
 		return true, SkipReasonNone
 	default:
-		return false, SkipReasonWhenUnknown
+		return false, SkipReasonMatchUnknown
 	}
 }
 

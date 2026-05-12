@@ -9,13 +9,15 @@
 name: session-context
 description: "Injects session identity and context into the first message"
 enabled: true
-when: first
-position: prepend
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 30m
+    afterSentMsgs: 20
+    afterTokens: 80000
+mutate: prepend
 priority: 10
-rerun:
-  afterTime: 30m
-  afterSentMsgs: 20
-  afterTokens: 80000
 text: |
   [Session Context]
   Session: @mitto:session_id (@mitto:session_name)

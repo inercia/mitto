@@ -11,13 +11,15 @@ name: check-mcp-tools
 description: "Checks if Mitto MCP tools are available and suggests installation"
 enabled: true
 enabledWhen: '!tools.hasPattern("mitto_*")'
-when: first
-position: append
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 20m
+    afterSentMsgs: 15
+    afterTokens: 60000
+mutate: append
 priority: 15
-rerun:
-  afterTime: 20m
-  afterSentMsgs: 15
-  afterTokens: 60000
 text: |
   ---
   [Mitto MCP Tools Check]

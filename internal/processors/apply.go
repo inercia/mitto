@@ -71,7 +71,8 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			logger.Debug("processor skipped",
 				"name", proc.Name,
 				"reason", string(skipReason),
-				"when", proc.When,
+				"on", proc.When.On,
+				"match", proc.When.Match,
 				"priority", proc.GetPriority(),
 			)
 			continue
@@ -81,23 +82,24 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		result.AppliedNames = append(result.AppliedNames, proc.Name)
 		logger.Info("applying processor",
 			"name", proc.Name,
-			"when", proc.When,
+			"on", proc.When.On,
+			"match", proc.When.Match,
 			"mode", map[bool]string{true: "text", false: "command"}[proc.IsTextMode()],
-			"position", proc.GetPosition(),
+			"mutate", proc.GetMutate(),
 			"priority", proc.GetPriority(),
 		)
 
 		// Text-mode: directly prepend or append the static text (no external command).
 		if proc.IsTextMode() {
-			switch proc.GetPosition() {
-			case config.ProcessorPositionPrepend:
+			switch proc.GetMutate() {
+			case config.ProcessorMutatePrepend:
 				result.Message = proc.Text + result.Message
-			case config.ProcessorPositionAppend:
+			case config.ProcessorMutateAppend:
 				result.Message += proc.Text
 			}
 			logger.Info("text-mode processor applied",
 				"name", proc.Name,
-				"position", proc.GetPosition(),
+				"mutate", proc.GetMutate(),
 			)
 			continue
 		}
@@ -224,6 +226,15 @@ type Manager struct {
 	totalActivations int       // Total number of pipeline invocations (Apply calls) across session lifetime
 	lastActivationAt time.Time // When the pipeline was last invoked (zero if never)
 	lastAppliedNames []string  // Names of processors applied on the most recent activation
+
+	// stateStore persists agentResponseCount and per-processor cadence state across
+	// session restarts. Defaults to FileStateStore (writes processor_state.json in
+	// the session directory). Injected as MemoryStateStore in unit tests.
+	stateStore StateStore
+
+	// clock returns the current time. Defaults to time.Now; overridden in tests
+	// to make time-based cadence deterministic.
+	clock func() time.Time
 }
 
 // processorRunState tracks when a processor last ran, for rerun scheduling.
@@ -242,7 +253,21 @@ func NewManager(processorsDir string, logger *slog.Logger) *Manager {
 		processorsDir: processorsDir,
 		logger:        logger,
 		rerunState:    make(map[string]*processorRunState),
+		stateStore:    &FileStateStore{},
+		clock:         time.Now,
 	}
+}
+
+// SetStateStore replaces the state store used for persistence.
+// Primarily used in unit tests to inject a MemoryStateStore.
+func (m *Manager) SetStateStore(s StateStore) {
+	m.stateStore = s
+}
+
+// SetClock replaces the clock function used for cadence time checks.
+// Primarily used in unit tests to make time-based cadence deterministic.
+func (m *Manager) SetClock(fn func() time.Time) {
+	m.clock = fn
 }
 
 // AddTextProcessors converts config.MessageProcessor entries into unified Processor
@@ -260,8 +285,8 @@ func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority in
 	for i, p := range procs {
 		proc := &Processor{
 			Name:     fmt.Sprintf("text-processor-%d", i),
-			When:     p.When,
-			Position: p.Position,
+			When:     WhenConfig{On: PhaseUserPrompt, Match: Match(p.When.Match)},
+			Mutate:   p.Mutate,
 			Text:     p.Text,
 			Priority: priority,
 			Source:   ProcessorSourceConfig,
@@ -307,6 +332,8 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 		promptFunc:       m.promptFunc,
 		totalActivations: activations,
 		lastActivationAt: lastAt,
+		stateStore:       m.stateStore,
+		clock:            m.clock,
 	}
 	copy(clone.processors, m.processors)
 	clone.AddTextProcessors(procs, priority)
@@ -338,6 +365,8 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		promptFunc:       m.promptFunc,
 		totalActivations: activations,
 		lastActivationAt: lastAt,
+		stateStore:       m.stateStore,
+		clock:            m.clock,
 	}
 	copy(clone.processors, m.processors)
 
@@ -424,6 +453,8 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		promptFunc:       m.promptFunc,
 		totalActivations: activations,
 		lastActivationAt: lastAt,
+		stateStore:       m.stateStore,
+		clock:            m.clock,
 	}
 
 	// Deep-copy processor pointers so we can modify Enabled without affecting the original.
@@ -464,11 +495,11 @@ func (m *Manager) Processors() []*Processor {
 }
 
 // Apply applies all applicable processors to a message.
-// Handles rerun logic for "when: first" processors: if a processor has a rerun config,
+// Handles rerun logic for "when.sent: first" processors: if a processor has a when.rerun config,
 // it tracks when the processor last ran and re-fires it when a threshold is reached.
 // Returns the processor result containing the transformed message and any attachments.
 func (m *Manager) Apply(ctx context.Context, input *ProcessorInput) (*ProcessorResult, error) {
-	// Pre-pass: check rerun eligibility for when:first processors.
+	// Pre-pass: check rerun eligibility for when.sent:first processors.
 	// We temporarily override isFirstMessage for processors that are due for re-run.
 	rerunOverrides := m.checkRerunEligibility(input)
 
@@ -511,18 +542,18 @@ func (m *Manager) hasPromptModeProcessors() bool {
 	return false
 }
 
-// checkRerunEligibility checks which "when: first" processors with rerun config
+// checkRerunEligibility checks which "when.on: userPrompt, match: first" processors with when.rerun config
 // are due for re-run. Returns a map of processor names to the reason they should be re-triggered.
 func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]RerunReason {
 	if input.IsFirstMessage {
-		return nil // First message — all "when: first" processors will fire naturally
+		return nil // First message — all "match: first" processors will fire naturally
 	}
 
 	overrides := make(map[string]RerunReason)
 	now := time.Now()
 
 	for _, proc := range m.processors {
-		if proc.When != config.ProcessorWhenFirst || proc.Rerun == nil || proc.Name == "" {
+		if proc.When.On != PhaseUserPrompt || proc.When.Match != MatchFirst || proc.When.Rerun == nil || proc.Name == "" {
 			continue
 		}
 
@@ -531,7 +562,7 @@ func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]RerunR
 			continue // Never ran yet — will be handled by isFirstMessage
 		}
 
-		rerun := proc.Rerun
+		rerun := proc.When.Rerun
 		// Check time threshold
 		if rerun.GetAfterDuration() > 0 && now.Sub(state.lastRunTime) >= rerun.GetAfterDuration() {
 			m.logger.Info("processor rerun triggered by time",
@@ -601,7 +632,8 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			m.logger.Debug("processor skipped",
 				"name", proc.Name,
 				"reason", string(skipReason),
-				"when", proc.When,
+				"on", proc.When.On,
+				"match", proc.When.Match,
 				"priority", proc.GetPriority(),
 			)
 			continue
@@ -612,9 +644,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 		rerunReason, isRerun := rerunOverrides[proc.Name]
 		m.logger.Info("applying processor",
 			"name", proc.Name,
-			"when", proc.When,
+			"on", proc.When.On,
+			"match", proc.When.Match,
 			"mode", map[bool]string{true: "text", false: "command"}[proc.IsTextMode()],
-			"position", proc.GetPosition(),
+			"mutate", proc.GetMutate(),
 			"priority", proc.GetPriority(),
 			"is_rerun", isRerun,
 			"rerun_reason", string(rerunReason),
@@ -623,10 +656,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 		// Text-mode: directly prepend or append the static text (no external command).
 		if proc.IsTextMode() {
 			text := SubstituteVariables(proc.Text, input)
-			switch proc.GetPosition() {
-			case config.ProcessorPositionPrepend:
+			switch proc.GetMutate() {
+			case config.ProcessorMutatePrepend:
 				result.Message = text + result.Message
-			case config.ProcessorPositionAppend:
+			case config.ProcessorMutateAppend:
 				result.Message += text
 			}
 			input.Message = result.Message
@@ -697,7 +730,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 		}
 
 		// Record run for rerun tracking
-		if proc.Name != "" && proc.Rerun != nil {
+		if proc.Name != "" && proc.When.Rerun != nil {
 			m.rerunState[proc.Name] = &processorRunState{
 				lastRunTime:   time.Now(),
 				messagesSince: 0,
@@ -736,7 +769,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 // increment the message counter.
 func (m *Manager) updateRerunState(wasFirstMessage bool) {
 	for _, proc := range m.processors {
-		if proc.When != config.ProcessorWhenFirst || proc.Rerun == nil || proc.Name == "" {
+		if proc.When.On != PhaseUserPrompt || proc.When.Match != MatchFirst || proc.When.Rerun == nil || proc.Name == "" {
 			continue
 		}
 
@@ -765,7 +798,7 @@ func (m *Manager) AccumulateTokenUsage(totalTokens int) {
 		return
 	}
 	for _, proc := range m.processors {
-		if proc.When != config.ProcessorWhenFirst || proc.Rerun == nil || proc.Name == "" {
+		if proc.When.On != PhaseUserPrompt || proc.When.Match != MatchFirst || proc.When.Rerun == nil || proc.Name == "" {
 			continue
 		}
 		state, exists := m.rerunState[proc.Name]
@@ -774,6 +807,305 @@ func (m *Manager) AccumulateTokenUsage(totalTokens int) {
 		}
 		state.tokensSince += totalTokens
 	}
+}
+
+// ApplyAfter runs all agentResponded processors against the completed agent turn.
+// It applies stop-reason, origin, match, and cadence filters in declaration order,
+// executes each processor (command or prompt mode), and accumulates side-effects.
+//
+// Persistence: the session's AgentResponseCount and per-processor cadence state are
+// loaded from input.SessionDir at the start and saved atomically after all processors
+// have run. If input.SessionDir is empty (tests, store-less sessions), state is held
+// only in the injected StateStore (MemoryStateStore in tests).
+//
+// Returns an ApplyAfterResult — never returns an error; individual processor failures
+// are collected non-fatally in ApplyAfterResult.Errors.
+func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) ApplyAfterResult {
+	// --- Load persisted state ---
+	store := m.stateStore
+	if store == nil {
+		store = &FileStateStore{}
+	}
+	state, err := store.Load(input.SessionDir)
+	if err != nil {
+		m.logger.Warn("after-phase: failed to load processor state, using zero-value",
+			"error", err, "session_dir", input.SessionDir)
+		state = &ProcessorStateData{Processors: make(map[string]*ProcessorCadenceState)}
+	}
+
+	isFirstAgentResponse := state.AgentResponseCount == 0
+	now := m.clock()
+
+	// Determine cumulative token count for this turn.
+	var turnTokens int64
+	if input.TokenUsage != nil {
+		turnTokens = input.TokenUsage.Total
+	}
+
+	var result ApplyAfterResult
+	applied := 0
+	skipped := 0
+
+	m.logger.Info("after-phase processor pipeline starting",
+		"total_processors", len(m.processors),
+		"is_first_agent_response", isFirstAgentResponse,
+		"agent_response_count", state.AgentResponseCount,
+		"stop_reason", input.StopReason,
+		"origin", input.Origin,
+	)
+
+	for _, proc := range m.processors {
+		// Phase filter: only agentResponded processors fire here.
+		if proc.When.On != PhaseAgentResponded {
+			continue
+		}
+
+		// Enabled check
+		if !proc.IsEnabled() {
+			skipped++
+			m.logger.Debug("after-phase processor skipped",
+				"name", proc.Name, "reason", "disabled")
+			continue
+		}
+
+		// StopReason filter
+		if len(proc.When.StopReasons) > 0 {
+			matched := false
+			for _, sr := range proc.When.StopReasons {
+				if sr == input.StopReason {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				skipped++
+				m.logger.Debug("after-phase processor skipped",
+					"name", proc.Name, "reason", "stopReason_mismatch",
+					"stop_reason", input.StopReason, "allowed", proc.When.StopReasons)
+				continue
+			}
+		}
+
+		// Origin filter (excludeOrigins)
+		if len(proc.When.ExcludeOrigins) > 0 {
+			excluded := false
+			for _, o := range proc.When.ExcludeOrigins {
+				if o == input.Origin {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				skipped++
+				m.logger.Debug("after-phase processor skipped",
+					"name", proc.Name, "reason", "origin_excluded",
+					"origin", input.Origin)
+				continue
+			}
+		}
+
+		// Match filter (uses persisted AgentResponseCount for correctness across restarts)
+		switch proc.When.Match {
+		case MatchFirst:
+			if !isFirstAgentResponse {
+				skipped++
+				m.logger.Debug("after-phase processor skipped",
+					"name", proc.Name, "reason", "match=first_not_first_response")
+				continue
+			}
+		case MatchAll:
+			// always passes match filter (cadence may still gate it)
+		case MatchAllExceptFirst:
+			if isFirstAgentResponse {
+				skipped++
+				m.logger.Debug("after-phase processor skipped",
+					"name", proc.Name, "reason", "match=allExceptFirst_is_first_response")
+				continue
+			}
+		default:
+			skipped++
+			m.logger.Warn("after-phase processor skipped: unknown match value",
+				"name", proc.Name, "match", proc.When.Match)
+			continue
+		}
+
+		// Cadence filter — gates processors with when.cadence configured.
+		// All specified thresholds must be met simultaneously (AND logic).
+		// Pre-increment semantics: TurnsSinceLastFire is incremented BEFORE the gate
+		// check so that everyNTurns:N means "fire every N agent responses that pass
+		// all other filters (stop reason, origin, match)".
+		if proc.When.Cadence != nil && proc.Name != "" {
+			cadenceState := state.Processors[proc.Name]
+			if cadenceState == nil {
+				cadenceState = &ProcessorCadenceState{}
+				state.Processors[proc.Name] = cadenceState
+			}
+			c := proc.When.Cadence
+
+			// Pre-increment counters for this turn.
+			cadenceState.TurnsSinceLastFire++
+			cadenceState.TokensSinceLastFire += turnTokens
+
+			// Check all thresholds (AND logic).
+			gatePassed := true
+
+			if c.EveryNTurns > 0 && cadenceState.TurnsSinceLastFire < c.EveryNTurns {
+				gatePassed = false
+				m.logger.Debug("after-phase processor cadence: turns threshold not met",
+					"name", proc.Name,
+					"turns_since_last_fire", cadenceState.TurnsSinceLastFire,
+					"required", c.EveryNTurns)
+			}
+			if gatePassed && c.EveryNTokens > 0 && cadenceState.TokensSinceLastFire < c.EveryNTokens {
+				gatePassed = false
+				m.logger.Debug("after-phase processor cadence: tokens threshold not met",
+					"name", proc.Name,
+					"tokens_since_last_fire", cadenceState.TokensSinceLastFire,
+					"required", c.EveryNTokens)
+			}
+			if gatePassed && c.AfterInterval != "" {
+				interval := c.GetAfterIntervalDuration()
+				if interval > 0 && !cadenceState.LastFiredAt.IsZero() {
+					elapsed := now.Sub(cadenceState.LastFiredAt)
+					if elapsed < interval {
+						gatePassed = false
+						m.logger.Debug("after-phase processor cadence: interval threshold not met",
+							"name", proc.Name,
+							"elapsed", elapsed,
+							"required", interval)
+					}
+				}
+			}
+
+			if !gatePassed {
+				skipped++
+				continue
+			}
+		}
+
+		applied++
+		m.logger.Info("applying after-phase processor",
+			"name", proc.Name,
+			"match", proc.When.Match,
+			"output", proc.GetOutput(),
+		)
+
+		// Execute the processor and collect stdout.
+		var stdout string
+		var execErr error
+
+		if proc.IsPromptMode() {
+			stdout, execErr = executeAfterPrompt(proc, input)
+		} else {
+			// Command mode (text mode is forbidden for agentResponded by the loader).
+			stdout, execErr = executeAfterCommand(ctx, proc, m.processorsDir, input, m.logger)
+		}
+
+		if execErr != nil {
+			m.logger.Warn("after-phase processor execution failed",
+				"name", proc.Name, "error", execErr)
+			result.Errors = append(result.Errors, ProcessorError{
+				ProcessorName: proc.Name,
+				Error:         execErr.Error(),
+			})
+			continue
+		}
+
+		// After a successful execution, reset cadence counters for this processor.
+		if proc.When.Cadence != nil && proc.Name != "" {
+			cs := state.Processors[proc.Name]
+			if cs == nil {
+				cs = &ProcessorCadenceState{}
+				state.Processors[proc.Name] = cs
+			}
+			cs.TurnsSinceLastFire = 0
+			cs.TokensSinceLastFire = 0
+			cs.LastFiredAt = now
+		}
+
+		// Parse output according to output type.
+		outputType := proc.GetOutput()
+		if outputType == OutputTransform || outputType == OutputPrepend || outputType == OutputAppend {
+			// These are forbidden for agentResponded by the loader; treat as discard.
+			outputType = OutputDiscard
+		}
+
+		switch outputType {
+		case OutputDiscard:
+			// Side-effects only; stdout is intentionally discarded.
+
+		case OutputNotify:
+			notifs, parseErr := parseNotifyOutput(stdout)
+			if parseErr != nil {
+				m.logger.Warn("after-phase processor notify parse failed",
+					"name", proc.Name, "error", parseErr)
+				result.Errors = append(result.Errors, ProcessorError{
+					ProcessorName: proc.Name,
+					Error:         parseErr.Error(),
+				})
+				continue
+			}
+			result.Notifications = append(result.Notifications, notifs...)
+
+		case OutputActionButtons:
+			buttons, parseErr := parseActionButtonsOutput(stdout)
+			if parseErr != nil {
+				m.logger.Warn("after-phase processor actionButtons parse failed",
+					"name", proc.Name, "error", parseErr)
+				result.Errors = append(result.Errors, ProcessorError{
+					ProcessorName: proc.Name,
+					Error:         parseErr.Error(),
+				})
+				continue
+			}
+			result.ActionButtons = append(result.ActionButtons, buttons...)
+
+		case OutputUserData:
+			patch, parseErr := parseUserDataOutput(stdout)
+			if parseErr != nil {
+				m.logger.Warn("after-phase processor userData parse failed",
+					"name", proc.Name, "error", parseErr)
+				result.Errors = append(result.Errors, ProcessorError{
+					ProcessorName: proc.Name,
+					Error:         parseErr.Error(),
+				})
+				continue
+			}
+			if len(patch) > 0 {
+				if result.UserDataPatch == nil {
+					result.UserDataPatch = make(map[string]string)
+				}
+				for k, v := range patch {
+					result.UserDataPatch[k] = v
+				}
+			}
+		}
+
+		m.logger.Info("after-phase processor applied",
+			"name", proc.Name, "output_type", outputType)
+	}
+
+	// --- Update and save persisted state ---
+	// Increment global response count so next call knows it's not the first response.
+	state.AgentResponseCount++
+
+	if saveErr := store.Save(input.SessionDir, state); saveErr != nil {
+		m.logger.Warn("after-phase: failed to save processor state",
+			"error", saveErr, "session_dir", input.SessionDir)
+	}
+
+	m.logger.Info("after-phase processor pipeline complete",
+		"total", len(m.processors),
+		"applied", applied,
+		"skipped", skipped,
+		"agent_response_count", state.AgentResponseCount,
+		"notifications", len(result.Notifications),
+		"action_buttons", len(result.ActionButtons),
+		"user_data_keys", len(result.UserDataPatch),
+		"errors", len(result.Errors),
+	)
+
+	return result
 }
 
 // EstimateTokens estimates the number of tokens in a text string.

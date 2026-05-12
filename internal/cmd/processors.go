@@ -25,7 +25,8 @@ Example processor file (processors/git-context.yaml):
 
   name: git-context
   description: "Adds recent git commits to context"
-  when: first
+  when:
+    sent: first
   command: ./git-context.sh
   input: message
   output: prepend`,
@@ -111,8 +112,8 @@ func runProcessorsList(cmd *cobra.Command, args []string) error {
 
 	// Use tabwriter for aligned output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tPRIORITY\tWHEN\tFILE")
-	fmt.Fprintln(w, "----\t-----------\t--------\t----\t----")
+	fmt.Fprintln(w, "NAME\tDESCRIPTION\tPRIORITY\tON\tMATCH\tFILE")
+	fmt.Fprintln(w, "----\t-----------\t--------\t--\t-----\t----")
 
 	for _, p := range procs {
 		desc := p.Description
@@ -122,7 +123,7 @@ func runProcessorsList(cmd *cobra.Command, args []string) error {
 		if len(desc) > 40 {
 			desc = desc[:37] + "..."
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", p.Name, desc, p.GetPriority(), p.When, filepath.Base(p.FilePath))
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\n", p.Name, desc, p.GetPriority(), p.When.On, p.When.Match, filepath.Base(p.FilePath))
 	}
 	w.Flush()
 

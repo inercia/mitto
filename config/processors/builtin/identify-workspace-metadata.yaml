@@ -14,7 +14,9 @@
 name: identify-workspace-metadata
 description: "Analyzes the project and fills in workspace metadata (description, URL) in .mittorc"
 enabled: true
-when: first
+when:
+  on: userPrompt
+  match: first
 priority: 195
 timeout: 120s
 on_error: skip

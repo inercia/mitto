@@ -19,8 +19,10 @@ name: file-context
 description: "Attaches file contents when message contains @file:path"
 enabled: true
 
-when: all
-position: prepend
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 priority: 90  # Run before git hooks
 
 command: ./file-context.sh

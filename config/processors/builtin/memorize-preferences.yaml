@@ -27,13 +27,17 @@
 name: memorize-preferences
 description: "Extracts user preferences from conversations and saves them to AGENTS.md"
 enabled: true
-when: first
+when:
+  on: agentResponded
+  match: all
+  stopReasons: [end_turn]
+  cadence:
+    everyNTurns: 5
+    everyNTokens: 30000
+    afterInterval: 5m
 priority: 200
 timeout: 120s
 on_error: skip
-rerun:
-  afterSentMsgs: 10
-  afterTokens: 30000
 
 # Skip periodic prompts — only process real user messages
 enabledWhen: '!session.isPeriodic'
@@ -78,8 +82,8 @@ prompt: |
   Call it with:
   - `self_id`: your session ID (from `mitto_conversation_get_current`)
   - `conversation_id`: "@mitto:session_id"
-  - `event_types`: ["user_prompt"]
-  - `last_n`: 20
+  - `event_types`: ["user_prompt", "agent_message"]
+  - `last_n`: 12
 
   Review these messages for user preferences and conventions.
 
