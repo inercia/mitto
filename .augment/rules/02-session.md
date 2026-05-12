@@ -30,6 +30,7 @@ keywords:
 | `Lock`               | Session locking, heartbeat, cleanup         | Yes (mutex + goroutine) |
 | `Queue`              | Message queue for busy agent                | Yes (mutex)             |
 | `ActionButtonsStore` | Follow-up suggestions persistence           | Yes (mutex)             |
+| `PeriodicStore`      | Periodic prompt config per session          | Yes (mutex)             |
 | `Flags`              | Available feature flags registry            | N/A (read-only)         |
 
 ## Immediate Persistence (Web Interface)
@@ -93,50 +94,47 @@ lock.SetWaitingPermission("File write")  // During permission request
 
 ## Message Queue
 
-**Important**: Queue configuration is **global/workspace-scoped**, NOT per-session.
+**Important**: Queue configuration is **global/workspace-scoped**, NOT per-session. See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for config options, REST API, WebSocket notifications, and title auto-generation.
 
-See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for:
+## Periodic Prompts (PeriodicStore)
 
-- Configuration options and scope rationale
-- REST API endpoints
-- WebSocket notifications
-- Title auto-generation
+Stored in `periodic.json` per session. API: `GET/PUT/PATCH/DELETE /api/sessions/{id}/periodic`, `POST /api/sessions/{id}/periodic/run-now`.
+
+```go
+ps := store.Periodic(sessionID)
+ps.Set(&session.PeriodicPrompt{Prompt: "...", Frequency: ..., Enabled: true})
+ps.Update(prompt, frequency, enabled)  // partial update (pointer args, nil = no-op)
+ps.RecordSent()                         // updates last_sent_at + next_scheduled_at
+ps.TriggerNow(sessionID, resetTimer)    // immediate delivery via periodicRunner
+```
+
+**Key rules**:
+- Only top-level/parent sessions may have periodic prompts (child sessions return 400)
+- `PromptName` field (when added): references a named workspace prompt by name instead of embedding full text. `Validate()` must accept empty `Prompt` when `PromptName` is set. The periodic runner resolves the name to text at send time via the prompts cache.
+- **Caller update required**: Changing `PeriodicStore.Update()` signature requires updating **both** `internal/web/session_periodic_api.go` (PATCH handler) AND `internal/mcpserver/server.go` (MCP tool handler) — both call `Update()`.
 
 ## Auxiliary Package
 
-The `internal/auxiliary` package provides a hidden ACP session for utility tasks.
+The `internal/auxiliary` package provides a hidden ACP session for utility tasks. Lazy init, auto-approve permissions, file writes denied, thread-safe.
 
 ```go
-auxiliary.Initialize(acpCommand, logger)  // Once at startup
+auxiliary.Initialize(acpCommand, logger)
 title, err := auxiliary.GenerateTitle(ctx, userMessage)
-auxiliary.Shutdown()  // On exit
+auxiliary.Shutdown()
 ```
-
-**Key characteristics**: Lazy init, auto-approve permissions, file writes denied, thread-safe.
 
 ## Action Buttons Store
 
 The `ActionButtonsStore` persists follow-up suggestions to disk. See [docs/devel/follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) for full architecture.
 
 ```go
-// Get action buttons store for a session
 abStore := store.ActionButtons(sessionID)
-
-// Store suggestions after analysis
-abStore.Set(buttons, eventSeq)
-
-// Read suggestions (returns empty slice if none)
-buttons, err := abStore.Get()
-
-// Clear when user sends new prompt
-abStore.Clear()
+abStore.Set(buttons, eventSeq)   // after analysis
+abStore.Get()                    // returns empty slice if none
+abStore.Clear()                  // on new prompt
 ```
 
-**Key patterns**:
-
-- Separate file (`action_buttons.json`) - not in events.jsonl (transient UI state, not history)
-- Delete file on clear (vs writing empty) - reduces disk clutter
-- Two-tier cache in BackgroundSession: memory (fast) + disk (persistent)
+Stored in `action_buttons.json` (not events.jsonl). Delete on clear (vs writing empty). Two-tier cache in BackgroundSession: memory + disk.
 
 ## Feature Flags (AdvancedSettings)
 

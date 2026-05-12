@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -583,6 +584,11 @@ func NewServer(config Config) (*Server, error) {
 			logger.Info("Periodic archive retention cleanup enabled", "retention_period", retentionPeriod)
 		}
 	}
+
+	// Set prompt resolver for periodic runner — resolves prompt names to text at execution time
+	s.periodicRunner.SetPromptResolver(func(promptName string, workingDir string) (string, error) {
+		return s.resolvePromptByName(promptName, workingDir)
+	})
 
 	s.periodicRunner.Start()
 
@@ -1450,6 +1456,95 @@ func (s *Server) getPromptsWatchDirs() []string {
 	}
 
 	return dirs
+}
+
+// resolvePromptByName resolves a prompt name to its full text for a given working directory.
+// Uses the same prompt resolution pipeline as the workspace prompts API endpoint.
+func (s *Server) resolvePromptByName(promptName string, workingDir string) (string, error) {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for prompt resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	defaultDir := appdir.WorkspacePromptsDir(workingDir)
+	workspacePromptsDirs = append(workspacePromptsDirs, defaultDir)
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	// Merge with proper priority (same as handleWorkspacePromptsGET)
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	// Find the prompt by name (case-insensitive)
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			if p.Prompt == "" {
+				return "", fmt.Errorf("prompt %q has no content", promptName)
+			}
+			return p.Prompt, nil
+		}
+	}
+
+	return "", fmt.Errorf("prompt %q not found", promptName)
 }
 
 // parseAutoArchivePeriod converts an auto-archive period string to a duration.
