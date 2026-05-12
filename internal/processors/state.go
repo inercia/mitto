@@ -49,6 +49,9 @@ type StateStore interface {
 type FileStateStore struct{}
 
 func (s *FileStateStore) Load(sessionDir string) (*ProcessorStateData, error) {
+	if sessionDir == "" {
+		return &ProcessorStateData{Processors: make(map[string]*ProcessorCadenceState)}, nil
+	}
 	state := &ProcessorStateData{
 		Processors: make(map[string]*ProcessorCadenceState),
 	}
@@ -114,6 +117,9 @@ func copyState(src *ProcessorStateData) *ProcessorStateData {
 		Processors:         make(map[string]*ProcessorCadenceState, len(src.Processors)),
 	}
 	for k, v := range src.Processors {
+		if v == nil {
+			continue
+		}
 		cp := *v
 		dst.Processors[k] = &cp
 	}

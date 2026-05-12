@@ -226,7 +226,7 @@ export function ChatInput({
   // Falls back to input_tokens from PromptResponse.Usage + static model context window.
   const contextPct = useMemo(() => {
     // Primary: use SessionUsageUpdate data if available
-    if (contextUsage?.size && contextUsage?.used) {
+    if (contextUsage?.size > 0 && contextUsage?.used != null) {
       return Math.min(Math.round((contextUsage.used / contextUsage.size) * 100), 100);
     }
     // Fallback: compute from input_tokens + known model context window
