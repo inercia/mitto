@@ -101,8 +101,10 @@ prompts:
 conversations:
   processing:
     processors:
-      - when: first
-        position: prepend
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
         text: |
           You are working on MyProject, a Node.js application.
           Follow TypeScript strict mode and ESLint rules.

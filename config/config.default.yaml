@@ -150,9 +150,10 @@ web:
 
 # Conversation processing - transformations applied to user messages
 # Processors are applied in order. Each processor specifies:
-#   - when: "first" (first message only), "all" (every message), "all-except-first"
-#   - position: "prepend" (before message) or "append" (after message)
-#   - text: the content to insert
+#   - when.on:    "userPrompt" (before sending to agent) or "agentResponded" (after agent reply)
+#   - when.match: "first" (first message only), "all" (every message), "allExceptFirst"
+#   - mutate: "prepend" (before message) or "append" (after message)  [userPrompt only]
+#   - text: the content to insert  [userPrompt only]
 #
 # Global processors defined here apply to all workspaces.
 # Workspace-specific processors can be defined in <workspace>/.mittorc
@@ -162,8 +163,10 @@ web:
 #   processing:
 #     processors:
 #       # Add system context to the first message
-#       - when: first
-#         position: prepend
+#       - when:
+#           on: userPrompt
+#           match: first
+#         mutate: prepend
 #         text: |
 #           You are a helpful AI coding assistant.
 #           Please follow best practices and be concise.
@@ -171,13 +174,17 @@ web:
 #           ---
 #
 #       # Add a reminder to all messages
-#       - when: all
-#         position: append
+#       - when:
+#           on: userPrompt
+#           match: all
+#         mutate: append
 #         text: "\n\n[Remember: Provide working code examples]"
 #
 #       # Add continuation context after the first message
-#       # - when: all-except-first
-#       #   position: prepend
+#       # - when:
+#       #     on: userPrompt
+#       #     match: allExceptFirst
+#       #   mutate: prepend
 #       #   text: "[Continuing from previous context]\n\n"
 #
 #   # Message queue configuration

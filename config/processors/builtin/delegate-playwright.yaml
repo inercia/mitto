@@ -19,13 +19,15 @@
 name: delegate-playwright
 description: "Delegates Playwright browser automation to a faster model when using a premium reasoning model"
 enabled: true
-when: first
-position: append
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 30m
+    afterSentMsgs: 20
+    afterTokens: 80000
+mutate: append
 priority: 91
-rerun:
-  afterTime: 30m
-  afterSentMsgs: 20
-  afterTokens: 80000
 enabledWhen: >-
   (acp.tags.exists(t, t == "reasoning")
   || acp.tags.exists(t, t == "thinking")

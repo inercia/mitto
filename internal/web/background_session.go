@@ -3108,6 +3108,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 		var promptResp acp.PromptResponse
 		var err error
+		promptStartedAt := time.Now() // captured for after-phase processors
 		if bs.sharedProcess != nil {
 			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(bs.acpID), finalBlocks)
 		} else {
@@ -3116,6 +3117,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				Prompt:    finalBlocks,
 			})
 		}
+		promptEndedAt := time.Now() // captured for after-phase processors
 
 		// Store token usage from the prompt response (if available).
 		if promptResp.Usage != nil {
@@ -3316,6 +3318,14 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					}
 				}
 			}
+
+			// Apply after-phase processors (on: agentResponded pipeline).
+			// Runs after follow-up analysis so all event state is fully persisted.
+			// This is synchronous — processors are fast (command execution with timeouts).
+			if bs.processorManager != nil {
+				bs.applyAfterProcessors(bs.ctx, message, meta.SenderID,
+					string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp)
+			}
 		}
 
 		// Invoke OnComplete callback if set.
@@ -3427,6 +3437,197 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage s
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnActionButtons(buttons)
 	})
+}
+
+// promptOriginFromSenderID maps a PromptMeta.SenderID to the canonical origin tag used
+// by after-phase processors in their excludeOrigins filter.
+//
+// Canonical origin strings (kept in sync with processors.AfterProcessorInput.Origin docs):
+//
+//	"user"             – direct user prompt from a WebSocket client
+//	"queue"            – message injected via the queue (includes mcp-send-prompt, which
+//	                     cannot be distinguished from regular queue messages at this layer)
+//	"periodic-runner"  – message sent by the periodic runner goroutine
+//
+// If a new origin is introduced (e.g. mcp-send-prompt queued with a dedicated SenderID),
+// add it here and update the AfterProcessorInput.Origin godoc in types.go.
+func promptOriginFromSenderID(senderID string) string {
+	switch senderID {
+	case "periodic-runner":
+		return "periodic-runner"
+	case "queue":
+		// Covers both direct queue messages and MCP mitto_conversation_send_prompt,
+		// which are indistinguishable at this layer (both use SenderID="queue").
+		// TODO: when mcp-send-prompt gets a dedicated SenderID, add a case here.
+		return "queue"
+	default:
+		// Empty SenderID (Prompt/PromptWithImages) or a WebSocket client UUID.
+		return "user"
+	}
+}
+
+// applyAfterProcessors runs the agentResponded processor pipeline after an ACP turn completes.
+// It is called synchronously in the prompt goroutine, after follow-up suggestion analysis,
+// so all events are already flushed and persisted at this point.
+//
+// Results are dispatched as follows:
+//   - Notifications → bs.UINotify (fire-and-forget toast)
+//   - ActionButtons → appended to the existing action-buttons cache/store and broadcast
+//   - UserDataPatch → merged into the session's user-data file
+//   - Errors        → logged as warnings (non-fatal)
+func (bs *BackgroundSession) applyAfterProcessors(
+	ctx context.Context,
+	userPrompt string,
+	senderID string,
+	stopReason string,
+	startedAt, endedAt time.Time,
+	promptResp acp.PromptResponse,
+) {
+	// Build agent messages from the last persisted agent message.
+	var agentMessages []string
+	if bs.store != nil {
+		if events, err := bs.store.ReadEvents(bs.persistedID); err == nil {
+			if msg := session.GetLastAgentMessage(events); msg != "" {
+				agentMessages = []string{msg}
+			}
+		}
+	}
+
+	// Build token usage snapshot (nil if ACP did not report usage).
+	var tokenUsage *processors.AfterTokenUsage
+	if promptResp.Usage != nil {
+		tokenUsage = &processors.AfterTokenUsage{
+			Input:  int64(promptResp.Usage.InputTokens),
+			Output: int64(promptResp.Usage.OutputTokens),
+			Total:  int64(promptResp.Usage.TotalTokens),
+		}
+	}
+
+	// Resolve session directory for processor state persistence (cadence + match:first).
+	var sessionDir string
+	if bs.store != nil && bs.persistedID != "" {
+		sessionDir = bs.store.SessionDir(bs.persistedID)
+	}
+
+	input := processors.AfterProcessorInput{
+		SessionID:     bs.persistedID,
+		SessionDir:    sessionDir,
+		WorkingDir:    bs.workingDir,
+		Origin:        promptOriginFromSenderID(senderID),
+		StopReason:    stopReason,
+		UserPrompt:    userPrompt,
+		AgentMessages: agentMessages,
+		ToolCalls:     nil, // TODO: populate from turn events in a future pass
+		TokenUsage:    tokenUsage,
+		StartedAt:     startedAt,
+		EndedAt:       endedAt,
+	}
+
+	result := bs.processorManager.ApplyAfter(ctx, input)
+
+	// Log non-fatal processor errors as warnings.
+	for _, pe := range result.Errors {
+		if bs.logger != nil {
+			bs.logger.Warn("after-phase processor error (non-fatal)",
+				"processor", pe.ProcessorName,
+				"error", pe.Error)
+		}
+	}
+
+	// Dispatch notifications via UINotify (uses OnNotification observer path).
+	for _, n := range result.Notifications {
+		req := UINotifyRequest{
+			Title:   n.Title,
+			Message: n.Message,
+			Style:   n.Style,
+		}
+		if err := bs.UINotify(req); err != nil && bs.logger != nil {
+			bs.logger.Warn("after-phase: failed to dispatch notification",
+				"title", n.Title,
+				"error", err)
+		}
+	}
+
+	// Append action buttons to the existing store and notify observers.
+	if len(result.ActionButtons) > 0 {
+		buttons := make([]ActionButton, 0, len(result.ActionButtons))
+		for _, ab := range result.ActionButtons {
+			buttons = append(buttons, ActionButton{
+				Label:    ab.Label,
+				Response: ab.Prompt,
+			})
+		}
+
+		// Merge with any existing cached buttons (e.g. from follow-up analysis).
+		bs.actionButtonsMu.Lock()
+		merged := make([]ActionButton, 0, len(bs.cachedActionButtons)+len(buttons))
+		merged = append(merged, bs.cachedActionButtons...)
+		merged = append(merged, buttons...)
+		bs.cachedActionButtons = merged
+		bs.actionButtonsMu.Unlock()
+
+		// Persist to disk.
+		if bs.store != nil && bs.persistedID != "" {
+			abStore := bs.store.ActionButtons(bs.persistedID)
+			sessionButtons := make([]session.ActionButton, len(merged))
+			for i, b := range merged {
+				sessionButtons[i] = session.ActionButton{Label: b.Label, Response: b.Response}
+			}
+			if err := abStore.Set(sessionButtons, int64(bs.GetEventCount())); err != nil && bs.logger != nil {
+				bs.logger.Debug("after-phase: failed to persist action buttons", "error", err)
+			}
+		}
+
+		bs.notifyObservers(func(o SessionObserver) {
+			o.OnActionButtons(merged)
+		})
+	}
+
+	// Merge UserDataPatch into the session's user-data file.
+	if len(result.UserDataPatch) > 0 && bs.store != nil && bs.persistedID != "" {
+		// Read current user data.
+		current, err := bs.store.GetUserData(bs.persistedID)
+		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("after-phase: failed to read user data for patch", "error", err)
+			}
+		} else {
+			// Build a name→value map of existing attributes for fast lookup.
+			attrMap := make(map[string]string, len(current.Attributes))
+			for _, a := range current.Attributes {
+				attrMap[a.Name] = a.Value
+			}
+			// Apply patch (later processors override earlier on key collision).
+			patchedKeys := 0
+			for k, v := range result.UserDataPatch {
+				attrMap[k] = v
+				patchedKeys++
+			}
+			// Reconstruct ordered slice: keep existing order, then append new keys.
+			newAttrs := make([]session.UserDataAttribute, 0, len(attrMap))
+			seen := make(map[string]bool)
+			for _, a := range current.Attributes {
+				newAttrs = append(newAttrs, session.UserDataAttribute{Name: a.Name, Value: attrMap[a.Name]})
+				seen[a.Name] = true
+			}
+			for k, v := range result.UserDataPatch {
+				if !seen[k] {
+					newAttrs = append(newAttrs, session.UserDataAttribute{Name: k, Value: v})
+				}
+			}
+			if err := bs.store.SetUserData(bs.persistedID, &session.UserData{Attributes: newAttrs}); err != nil {
+				if bs.logger != nil {
+					bs.logger.Warn("after-phase: failed to persist user data patch",
+						"patched_keys", patchedKeys,
+						"error", err)
+				}
+			} else if bs.logger != nil {
+				bs.logger.Debug("after-phase: user data patched",
+					"patched_keys", patchedKeys,
+					"total_keys", len(newAttrs))
+			}
+		}
+	}
 }
 
 // TriggerFollowUpSuggestions triggers follow-up suggestions analysis for a resumed session.

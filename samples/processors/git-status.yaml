@@ -19,8 +19,10 @@ description: "Attaches git status when message contains @git:status"
 enabled: true
 
 # Apply to all messages (we filter by @git-status in the script)
-when: all
-position: prepend
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 priority: 100
 
 # Use companion script in the same directory

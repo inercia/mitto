@@ -15,13 +15,15 @@
 name: auggie-manage-rules
 description: "Generate and maintain .augment/rules/ files from workspace analysis and conversations"
 enabled: true
-when: first
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterSentMsgs: 10
+    afterTokens: 40000
 priority: 200
 timeout: 300s
 on_error: skip
-rerun:
-  afterSentMsgs: 10
-  afterTokens: 40000
 
 # Only for Auggie sessions, skip periodic prompts
 enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'

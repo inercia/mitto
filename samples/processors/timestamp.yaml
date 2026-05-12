@@ -2,7 +2,7 @@
 # Adds current date/time to the first message of each conversation
 #
 # This is a simple example that demonstrates:
-# - Using "when: first" to only run on the first message
+# - Using "when.on: userPrompt, match: first" to only run on the first message
 # - Using "output: prepend" to add context before the message
 # - A minimal hook that doesn't need the input message
 #
@@ -15,8 +15,10 @@ name: timestamp
 description: "Adds current timestamp to first message"
 enabled: true
 
-when: first       # Only on first message of conversation
-position: prepend
+when:
+  on: userPrompt
+  match: first      # Only on first message of conversation
+mutate: prepend
 priority: 200     # Run after other hooks
 
 command: ./timestamp.sh

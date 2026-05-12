@@ -82,49 +82,49 @@ func TestProcessorShouldApply(t *testing.T) {
 	}{
 		{
 			name:           "disabled hook",
-			hook:           &Processor{Enabled: boolPtr(false), When: config.ProcessorWhenAll},
+			hook:           &Processor{Enabled: boolPtr(false), When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name:           "when=first, is first",
-			hook:           &Processor{When: config.ProcessorWhenFirst},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst}},
 			isFirstMessage: true,
 			expected:       true,
 		},
 		{
 			name:           "when=first, not first",
-			hook:           &Processor{When: config.ProcessorWhenFirst},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst}},
 			isFirstMessage: false,
 			expected:       false,
 		},
 		{
 			name:           "when=all, is first",
-			hook:           &Processor{When: config.ProcessorWhenAll},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
 			isFirstMessage: true,
 			expected:       true,
 		},
 		{
 			name:           "when=all, not first",
-			hook:           &Processor{When: config.ProcessorWhenAll},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
 			isFirstMessage: false,
 			expected:       true,
 		},
 		{
 			name:           "when=all-except-first, is first",
-			hook:           &Processor{When: config.ProcessorWhenAllExceptFirst},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAllExceptFirst}},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name:           "when=all-except-first, not first",
-			hook:           &Processor{When: config.ProcessorWhenAllExceptFirst},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAllExceptFirst}},
 			isFirstMessage: false,
 			expected:       true,
 		},
 		{
 			name: "enabledWhen CEL matches acp.name",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.name == "auggie-opus"`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.name == "auggie-opus"`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-opus",
 				AvailableACPServers: []AvailableACPServer{
@@ -136,7 +136,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL acp.name no match",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.name == "auggie-opus"`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.name == "auggie-opus"`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-fast",
 				AvailableACPServers: []AvailableACPServer{
@@ -148,7 +148,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL matches acp.tags",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-opus",
 				AvailableACPServers: []AvailableACPServer{
@@ -160,7 +160,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL tags no match",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-fast",
 				AvailableACPServers: []AvailableACPServer{
@@ -172,7 +172,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL children.exists",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.exists`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.exists`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Sub task"},
@@ -183,14 +183,14 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name:           "enabledWhen CEL children.exists false",
-			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.exists`},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.exists`},
 			input:          &ProcessorInput{},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name: "enabledWhen CEL children.mcp_count threshold met",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.mcp_count >= 2`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.mcp_count >= 2`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
@@ -202,7 +202,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL children.mcp_count below threshold",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.mcp_count >= 2`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.mcp_count >= 2`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
@@ -214,7 +214,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL invalid expression fails open",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `!!!invalid`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `!!!invalid`},
 			input: &ProcessorInput{
 				ACPServer: "test",
 			},
@@ -223,14 +223,14 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name:           "enabledWhen empty means all",
-			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: ""},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: ""},
 			input:          &ProcessorInput{ACPServer: "anything"},
 			isFirstMessage: true,
 			expected:       true,
 		},
 		{
 			name: "tools.hasAllPatterns all patterns satisfied",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "jira_*"])`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "jira_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list", "jira_search"},
 			},
@@ -239,7 +239,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "tools.hasAllPatterns some patterns not satisfied",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "slack_*"])`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "slack_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},
@@ -248,14 +248,14 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name:           "tools.hasPattern no tools available",
-			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_*")`},
 			input:          &ProcessorInput{MCPToolNames: []string{}},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name: "enabledWhen empty tools means all",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: ""},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: ""},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"anything"},
 			},
@@ -264,7 +264,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "tools.hasPattern exact tool match",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_conversation_new")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_conversation_new")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -273,7 +273,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL tools.hasPattern",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_*")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -282,7 +282,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL tools.hasPattern no match",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("slack_*")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("slack_*")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},
@@ -306,11 +306,13 @@ func TestManagerApply_RerunAfterTime(t *testing.T) {
 	writeYAML(t, dir, "ctx.yaml", `
 name: context-injector
 enabled: true
-when: first
-position: prepend
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 50ms
+mutate: prepend
 text: "[context]"
-rerun:
-  afterTime: 50ms
 `)
 
 	mgr := NewManager(dir, nil)
@@ -359,11 +361,13 @@ func TestManagerApply_RerunAfterMsgs(t *testing.T) {
 	writeYAML(t, dir, "ctx.yaml", `
 name: context-injector
 enabled: true
-when: first
-position: prepend
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterSentMsgs: 3
+mutate: prepend
 text: "[context]"
-rerun:
-  afterSentMsgs: 3
 `)
 
 	mgr := NewManager(dir, nil)
@@ -424,11 +428,13 @@ func TestManagerApply_RerunAfterTokens(t *testing.T) {
 	writeYAML(t, dir, "ctx.yaml", `
 name: context-injector
 enabled: true
-when: first
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTokens: 1000
 text: "[CONTEXT]"
-position: prepend
-rerun:
-  afterTokens: 1000
+mutate: prepend
 `)
 
 	mgr := NewManager(dir, nil)
@@ -512,14 +518,13 @@ func TestAccumulateTokenUsage(t *testing.T) {
 	mgr := NewManager("", nil)
 	mgr.processors = []*Processor{
 		{
-			Name:  "tracked",
-			When:  config.ProcessorWhenFirst,
-			Text:  "test",
-			Rerun: &RerunConfig{AfterTokens: 100},
+			Name: "tracked",
+			When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst, Rerun: &RerunConfig{AfterTokens: 100}},
+			Text: "test",
 		},
 		{
 			Name: "no-rerun",
-			When: config.ProcessorWhenFirst,
+			When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
 			Text: "test2",
 		},
 	}
@@ -574,10 +579,13 @@ func TestLoader_RerunOnlyWithFirst(t *testing.T) {
 	writeYAML(t, dir, "bad.yaml", `
 name: bad-rerun
 enabled: true
-when: all
+when:
+  on: userPrompt
+  match: all
+  rerun:
+    afterTime: 10m
 text: "test"
-rerun:
-  afterTime: 10m
+mutate: prepend
 `)
 
 	loader := NewLoader(dir, nil)
@@ -588,6 +596,202 @@ rerun:
 	// The bad processor should have been skipped
 	if len(procs) != 0 {
 		t.Errorf("expected 0 processors (bad rerun config skipped), got %d", len(procs))
+	}
+}
+
+// TestLoader_Validation tests all validation rules for the new on/match schema.
+func TestLoader_Validation(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		expectSkip  bool // true = processor should be skipped (bad file), false = should load OK
+		expectCount int  // expected processor count after load
+	}{
+		{
+			name: "missing when.on rejected",
+			yaml: `
+name: bad-on
+when:
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "missing when.match rejected",
+			yaml: `
+name: bad-match
+when:
+  on: userPrompt
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "invalid when.on value rejected",
+			yaml: `
+name: bad-on-val
+when:
+  on: beforeSend
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "kebab-case all-except-first rejected",
+			yaml: `
+name: bad-kebab
+when:
+  on: userPrompt
+  match: all-except-first
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "camelCase allExceptFirst accepted",
+			yaml: `
+name: ok-camel
+when:
+  on: userPrompt
+  match: allExceptFirst
+command: /bin/echo
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "agentResponded with text rejected",
+			yaml: `
+name: bad-ar-text
+when:
+  on: agentResponded
+  match: all
+text: "some text"
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "agentResponded with mutate rejected",
+			yaml: `
+name: bad-ar-mutate
+when:
+  on: agentResponded
+  match: all
+mutate: prepend
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "agentResponded with rerun rejected",
+			yaml: `
+name: bad-ar-rerun
+when:
+  on: agentResponded
+  match: all
+  rerun:
+    afterTime: 10m
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "agentResponded command-mode accepted",
+			yaml: `
+name: ok-ar-cmd
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "agentResponded prompt-mode accepted",
+			yaml: `
+name: ok-ar-prompt
+when:
+  on: agentResponded
+  match: all
+prompt: "Analyze the session."
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "userPrompt stopReasons rejected",
+			yaml: `
+name: bad-up-stop
+when:
+  on: userPrompt
+  match: all
+  stopReasons: ["end_turn"]
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "userPrompt excludeOrigins rejected",
+			yaml: `
+name: bad-up-excl
+when:
+  on: userPrompt
+  match: all
+  excludeOrigins: ["user"]
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "legacy sent: key rejected",
+			yaml: `
+name: bad-sent
+when:
+  sent: all
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "text mode without mutate rejected",
+			yaml: `
+name: bad-text-no-mutate
+when:
+  on: userPrompt
+  match: all
+text: "hello"
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeYAML(t, dir, "proc.yaml", tt.yaml)
+			loader := NewLoader(dir, nil)
+			procs, err := loader.Load()
+			if err != nil {
+				t.Fatalf("Load() should not return error (bad files skipped), got: %v", err)
+			}
+			if len(procs) != tt.expectCount {
+				t.Errorf("expected %d processors, got %d", tt.expectCount, len(procs))
+			}
+		})
 	}
 }
 
@@ -621,7 +825,9 @@ func TestLoaderLoad(t *testing.T) {
 	hookContent := `
 name: test-hook
 command: /bin/echo
-when: all
+when:
+  on: userPrompt
+  match: all
 `
 	if err := os.WriteFile(filepath.Join(tmpDir, "test.yaml"), []byte(hookContent), 0644); err != nil {
 		t.Fatalf("Failed to write hook file: %v", err)
@@ -741,7 +947,7 @@ echo '{"message": "transformed message"}'
 		{
 			Name:    "transform-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenAll,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Output:  OutputTransform,
 			Input:   InputMessage,
 			HookDir: tmpDir,
@@ -780,7 +986,7 @@ echo '{"text": "PREFIX: "}'
 		{
 			Name:    "prepend-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenAll,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Output:  OutputPrepend,
 			Input:   InputNone,
 			HookDir: tmpDir,
@@ -819,7 +1025,7 @@ echo '{"text": " :SUFFIX"}'
 		{
 			Name:    "append-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenAll,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Output:  OutputAppend,
 			Input:   InputNone,
 			HookDir: tmpDir,
@@ -859,7 +1065,7 @@ echo '{"message": "this should be ignored"}'
 		{
 			Name:    "discard-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenAll,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Output:  OutputDiscard,
 			Input:   InputNone,
 			HookDir: tmpDir,
@@ -898,7 +1104,7 @@ echo '{"message": "first message only"}'
 		{
 			Name:    "first-only-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenFirst, // Only applies to first message
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchFirst}, // Only applies to first message
 			Output:  OutputTransform,
 			Input:   InputNone,
 			HookDir: tmpDir,
@@ -938,7 +1144,7 @@ exit 1
 		{
 			Name:    "failing-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenAll,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Output:  OutputTransform,
 			OnError: ErrorSkip, // Should skip on error
 			HookDir: tmpDir,
@@ -977,7 +1183,7 @@ exit 1
 		{
 			Name:    "failing-hook",
 			Command: scriptPath,
-			When:    config.ProcessorWhenAll,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Output:  OutputTransform,
 			OnError: ErrorFail, // Should fail on error
 			HookDir: tmpDir,
@@ -1000,10 +1206,10 @@ exit 1
 func TestApplyProcessorsTextModePrepend(t *testing.T) {
 	procs := []*Processor{
 		{
-			Name:     "text-prepend",
-			Text:     "PREFIX: ",
-			Position: config.ProcessorPositionPrepend,
-			When:     config.ProcessorWhenAll,
+			Name:   "text-prepend",
+			Text:   "PREFIX: ",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		},
 	}
 
@@ -1025,10 +1231,10 @@ func TestApplyProcessorsTextModePrepend(t *testing.T) {
 func TestApplyProcessorsTextModeAppend(t *testing.T) {
 	procs := []*Processor{
 		{
-			Name:     "text-append",
-			Text:     " SUFFIX",
-			Position: config.ProcessorPositionAppend,
-			When:     config.ProcessorWhenAll,
+			Name:   "text-append",
+			Text:   " SUFFIX",
+			Mutate: config.ProcessorMutateAppend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		},
 	}
 
@@ -1051,16 +1257,16 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 	// Multiple text-mode processors applied in order
 	procs := []*Processor{
 		{
-			Name:     "prepend-context",
-			Text:     "Context: ",
-			Position: config.ProcessorPositionPrepend,
-			When:     config.ProcessorWhenAll,
+			Name:   "prepend-context",
+			Text:   "Context: ",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		},
 		{
-			Name:     "append-footer",
-			Text:     "\n---\nEnd",
-			Position: config.ProcessorPositionAppend,
-			When:     config.ProcessorWhenAll,
+			Name:   "append-footer",
+			Text:   "\n---\nEnd",
+			Mutate: config.ProcessorMutateAppend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		},
 	}
 
@@ -1083,10 +1289,10 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 	procs := []*Processor{
 		{
-			Name:     "first-only",
-			Text:     "FIRST: ",
-			Position: config.ProcessorPositionPrepend,
-			When:     config.ProcessorWhenFirst,
+			Name:   "first-only",
+			Text:   "FIRST: ",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
 		},
 	}
 
@@ -1119,16 +1325,16 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 	procs := []*Processor{
 		{
-			Name:     "inject-context",
-			Text:     "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n",
-			Position: config.ProcessorPositionPrepend,
-			When:     config.ProcessorWhenFirst,
+			Name:   "inject-context",
+			Text:   "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
 		},
 		{
-			Name:     "inject-footer",
-			Text:     "\n[agent: @mitto:acp_server]",
-			Position: config.ProcessorPositionAppend,
-			When:     config.ProcessorWhenAll,
+			Name:   "inject-footer",
+			Text:   "\n[agent: @mitto:acp_server]",
+			Mutate: config.ProcessorMutateAppend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		},
 	}
 
@@ -1193,10 +1399,10 @@ func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {
 func TestApplyProcessorsVariablesEmptyValues(t *testing.T) {
 	procs := []*Processor{
 		{
-			Name:     "context",
-			Text:     "Parent: @mitto:parent_session_id\n",
-			Position: config.ProcessorPositionPrepend,
-			When:     config.ProcessorWhenAll,
+			Name:   "context",
+			Text:   "Parent: @mitto:parent_session_id\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		},
 	}
 
@@ -1227,10 +1433,10 @@ func TestApplyProcessorsVariablesEmptyValues(t *testing.T) {
 func TestApplyProcessorsVariablesWithAvailableServers(t *testing.T) {
 	procs := []*Processor{
 		{
-			Name:     "server-info",
-			Text:     "Available: @mitto:available_acp_servers\n\n",
-			Position: config.ProcessorPositionPrepend,
-			When:     config.ProcessorWhenFirst,
+			Name:   "server-info",
+			Text:   "Available: @mitto:available_acp_servers\n\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
 		},
 	}
 
@@ -1265,7 +1471,9 @@ func TestManagerLoadAndApply(t *testing.T) {
 name: test-manager-hook
 command: /bin/echo
 args: ['{"message": "from manager"}']
-when: all
+when:
+  on: userPrompt
+  match: all
 output: transform
 `
 	if err := os.WriteFile(filepath.Join(tmpDir, "hook.yaml"), []byte(hookContent), 0644); err != nil {
@@ -1465,22 +1673,22 @@ func TestExecutorParseOutput(t *testing.T) {
 	}
 }
 
-func TestProcessorGetPosition(t *testing.T) {
+func TestProcessorGetMutate(t *testing.T) {
 	tests := []struct {
 		name     string
-		position config.ProcessorPosition
-		expected config.ProcessorPosition
+		mutate   config.ProcessorMutate
+		expected config.ProcessorMutate
 	}{
-		{"empty defaults to prepend", "", config.ProcessorPositionPrepend},
-		{"prepend", config.ProcessorPositionPrepend, config.ProcessorPositionPrepend},
-		{"append", config.ProcessorPositionAppend, config.ProcessorPositionAppend},
+		{"empty defaults to prepend", "", config.ProcessorMutatePrepend},
+		{"prepend", config.ProcessorMutatePrepend, config.ProcessorMutatePrepend},
+		{"append", config.ProcessorMutateAppend, config.ProcessorMutateAppend},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &Processor{Position: tt.position}
-			if got := h.GetPosition(); got != tt.expected {
-				t.Errorf("GetPosition() = %v, want %v", got, tt.expected)
+			h := &Processor{Mutate: tt.mutate}
+			if got := h.GetMutate(); got != tt.expected {
+				t.Errorf("GetMutate() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
@@ -1539,8 +1747,10 @@ func TestCloneWithDirProcessors(t *testing.T) {
 	writeYAML(t, globalDir, "global.yaml", `
 name: global-proc
 enabled: true
-when: all
-position: prepend
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 text: "global"
 `)
 
@@ -1549,8 +1759,10 @@ text: "global"
 	writeYAML(t, wsDir, "workspace.yaml", `
 name: ws-proc
 enabled: true
-when: all
-position: append
+when:
+  on: userPrompt
+  match: all
+mutate: append
 text: "workspace"
 `)
 
@@ -1587,8 +1799,10 @@ func TestCloneWithDirProcessors_Override(t *testing.T) {
 	writeYAML(t, globalDir, "shared.yaml", `
 name: shared
 enabled: true
-when: all
-position: prepend
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 text: "global version"
 `)
 
@@ -1597,8 +1811,10 @@ text: "global version"
 	writeYAML(t, wsDir, "shared.yaml", `
 name: shared
 enabled: true
-when: all
-position: append
+when:
+  on: userPrompt
+  match: all
+mutate: append
 text: "workspace version"
 `)
 
@@ -1616,8 +1832,8 @@ text: "workspace version"
 	if procs[0].Text != "workspace version" {
 		t.Errorf("expected workspace version, got %q", procs[0].Text)
 	}
-	if procs[0].GetPosition() != "append" {
-		t.Errorf("expected append position from workspace override, got %q", procs[0].GetPosition())
+	if procs[0].GetMutate() != "append" {
+		t.Errorf("expected append mutate from workspace override, got %q", procs[0].GetMutate())
 	}
 }
 
@@ -1626,7 +1842,10 @@ func TestCloneWithDirProcessors_NonexistentDir(t *testing.T) {
 	writeYAML(t, globalDir, "global.yaml", `
 name: global-proc
 enabled: true
-when: all
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 text: "global"
 `)
 
@@ -1652,8 +1871,11 @@ func TestCloneWithDirProcessors_Priority(t *testing.T) {
 	writeYAML(t, globalDir, "high.yaml", `
 name: high-priority
 enabled: true
-when: all
+when:
+  on: userPrompt
+  match: all
 priority: 50
+mutate: prepend
 text: "high"
 `)
 
@@ -1661,8 +1883,11 @@ text: "high"
 	writeYAML(t, wsDir, "low.yaml", `
 name: low-priority
 enabled: true
-when: all
+when:
+  on: userPrompt
+  match: all
 priority: 10
+mutate: prepend
 text: "low"
 `)
 
@@ -1692,7 +1917,10 @@ func TestCloneWithDirProcessors_EmptyDirs(t *testing.T) {
 	writeYAML(t, globalDir, "global.yaml", `
 name: global
 enabled: true
-when: all
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
 text: "global"
 `)
 
@@ -1760,7 +1988,9 @@ func TestLoaderPromptModeValidation(t *testing.T) {
 		dir := t.TempDir()
 		writeYAML(t, dir, "valid.yaml", `
 name: valid-prompt
-when: all
+when:
+  on: userPrompt
+  match: all
 prompt: "Use mitto_conversation_history to retrieve messages."
 `)
 		loader := NewLoader(dir, nil)
@@ -1780,7 +2010,9 @@ prompt: "Use mitto_conversation_history to retrieve messages."
 		dir := t.TempDir()
 		writeYAML(t, dir, "bad.yaml", `
 name: bad-proc
-when: all
+when:
+  on: userPrompt
+  match: all
 prompt: "Analyze this"
 command: /bin/echo
 `)
@@ -1798,7 +2030,9 @@ command: /bin/echo
 		dir := t.TempDir()
 		writeYAML(t, dir, "bad.yaml", `
 name: bad-proc
-when: all
+when:
+  on: userPrompt
+  match: all
 prompt: "Analyze this"
 text: "some text"
 `)
@@ -1818,7 +2052,7 @@ func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
 	mgr.processors = []*Processor{
 		{
 			Name:   "test-prompt",
-			When:   config.ProcessorWhenAll,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Prompt: "Analyze the session @mitto:session_id",
 		},
 	}
@@ -1861,7 +2095,7 @@ func TestPromptModeSingleNotBatched(t *testing.T) {
 	mgr.processors = []*Processor{
 		{
 			Name:   "solo-proc",
-			When:   config.ProcessorWhenAll,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Prompt: "Solo prompt",
 		},
 	}
@@ -1914,12 +2148,12 @@ func TestPromptModeBatching(t *testing.T) {
 	mgr.processors = []*Processor{
 		{
 			Name:   "proc-alpha",
-			When:   config.ProcessorWhenAll,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Prompt: "Alpha task prompt",
 		},
 		{
 			Name:   "proc-beta",
-			When:   config.ProcessorWhenAll,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 			Prompt: "Beta task prompt",
 		},
 	}
@@ -1988,4 +2222,747 @@ func writeYAML(t *testing.T, dir, filename, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write %s: %v", path, err)
 	}
+}
+
+// makeAfterInput returns a minimal AfterProcessorInput for tests.
+// SessionDir is set to a stable key so the MemoryStateStore injected by
+// makeAfterManager shares state across successive calls within the same test.
+func makeAfterInput(origin, stopReason string) AfterProcessorInput {
+	return AfterProcessorInput{
+		SessionID:     "test-session",
+		SessionDir:    "test-session-dir", // key for MemoryStateStore
+		Origin:        origin,
+		StopReason:    stopReason,
+		UserPrompt:    "hello",
+		AgentMessages: []string{"world"},
+		StartedAt:     time.Now().Add(-time.Second),
+		EndedAt:       time.Now(),
+	}
+}
+
+// makeAfterManager returns a Manager with no processors directory, using the
+// given processors slice directly (bypasses the filesystem loader).
+// A MemoryStateStore is injected so match:first / cadence state is preserved
+// across successive ApplyAfter calls within the same test.
+func makeAfterManager(procs []*Processor) *Manager {
+	m := NewManager("", nil)
+	m.processors = procs
+	m.SetStateStore(NewMemoryStateStore())
+	return m
+}
+
+// TestApplyAfter_EmptyPipeline verifies that an empty processor list returns
+// a zero-value ApplyAfterResult without panicking.
+func TestApplyAfter_EmptyPipeline(t *testing.T) {
+	m := makeAfterManager(nil)
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+	if len(result.Notifications) != 0 || len(result.ActionButtons) != 0 ||
+		len(result.UserDataPatch) != 0 || len(result.Errors) != 0 {
+		t.Errorf("expected empty result, got %+v", result)
+	}
+}
+
+// TestApplyAfter_SkipsUserPromptProcessors ensures userPrompt processors are ignored.
+func TestApplyAfter_SkipsUserPromptProcessors(t *testing.T) {
+	proc := &Processor{
+		Name:    "pre-phase",
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Command: "echo",
+		Output:  OutputDiscard,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+	if len(result.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", result.Errors)
+	}
+}
+
+// TestApplyAfter_StopReasonFilter verifies that processors skip when the stop
+// reason does not match the processor's stopReasons list.
+func TestApplyAfter_StopReasonFilter(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "echo.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho done"), 0755)
+
+	proc := &Processor{
+		Name:    "end-turn-only",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputDiscard,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// Should fire for endTurn
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors for endTurn: %v", result.Errors)
+	}
+
+	// Should skip for maxTokens
+	result2 := m.ApplyAfter(context.Background(), makeAfterInput("user", "maxTokens"))
+	if len(result2.Errors) != 0 {
+		t.Errorf("unexpected errors for maxTokens: %v", result2.Errors)
+	}
+}
+
+// TestApplyAfter_OriginFilter verifies that excludeOrigins causes the processor
+// to be skipped when the origin matches.
+func TestApplyAfter_OriginFilter(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "echo.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho done"), 0755)
+
+	proc := &Processor{
+		Name:    "no-periodic",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}, ExcludeOrigins: []string{"periodic-runner"}},
+		Command: scriptPath,
+		Output:  OutputDiscard,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// Should skip for periodic-runner
+	result := m.ApplyAfter(context.Background(), makeAfterInput("periodic-runner", "end_turn"))
+	if len(result.Errors) != 0 {
+		t.Errorf("expected no errors for excluded origin, got %v", result.Errors)
+	}
+
+	// Should fire for user
+	result2 := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+	if len(result2.Errors) != 0 {
+		t.Errorf("expected no errors for user origin, got %v", result2.Errors)
+	}
+}
+
+// TestApplyAfter_MatchFirst verifies that match:first fires exactly once.
+func TestApplyAfter_MatchFirst(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '{\"title\":\"hello\",\"message\":\"world\"}'"), 0755)
+
+	proc := &Processor{
+		Name:    "first-only",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchFirst, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	input := makeAfterInput("user", "end_turn")
+
+	// First call: fires
+	r1 := m.ApplyAfter(context.Background(), input)
+	if len(r1.Notifications) != 1 {
+		t.Fatalf("first call: expected 1 notification, got %d", len(r1.Notifications))
+	}
+
+	// Second call: must be skipped
+	r2 := m.ApplyAfter(context.Background(), input)
+	if len(r2.Notifications) != 0 {
+		t.Errorf("second call: expected 0 notifications (match=first), got %d", len(r2.Notifications))
+	}
+}
+
+// TestApplyAfter_MatchAllExceptFirst verifies that match:allExceptFirst skips the
+// first call and fires from the second onward.
+func TestApplyAfter_MatchAllExceptFirst(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '{\"title\":\"T\",\"message\":\"M\"}'"), 0755)
+
+	proc := &Processor{
+		Name:    "not-first",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAllExceptFirst, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	input := makeAfterInput("user", "end_turn")
+
+	// First call: skipped
+	r1 := m.ApplyAfter(context.Background(), input)
+	if len(r1.Notifications) != 0 {
+		t.Errorf("first call: expected 0 notifications, got %d", len(r1.Notifications))
+	}
+
+	// Second call: fires
+	r2 := m.ApplyAfter(context.Background(), input)
+	if len(r2.Notifications) != 1 {
+		t.Errorf("second call: expected 1 notification, got %d", len(r2.Notifications))
+	}
+}
+
+// TestApplyAfter_OutputDiscard verifies that output:discard runs the command but
+// produces no entries in the result.
+func TestApplyAfter_OutputDiscard(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "side_effect.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'should be discarded'"), 0755)
+
+	proc := &Processor{
+		Name:    "side-effect",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputDiscard,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Notifications) != 0 || len(result.ActionButtons) != 0 ||
+		len(result.UserDataPatch) != 0 || len(result.Errors) != 0 {
+		t.Errorf("expected empty result for discard, got %+v", result)
+	}
+}
+
+// TestApplyAfter_OutputNotify_JSON verifies JSON-form notify output is parsed correctly.
+func TestApplyAfter_OutputNotify_JSON(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"Alert","message":"Done","style":"success"}'`), 0755)
+
+	proc := &Processor{
+		Name:    "json-notify",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(result.Notifications))
+	}
+	n := result.Notifications[0]
+	if n.Title != "Alert" || n.Message != "Done" || n.Style != "success" {
+		t.Errorf("unexpected notification: %+v", n)
+	}
+}
+
+// TestApplyAfter_OutputNotify_PlainText verifies plain-text notify output.
+func TestApplyAfter_OutputNotify_PlainText(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'Title Line\nBody text here'"), 0755)
+
+	proc := &Processor{
+		Name:    "text-notify",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(result.Notifications))
+	}
+	n := result.Notifications[0]
+	if n.Title != "Title Line" {
+		t.Errorf("expected title 'Title Line', got %q", n.Title)
+	}
+	if n.Style != "info" {
+		t.Errorf("expected style 'info', got %q", n.Style)
+	}
+}
+
+// TestApplyAfter_OutputActionButtons_Array verifies JSON array form.
+func TestApplyAfter_OutputActionButtons_Array(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "buttons.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '[{"label":"Run tests","prompt":"Run tests now"},{"label":"Deploy","prompt":"Deploy to prod"}]'`), 0755)
+
+	proc := &Processor{
+		Name:    "array-buttons",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputActionButtons,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.ActionButtons) != 2 {
+		t.Fatalf("expected 2 buttons, got %d", len(result.ActionButtons))
+	}
+	if result.ActionButtons[0].Label != "Run tests" {
+		t.Errorf("expected label 'Run tests', got %q", result.ActionButtons[0].Label)
+	}
+}
+
+// TestApplyAfter_OutputActionButtons_SingleObject verifies single-object form.
+func TestApplyAfter_OutputActionButtons_SingleObject(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "button.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"label":"Deploy","prompt":"Deploy now"}'`), 0755)
+
+	proc := &Processor{
+		Name:    "single-button",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputActionButtons,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.ActionButtons) != 1 {
+		t.Fatalf("expected 1 button, got %d", len(result.ActionButtons))
+	}
+	if result.ActionButtons[0].Label != "Deploy" {
+		t.Errorf("expected label 'Deploy', got %q", result.ActionButtons[0].Label)
+	}
+}
+
+// TestApplyAfter_OutputUserData verifies that multiple processors' patches are merged
+// and that later processors win on key collision.
+func TestApplyAfter_OutputUserData_Merge(t *testing.T) {
+	dir := t.TempDir()
+	script1 := filepath.Join(dir, "ud1.sh")
+	script2 := filepath.Join(dir, "ud2.sh")
+	os.WriteFile(script1, []byte(`#!/bin/sh
+printf '{"lang":"go","version":"1.0"}'`), 0755)
+	os.WriteFile(script2, []byte(`#!/bin/sh
+printf '{"version":"2.0","extra":"yes"}'`), 0755)
+
+	proc1 := &Processor{
+		Name:    "ud1",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: script1,
+		Output:  OutputUserData,
+	}
+	proc2 := &Processor{
+		Name:    "ud2",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: script2,
+		Output:  OutputUserData,
+	}
+	m := makeAfterManager([]*Processor{proc1, proc2})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if result.UserDataPatch["lang"] != "go" {
+		t.Errorf("expected lang=go, got %q", result.UserDataPatch["lang"])
+	}
+	// proc2 overrides version
+	if result.UserDataPatch["version"] != "2.0" {
+		t.Errorf("expected version=2.0 (proc2 wins), got %q", result.UserDataPatch["version"])
+	}
+	if result.UserDataPatch["extra"] != "yes" {
+		t.Errorf("expected extra=yes, got %q", result.UserDataPatch["extra"])
+	}
+}
+
+// TestApplyAfter_CommandFailure verifies that a failing command records a non-fatal
+// error and that later processors still run.
+func TestApplyAfter_CommandFailure(t *testing.T) {
+	dir := t.TempDir()
+	failScript := filepath.Join(dir, "fail.sh")
+	succScript := filepath.Join(dir, "succ.sh")
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1"), 0755)
+	os.WriteFile(succScript, []byte(`#!/bin/sh
+printf '{"title":"OK","message":"ran"}'`), 0755)
+
+	proc1 := &Processor{
+		Name:    "will-fail",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: failScript,
+		Output:  OutputDiscard,
+	}
+	proc2 := &Processor{
+		Name:    "will-succeed",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: succScript,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc1, proc2})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 error (from will-fail), got %d: %v", len(result.Errors), result.Errors)
+	}
+	if result.Errors[0].ProcessorName != "will-fail" {
+		t.Errorf("expected error from 'will-fail', got %q", result.Errors[0].ProcessorName)
+	}
+	if len(result.Notifications) != 1 {
+		t.Errorf("expected 1 notification from will-succeed, got %d", len(result.Notifications))
+	}
+}
+
+// TestApplyAfter_StdinPayload verifies that the JSON stdin payload contains expected fields.
+func TestApplyAfter_StdinPayload(t *testing.T) {
+	dir := t.TempDir()
+	// Read stdin and emit it as-is so we can inspect it via parseNotifyOutput hack
+	captureScript := filepath.Join(dir, "capture.sh")
+	outFile := filepath.Join(dir, "stdin.json")
+	script := fmt.Sprintf("#!/bin/sh\ncat > %s\nprintf '{\"title\":\"ok\",\"message\":\"done\"}'", outFile)
+	os.WriteFile(captureScript, []byte(script), 0755)
+
+	proc := &Processor{
+		Name:    "capture",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: captureScript,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	input := AfterProcessorInput{
+		SessionID:     "sess-abc",
+		Origin:        "user",
+		StopReason:    "end_turn",
+		UserPrompt:    "hello world",
+		AgentMessages: []string{"response text"},
+		StartedAt:     time.Now().Add(-time.Second),
+		EndedAt:       time.Now(),
+	}
+	result := m.ApplyAfter(context.Background(), input)
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("failed to read captured stdin: %v", err)
+	}
+
+	if !strings.Contains(string(data), `"sessionId":"sess-abc"`) {
+		t.Errorf("stdin JSON missing sessionId, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"origin":"user"`) {
+		t.Errorf("stdin JSON missing origin, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"stopReason":"end_turn"`) {
+		t.Errorf("stdin JSON missing stopReason, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"userPrompt":"hello world"`) {
+		t.Errorf("stdin JSON missing userPrompt, got: %s", string(data))
+	}
+}
+
+// TestParseNotifyOutput tests the notify output parser in isolation.
+func TestParseNotifyOutput(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantLen   int
+		wantTitle string
+		wantStyle string
+	}{
+		{"empty", "", 0, "", ""},
+		{"json full", `{"title":"T","message":"M","style":"warning"}`, 1, "T", "warning"},
+		{"json default style", `{"title":"T","message":"M"}`, 1, "T", "info"},
+		{"plain text single line", "Hello there", 1, "Hello there", "info"},
+		{"plain text multi line", "Title\nBody text", 1, "Title", "info"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseNotifyOutput(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != tt.wantLen {
+				t.Fatalf("expected %d notifications, got %d", tt.wantLen, len(got))
+			}
+			if tt.wantLen > 0 {
+				if got[0].Title != tt.wantTitle {
+					t.Errorf("title: got %q, want %q", got[0].Title, tt.wantTitle)
+				}
+				if got[0].Style != tt.wantStyle {
+					t.Errorf("style: got %q, want %q", got[0].Style, tt.wantStyle)
+				}
+			}
+		})
+	}
+}
+
+// TestParseActionButtonsOutput tests the actionButtons output parser in isolation.
+func TestParseActionButtonsOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantLen int
+		wantErr bool
+	}{
+		{"empty", "", 0, false},
+		{"array", `[{"label":"A","prompt":"a"},{"label":"B","prompt":"b"}]`, 2, false},
+		{"single object", `{"label":"X","prompt":"x"}`, 1, false},
+		{"invalid json", `not json`, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseActionButtonsOutput(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tt.wantErr)
+			}
+			if !tt.wantErr && len(got) != tt.wantLen {
+				t.Errorf("expected %d buttons, got %d", tt.wantLen, len(got))
+			}
+		})
+	}
+}
+
+// TestParseUserDataOutput tests the userData output parser in isolation.
+func TestParseUserDataOutput(t *testing.T) {
+	got, err := parseUserDataOutput(`{"key":"val","other":"42"}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["key"] != "val" || got["other"] != "42" {
+		t.Errorf("unexpected patch: %v", got)
+	}
+
+	_, err = parseUserDataOutput(`not json`)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+
+	got2, err := parseUserDataOutput("")
+	if err != nil || len(got2) != 0 {
+		t.Errorf("expected nil result for empty input, got %v %v", got2, err)
+	}
+}
+
+// TestApplyAfter_PromptMode verifies that a prompt-mode processor renders
+// its template with after-phase variables and parses the result as notify output.
+func TestApplyAfter_PromptMode_Notify(t *testing.T) {
+	proc := &Processor{
+		Name:   "prompt-notifier",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: `{"title":"Stop: @mitto:stop_reason","message":"Origin: @mitto:origin"}`,
+		Output: OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	input := makeAfterInput("user", "end_turn")
+	result := m.ApplyAfter(context.Background(), input)
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(result.Notifications))
+	}
+	n := result.Notifications[0]
+	if n.Title != "Stop: end_turn" {
+		t.Errorf("expected 'Stop: end_turn', got %q", n.Title)
+	}
+	if n.Message != "Origin: user" {
+		t.Errorf("expected 'Origin: user', got %q", n.Message)
+	}
+}
+
+// TestApplyAfter_Cadence_EveryNTurns verifies that a processor with
+// cadence.everyNTurns:2 fires on every 2nd turn (turns 2, 4, 6, ...).
+// Pre-increment semantics: TurnsSinceLastFire is incremented before the gate
+// check, so everyNTurns:2 means "fire when TurnsSinceLastFire reaches 2".
+func TestApplyAfter_Cadence_EveryNTurns(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"cadence","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "cadenced",
+		When: WhenConfig{
+			On:          PhaseAgentResponded,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTurns: 2},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	input := makeAfterInput("user", "end_turn")
+
+	// Turn 1: pre-increment→1; 1 < 2 → skip
+	r1 := m.ApplyAfter(context.Background(), input)
+	if len(r1.Notifications) != 0 {
+		t.Errorf("turn 1: expected 0 notifications (cadence not yet met), got %d", len(r1.Notifications))
+	}
+
+	// Turn 2: pre-increment→2; 2 >= 2 → fires! reset to 0
+	r2 := m.ApplyAfter(context.Background(), input)
+	if len(r2.Notifications) != 1 {
+		t.Errorf("turn 2: expected 1 notification (cadence met), got %d", len(r2.Notifications))
+	}
+
+	// Turn 3: pre-increment→1; 1 < 2 → skip
+	r3 := m.ApplyAfter(context.Background(), input)
+	if len(r3.Notifications) != 0 {
+		t.Errorf("turn 3: expected 0 notifications (cadence not yet met), got %d", len(r3.Notifications))
+	}
+
+	// Turn 4: pre-increment→2; 2 >= 2 → fires again
+	r4 := m.ApplyAfter(context.Background(), input)
+	if len(r4.Notifications) != 1 {
+		t.Errorf("turn 4: expected 1 notification (cadence met), got %d", len(r4.Notifications))
+	}
+
+	// Turn 5: pre-increment→1; 1 < 2 → skip
+	r5 := m.ApplyAfter(context.Background(), input)
+	if len(r5.Notifications) != 0 {
+		t.Errorf("turn 5: expected 0 notifications (cadence not yet met), got %d", len(r5.Notifications))
+	}
+}
+
+// TestApplyAfter_Cadence_AfterInterval verifies that a processor with
+// cadence.afterInterval fires only after the specified duration has passed.
+func TestApplyAfter_Cadence_AfterInterval(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"interval","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "interval-proc",
+		When: WhenConfig{
+			On:          PhaseAgentResponded,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{AfterInterval: "1h"},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+
+	// Use a controllable clock.
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := makeAfterManager([]*Processor{proc})
+	m.SetClock(func() time.Time { return fakeNow })
+	input := makeAfterInput("user", "end_turn")
+
+	// Turn 1: LastFiredAt is zero → interval threshold is skipped (nil time) → fires on first call
+	r1 := m.ApplyAfter(context.Background(), input)
+	if len(r1.Notifications) != 1 {
+		t.Errorf("turn 1 (first ever): expected 1 notification (never fired before), got %d", len(r1.Notifications))
+	}
+
+	// Turn 2: only 0 seconds elapsed → interval not met → skip
+	r2 := m.ApplyAfter(context.Background(), input)
+	if len(r2.Notifications) != 0 {
+		t.Errorf("turn 2: expected 0 notifications (interval not elapsed), got %d", len(r2.Notifications))
+	}
+
+	// Advance clock by 2 hours
+	fakeNow = fakeNow.Add(2 * time.Hour)
+	m.SetClock(func() time.Time { return fakeNow })
+
+	// Turn 3: 2h elapsed, threshold is 1h → fires
+	r3 := m.ApplyAfter(context.Background(), input)
+	if len(r3.Notifications) != 1 {
+		t.Errorf("turn 3: expected 1 notification (interval elapsed), got %d", len(r3.Notifications))
+	}
+}
+
+// TestApplyAfter_StatePersistence_MatchFirst verifies that match:first semantics
+// survive a manager restart by using a shared MemoryStateStore.
+func TestApplyAfter_StatePersistence_MatchFirst(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"first","message":"only once"}'`), 0755)
+
+	proc := &Processor{
+		Name:    "first-ever",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchFirst, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+
+	// Shared store simulates persistence across two Manager instances.
+	shared := NewMemoryStateStore()
+	input := makeAfterInput("user", "end_turn")
+
+	// Session 1: first manager instance fires the processor.
+	m1 := NewManager("", nil)
+	m1.processors = []*Processor{proc}
+	m1.SetStateStore(shared)
+	r1 := m1.ApplyAfter(context.Background(), input)
+	if len(r1.Notifications) != 1 {
+		t.Fatalf("session 1: expected 1 notification, got %d", len(r1.Notifications))
+	}
+
+	// Session 2: new manager instance — but same shared store.
+	// Should NOT fire because AgentResponseCount == 1 in the store.
+	m2 := NewManager("", nil)
+	m2.processors = []*Processor{proc}
+	m2.SetStateStore(shared)
+	r2 := m2.ApplyAfter(context.Background(), input)
+	if len(r2.Notifications) != 0 {
+		t.Errorf("session 2 (after restart): expected 0 notifications (match=first already fired), got %d", len(r2.Notifications))
+	}
+}
+
+// TestCadenceConfig_Validation verifies that invalid cadence configurations
+// are rejected by the loader.
+func TestCadenceConfig_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cadence *CadenceConfig
+		wantErr string
+	}{
+		{
+			name:    "no thresholds",
+			cadence: &CadenceConfig{},
+			wantErr: "at least one of",
+		},
+		{
+			name:    "negative everyNTurns",
+			cadence: &CadenceConfig{EveryNTurns: -1},
+			wantErr: "everyNTurns",
+		},
+		{
+			name:    "negative everyNTokens",
+			cadence: &CadenceConfig{EveryNTokens: -1},
+			wantErr: "everyNTokens",
+		},
+		{
+			name:    "invalid duration",
+			cadence: &CadenceConfig{AfterInterval: "not-a-duration"},
+			wantErr: "afterInterval",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yamlContent := buildProcessorYAML(tt.cadence)
+			tmpDir := t.TempDir()
+			f, _ := os.CreateTemp(tmpDir, "*.yaml")
+			f.WriteString(yamlContent)
+			f.Close()
+			loader := NewLoader(tmpDir, nil)
+			_, err := loader.LoadFile(f.Name())
+			if err == nil {
+				t.Fatalf("expected validation error for %q, got nil", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// buildProcessorYAML builds a minimal processor YAML with the given cadence config for testing.
+// When cadence is non-nil, ALL fields are always written (including zeros) so the YAML
+// parser sees an explicit cadence block (not null). This lets us test validation of
+// configurations that have cadence present but all thresholds at zero.
+func buildProcessorYAML(cadence *CadenceConfig) string {
+	var sb strings.Builder
+	sb.WriteString("name: test-cadence\n")
+	sb.WriteString("command: /bin/true\n")
+	sb.WriteString("when:\n")
+	sb.WriteString("  on: agentResponded\n")
+	sb.WriteString("  match: all\n")
+	if cadence != nil {
+		sb.WriteString("  cadence:\n")
+		// Always write all fields explicitly so the block is not parsed as null.
+		sb.WriteString(fmt.Sprintf("    everyNTurns: %d\n", cadence.EveryNTurns))
+		sb.WriteString(fmt.Sprintf("    everyNTokens: %d\n", cadence.EveryNTokens))
+		if cadence.AfterInterval != "" {
+			sb.WriteString(fmt.Sprintf("    afterInterval: %q\n", cadence.AfterInterval))
+		} else {
+			sb.WriteString("    afterInterval: \"\"\n")
+		}
+	}
+	return sb.String()
 }

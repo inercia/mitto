@@ -16,13 +16,15 @@
 name: cleanup-children
 description: "Reminds the agent to clean up child conversations it no longer needs"
 enabled: true
-when: first
-position: append
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterSentMsgs: 10
+    afterTime: 15m
+    afterTokens: 40000
+mutate: append
 priority: 95
-rerun:
-  afterSentMsgs: 10
-  afterTime: 15m
-  afterTokens: 40000
 enabledWhen: 'children.mcpCount >= 2 && tools.hasPattern("mitto_conversation_delete_*")'
 text: |
   ---

@@ -753,8 +753,13 @@ func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []stri
 // processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
 // Returns the original manager if no workspace processors are found.
 func (sm *SessionManager) loadWorkspaceProcessors(procMgr *processors.Manager, workingDir string) *processors.Manager {
-	if procMgr == nil || workingDir == "" {
+	if workingDir == "" {
 		return procMgr
+	}
+	// If no global processor manager exists yet, create a minimal empty one so
+	// workspace-local processors can still be loaded and executed.
+	if procMgr == nil {
+		procMgr = processors.NewManager("", sm.logger)
 	}
 
 	var dirs []string

@@ -15,13 +15,16 @@
 name: identify-user-data
 description: "Detects user data values from conversations and sets them via MCP"
 enabled: true
-when: first
+when:
+  on: agentResponded
+  match: all
+  stopReasons: [end_turn]
+  cadence:
+    everyNTurns: 3
+    everyNTokens: 15000
 priority: 190
 timeout: 120s
 on_error: skip
-rerun:
-  afterSentMsgs: 5
-  afterTokens: 15000
 
 # Only activate when the workspace has a user data schema and this isn't a periodic prompt
 enabledWhen: 'workspace.hasUserDataSchema && !session.isPeriodic'
@@ -55,7 +58,8 @@ prompt: |
 
   ## Your Task
 
-  1. Go through the latest messages in the conversation history.
+  1. Go through the latest user messages and agent messages in the conversation history
+     (look at both — the agent may have confirmed or echoed values that the user mentioned).
   2. For each field in the schema, check whether the messages contain information that
      matches the field's description.
   3. **Only extract values you are confident about.** Do not guess or fabricate values.
@@ -97,8 +101,8 @@ prompt: |
   Call it with:
   - `self_id`: your session ID (from `mitto_conversation_get_current`)
   - `conversation_id`: "@mitto:session_id"
-  - `event_types`: ["user_prompt"]
-  - `last_n`: 15
+  - `event_types`: ["user_prompt", "agent_message"]
+  - `last_n`: 10
 
   Review these messages for user data field values.
 
