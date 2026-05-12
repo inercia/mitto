@@ -26,7 +26,8 @@ Example processor file (processors/git-context.yaml):
   name: git-context
   description: "Adds recent git commits to context"
   when:
-    sent: first
+    on: userPrompt
+    match: first
   command: ./git-context.sh
   input: message
   output: prepend`,

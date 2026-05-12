@@ -245,7 +245,7 @@ type Processor struct {
 	Source ProcessorSource `yaml:"-" json:"source,omitempty"`
 }
 
-// RerunConfig configures automatic re-run for "when.sent: first" processors.
+// RerunConfig configures automatic re-run for "when.match: first" processors.
 type RerunConfig struct {
 	// AfterTime is the duration after which the processor should re-run.
 	// Supports Go duration strings: "10m", "1h", "30s", "2h30m".
@@ -343,7 +343,7 @@ type AfterProcessorInput struct {
 	SessionDir string `json:"-"`
 	// WorkingDir is the session's working directory (used for WorkingDirSession processors).
 	WorkingDir string `json:"workingDir,omitempty"`
-	// Origin is the source of the prompt: "user", "queue", "periodic-runner", "mcp-send-prompt".
+	// Origin is the source of the prompt: "user", "queue", or "periodic-runner".
 	Origin string `json:"origin"`
 	// StopReason is the ACP stop reason string (e.g. "end_turn", "max_tokens").
 	// These match the ACP SDK StopReason constants (snake_case).
