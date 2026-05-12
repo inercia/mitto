@@ -99,6 +99,10 @@ func (f *Frequency) Duration() time.Duration {
 type PeriodicPrompt struct {
 	// Prompt is the message text to send.
 	Prompt string `json:"prompt"`
+	// PromptName is the name of a workspace prompt to resolve at execution time.
+	// When set, the prompt text is resolved from the workspace prompts at execution time.
+	// Either Prompt or PromptName must be set.
+	PromptName string `json:"prompt_name,omitempty"`
 	// Frequency defines how often the prompt should be sent.
 	Frequency Frequency `json:"frequency"`
 	// Enabled indicates whether the periodic prompt is active.
@@ -115,7 +119,7 @@ type PeriodicPrompt struct {
 
 // Validate checks if the periodic prompt configuration is valid.
 func (p *PeriodicPrompt) Validate() error {
-	if p.Prompt == "" {
+	if p.Prompt == "" && p.PromptName == "" {
 		return ErrPromptEmpty
 	}
 	return p.Frequency.Validate()
@@ -190,7 +194,7 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
-func (ps *PeriodicStore) Update(prompt *string, frequency *Frequency, enabled *bool) error {
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -201,6 +205,9 @@ func (ps *PeriodicStore) Update(prompt *string, frequency *Frequency, enabled *b
 
 	if prompt != nil {
 		existing.Prompt = *prompt
+	}
+	if promptName != nil {
+		existing.PromptName = *promptName
 	}
 	if frequency != nil {
 		existing.Frequency = *frequency
