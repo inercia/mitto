@@ -52,12 +52,15 @@ func executeAfterCommand(ctx context.Context, proc *Processor, processorsDir str
 	duration := time.Since(start)
 
 	if logger != nil {
-		logger.Info("after-phase processor executed",
+		logAttrs := []any{
 			"name", proc.Name,
 			"duration", duration,
-			"exit_code", cmd.ProcessState.ExitCode(),
 			"stderr", stderr.String(),
-		)
+		}
+		if cmd.ProcessState != nil {
+			logAttrs = append(logAttrs, "exit_code", cmd.ProcessState.ExitCode())
+		}
+		logger.Info("after-phase processor executed", logAttrs...)
 	}
 
 	if err != nil {

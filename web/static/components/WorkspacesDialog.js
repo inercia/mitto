@@ -1418,7 +1418,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                                                 <span class="text-sm font-medium font-mono ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${proc.name}</span>
                                                 <span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>
                                                 ${isPromptMode && html`<span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">prompt</span>`}
-                                                ${proc.when && html`<span class="text-xs text-gray-500">when: ${proc.when}</span>`}
+                                                ${proc.on && html`<span class="text-xs text-gray-500">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
                                               </div>
                                               ${proc.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${proc.description}</p>`}
                                             </div>
