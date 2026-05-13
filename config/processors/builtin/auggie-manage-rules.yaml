@@ -1,39 +1,35 @@
 ##########################################################################################
-# Builtin processor: generates and maintains Augment rules files for a workspace.
+# Builtin processor: generates initial Augment rules files for a workspace.
 #
-# On first run, dispatches a prompt to an auxiliary AI agent that explores the workspace
-# and generates comprehensive .augment/rules/ files. On subsequent runs (every 10
-# messages or 40K tokens), it reviews recent conversation history and updates the rules with new
-# patterns, conventions, and lessons learned.
+# One-shot: fires only on the first user prompt when no .augment/rules/ files exist yet.
+# Dispatches a prompt to an auxiliary AI agent that explores the workspace and generates
+# comprehensive .augment/rules/ files.
+#
+# For ongoing updates after the initial generation, see auggie-update-rules.yaml.
 #
 # Fire-and-forget: the auxiliary agent works in the background while the main
 # conversation continues normally.
 #
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
-# Only activates when the ACP server is Auggie.
+# Only activates when the ACP server is Auggie and no rules files exist yet.
 ##########################################################################################
 name: auggie-manage-rules
-description: "Generate and maintain .augment/rules/ files from workspace analysis and conversations"
+description: "Generate initial .augment/rules/ files from workspace analysis"
 enabled: true
 when:
   on: userPrompt
   match: first
-  rerun:
-    afterSentMsgs: 10
-    afterTokens: 40000
 priority: 200
 timeout: 300s
 on_error: skip
 
-# Only for Auggie sessions, skip periodic prompts
-enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'
+# Only for Auggie sessions, skip periodic prompts, and only when rules don't exist yet
+enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")'
 
 prompt: |
-  You manage `.augment/rules` files for this workspace.
+  You generate `.augment/rules` files for this workspace for the first time.
 
   Working directory: @mitto:working_dir
-
-  ## If no `.augment/rules/` files exist yet
 
   Explore the workspace and generate comprehensive rules files:
 
@@ -62,19 +58,6 @@ prompt: |
 
   3. Create `.augment/rules/` if needed. Keep each file <200 lines.
 
-  ## If `.augment/rules/` files already exist
-
-  Review the recent conversation messages below and update rules based on insights
-  and lessons learned:
-
-  1. Add new architectural patterns or components introduced
-  2. Document new conventions, best practices, or anti-patterns discovered
-  3. Update outdated or incomplete sections
-  4. Add sections for uncovered areas (new packages, APIs, patterns)
-  5. Ensure examples reflect current codebase
-
-  If no meaningful updates are needed, do nothing — do NOT modify any files.
-
   ## Size and Scope Control
 
   Rules files must stay lean and focused. They are loaded into every AI conversation,
@@ -84,11 +67,6 @@ prompt: |
     beyond this, split it or aggressively trim.
   - **Total budget**: Aim for no more than ~10 rules files total. Fewer, focused files
     are better than many overlapping ones.
-  - **Prune ruthlessly**: On every update, actively look for content to remove:
-    - Outdated patterns that no longer match the codebase
-    - Redundant entries that repeat information already in other files
-    - Obvious guidance that any competent AI would follow without being told
-    - Verbose examples that could be shortened without losing clarity
   - **Never duplicate docs**: If the project has its own documentation, reference it
     by path instead of copying content into rules files.
   - **Prefer tables over prose** for quick-reference material.
@@ -103,24 +81,10 @@ prompt: |
   - Include common pitfalls and anti-pattern examples
   - Reference existing repo docs rather than duplicating
 
-  === Recent Conversation ===
-
-  Use the `mitto_conversation_history` MCP tool to retrieve the recent conversation.
-  Call it with:
-  - `self_id`: your session ID (from `mitto_conversation_get_current`)
-  - `conversation_id`: "@mitto:session_id"
-  - `event_types`: ["user_prompt", "agent_message"]
-  - `last_n`: 10
-
-  Review these messages for patterns, conventions, and lessons learned.
-
   ## Notification
 
-  After completing your work, if you created or updated any rules files, call
-  `mitto_ui_notify` with:
+  After completing your work, call `mitto_ui_notify` with:
   - `self_id`: "@mitto:session_id"
-  - `title`: "✏️ Rules Updated"
-  - `message`: a brief summary, e.g. "Updated 3 rules files with new patterns"
+  - `title`: "✏️ Rules Generated"
+  - `message`: a brief summary, e.g. "Generated 5 rules files for this workspace"
   - `style`: "success"
-
-  If no changes were needed, do NOT send any notification — stay completely silent.

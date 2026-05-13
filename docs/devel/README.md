@@ -28,7 +28,13 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, and process GC
 
-- **[Restricted Runner Integration](restricted-runner-integration.md)** — Runner system architecture, sandbox types, configuration hierarchy, and ACP subprocess integration
+- **[Restricted Runner Integration](restricted-runners.md)** — Runner system architecture, sandbox types, configuration hierarchy, and ACP subprocess integration
+
+- **[Message Processing Pipeline](processors.md)** — Unified processing pipeline, declarative/command/prompt processors, variable substitution
+
+### Analysis
+
+- **[Session Resume Analysis](session-resume-analysis.md)** — ACP session resume support analysis, UNSTABLE API usage, implementation plan
 
 ### Debugging & Tools
 
@@ -60,7 +66,9 @@ This directory contains technical documentation for developers working on Mitto.
 | MCP debugging       | [MCP Servers](mcp.md)                                             | Global Debug Server                          |
 | Session MCP         | [MCP Servers](mcp.md)                                             | Per-Session MCP Servers                      |
 | Settings API        | [MCP Servers](mcp.md)                                             | Advanced Settings API                        |
-| Restricted runners  | [Restricted Runner Integration](restricted-runner-integration.md) | Architecture, Runner Types, Config Hierarchy |
+| Restricted runners  | [Restricted Runner Integration](restricted-runners.md)            | Architecture, Runner Types, Config Hierarchy |
+| Message processors  | [Message Processing Pipeline](processors.md)                      | Pipeline, Processor Types, Variable Substitution |
+| Session resume      | [Session Resume Analysis](session-resume-analysis.md)             | ACP resume support, UNSTABLE API, implementation plan |
 
 ## Additional Documentation
 

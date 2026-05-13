@@ -150,8 +150,10 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | userPrompt / first | text   | Yes (requires smart model + `browser_*` MCP tools) |
 | `cleanup-children`    | Reminds the agent to clean up child conversations it no longer needs                                     | userPrompt / first | text   | Yes (requires ≥2 MCP-created children + delete tool) |
 | `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
-| `auggie-manage-rules` | Generates and maintains `.augment/rules/` from workspace analysis and conversations (every 15 messages)   | userPrompt / first | prompt | **Yes** (Auggie only; disable per workspace if unwanted) |
-| `claude-manage-memory`| Generates and maintains Claude Code memory files from workspace analysis and conversations (every 15 msgs)| userPrompt / first | prompt | **Yes** (Claude Code only; disable per workspace if unwanted) |
+| `auggie-manage-rules` | Generates initial `.augment/rules/` when none exist | userPrompt / first | prompt | **Yes** (Auggie only) |
+| `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 10 turns or 40k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
+| `claude-manage-memory`| Generates initial Claude Code memory files when none exist | userPrompt / first | prompt | **Yes** (Claude Code only) |
+| `claude-update-memory`| Updates Claude Code memory files from conversation insights (every 15 turns or 60k tokens) | agentResponded / all | prompt | **Yes** (Claude Code only) |
 | `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 3 turns or 15k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
 | `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | userPrompt / first | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description) |
 

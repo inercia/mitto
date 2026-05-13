@@ -149,6 +149,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		// sending to the client.  Even authenticated users must not receive the password
 		// because it could be exfiltrated through XSS, dev-tools inspection, or screen-sharing.
 		response["web"] = sanitizeWebConfig(s.config.MittoConfig.Web)
+		// Indicate to the frontend whether a password already exists (in keychain or settings).
+		// The frontend uses this to distinguish "user left the field empty intentionally"
+		// from "field is empty because there was never a password" — without exposing the password itself.
+		response["has_auth_password"] = s.hasExistingSimpleAuth()
 		response["ui"] = s.config.MittoConfig.UI
 		response["session"] = s.config.MittoConfig.Session
 		response["conversations"] = s.config.MittoConfig.Conversations

@@ -1193,6 +1193,9 @@ export function SettingsDialog({
   // Track whether the password was loaded from an existing config (sanitized by backend).
   // When true, the user hasn't changed it and we should skip client-side validation.
   const [authPasswordUnchanged, setAuthPasswordUnchanged] = useState(false);
+  // True when the backend reported that a password already exists (in keychain or settings).
+  // Used to distinguish "user left field empty" from "no password was ever set".
+  const [hasExistingPassword, setHasExistingPassword] = useState(false);
   const [cfEnabled, setCfEnabled] = useState(false);
   const [cfTeamDomain, setCfTeamDomain] = useState("");
   const [cfAudience, setCfAudience] = useState("");
@@ -1529,6 +1532,8 @@ export function SettingsDialog({
       // Backend sanitizes the password (sends empty string) for security.
       // Track this so we can skip validation and preserve the existing password on save.
       setAuthPasswordUnchanged(!!loadedUsername && !loadedPassword);
+      // Track whether a password already exists in the keychain/settings.
+      setHasExistingPassword(!!config.has_auth_password);
 
       // Cloudflare auth
       setCfEnabled(!!hasCfAuth);
@@ -1697,11 +1702,17 @@ export function SettingsDialog({
       // Skip password validation if the password hasn't been changed from the
       // sanitized empty value loaded from the backend (existing password is preserved server-side).
       if (!authPasswordUnchanged) {
-        const passwordError = validatePassword(authPassword);
-        if (passwordError) {
-          setError(passwordError);
-          setActiveTab("web");
-          return;
+        // If the field is empty but a password already exists in the keychain,
+        // treat this as "keep existing" — no validation needed.
+        if (authPassword === "" && hasExistingPassword) {
+          // No-op: server will preserve the existing password.
+        } else {
+          const passwordError = validatePassword(authPassword);
+          if (passwordError) {
+            setError(passwordError);
+            setActiveTab("web");
+            return;
+          }
         }
       }
     }
@@ -3642,7 +3653,14 @@ export function SettingsDialog({
                                       value=${authPassword}
                                       onInput=${(e) => {
                                         setAuthPassword(e.target.value);
-                                        setAuthPasswordUnchanged(false);
+                                        if (e.target.value === "" && hasExistingPassword) {
+                                          // User cleared the field while a keychain password exists
+                                          // → revert to "keep existing" mode
+                                          setAuthPasswordUnchanged(true);
+                                        } else if (e.target.value !== "") {
+                                          // User typed a new password → mark as changed
+                                          setAuthPasswordUnchanged(false);
+                                        }
                                       }}
                                       placeholder=${authPasswordUnchanged
                                         ? "••••••••"

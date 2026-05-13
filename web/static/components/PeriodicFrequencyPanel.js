@@ -146,7 +146,7 @@ export function PeriodicFrequencyPanel({
   // Note: newAt is in LOCAL time, needs to be converted to UTC before sending
   const saveFrequency = useCallback(
     async (newValue, newUnit, newAtLocal) => {
-      if (!sessionId || isSaving || disabled) return;
+      if (!sessionId || isSaving) return;
 
       // Immediately update local next run time estimate
       setLocalNextScheduledAt(calculateNextRun(newValue, newUnit));
@@ -189,7 +189,7 @@ export function PeriodicFrequencyPanel({
         setIsSaving(false);
       }
     },
-    [sessionId, isSaving, disabled, onFrequencyChange, calculateNextRun],
+    [sessionId, isSaving, onFrequencyChange, calculateNextRun],
   );
 
   // Handle value change
@@ -420,9 +420,8 @@ export function PeriodicFrequencyPanel({
           value=${localValue}
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
-          disabled=${isSaving || disabled}
-          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving ||
-          disabled
+          disabled=${isSaving}
+          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
             ? "opacity-50 cursor-not-allowed"
             : ""}"
         />
@@ -431,9 +430,8 @@ export function PeriodicFrequencyPanel({
         <select
           value=${localUnit}
           onChange=${handleUnitChange}
-          disabled=${isSaving || disabled}
-          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving ||
-          disabled
+          disabled=${isSaving}
+          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
             ? "opacity-50 cursor-not-allowed"
             : "cursor-pointer"}"
         >
@@ -453,9 +451,8 @@ export function PeriodicFrequencyPanel({
             value=${localAt}
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
-            disabled=${isSaving || disabled}
-            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving ||
-            disabled
+            disabled=${isSaving}
+            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             placeholder="HH:MM"

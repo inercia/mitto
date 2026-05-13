@@ -273,7 +273,7 @@ This separation ensures:
 
 - Blocked IPs are rejected before the handler runs
 - Same blocklist and IP metrics as other public endpoints
-- See [Restricted Runner Integration](restricted-runner-integration.md) for defense architecture
+- See [Restricted Runner Integration](restricted-runners.md) for defense architecture
 
 ### Mutation Scope
 
@@ -657,18 +657,3 @@ curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
 3. No data exposure — callback returns minimal response
 4. Session authentication required for all management endpoints
 
-## Implementation Checklist
-
-When implementing callback support:
-
-- [ ] `CallbackStore` in `internal/session/callback.go` (persistence)
-- [ ] `CallbackIndex` in `internal/web/callback.go` (in-memory lookup)
-- [ ] `CallbackRateLimiter` in `internal/web/callback.go` (per-token limits)
-- [ ] `handleCallbackTrigger` in `internal/web/callback.go` (public POST handler)
-- [ ] `handleSessionCallback` in `internal/web/callback.go` (GET/POST/DELETE management)
-- [ ] `buildCallbackIndex()` in `internal/web/server.go` (startup scan)
-- [ ] Route registration in `internal/web/server.go` (`POST {prefix}/api/callback/{token}`)
-- [ ] Frontend UI in `web/static/components/ConversationPropertiesPanel.js`
-- [ ] Integration tests in `tests/integration/inprocess/callback_test.go`
-- [ ] Unit tests for `CallbackStore`, `CallbackIndex`, `CallbackRateLimiter`
-- [ ] Documentation updates (this file, README, web-interface.md)

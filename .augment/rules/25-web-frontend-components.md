@@ -16,7 +16,6 @@ keywords:
   - expand
   - collapse
   - ContextMenu
-  - SessionItem
   - useResizeHandle
   - useSwipeNavigation
   - ConversationPropertiesPanel
@@ -46,6 +45,8 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `Icons`                      | `Icons.js`                        | SVG icon components                                  |
 | `SessionPanel`               | `SessionPanel.js`                 | Unified right-side overlay with tabs (Changes + Properties + User Data) |
 | `ToastContainer`             | `ToastContainer.js`               | Renders toast stack, color-coded by severity         |
+| `PeriodicPromptSelector`     | `PeriodicPromptSelector.js`       | Dropdown to select a workspace prompt by name for periodic execution |
+| `PeriodicFrequencyPanel`     | `PeriodicFrequencyPanel.js`       | Frequency controls; `disabled=true` shows "run now" icon but controls (input/select/time) stay editable |
 | `ContextMenu`                | `app.js`                          | Right-click menus with viewport-aware positioning    |
 | `SessionItem`                | `app.js`                          | Session list item with swipe, context menu, status   |
 
@@ -81,9 +82,7 @@ const selectConfigOptions = useMemo(() => {
 
 ### Context Usage Percentage (center bar)
 
-**Primary**: `context_usage` from ACP `SessionUsageUpdate` — UNSTABLE; most agents don't send it.
-**Fallback**: `tokenUsage.input_tokens ÷ getContextWindowSize(modelId)` from `utils/models.js`.
-Always implement both: the primary path will silently produce nothing if the agent doesn't support it.
+**Primary**: `context_usage` from ACP `SessionUsageUpdate` (UNSTABLE — most agents don't send it). **Fallback**: `tokenUsage.input_tokens ÷ getContextWindowSize(modelId)` from `utils/models.js`. Implement both.
 
 ### Keyboard Shortcuts
 
@@ -122,7 +121,6 @@ Severity durations: info/success=5s, warning/error=10s. Max 5 simultaneous. Rend
 
 - `useResizeHandle`: mouse+touch drag for height. Spread `handleProps` on handle element. ChatInput uses **two instances**: one for QueueDropdown panel height, one for textarea max-height (min: 80px, default: 200px, max: 500px, persisted in `mitto_ui_textarea_max_height` localStorage key).
 - `useSwipeNavigation`: swipe left/right with threshold, edge detection. 500ms window.
-- **New hooks**: `use[Name].js`, export from `hooks/index.js`, use `window.preact` globals, cleanup in useEffect.
 
 ## Hooks in Conditionals (Anti-Pattern)
 
