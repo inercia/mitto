@@ -108,6 +108,10 @@ func mapsEqual(a, b map[string]string) bool {
 
 // NewACPProcessManager creates a new process manager.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
+	// Clean up any orphaned ACP processes from a previous Mitto instance
+	// that may have crashed without running its shutdown sequence.
+	cleanupOrphanedACPProcesses(logger)
+
 	return &ACPProcessManager{
 		processes:    make(map[string]*SharedACPProcess),
 		auxProcesses: make(map[string]*SharedACPProcess),
@@ -184,13 +188,14 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		ACPCommand: workspace.ACPCommand,
-		ACPCwd:     workspace.ACPCwd,
-		ACPServer:  workspace.ACPServer,
-		WorkingDir: workspace.WorkingDir,
-		Env:        workspace.ACPEnv,
-		Runner:     r,
-		Logger:     processLogger,
+		WorkspaceUUID: workspace.UUID,
+		ACPCommand:    workspace.ACPCommand,
+		ACPCwd:        workspace.ACPCwd,
+		ACPServer:     workspace.ACPServer,
+		WorkingDir:    workspace.WorkingDir,
+		Env:           workspace.ACPEnv,
+		Runner:        r,
+		Logger:        processLogger,
 	})
 	createDuration := time.Since(createStart)
 
@@ -307,11 +312,13 @@ func (m *ACPProcessManager) GetOrCreateAuxProcess(workspace *config.WorkspaceSet
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		ACPCommand: auxACPCommand,
-		ACPServer:  workspace.AuxiliaryACPServer,
-		WorkingDir: workspace.WorkingDir,
-		Runner:     r,
-		Logger:     processLogger,
+		WorkspaceUUID: workspace.UUID,
+		IsAuxiliary:   true,
+		ACPCommand:    auxACPCommand,
+		ACPServer:     workspace.AuxiliaryACPServer,
+		WorkingDir:    workspace.WorkingDir,
+		Runner:        r,
+		Logger:        processLogger,
 	})
 	createDuration := time.Since(createStart)
 

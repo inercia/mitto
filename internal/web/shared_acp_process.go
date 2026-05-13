@@ -38,6 +38,11 @@ const (
 
 // SharedACPProcessConfig holds configuration for creating a SharedACPProcess.
 type SharedACPProcessConfig struct {
+	// WorkspaceUUID is the unique identifier for the workspace this process belongs to.
+	// Used for PID file tracking to detect orphaned processes on startup.
+	WorkspaceUUID string
+	// IsAuxiliary indicates this is a dedicated auxiliary process (uses different PID file suffix).
+	IsAuxiliary bool
 	// ACPCommand is the shell command to start the ACP server process.
 	ACPCommand string
 	// ACPCwd is the working directory for the ACP server process itself.
@@ -356,6 +361,16 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		if err := cmd.Start(); err != nil {
 			return "", fmt.Errorf("failed to start ACP server: %w", err)
+		}
+
+		// Track process PID for orphan detection on restart
+		if p.config.WorkspaceUUID != "" {
+			if pidErr := writeACPPIDFile(p.config.WorkspaceUUID, cmd.Process.Pid, p.config.IsAuxiliary); pidErr != nil {
+				if p.logger != nil {
+					p.logger.Warn("Failed to write ACP PID file", "error", pidErr,
+						"workspace_uuid", p.config.WorkspaceUUID)
+				}
+			}
 		}
 
 		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
@@ -947,7 +962,15 @@ func (p *SharedACPProcess) killProcess() {
 	}
 
 	if p.cmd != nil && p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		// Kill the entire process group to ensure all child processes are terminated.
+		// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
+		// survive and become orphans.
+		mittoAcp.KillProcessGroup(p.cmd.Process.Pid)
+	}
+
+	// Remove PID tracking file
+	if p.config.WorkspaceUUID != "" {
+		_ = removeACPPIDFile(p.config.WorkspaceUUID, p.config.IsAuxiliary)
 	}
 
 	if p.wait != nil {
