@@ -367,10 +367,10 @@ export function PeriodicFrequencyPanel({
                 type="button"
                 onClick=${handleIconClick}
                 disabled=${isTriggering || isStreaming}
-                class="flex-shrink-0 p-0 border-0 bg-transparent transition-opacity ${isTriggering ||
+                class="flex-shrink-0 p-1.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-colors ${isTriggering ||
                 isStreaming
                   ? "opacity-50 cursor-not-allowed"
-                  : "cursor-pointer hover:opacity-80"}"
+                  : "cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700"}"
                 title=${isStreaming
                   ? "Wait for agent to finish responding"
                   : "Click to run this periodic prompt now"}
