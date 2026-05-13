@@ -559,8 +559,10 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 		return err
 	}
 
-	// Notify about the periodic prompt delivery (the prompt is now queued/started)
-	if r.onPeriodicStarted != nil {
+	// Notify about the periodic prompt delivery (the prompt is now queued/started).
+	// Skip notification for forced (manual "Run Now") triggers — the user already
+	// knows they triggered it, so showing a notification is redundant.
+	if r.onPeriodicStarted != nil && !forced {
 		r.onPeriodicStarted(sessionID, sessionName)
 	}
 
