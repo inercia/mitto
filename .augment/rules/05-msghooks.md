@@ -106,8 +106,10 @@ processors:
 | `delegate-to-coder`   | text    | _(varies)_                                                      | Delegate work to coder session     |
 | `delegate-playwright` | text    | _(varies)_                                                      | Delegate Playwright tests          |
 | `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
-| `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic`       | Maintain `.augment/rules/` files   |
-| `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic`   | Maintain `CLAUDE.md` / `.claude/`  |
+| `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")` | Generate initial `.augment/rules/` files |
+| `auggie-update-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")`  | Update rules from conversation insights (agentResponded, cadence: every 10 turns/40k tokens/10m) |
+| `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")` | Generate initial memory files |
+| `claude-update-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && (fileExists("CLAUDE.md") \|\| dirExists(".claude"))` | Update memory from conversation insights (agentResponded, cadence: every 15 turns/60k tokens/10m) |
 | `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md` (agentResponded, cadence: every 5 turns/30k tokens/5m) |
 | `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields (agentResponded, cadence: every 3 turns/15k tokens) |
 | `identify-workspace-metadata` | prompt | `workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic` | Auto-fill `metadata.description` and `metadata.url` in `.mittorc` |

@@ -133,6 +133,10 @@ When a client connects to a deleted session, send `session_gone` (NOT a generic 
 
 **Anti-patterns**: Never archive a child directly. Never allow periodic config on a child.
 
+## Periodic Prompt Name Resolution
+
+Periodic prompts support selection by **name** (`PromptName` field) instead of inline text. At execution time, `PromptResolverFunc` resolves the name to text from workspace prompts. Either `Prompt` or `PromptName` must be set. Frontend uses `PeriodicPromptSelector` component; PATCH API accepts `prompt_name`. The textarea stays empty — it's for ad-hoc messages only.
+
 ## Auto-Resume Guard (Race Condition)
 
 **Bug**: GC-closed sessions become `SessionStatusCompleted` but are NOT archived. Auto-resume guards that only check `!Archived` will re-create a new `BackgroundSession`, causing a second `session_end` event when the session is later deleted.

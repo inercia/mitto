@@ -63,18 +63,20 @@ All logs in `~/Library/Logs/Mitto/` (macOS):
 
 ### Quick Commands
 
+> ⚠️ **Self-referential matches**: When grep runs inside a live Mitto session, the log captures the prompt/agent messages containing the grep query strings, causing false matches. Use `grep -E 'level=(ERROR|WARN)'` (exact field syntax) instead of `-i 'error|warn'` to avoid this.
+
 ```bash
-# mitto.log
-grep -i "level=ERROR\|level=WARN" ~/Library/Logs/Mitto/mitto.log | tail -100
+# mitto.log — use exact field syntax to avoid self-referential matches
+grep -E 'level=(ERROR|WARN)' ~/Library/Logs/Mitto/mitto.log | tail -100
 grep -i "panic\|fatal\|crash" ~/Library/Logs/Mitto/mitto.log
 grep "session_id=SESSION_ID" ~/Library/Logs/Mitto/mitto.log
 # webview.log (frontend / WKWebView)
 grep '\[ERROR\]' ~/Library/Logs/Mitto/webview.log | tail -50
-grep '\[WS\]' ~/Library/Logs/Mitto/webview.log | tail -50
+grep -i 'force.reconnect\|reconnect\|websocket.*connect\|connected.*session' ~/Library/Logs/Mitto/webview.log | tail -50
 grep -i 'sync\|resync\|behind' ~/Library/Logs/Mitto/webview.log | tail -30
+# Note: [WS] tag is NOT used in webview.log — search for 'reconnect' or 'connected' instead
 # access.log (security / auth) — also check rotated: access.log.1
 grep -i 'fail\|invalid\|unauthorized' ~/Library/Logs/Mitto/access.log
-grep -i 'rate_limit' ~/Library/Logs/Mitto/access.log
 grep -v '127\.0\.0\.1\|::1' ~/Library/Logs/Mitto/access.log   # non-localhost
 ```
 
@@ -92,7 +94,7 @@ grep 'processor execution failed\|processor returned error\|processor failed' ~/
 | Anomaly                        | Log            | grep / indicator                                    |
 | ------------------------------ | -------------- | --------------------------------------------------- |
 | Sync loops                     | `mitto.log`    | `keepalive.*behind\|sync_request`                   |
-| Reconnection storms            | `webview.log`  | Multiple `[WS] connected` in short time             |
+| Reconnection storms            | `webview.log`  | Multiple `force-reconnect` in short time (no [WS] tag)|
 | Stale client                   | `mitto.log`    | `client_max_seq` >> `server_max_seq`                |
 | Events after session end       | `mitto.log`    | `session_end` then more events same session         |
 | Duplicate session starts       | `mitto.log`    | Multiple `session_start` same `session_id`          |
