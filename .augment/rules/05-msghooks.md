@@ -106,6 +106,7 @@ processors:
 | `delegate-to-coder`   | text    | _(varies)_                                                      | Delegate work to coder session     |
 | `delegate-playwright` | text    | _(varies)_                                                      | Delegate Playwright tests          |
 | `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
+| `use-ui-tools`        | text    | `tools.hasPattern("mitto_ui_*")`                                | Remind agent to use Mitto UI tools |
 | `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")` | Generate initial `.augment/rules/` files |
 | `auggie-update-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")`  | Update rules from conversation insights (agentResponded, cadence: every 10 turns/40k tokens/10m) |
 | `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")` | Generate initial memory files |

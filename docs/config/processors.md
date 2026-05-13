@@ -149,6 +149,7 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | userPrompt / first | text   | Yes (only activates for matching ACP servers)      |
 | `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | userPrompt / first | text   | Yes (requires smart model + `browser_*` MCP tools) |
 | `cleanup-children`    | Reminds the agent to clean up child conversations it no longer needs                                     | userPrompt / first | text   | Yes (requires ≥2 MCP-created children + delete tool) |
+| `use-ui-tools`        | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts | userPrompt / first | text   | Yes |
 | `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
 | `auggie-manage-rules` | Generates initial `.augment/rules/` when none exist | userPrompt / first | prompt | **Yes** (Auggie only) |
 | `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 10 turns or 40k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
