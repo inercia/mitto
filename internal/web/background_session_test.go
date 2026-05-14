@@ -770,7 +770,7 @@ func TestBackgroundSession_ProcessNextQueuedMessage_Disabled(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-disabled-queue")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -822,7 +822,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_IsPrompting(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-prompting")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -871,7 +871,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_IsClosed(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-closed")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -918,7 +918,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_DelayNotElapsed(t *testing.T)
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-delay")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -971,7 +971,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_DelayElapsed(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-delay-elapsed")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1034,7 +1034,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_ZeroDelayNoLastResponse(t *te
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-zero-delay")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1126,7 +1126,7 @@ func TestQueueTitleWorker_MessageRemovedBeforeTitleGenerated(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-title-race")
-	msg, err := queue.Add("Test message for title", nil, nil, "client1", 0)
+	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1166,7 +1166,7 @@ func TestQueueTitleWorker_UpdateTitleSuccess(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-title-success")
-	msg, err := queue.Add("Test message for title", nil, nil, "client1", 0)
+	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -3829,5 +3829,51 @@ func TestPromptWithMeta_ClosedSession_ErrorMessage(t *testing.T) {
 	// Closed session returns a different error
 	if !strings.Contains(err.Error(), "session is closed") {
 		t.Errorf("Error message for closed session should contain 'session is closed', got: %q", err.Error())
+	}
+}
+
+// TestRestartACPProcess_SharedProcess_PreservesReference verifies that when
+// restartACPProcess fails for a shared-process session, the sharedProcess
+// reference is preserved (not nilled out). Without this, the session becomes
+// a permanent zombie where every prompt returns "still starting up".
+func TestRestartACPProcess_SharedProcess_PreservesReference(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a minimal shared process (not actually running — Restart will fail)
+	processCtx, processCancel := context.WithCancel(context.Background())
+	defer processCancel()
+	sharedProc := &SharedACPProcess{
+		ctx:       processCtx,
+		ctxCancel: processCancel,
+	}
+
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		persistedID:   "test-zombie-fix",
+		sharedProcess: sharedProc,
+		workingDir:    "/tmp/test",
+		observers:     make(map[SessionObserver]struct{}),
+	}
+
+	// restartACPProcess should fail (shared process has no real connection)
+	err := bs.restartACPProcess(RestartReasonCrashDuringStream)
+	if err == nil {
+		t.Fatal("Expected restartACPProcess to fail on a process with no connection")
+	}
+
+	// The critical assertion: sharedProcess must NOT be nil after a failed restart.
+	// If it's nil, PromptWithMeta would return "still starting up" permanently.
+	if bs.sharedProcess == nil {
+		t.Fatal("sharedProcess was nilled out after failed restart — session would become a permanent zombie")
+	}
+
+	// Verify PromptWithMeta doesn't return the "still starting up" zombie error.
+	// We can't call PromptWithMeta here because it spawns goroutines that need
+	// fully initialized fields (promptCond, etc.), but we can verify the guard
+	// condition directly: the check is (acpConn == nil && sharedProcess == nil).
+	if bs.acpConn == nil && bs.sharedProcess == nil {
+		t.Error("Session is in zombie state: acpConn==nil && sharedProcess==nil — PromptWithMeta would return 'still starting up'")
 	}
 }

@@ -1476,6 +1476,14 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 		// Shared mode: restart the shared OS process, then create a new session on it.
 		// Note: multiple sessions may call Restart() concurrently; SharedACPProcess.canRestart()
 		// is rate-limited so only one restart happens, others get the already-restarted process.
+
+		// Save the shared process reference before attempting session creation.
+		// resumeSharedACPSession nils bs.sharedProcess on failure (to clean up for
+		// initial session creation), but during restart we must preserve it so future
+		// prompts can trigger another restart attempt instead of getting permanently
+		// stuck with "The AI agent is still starting up".
+		savedSharedProcess := bs.sharedProcess
+
 		if restartErr := bs.sharedProcess.Restart(); restartErr != nil {
 			// Log but don't fail — the process may have been restarted by another session.
 			if bs.logger != nil {
@@ -1485,6 +1493,13 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 			}
 		}
 		err = bs.resumeSharedACPSession(bs.sharedProcess, bs.workingDir, bs.acpID)
+
+		// Restore the shared process reference if session creation failed.
+		// This prevents the session from becoming a permanent zombie — future
+		// prompts will still detect the dead connection and can retry.
+		if err != nil && bs.sharedProcess == nil {
+			bs.sharedProcess = savedSharedProcess
+		}
 	} else {
 		// Per-session mode: start a new ACP process, attempting to resume the session.
 		err = bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
