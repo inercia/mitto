@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -12,9 +13,10 @@ import (
 
 // QueueAddRequest represents a request to add a message to the queue.
 type QueueAddRequest struct {
-	Message  string   `json:"message"`
-	ImageIDs []string `json:"image_ids,omitempty"`
-	FileIDs  []string `json:"file_ids,omitempty"`
+	Message       string   `json:"message"`
+	ImageIDs      []string `json:"image_ids,omitempty"`
+	FileIDs       []string `json:"file_ids,omitempty"`
+	ScheduledTime *string  `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp for scheduled delivery
 }
 
 // QueueMoveRequest represents a request to move a message in the queue.
@@ -151,7 +153,19 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		maxSize = queueConfig.GetMaxSize()
 	}
 
-	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, maxSize)
+	// Parse optional scheduled time
+	var scheduledTime *time.Time
+	if req.ScheduledTime != nil {
+		t, err := time.Parse(time.RFC3339, *req.ScheduledTime)
+		if err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, "invalid_scheduled_time",
+				"scheduled_time must be in RFC 3339 format (e.g., 2024-01-15T10:30:00Z)")
+			return
+		}
+		scheduledTime = &t
+	}
+
+	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, scheduledTime, maxSize)
 	if err != nil {
 		if errors.Is(err, session.ErrQueueFull) {
 			writeErrorJSON(w, http.StatusConflict, "queue_full",
@@ -178,9 +192,12 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 	}
 
 	// Try to process the queued message immediately if agent is idle
-	if s.sessionManager != nil {
-		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
-			go bs.TryProcessQueuedMessage()
+	// (skip for scheduled messages — the periodic runner will deliver them when due)
+	if scheduledTime == nil {
+		if s.sessionManager != nil {
+			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+				go bs.TryProcessQueuedMessage()
+			}
 		}
 	}
 
