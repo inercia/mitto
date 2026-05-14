@@ -1,7 +1,7 @@
 // Mitto Web Interface - Queue Dropdown Component
 // Displays and manages queued messages waiting to be sent to the agent
 
-const { useEffect, useRef, useCallback, html } = window.preact;
+const { useState, useEffect, useRef, useCallback, html } = window.preact;
 
 import {
   TrashIcon,
@@ -29,6 +29,38 @@ function truncateText(text, maxLength = 50) {
 }
 
 /**
+ * Format a scheduled time as a relative time string
+ * @param {string} scheduledTime - ISO 8601 timestamp
+ * @returns {string} Relative time string (e.g., "in 5 min", "in 2h")
+ */
+function formatRelativeTime(scheduledTime) {
+  if (!scheduledTime) return "";
+  const now = Date.now();
+  const scheduled = new Date(scheduledTime).getTime();
+  const diffMs = scheduled - now;
+
+  if (diffMs <= 0) return "due now";
+
+  const diffSeconds = Math.floor(diffMs / 1000);
+  if (diffSeconds < 60) return `in ${diffSeconds}s`;
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `in ${diffMinutes} min`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    const remainingMinutes = diffMinutes % 60;
+    return remainingMinutes > 0
+      ? `in ${diffHours}h ${remainingMinutes}m`
+      : `in ${diffHours}h`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `in ${diffDays}d`;
+}
+
+
+/**
  * QueueDropdown component - displays queued messages with delete and move functionality
  * @param {Object} props
  * @param {boolean} props.isOpen - Whether the dropdown is visible
@@ -54,6 +86,21 @@ export function QueueDropdown({
 }) {
   const dropdownRef = useRef(null);
   const inactivityTimerRef = useRef(null);
+
+  // Tick counter to force re-render for relative time updates
+  const [, setTick] = useState(0);
+
+  // Update relative times for scheduled messages every 30 seconds
+  useEffect(() => {
+    const hasScheduled = messages.some((m) => m.scheduled_time);
+    if (!hasScheduled || !isOpen) return;
+
+    const interval = setInterval(() => {
+      setTick((t) => t + 1);
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [messages, isOpen]);
 
   // Get height constraints for resize
   const heightConstraints = getQueueHeightConstraints();
@@ -237,6 +284,18 @@ export function QueueDropdown({
                     >
                       ${msg.title || truncateText(msg.message)}
                     </span>
+                    ${msg.scheduled_time
+                      ? html`
+                          <span
+                            class="text-xs text-amber-400 flex-shrink-0 font-mono"
+                            title=${new Date(
+                              msg.scheduled_time,
+                            ).toLocaleString()}
+                          >
+                            ⏰ ${formatRelativeTime(msg.scheduled_time)}
+                          </span>
+                        `
+                      : null}
                     <div
                       class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                     >
