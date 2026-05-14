@@ -252,12 +252,13 @@ func (c *Client) UploadImage(sessionID string, filename string, mimeType string,
 
 // QueuedMessage represents a message waiting to be sent to the agent.
 type QueuedMessage struct {
-	ID       string   `json:"id"`
-	Message  string   `json:"message"`
-	ImageIDs []string `json:"image_ids,omitempty"`
-	QueuedAt string   `json:"queued_at"`
-	ClientID string   `json:"client_id,omitempty"`
-	Title    string   `json:"title,omitempty"`
+	ID            string   `json:"id"`
+	Message       string   `json:"message"`
+	ImageIDs      []string `json:"image_ids,omitempty"`
+	QueuedAt      string   `json:"queued_at"`
+	ClientID      string   `json:"client_id,omitempty"`
+	Title         string   `json:"title,omitempty"`
+	ScheduledTime *string  `json:"scheduled_time,omitempty"`
 }
 
 // QueueListResponse represents the response for listing queued messages.
@@ -268,8 +269,9 @@ type QueueListResponse struct {
 
 // QueueAddRequest represents a request to add a message to the queue.
 type QueueAddRequest struct {
-	Message  string   `json:"message"`
-	ImageIDs []string `json:"image_ids,omitempty"`
+	Message       string   `json:"message"`
+	ImageIDs      []string `json:"image_ids,omitempty"`
+	ScheduledTime *string  `json:"scheduled_time,omitempty"`
 }
 
 // ListQueue returns all queued messages for a session.

@@ -1027,6 +1027,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
+			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -1636,7 +1637,8 @@ type SendPromptToConversationInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the caller), not the target
 	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
 	Prompt         string `json:"prompt"`
-	Workspace      string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace operations
+	Workspace      string `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
+	ScheduleTime   string `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp for scheduled delivery
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1738,11 +1740,24 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		}
 	}
 
+	// Parse optional scheduled time
+	var scheduledTime *time.Time
+	if input.ScheduleTime != "" {
+		t, err := time.Parse(time.RFC3339, input.ScheduleTime)
+		if err != nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   "schedule_time must be in RFC 3339 format (e.g., 2024-01-15T10:30:00Z)",
+			}, nil
+		}
+		scheduledTime = &t
+	}
+
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
 	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, 0)
+	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -1757,28 +1772,31 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		"source_session", realSessionID,
 		"target_session", input.ConversationID,
 		"message_id", msg.ID,
-		"queue_position", queueLen)
+		"queue_position", queueLen,
+		"scheduled", scheduledTime != nil)
 
 	// Try to process the queued message immediately if agent is idle.
-	// If the session is not running (stored), auto-resume it first.
-	if s.sessionManager != nil {
-		bs := s.sessionManager.GetSession(input.ConversationID)
-		if bs == nil && !targetMeta.Archived && targetMeta.Status != session.SessionStatusCompleted {
-			// Session is stored (not running) — try to resume it so the queue gets processed.
-			s.logger.Info("Auto-resuming stored session to process queued prompt",
-				"target_session", input.ConversationID,
-				"source_session", realSessionID)
-			resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
-			if resumeErr != nil {
-				s.logger.Warn("Failed to auto-resume stored session",
+	// Skip for scheduled messages — the periodic runner will deliver them when due.
+	if scheduledTime == nil {
+		if s.sessionManager != nil {
+			bs := s.sessionManager.GetSession(input.ConversationID)
+			if bs == nil && !targetMeta.Archived && targetMeta.Status != session.SessionStatusCompleted {
+				// Session is stored (not running) — try to resume it so the queue gets processed.
+				s.logger.Info("Auto-resuming stored session to process queued prompt",
 					"target_session", input.ConversationID,
-					"error", resumeErr)
-			} else {
-				bs = resumed
+					"source_session", realSessionID)
+				resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
+				if resumeErr != nil {
+					s.logger.Warn("Failed to auto-resume stored session",
+						"target_session", input.ConversationID,
+						"error", resumeErr)
+				} else {
+					bs = resumed
+				}
 			}
-		}
-		if bs != nil {
-			go bs.TryProcessQueuedMessage()
+			if bs != nil {
+				go bs.TryProcessQueuedMessage()
+			}
 		}
 	}
 
@@ -2683,7 +2701,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// If initial prompt provided, add it to the queue
 	if input.InitialPrompt != "" {
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, 0)
+		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, nil, 0)
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -3881,7 +3899,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				continue
 			}
 
-			msg, err := queue.Add(promptText, nil, nil, realSessionID, 0)
+			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0)
 			if err != nil {
 				s.logger.Warn("Failed to enqueue prompt to child",
 					"parent_session", realSessionID,
