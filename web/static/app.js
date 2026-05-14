@@ -1710,6 +1710,51 @@ function SessionList({
     };
   }, []);
 
+  // Auto-scroll sidebar to show the active session when it changes programmatically
+  // (e.g., from notification click, swipe navigation, or keyboard shortcut)
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    // Find the session to determine which tab it belongs to
+    const session = allSessions.find((s) => s.session_id === activeSessionId);
+    let tabSwitched = false;
+    if (session) {
+      // Determine target tab
+      let targetTab = FILTER_TAB.CONVERSATIONS;
+      if (session.archived) {
+        targetTab = FILTER_TAB.ARCHIVED;
+      } else if (session.periodic_enabled) {
+        targetTab = FILTER_TAB.PERIODIC;
+      }
+
+      // Switch tab if needed
+      if (filterTab !== targetTab) {
+        handleFilterTabChange(targetTab);
+        tabSwitched = true;
+      }
+    }
+
+    // Scroll the active session into view after DOM updates.
+    // Use double-rAF when a tab switch occurred to ensure the new tab content
+    // has been rendered before attempting to find and scroll the element.
+    const scrollToActive = () => {
+      const el = document.querySelector(
+        `[data-session-id="${activeSessionId}"]`,
+      );
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    };
+
+    if (tabSwitched) {
+      // Tab switch triggers a state update → re-render → DOM commit.
+      // First rAF waits for commit, second rAF ensures paint completed.
+      requestAnimationFrame(() => requestAnimationFrame(scrollToActive));
+    } else {
+      requestAnimationFrame(scrollToActive);
+    }
+  }, [activeSessionId]); // Intentionally minimal deps - only trigger on session change
+
   // Handle filter tab change - also update grouping mode to match the new tab's setting
   const handleFilterTabChange = useCallback((tab) => {
     setFilterTab(tab);

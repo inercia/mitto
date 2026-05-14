@@ -1740,6 +1740,7 @@ export function SettingsDialog({
     }
 
     setSaving(true);
+    const saveStartTime = Date.now();
     try {
       // Build web config
       const webConfig = {
@@ -1996,7 +1997,9 @@ export function SettingsDialog({
     } catch (err) {
       setError(err.message);
     } finally {
-      setSaving(false);
+      const elapsed = Date.now() - saveStartTime;
+      const remaining = Math.max(0, 1000 - elapsed);
+      setTimeout(() => setSaving(false), remaining);
     }
   };
 

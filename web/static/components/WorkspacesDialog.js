@@ -430,6 +430,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       return;
     }
     setSaving(true);
+    const saveStartTime = Date.now();
     setError("");
     try {
       // Filter out any workspaces with empty working_dir (safety net)
@@ -449,7 +450,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
         updated = updated.map(applyWorkspaceEdits);
       }
 
-      if (updated.length === 0) { setError("At least one workspace is required"); setSaving(false); return; }
+      if (updated.length === 0) { setError("At least one workspace is required"); const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed)); return; }
 
       const config = await fetchConfig(null, true);
       const res = await secureFetch(apiUrl("/api/config"), {
@@ -483,7 +484,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             }
           } catch (metaErr) {
             setError("Failed to save metadata: " + metaErr.message);
-            setSaving(false);
+            const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
             return;
           }
         }
@@ -511,18 +512,21 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             }
           } catch (schemaErr) {
             setError("Failed to save user data schema: " + schemaErr.message);
-            setSaving(false);
+            const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
             return;
           }
         }
       }
 
+      setWorkspaces(updated);
       setNewFolderKey(null);
       onSave?.();
     } catch (err) {
       setError(err.message);
     } finally {
-      setSaving(false);
+      const elapsed = Date.now() - saveStartTime;
+      const remaining = Math.max(0, 1000 - elapsed);
+      setTimeout(() => setSaving(false), remaining);
     }
   };
 
@@ -1636,8 +1640,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
               disabled=${saving || loading}
               class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
             >
-              ${saving && html`<${SpinnerIcon} className="w-4 h-4" />`}
-              Save
+              ${saving
+                ? html`<${SpinnerIcon} className="w-4 h-4" /> Saving...`
+                : "Save"}
             </button>
           </div>
         </div>
