@@ -61,12 +61,13 @@ conversations:
 ```go
 // QueuedMessage represents a message waiting to be sent to the agent.
 type QueuedMessage struct {
-    ID       string    `json:"id"`                   // Unique ID (q-{timestamp}-{random})
-    Message  string    `json:"message"`              // Text content
-    ImageIDs []string  `json:"image_ids,omitempty"`  // Attached images
-    QueuedAt time.Time `json:"queued_at"`            // When queued
-    ClientID string    `json:"client_id,omitempty"`  // Source client
-    Title    string    `json:"title,omitempty"`      // Auto-generated title
+    ID            string     `json:"id"`                      // Unique ID (q-{timestamp}-{random})
+    Message       string     `json:"message"`                 // Text content
+    ImageIDs      []string   `json:"image_ids,omitempty"`     // Attached images
+    QueuedAt      time.Time  `json:"queued_at"`               // When queued
+    ClientID      string     `json:"client_id,omitempty"`     // Source client
+    Title         string     `json:"title,omitempty"`         // Auto-generated title
+    ScheduledTime *time.Time `json:"scheduled_time,omitempty"` // Deliver after this time (nil = immediate)
 }
 
 // Queue manages the message queue for a single session.
@@ -76,24 +77,56 @@ type Queue struct { ... }
 
 ### Methods
 
-| Method                                      | Description                                        |
-| ------------------------------------------- | -------------------------------------------------- |
-| `Add(message, imageIDs, clientID, maxSize)` | Add message, returns `ErrQueueFull` if at capacity |
-| `List()`                                    | Get all messages in FIFO order                     |
-| `Get(id)`                                   | Get specific message by ID                         |
-| `Remove(id)`                                | Remove specific message                            |
-| `Pop()`                                     | Remove and return first message                    |
-| `Clear()`                                   | Remove all messages                                |
-| `Len()`                                     | Get queue length                                   |
-| `UpdateTitle(id, title)`                    | Update a message's title                           |
+| Method                                                     | Description                                                           |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| `Add(message, imageIDs, fileIDs, clientID, scheduled, sz)` | Add message, returns `ErrQueueFull` if at capacity                    |
+| `List()`                                                   | Get all messages in FIFO order                                        |
+| `Get(id)`                                                  | Get specific message by ID                                            |
+| `Remove(id)`                                               | Remove specific message                                               |
+| `Pop()`                                                    | Remove and return next ready message (skips future-scheduled)         |
+| `Clear()`                                                  | Remove all messages                                                   |
+| `Len()`                                                    | Get queue length                                                      |
+| `UpdateTitle(id, title)`                                   | Update a message's title                                              |
+| `HasScheduledMessages()`                                   | Check if any scheduled messages exist                                 |
+| `NextScheduledTime()`                                      | Get earliest scheduled time of pending messages                       |
 
 ### Error Values
 
-| Error                | Condition                                               |
-| -------------------- | ------------------------------------------------------- |
-| `ErrQueueEmpty`      | `Pop()` on empty queue                                  |
-| `ErrMessageNotFound` | `Get()`, `Remove()`, or `UpdateTitle()` with invalid ID |
-| `ErrQueueFull`       | `Add()` when queue has `maxSize` messages               |
+| Error                | Condition                                                       |
+| -------------------- | --------------------------------------------------------------- |
+| `ErrQueueEmpty`      | `Pop()` on empty queue or no ready messages                     |
+| `ErrMessageNotFound` | `Get()`, `Remove()`, or `UpdateTitle()` with invalid ID         |
+| `ErrQueueFull`       | `Add()` when queue has `maxSize` messages                       |
+
+## Scheduled Messages
+
+Messages can optionally have a `ScheduledTime` that defers delivery until a future time.
+
+### Behavior
+
+- **Non-scheduled messages** (ScheduledTime = nil): Delivered immediately when the agent becomes idle. Backward compatible with all existing behavior.
+- **Scheduled messages** (ScheduledTime set): Held in the queue until `time.Now() >= ScheduledTime`.
+
+### Pop() Ordering
+
+When `Pop()` is called, it selects the next ready message:
+1. **First non-scheduled message** (FIFO among immediate messages)
+2. If no immediate messages, the **earliest due scheduled message** (by ScheduledTime)
+3. Returns `ErrQueueEmpty` if no messages are ready (even if future-scheduled messages exist)
+
+### Periodic Check
+
+The `PeriodicRunner` checks all active sessions for due scheduled messages on each poll cycle (default: 1 minute). When a scheduled message becomes due, it triggers `TryProcessQueuedMessage()` on the session.
+
+### API
+
+- **REST**: `POST /api/sessions/{id}/queue` accepts optional `scheduled_time` field (RFC 3339)
+- **MCP**: `mitto_conversation_send_prompt` accepts optional `schedule_time` parameter (RFC 3339)
+- **List**: Scheduled messages appear in the list response with the `scheduled_time` field
+
+### Frontend
+
+Scheduled messages display a ⏰ badge with a relative time string (e.g., "in 5 min", "in 2h") in the queue dropdown. The display updates every 30 seconds.
 
 ## Title Generation
 
