@@ -297,6 +297,9 @@ func (r *PeriodicRunner) RunOnce() (delivered, skipped, errored int) {
 		errored += e
 	}
 
+	// Check scheduled queue messages across all active sessions
+	r.checkScheduledQueues(sessions)
+
 	// Auto-archive inactive sessions
 	r.checkAutoArchive(sessions, now)
 
@@ -311,6 +314,38 @@ func (r *PeriodicRunner) RunOnce() (delivered, skipped, errored int) {
 	}
 
 	return delivered, skipped, errored
+}
+
+// checkScheduledQueues checks all active sessions for scheduled queue messages
+// that are now due for delivery, and triggers processing.
+func (r *PeriodicRunner) checkScheduledQueues(sessions []session.Metadata) {
+	if r.store == nil || r.sessionManager == nil {
+		return
+	}
+
+	now := time.Now()
+
+	for _, meta := range sessions {
+		// Skip archived or non-active sessions
+		if meta.Archived || (meta.Status != session.SessionStatusActive && meta.Status != "") {
+			continue
+		}
+
+		// Check if this session has scheduled messages that are now due
+		queue := r.store.Queue(meta.SessionID)
+		nextTime, err := queue.NextScheduledTime()
+		if err != nil || nextTime == nil {
+			continue
+		}
+
+		// If the next scheduled time has arrived, try to process
+		if !nextTime.After(now) {
+			bs := r.sessionManager.GetSession(meta.SessionID)
+			if bs != nil {
+				go bs.TryProcessQueuedMessage()
+			}
+		}
+	}
 }
 
 // checkSession checks a single session for due periodic prompts.
