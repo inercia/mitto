@@ -591,10 +591,15 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
-	// Set prompt resolver for periodic runner — resolves prompt names to text at execution time
-	s.periodicRunner.SetPromptResolver(func(promptName string, workingDir string) (string, error) {
+	// Set prompt resolver for periodic runner and session manager — resolves prompt names to text at execution time.
+	// Both use the same resolver: PeriodicRunner for scheduled prompts, SessionManager for interactive prompt-by-name.
+	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
-	})
+	}
+	s.periodicRunner.SetPromptResolver(promptResolverFunc)
+	if s.sessionManager != nil {
+		s.sessionManager.SetPromptResolver(promptResolverFunc)
+	}
 
 	s.periodicRunner.Start()
 

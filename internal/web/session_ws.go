@@ -531,16 +531,17 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	switch msg.Type {
 	case WSMsgTypePrompt:
 		var data struct {
-			Message  string   `json:"message"`
-			ImageIDs []string `json:"image_ids,omitempty"`
-			FileIDs  []string `json:"file_ids,omitempty"`
-			PromptID string   `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
+			Message    string   `json:"message"`
+			PromptName string   `json:"prompt_name,omitempty"` // Name of workspace prompt (backend resolves to text)
+			ImageIDs   []string `json:"image_ids,omitempty"`
+			FileIDs    []string `json:"file_ids,omitempty"`
+			PromptID   string   `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handlePromptWithMeta(data.Message, data.PromptID, data.ImageIDs, data.FileIDs)
+		c.handlePromptWithMeta(data.Message, data.PromptName, data.PromptID, data.ImageIDs, data.FileIDs)
 
 	case WSMsgTypeCancel:
 		c.handleCancel()
@@ -619,7 +620,7 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	}
 }
 
-func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, imageIDs, fileIDs []string) {
+func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string, promptID string, imageIDs, fileIDs []string) {
 	// If bgSession is nil, try to attach to a running session.
 	// This handles the case where the session was unarchived after this client connected.
 	if c.bgSession == nil {
@@ -637,10 +638,11 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 
 	// Send prompt to background session with sender info for multi-client broadcast
 	meta := PromptMeta{
-		SenderID: c.clientID,
-		PromptID: promptID,
-		ImageIDs: imageIDs,
-		FileIDs:  fileIDs,
+		SenderID:   c.clientID,
+		PromptID:   promptID,
+		PromptName: promptName,
+		ImageIDs:   imageIDs,
+		FileIDs:    fileIDs,
 	}
 	if err := c.bgSession.PromptWithMeta(message, meta); err != nil {
 		c.sendPromptError("Failed to send prompt: "+err.Error(), promptID)
@@ -2170,8 +2172,9 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // OnUserPrompt is called when any observer sends a prompt.
 // This allows all connected clients to see user messages from other clients.
 // senderID identifies which client sent the prompt (for deduplication).
+// promptName is the name of the workspace prompt used (empty for ad-hoc prompts).
 // seq is the sequence number for this user prompt event.
-func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string) {
+func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
 	// Check seq tracking
 	c.seqMu.Lock()
 	if seq > 0 && seq <= c.lastSentSeq {
@@ -2203,7 +2206,7 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 			"client_id", c.clientID)
 	}
 
-	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
+	data := map[string]interface{}{
 		"seq":          seq,
 		"max_seq":      c.getServerMaxSeq(),
 		"session_id":   c.sessionID,
@@ -2214,7 +2217,11 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 		"file_ids":     fileIDs,
 		"is_mine":      senderID == c.clientID,
 		"is_prompting": true, // Signal frontend to show Stop button immediately
-	})
+	}
+	if promptName != "" {
+		data["prompt_name"] = promptName
+	}
+	c.sendMessage(WSMsgTypeUserPrompt, data)
 }
 
 // GetClientID returns the unique identifier for this client.
