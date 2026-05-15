@@ -36,6 +36,58 @@ function isModelErrorThought(text) {
 }
 
 /**
+ * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
+ * Displayed right-aligned (like user messages) with an icon and the prompt name.
+ * Optionally shows the full resolved prompt text in an expandable section.
+ */
+function NamedPromptPill({ message }) {
+  const [showFull, setShowFull] = useState(false);
+  const hasText = !!message.text;
+
+  return html`
+    <div class="message-enter flex justify-end mb-3">
+      <div class="flex flex-col items-end gap-1">
+        <div
+          class="flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-500/20 border border-indigo-400/40 text-indigo-200"
+        >
+          <svg
+            class="w-4 h-4 flex-shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
+          </svg>
+          <span class="text-sm font-medium">${message.promptName}</span>
+        </div>
+        ${hasText &&
+        html`
+          <button
+            class="text-xs text-gray-500 hover:text-gray-400 transition-colors px-2"
+            onClick=${() => setShowFull(!showFull)}
+          >
+            ${showFull ? "▾ Hide prompt" : "▸ Show full prompt"}
+          </button>
+          ${showFull &&
+          html`
+            <div
+              class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user/50 text-mitto-user-text/70 border border-mitto-user-border/50 text-xs"
+            >
+              <pre class="whitespace-pre-wrap font-sans m-0">${message.text}</pre>
+            </div>
+          `}
+        `}
+      </div>
+    </div>
+  `;
+}
+
+/**
  * ThoughtBubble component - renders a thought message with collapsible support.
  * Extracted into its own component so hooks are always called unconditionally.
  */
@@ -283,6 +335,11 @@ export function Message({ message, isLast, isStreaming }) {
         </div>
       </div>
     `;
+  }
+
+  // Named prompt pill — rendered before regular user message logic
+  if (isUser && message.promptName) {
+    return html`<${NamedPromptPill} message=${message} />`;
   }
 
   // User message (Markdown or plain text with optional images)

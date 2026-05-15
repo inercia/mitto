@@ -486,6 +486,7 @@ export function convertEventsToMessages(events, options = {}) {
           text: event.data?.message || event.data?.text || "",
           timestamp: new Date(event.timestamp).getTime(),
           seq,
+          promptName: event.data?.prompt_name || undefined,
         };
         // Convert stored image references to full image objects with URLs
         // Image refs are stored as: [{id, name?, mime_type}]
