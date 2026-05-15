@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestQueue_AddAndList(t *testing.T) {
@@ -554,5 +555,160 @@ func TestQueue_Move_Persistence(t *testing.T) {
 	}
 	if messages[1].ID != msg1.ID {
 		t.Errorf("Persisted message[1].ID = %q, want %q (msg1)", messages[1].ID, msg1.ID)
+	}
+}
+
+func TestParseScheduleTime(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantErr   bool
+		errSubstr string
+		// For absolute times, check exact match; for durations, check approximate offset from now.
+		checkExact    bool
+		exactTimeStr  string  // RFC 3339 string for exact match
+		approxOffset  float64 // expected offset in seconds from now (for duration inputs)
+		approxEpsilon float64 // allowed deviation in seconds
+	}{
+		// --- Valid RFC 3339 timestamps ---
+		{
+			name:         "RFC 3339 UTC",
+			input:        "2024-01-15T10:30:00Z",
+			checkExact:   true,
+			exactTimeStr: "2024-01-15T10:30:00Z",
+		},
+		{
+			name:         "RFC 3339 with timezone offset",
+			input:        "2024-06-01T14:00:00+02:00",
+			checkExact:   true,
+			exactTimeStr: "2024-06-01T14:00:00+02:00",
+		},
+		{
+			name:         "RFC 3339 with fractional seconds",
+			input:        "2024-12-31T23:59:59.999Z",
+			checkExact:   true,
+			exactTimeStr: "2024-12-31T23:59:59.999Z",
+		},
+
+		// --- Valid relative durations ---
+		{
+			name:          "duration seconds",
+			input:         "30s",
+			approxOffset:  30,
+			approxEpsilon: 2,
+		},
+		{
+			name:          "duration minutes",
+			input:         "5m",
+			approxOffset:  300,
+			approxEpsilon: 2,
+		},
+		{
+			name:          "duration hours",
+			input:         "2h",
+			approxOffset:  7200,
+			approxEpsilon: 2,
+		},
+		{
+			name:          "duration combined",
+			input:         "1h30m",
+			approxOffset:  5400,
+			approxEpsilon: 2,
+		},
+		{
+			name:          "duration zero",
+			input:         "0s",
+			approxOffset:  0,
+			approxEpsilon: 2,
+		},
+		{
+			name:          "duration milliseconds",
+			input:         "500ms",
+			approxOffset:  0.5,
+			approxEpsilon: 2,
+		},
+
+		// --- Invalid inputs ---
+		{
+			name:      "negative duration",
+			input:     "-5m",
+			wantErr:   true,
+			errSubstr: "duration must be positive",
+		},
+		{
+			name:      "negative duration hours",
+			input:     "-1h",
+			wantErr:   true,
+			errSubstr: "duration must be positive",
+		},
+		{
+			name:      "empty string",
+			input:     "",
+			wantErr:   true,
+			errSubstr: "invalid schedule_time",
+		},
+		{
+			name:      "random text",
+			input:     "tomorrow",
+			wantErr:   true,
+			errSubstr: "invalid schedule_time",
+		},
+		{
+			name:      "date only no time",
+			input:     "2024-01-15",
+			wantErr:   true,
+			errSubstr: "invalid schedule_time",
+		},
+		{
+			name:      "unix timestamp",
+			input:     "1705312200",
+			wantErr:   true,
+			errSubstr: "invalid schedule_time",
+		},
+		{
+			name:      "number without unit",
+			input:     "300",
+			wantErr:   true,
+			errSubstr: "invalid schedule_time",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := time.Now()
+			got, err := ParseScheduleTime(tt.input)
+			after := time.Now()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseScheduleTime(%q) = %v, want error containing %q", tt.input, got, tt.errSubstr)
+				}
+				if tt.errSubstr != "" && !contains(err.Error(), tt.errSubstr) {
+					t.Errorf("ParseScheduleTime(%q) error = %q, want substring %q", tt.input, err.Error(), tt.errSubstr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("ParseScheduleTime(%q) unexpected error: %v", tt.input, err)
+			}
+
+			if tt.checkExact {
+				expected, _ := time.Parse(time.RFC3339Nano, tt.exactTimeStr)
+				if !got.Equal(expected) {
+					t.Errorf("ParseScheduleTime(%q) = %v, want %v", tt.input, got, expected)
+				}
+			} else {
+				// Check that result is approximately now + approxOffset
+				expectedLow := before.Add(time.Duration(tt.approxOffset * float64(time.Second)))
+				expectedHigh := after.Add(time.Duration(tt.approxOffset * float64(time.Second)))
+				epsilon := time.Duration(tt.approxEpsilon * float64(time.Second))
+
+				if got.Before(expectedLow.Add(-epsilon)) || got.After(expectedHigh.Add(epsilon)) {
+					t.Errorf("ParseScheduleTime(%q) = %v, want approximately now+%vs (between %v and %v)",
+						tt.input, got, tt.approxOffset, expectedLow.Add(-epsilon), expectedHigh.Add(epsilon))
+				}
+			}
+		})
 	}
 }
