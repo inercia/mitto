@@ -59,6 +59,7 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 )
 
-// Once https://github.com/coder/acp-go-sdk/pull/18 is merged into coder/acp-go-sdk
-// and a new version is released, you can remove the replace directive and update to the official version.
-// replace github.com/coder/acp-go-sdk => github.com/agentcooper/acp-go-sdk v0.0.0-20260130133646-65ae55c285fb
+// Use our fork with configurable notification queue size (WithMaxQueuedNotifications).
+// See https://github.com/inercia/acp-go-sdk/tree/configurable-notification-queue-v0.12
+// Once https://github.com/coder/acp-go-sdk/pull/40 is merged, remove this replace and bump the version.
+replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.12.1-0.20260514143514-617ff1cb3d2f
