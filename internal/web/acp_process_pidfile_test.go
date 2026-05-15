@@ -268,7 +268,7 @@ func TestCleanupOrphanedACPProcesses_AliveProcess(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start subprocess: %v", err)
 	}
-	defer cmd.Process.Kill() // safety net
+	defer cmd.Process.Kill() // always clean up
 
 	if err := writeACPPIDFile("alive-ws", cmd.Process.Pid, false); err != nil {
 		t.Fatalf("writeACPPIDFile: %v", err)
@@ -280,12 +280,12 @@ func TestCleanupOrphanedACPProcesses_AliveProcess(t *testing.T) {
 	dir, _ := acpPIDDir()
 	path := filepath.Join(dir, "alive-ws.pid")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("PID file still exists after cleanup of alive process")
+		t.Errorf("PID file still exists after cleanup")
 	}
 
-	// The subprocess should have been killed.
-	err := cmd.Wait()
-	if err == nil {
-		t.Errorf("expected subprocess to be killed, but Wait() returned nil")
+	// The subprocess should NOT have been killed — cleanup only removes PID files,
+	// it never sends signals (to avoid PID-reuse false positives).
+	if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {
+		t.Errorf("subprocess was killed by cleanup but should have been left alive: %v", err)
 	}
 }
