@@ -27,6 +27,28 @@ var (
 	ErrQueueFull = errors.New("queue is full")
 )
 
+// ParseScheduleTime parses a schedule time string that can be either:
+//   - An absolute RFC 3339 / ISO 8601 timestamp (e.g., "2024-01-15T10:30:00Z")
+//   - A relative duration from now using Go duration syntax (e.g., "2m", "1h", "30s", "1h30m")
+//
+// Returns the resolved absolute time, or an error if the string is not a valid format.
+func ParseScheduleTime(s string) (time.Time, error) {
+	// Try RFC 3339 first
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+
+	// Try Go duration format (e.g., "2m", "1h", "30s", "1h30m")
+	if d, err := time.ParseDuration(s); err == nil {
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("duration must be positive, got %s", s)
+		}
+		return time.Now().Add(d), nil
+	}
+
+	return time.Time{}, fmt.Errorf("invalid schedule_time %q: must be an RFC 3339 timestamp (e.g., 2024-01-15T10:30:00Z) or a relative duration (e.g., 5m, 1h, 2h30m)", s)
+}
+
 // QueuedMessage represents a message waiting to be sent to the agent.
 type QueuedMessage struct {
 	// ID is the unique identifier for this queued message (auto-assigned).

@@ -1028,6 +1028,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
+			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -1638,7 +1639,7 @@ type SendPromptToConversationInput struct {
 	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
 	Prompt         string `json:"prompt"`
 	Workspace      string `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
-	ScheduleTime   string `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp for scheduled delivery
+	ScheduleTime   string `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1740,14 +1741,14 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		}
 	}
 
-	// Parse optional scheduled time
+	// Parse optional scheduled time (supports RFC 3339 or relative duration like "5m", "1h")
 	var scheduledTime *time.Time
 	if input.ScheduleTime != "" {
-		t, err := time.Parse(time.RFC3339, input.ScheduleTime)
+		t, err := session.ParseScheduleTime(input.ScheduleTime)
 		if err != nil {
 			return nil, SendPromptOutput{
 				Success: false,
-				Error:   "schedule_time must be in RFC 3339 format (e.g., 2024-01-15T10:30:00Z)",
+				Error:   err.Error(),
 			}, nil
 		}
 		scheduledTime = &t

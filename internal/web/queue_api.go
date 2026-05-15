@@ -16,7 +16,7 @@ type QueueAddRequest struct {
 	Message       string   `json:"message"`
 	ImageIDs      []string `json:"image_ids,omitempty"`
 	FileIDs       []string `json:"file_ids,omitempty"`
-	ScheduledTime *string  `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp for scheduled delivery
+	ScheduledTime *string  `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
 }
 
 // QueueMoveRequest represents a request to move a message in the queue.
@@ -153,13 +153,12 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		maxSize = queueConfig.GetMaxSize()
 	}
 
-	// Parse optional scheduled time
+	// Parse optional scheduled time (supports RFC 3339 or relative duration like "5m", "1h")
 	var scheduledTime *time.Time
 	if req.ScheduledTime != nil {
-		t, err := time.Parse(time.RFC3339, *req.ScheduledTime)
+		t, err := session.ParseScheduleTime(*req.ScheduledTime)
 		if err != nil {
-			writeErrorJSON(w, http.StatusBadRequest, "invalid_scheduled_time",
-				"scheduled_time must be in RFC 3339 format (e.g., 2024-01-15T10:30:00Z)")
+			writeErrorJSON(w, http.StatusBadRequest, "invalid_scheduled_time", err.Error())
 			return
 		}
 		scheduledTime = &t
