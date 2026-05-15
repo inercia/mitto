@@ -1334,6 +1334,24 @@ a:hover {
 }
 
 /* =============================================================================
+   Named Prompt Pill (periodic / by-name prompts)
+   ============================================================================= */
+
+/* Light theme: red accent on white */
+.v2-theme:not(.dark) .named-prompt-pill {
+  background: #dc2626 !important;
+  border: 1px solid #b91c1c !important;
+  color: #ffffff !important;
+}
+
+/* Dark theme: red accent on dark */
+.v2-theme.dark .named-prompt-pill {
+  background: #dc2626 !important;
+  border: 1px solid #ef4444 !important;
+  color: #ffffff !important;
+}
+
+/* =============================================================================
    Error Message Bubble
    ============================================================================= */
 

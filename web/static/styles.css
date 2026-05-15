@@ -1801,6 +1801,22 @@ mitto-action {
 }
 
 /* =============================================================================
+   Named Prompt Pill (periodic / by-name prompts)
+   ============================================================================= */
+
+.named-prompt-pill {
+  background: #dc2626;
+  border: 1px solid #ef4444;
+  color: #ffffff;
+}
+
+.light .named-prompt-pill {
+  background: #dc2626;
+  border: 1px solid #b91c1c;
+  color: #ffffff;
+}
+
+/* =============================================================================
    Error Message Bubble (dark theme default)
    ============================================================================= */
 

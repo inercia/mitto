@@ -397,6 +397,7 @@ export function ChatInput({
   const [textboxValue, setTextboxValue] = useState("");
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
+  const prevCollapsedBeforeUIRef = useRef(false);
 
   // Resize handle for UI prompt panels (textbox, form, options)
   const {
@@ -489,15 +490,25 @@ export function ChatInput({
     setFreeTextInput("");
   }, [activeUIPrompt?.requestId]);
 
-  // Initialize textbox value when a textbox prompt arrives, and auto-collapse prompt area
+  // Auto-hide chat input when MCP UI prompts (textbox, form, options) are active
   useEffect(() => {
-    if (activeUIPrompt?.promptType === "textbox") {
-      setTextboxValue(activeUIPrompt.text || "");
-      setIsPromptCollapsed(true); // Collapse prompt area when textbox appears
-    } else if (activeUIPrompt?.promptType === "form") {
-      setIsPromptCollapsed(true); // Collapse prompt area when form appears
+    const promptType = activeUIPrompt?.promptType;
+    // Auto-collapse for all MCP UI prompt types except permission
+    // (permission prompts are inline button-based and don't need the chat input hidden)
+    const isMCPUI = promptType && promptType !== "permission";
+
+    if (isMCPUI) {
+      if (promptType === "textbox") {
+        setTextboxValue(activeUIPrompt.text || "");
+      }
+      // Save current collapsed state before auto-collapsing
+      setIsPromptCollapsed((prev) => {
+        prevCollapsedBeforeUIRef.current = prev;
+        return true;
+      });
     } else if (!periodicEnabled) {
-      setIsPromptCollapsed(false); // Expand when textbox/form disappears (but not for periodic)
+      // Restore previous collapsed state when MCP UI dismisses
+      setIsPromptCollapsed(prevCollapsedBeforeUIRef.current);
     }
   }, [activeUIPrompt?.requestId, periodicEnabled]);
 
@@ -1685,7 +1696,7 @@ export function ChatInput({
           freeText,
         });
         // Immediately expand the prompt area (don't wait for dismiss from backend)
-        setIsPromptCollapsed(false);
+        setIsPromptCollapsed(prevCollapsedBeforeUIRef.current);
         onUIPromptAnswer(activeUIPrompt.requestId, optionId, label, freeText);
       }
     },
@@ -2344,12 +2355,7 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(
-        isPromptCollapsed &&
-        (periodicEnabled ||
-          activeUIPrompt?.promptType === "textbox" ||
-          activeUIPrompt?.promptType === "form")
-      ) &&
+      ${!(isPromptCollapsed && (periodicEnabled || hasActiveUIPrompt)) &&
       html`
         <div class="max-w-4xl mx-auto chat-input-container">
           <div class="chat-input-box" ref=${dropupRef}>
@@ -2908,9 +2914,14 @@ ${activeUIPrompt.text || ""}</textarea
                         <!-- Stop button -->
                         <button
                           type="button"
-                          onClick=${onCancel}
+                          onClick=${() => {
+                            if (hasActiveUIPrompt) {
+                              handleUIPromptAnswer("abort", "Abort");
+                            }
+                            onCancel();
+                          }}
                           class="chat-input-action stop-active"
-                          title="Stop streaming"
+                          title=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
                         >
                           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
