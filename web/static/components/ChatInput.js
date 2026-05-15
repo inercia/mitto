@@ -27,6 +27,45 @@ import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon } from "./Icons.js";
 
 /**
+ * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
+ * Prevents the select from reverting to the old value while waiting for the server's
+ * config_option_changed WebSocket response.
+ */
+function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming }) {
+  const [localValue, setLocalValue] = useState(configOption.current_value);
+
+  // Sync local value when server confirms the change
+  useEffect(() => {
+    setLocalValue(configOption.current_value);
+  }, [configOption.current_value]);
+
+  const handleInput = useCallback(
+    (e) => {
+      const newValue = e.target.value;
+      setLocalValue(newValue); // Update immediately (optimistic)
+      onSetConfigOption?.(configOption.id, newValue);
+    },
+    [configOption.id, onSetConfigOption],
+  );
+
+  return html`
+    <select
+      class="chat-input-model-select"
+      value=${localValue || ""}
+      onInput=${handleInput}
+      disabled=${isStreaming}
+      title=${isStreaming
+        ? "Cannot change " + configOption.name.toLowerCase() + " while streaming"
+        : configOption.description || "Select " + configOption.name.toLowerCase()}
+    >
+      ${configOption.options.map(
+        (opt) => html` <option value=${opt.value}>${opt.name}</option> `,
+      )}
+    </select>
+  `;
+}
+
+/**
  * Calculate contrasting text color (black or white) for a given background color.
  * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
  * @returns {string} - Either "#000000" or "#FFFFFF" for best contrast
@@ -2783,18 +2822,12 @@ ${activeUIPrompt.text || ""}</textarea
               ${(selectConfigOptions.length > 0 || contextPct !== null) && html`
                 <div class="chat-input-model-selector">
                   ${selectConfigOptions.map((configOpt) => html`
-                    <select
+                    <${ChatInputConfigSelect}
                       key=${configOpt.id}
-                      class="chat-input-model-select"
-                      value=${configOpt.current_value || ""}
-                      onInput=${(e) => onSetConfigOption?.(configOpt.id, e.target.value)}
-                      disabled=${isStreaming}
-                      title=${isStreaming ? "Cannot change " + configOpt.name.toLowerCase() + " while streaming" : configOpt.description || "Select " + configOpt.name.toLowerCase()}
-                    >
-                      ${configOpt.options.map((opt) => html`
-                        <option value=${opt.value}>${opt.name}</option>
-                      `)}
-                    </select>
+                      configOption=${configOpt}
+                      onSetConfigOption=${onSetConfigOption}
+                      isStreaming=${isStreaming}
+                    />
                   `)}
                   ${contextPct !== null && html`
                     <span
