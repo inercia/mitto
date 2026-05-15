@@ -290,8 +290,14 @@ func NewServer(config Config) (*Server, error) {
 	}
 	sessionMgr.SetStore(store)
 
-	// Create shared ACP process manager for workspace-level process sharing
+	// Create shared ACP process manager for workspace-level process sharing.
+	// Clean up orphaned ACP processes from any previous Mitto instance that crashed
+	// without running its shutdown sequence (not done in tests to avoid killing
+	// the developer's live ACP servers when running the test suite).
 	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
+	if os.Getenv("MITTO_TEST_MODE") == "" {
+		acpProcessMgr.CleanupOrphanedProcesses()
+	}
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
 	// Set workspace config provider so process manager can resolve auxiliary config.
 	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {

@@ -25,11 +25,13 @@ func newTestGCManager(
 		logger:          newTestLogger(),
 		processes:       make(map[string]*SharedACPProcess),
 		lastSessionSeen: make(map[string]time.Time),
+		auxSessions:     make(map[auxSessionKey]*auxiliarySessionState),
 		gcConfig: GCConfig{
 			Interval:            30 * time.Second,
 			GracePeriod:         60 * time.Second,
 			ObserverGracePeriod: 60 * time.Second,
 			IdleTimeout:         5 * time.Minute,
+			AuxIdleTimeout:      10 * time.Minute,
 		},
 		sessionQuery: query,
 		sessionClose: closeSession,
@@ -658,6 +660,76 @@ func TestGCTier1_MaxClosuresUnlimited(t *testing.T) {
 	defer mu.Unlock()
 	if len(closed) != 5 {
 		t.Errorf("expected all 5 sessions closed in one cycle with unlimited closures, got %d", len(closed))
+	}
+}
+
+// TestGCTier3_CleansUpStaleAuxiliarySessions verifies that auxiliary sessions idle
+// longer than AuxIdleTimeout are removed by Tier 3, while fresh sessions remain.
+func TestGCTier3_CleansUpStaleAuxiliarySessions(t *testing.T) {
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return map[string][]SessionInfo{} },
+		func(id string) {},
+	)
+
+	staleKey := auxSessionKey{workspaceUUID: "ws-1", purpose: "title-gen"}
+	freshKey := auxSessionKey{workspaceUUID: "ws-1", purpose: "follow-up"}
+
+	m.auxSessions[staleKey] = &auxiliarySessionState{
+		sessionID: "aux-stale",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-20 * time.Minute),
+	}
+	m.auxSessions[freshKey] = &auxiliarySessionState{
+		sessionID: "aux-fresh",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-1 * time.Minute),
+	}
+
+	m.RunGCOnce()
+
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+
+	if _, ok := m.auxSessions[staleKey]; ok {
+		t.Error("stale auxiliary session (20min idle) should have been cleaned up by Tier 3 GC")
+	}
+	if _, ok := m.auxSessions[freshKey]; !ok {
+		t.Error("fresh auxiliary session (1min idle) should NOT have been cleaned up by Tier 3 GC")
+	}
+}
+
+// TestGCTier3_NoCleanupWhenAllFresh verifies that Tier 3 does not remove auxiliary
+// sessions that are within the AuxIdleTimeout window.
+func TestGCTier3_NoCleanupWhenAllFresh(t *testing.T) {
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return map[string][]SessionInfo{} },
+		func(id string) {},
+	)
+
+	key1 := auxSessionKey{workspaceUUID: "ws-1", purpose: "title-gen"}
+	key2 := auxSessionKey{workspaceUUID: "ws-1", purpose: "follow-up"}
+
+	m.auxSessions[key1] = &auxiliarySessionState{
+		sessionID: "aux-1",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-1 * time.Minute),
+	}
+	m.auxSessions[key2] = &auxiliarySessionState{
+		sessionID: "aux-2",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-1 * time.Minute),
+	}
+
+	m.RunGCOnce()
+
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+
+	if _, ok := m.auxSessions[key1]; !ok {
+		t.Error("fresh auxiliary session key1 should NOT have been cleaned up by Tier 3 GC")
+	}
+	if _, ok := m.auxSessions[key2]; !ok {
+		t.Error("fresh auxiliary session key2 should NOT have been cleaned up by Tier 3 GC")
 	}
 }
 

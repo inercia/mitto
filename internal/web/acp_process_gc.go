@@ -20,6 +20,14 @@ type GCConfig struct {
 	// MaxClosuresPerCycle limits how many sessions the GC closes per cycle.
 	// 0 means unlimited. Prevents reconnection storms when many sessions go idle at once.
 	MaxClosuresPerCycle int
+	// AuxIdleTimeout is how long an auxiliary session can be idle before the GC
+	// cleans it up. Cleaned-up sessions are lazily re-created on next use (default: 10m).
+	AuxIdleTimeout time.Duration
+	// ChildIdleTimeout is how long a child session (spawned via MCP mitto_conversation_new)
+	// must be inactive before the GC considers closing it. Child sessions are less critical
+	// than user-created sessions and should be reclaimed faster to reduce memory pressure.
+	// Default: 5m (same as IdleTimeout). Set shorter than IdleTimeout for faster child GC.
+	ChildIdleTimeout time.Duration
 }
 
 type SessionInfo struct {
@@ -27,6 +35,9 @@ type SessionInfo struct {
 	WorkspaceUUID string
 	IsPrompting   bool
 	HasObservers  bool
+	// IsChild is true when this session was spawned by another session (has a parent).
+	// Used by GC to apply ChildIdleTimeout instead of IdleTimeout.
+	IsChild bool
 	// HasConnectedClients is true when there are WebSocket connections that have not
 	// yet registered as observers (i.e., connected but haven't sent load_events).
 	HasConnectedClients bool
@@ -58,7 +69,9 @@ func defaultGCConfig() GCConfig {
 		GracePeriod:         60 * time.Second,
 		ObserverGracePeriod: 60 * time.Second,
 		IdleTimeout:         5 * time.Minute,
+		ChildIdleTimeout:    5 * time.Minute,
 		MaxClosuresPerCycle: 3,
+		AuxIdleTimeout:      10 * time.Minute,
 	}
 }
 
@@ -84,6 +97,12 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 	}
 	if config.IdleTimeout <= 0 {
 		config.IdleTimeout = defaultGCConfig().IdleTimeout
+	}
+	if config.AuxIdleTimeout <= 0 {
+		config.AuxIdleTimeout = defaultGCConfig().AuxIdleTimeout
+	}
+	if config.ChildIdleTimeout <= 0 {
+		config.ChildIdleTimeout = defaultGCConfig().ChildIdleTimeout
 	}
 	// Note: MaxClosuresPerCycle == 0 means unlimited — no default applied.
 
@@ -155,6 +174,9 @@ func (m *ACPProcessManager) gcLoop() {
 //
 // Tier 2 stops shared ACP processes that have had no active sessions for longer
 // than the configured grace period.
+//
+// Tier 3 cleans up auxiliary sessions that have been idle longer than AuxIdleTimeout.
+// Cleaned-up sessions are lazily re-created on next use via getOrCreateAuxiliarySession.
 func (m *ACPProcessManager) RunGCOnce() {
 	if m.sessionQuery == nil || m.sessionClose == nil {
 		return
@@ -221,13 +243,19 @@ gcTier1:
 				continue
 			}
 			// Skip sessions with recent activity — keepalive, prompt, or observer
-			// changes within the idle timeout window.
-			if !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < m.gcConfig.IdleTimeout {
+			// changes within the idle timeout window. Child sessions use ChildIdleTimeout
+			// which can be set shorter than IdleTimeout for faster GC under memory pressure.
+			idleTimeout := m.gcConfig.IdleTimeout
+			if s.IsChild && m.gcConfig.ChildIdleTimeout > 0 {
+				idleTimeout = m.gcConfig.ChildIdleTimeout
+			}
+			if !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < idleTimeout {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping session (recent activity)",
 						"session_id", s.SessionID,
 						"workspace_uuid", workspaceUUID,
-						"last_activity_ago", now.Sub(s.LastActivityAt))
+						"last_activity_ago", now.Sub(s.LastActivityAt),
+						"is_child", s.IsChild)
 				}
 				continue
 			}
@@ -350,4 +378,9 @@ gcTier1:
 		m.gcMu.Lock()
 	}
 	m.gcMu.Unlock()
+
+	// ----------------------------------------------------------------
+	// Tier 3: clean up idle auxiliary sessions
+	// ----------------------------------------------------------------
+	m.CleanupStaleAuxiliarySessions(m.gcConfig.AuxIdleTimeout)
 }

@@ -1566,6 +1566,15 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	sharedProcess := sm.getSharedProcess(effectiveWs, r)
 	sharedProcessDuration := time.Since(sharedProcessStart)
 
+	// Ensure auxiliary sessions (title-gen, follow-up, etc.) are pre-warmed for
+	// this workspace. Pre-warming runs when a shared process is first created, but
+	// auxiliary sessions can be lost (server restart, process recreation, idle
+	// reaping). Without this, title generation on the first prompt can block for
+	// minutes waiting for a NewSession RPC while the agent does extended thinking.
+	if sharedProcess != nil && sm.acpProcessManager != nil {
+		sm.acpProcessManager.EnsurePrewarmed(workspaceUUID, sm.logger)
+	}
+
 	configDuration := time.Since(createStart)
 
 	// Build pruning configuration from global settings (with default)
@@ -2652,6 +2661,7 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			IsPrompting:           bs.IsPrompting(),
 			HasObservers:          bs.HasObservers(),
 			HasConnectedClients:   bs.HasConnectedClients(),
+			IsChild:               bs.HasParent(),
 			QueueLength:           queueLen,
 			NextPeriodicAt:        nextPeriodic,
 			ResumedAt:             bs.StartedAt(),
