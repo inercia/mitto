@@ -9,7 +9,6 @@ import (
 	"strings"
 	"syscall"
 
-	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/appdir"
 )
 
@@ -123,7 +122,10 @@ func parseACPPIDFile(content string) (pidFileContent, error) {
 }
 
 // cleanupOrphanedACPProcesses checks the acp_pids/ directory for PID files from a
-// previous Mitto instance. Any alive processes are killed; all PID files are removed.
+// previous Mitto instance and removes them. It does NOT kill any processes because:
+//   - ACP processes self-terminate on stdin EOF when Mitto exits (the pipe breaks).
+//   - A live process at a recycled PID is almost certainly an unrelated OS process —
+//     killing it would be dangerous.
 //
 // Safety: files whose Mitto owner PID is still alive are skipped — they belong to
 // a concurrently-running Mitto instance, not to a crashed one.
@@ -183,15 +185,17 @@ func cleanupOrphanedACPProcesses(logger *slog.Logger) {
 			}
 		}
 
-		// Owner Mitto is gone (or PID was 0 / old format). Check whether the ACP
-		// process is still alive and, if so, kill it.
+		// Check whether the ACP process is still alive. We do NOT kill it because:
+		// 1. ACP processes self-terminate on stdin EOF when Mitto exits (the pipe breaks)
+		// 2. If a process is alive at this PID, it's almost certainly PID reuse by
+		//    an unrelated process — killing it would be dangerous
+		// 3. The only value of killing would be if an ACP somehow survived after Mitto
+		//    crashed, but that's practically impossible due to stdin pipe closure
 		if err := syscall.Kill(pids.acpPID, 0); err == nil {
-			// Process is alive — kill the entire process group
 			if logger != nil {
-				logger.Warn("cleanupOrphanedACPProcesses: killing orphaned ACP process group",
+				logger.Warn("cleanupOrphanedACPProcesses: process still alive at orphaned ACP PID (not killing — likely PID reuse)",
 					"acp_pid", pids.acpPID, "file", entry.Name())
 			}
-			mittoAcp.KillProcessGroup(pids.acpPID)
 		} else {
 			if logger != nil {
 				logger.Info("cleanupOrphanedACPProcesses: stale PID file (process already gone)",
