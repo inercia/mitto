@@ -1,12 +1,12 @@
 package web
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -67,9 +67,9 @@ func TestWriteAndRemoveACPPIDFile(t *testing.T) {
 		}
 
 		uuid := "test-workspace-uuid"
-		pid := 12345
+		acpPid := 12345
 
-		if err := writeACPPIDFile(uuid, pid, isAux); err != nil {
+		if err := writeACPPIDFile(uuid, acpPid, isAux); err != nil {
 			t.Fatalf("writeACPPIDFile(isAux=%v) error: %v", isAux, err)
 		}
 
@@ -80,9 +80,17 @@ func TestWriteAndRemoveACPPIDFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PID file not created at %q: %v", path, err)
 		}
-		got, _ := strconv.Atoi(strings.TrimSpace(string(content)))
-		if got != pid {
-			t.Errorf("PID file content = %d, want %d", got, pid)
+
+		// Parse new "mitto=<N>\nacp=<N>\n" format
+		pids, err := parseACPPIDFile(string(content))
+		if err != nil {
+			t.Fatalf("parseACPPIDFile: %v (content=%q)", err, string(content))
+		}
+		if pids.acpPID != acpPid {
+			t.Errorf("acp PID in file = %d, want %d", pids.acpPID, acpPid)
+		}
+		if pids.mittoPID != mittoPID {
+			t.Errorf("mitto PID in file = %d, want %d (current process)", pids.mittoPID, mittoPID)
 		}
 
 		if err := removeACPPIDFile(uuid, isAux); err != nil {
@@ -91,6 +99,67 @@ func TestWriteAndRemoveACPPIDFile(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Errorf("PID file still exists after removal: %q", path)
 		}
+	}
+}
+
+func TestParseACPPIDFile(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		wantMitto int
+		wantACP   int
+		wantErr   bool
+	}{
+		{
+			name:      "new format",
+			content:   "mitto=100\nacp=200\n",
+			wantMitto: 100,
+			wantACP:   200,
+		},
+		{
+			name:      "new format no trailing newline",
+			content:   "mitto=100\nacp=200",
+			wantMitto: 100,
+			wantACP:   200,
+		},
+		{
+			name:    "old format plain PID",
+			content: "12345\n",
+			wantACP: 12345,
+		},
+		{
+			name:    "old format no newline",
+			content: "12345",
+			wantACP: 12345,
+		},
+		{
+			name:    "invalid content",
+			content: "not-a-pid",
+			wantErr: true,
+		},
+		{
+			name:    "missing acp line",
+			content: "mitto=100\n",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseACPPIDFile(tc.content)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseACPPIDFile() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got.mittoPID != tc.wantMitto {
+				t.Errorf("mittoPID = %d, want %d", got.mittoPID, tc.wantMitto)
+			}
+			if got.acpPID != tc.wantACP {
+				t.Errorf("acpPID = %d, want %d", got.acpPID, tc.wantACP)
+			}
+		})
 	}
 }
 
@@ -141,6 +210,54 @@ func TestCleanupOrphanedACPProcesses_InvalidContent(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("invalid PID file not removed after cleanup")
 	}
+}
+
+// TestCleanupOrphanedACPProcesses_SkipsLiveMittoOwner verifies that cleanup does NOT
+// kill an ACP process whose Mitto owner is still alive (concurrent Mitto instance).
+func TestCleanupOrphanedACPProcesses_SkipsLiveMittoOwner(t *testing.T) {
+	setTempAppDir(t)
+
+	// Start an "ACP" process to act as the target.
+	acpCmd := exec.Command("sleep", "60")
+	acpCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := acpCmd.Start(); err != nil {
+		t.Fatalf("failed to start ACP subprocess: %v", err)
+	}
+	defer acpCmd.Process.Kill() // safety net
+
+	// Start a second "Mitto" process to act as the owner.
+	ownerCmd := exec.Command("sleep", "60")
+	if err := ownerCmd.Start(); err != nil {
+		acpCmd.Process.Kill()
+		t.Fatalf("failed to start owner Mitto subprocess: %v", err)
+	}
+	defer ownerCmd.Process.Kill()
+
+	// Write a PID file as if the owner Mitto instance wrote it.
+	dir, _ := acpPIDDir()
+	path := filepath.Join(dir, "cross-instance-ws.pid")
+	content := fmt.Sprintf("mitto=%d\nacp=%d\n", ownerCmd.Process.Pid, acpCmd.Process.Pid)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Cleanup should skip this file because the owner Mitto is alive.
+	cleanupOrphanedACPProcesses(discardLogger())
+
+	// PID file should still exist (not removed by cleanup).
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("PID file was removed — cleanup should have skipped it (owner Mitto still running)")
+	}
+
+	// ACP process should still be alive.
+	if err := syscall.Kill(acpCmd.Process.Pid, 0); err != nil {
+		t.Errorf("ACP process was killed — cleanup should have skipped it (owner Mitto still running)")
+	}
+
+	// Clean up manually.
+	ownerCmd.Process.Kill()
+	acpCmd.Process.Kill()
+	_ = os.Remove(path)
 }
 
 func TestCleanupOrphanedACPProcesses_AliveProcess(t *testing.T) {
