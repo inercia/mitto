@@ -659,11 +659,25 @@ export function useWebSocket() {
       const timeoutId = setTimeout(() => {
         const ws = sessionWsRefs.current[sessionId];
         if (ws && ws.readyState === WebSocket.OPEN) {
+          // Skip if a sync is already in-flight (keepalive or another gap fill).
+          // The server drops concurrent load_events via TryLock anyway, and the
+          // next keepalive_ack will re-evaluate after the in-flight sync completes.
+          if (pendingSyncRef.current[sessionId]) {
+            console.log(
+              `[gap-fill] Session ${sessionId}: Skipping — sync already in-flight`,
+            );
+            delete pendingGapFillRef.current[sessionId];
+            return;
+          }
           // Request events after our last known seq
           const afterSeq = clientMaxSeq;
           console.log(
             `[gap-fill] Session ${sessionId}: Requesting events after seq ${afterSeq}`,
           );
+          // Mark sync in-flight so keepalive doesn't fire a concurrent load_events.
+          // Without this, both gap fill and keepalive could send overlapping requests,
+          // leading to duplicate event processing.
+          setPendingSync(sessionId);
           ws.send(
             JSON.stringify({
               type: "load_events",
@@ -690,7 +704,7 @@ export function useWebSocket() {
         timeoutId,
       };
     },
-    [sessionsRef],
+    [sessionsRef, setPendingSync],
   );
 
   // Fetch workspaces and ACP servers
@@ -1212,13 +1226,17 @@ export function useWebSocket() {
         const htmlLen = msg.data.html?.length || 0;
         const isPromptingFromServer = msg.data.is_prompting;
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps using max_seq (immediate gap detection).
+        // IMPORTANT: Must run BEFORE updateLastKnownSeq so that clientMaxSeq
+        // reflects the state before this message, allowing gap detection to
+        // catch missing events (e.g., user_prompt from periodic runner that
+        // was broadcast before the WebSocket observer was attached).
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // Agent is responding - this proves any pending prompts were received.
         // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
@@ -1308,13 +1326,13 @@ export function useWebSocket() {
           msg.data.is_prompting,
         );
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // Agent is responding - this proves any pending prompts were received.
         // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
@@ -1387,13 +1405,13 @@ export function useWebSocket() {
           msg.data.is_prompting,
         );
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // M1 fix: Check for duplicate events
         if (isSeqDuplicate(sessionId, msgSeq, null)) {
@@ -1432,13 +1450,13 @@ export function useWebSocket() {
         const msgSeq = msg.data.seq;
         const maxSeq = msg.data.max_seq;
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -1646,14 +1664,14 @@ export function useWebSocket() {
           currentSession?.messages?.[currentSession.messages.length - 1];
         const maxSeq = msg.data.max_seq;
 
-        // Update last known seq from max_seq (server's authoritative max)
-        updateLastKnownSeq(sessionId, maxSeq || 0);
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         // This is important for prompt_complete as it signals the end of a response
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, null);
         }
+
+        // Update last known seq from max_seq (server's authoritative max, after gap check)
+        updateLastKnownSeq(sessionId, maxSeq || 0);
 
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -1679,6 +1697,7 @@ export function useWebSocket() {
               ...session,
               messages,
               isStreaming: false,
+              activeUIPrompt: null,
               // Update processor stats from prompt_complete
               info: {
                 ...session.info,
@@ -1771,7 +1790,7 @@ export function useWebSocket() {
           ]);
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false },
+            [sessionId]: { ...session, messages, isStreaming: false, activeUIPrompt: null },
           };
         });
         break;
@@ -2055,7 +2074,7 @@ export function useWebSocket() {
           ]);
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false },
+            [sessionId]: { ...session, messages, isStreaming: false, activeUIPrompt: null },
           };
         });
         break;
@@ -2373,13 +2392,13 @@ export function useWebSocket() {
           is_queue_message: sender_id === "queue",
         });
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (max_seq) {
           checkAndFillGap(sessionId, max_seq, seq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
 
         // M1 fix: Mark seq as seen (for our own prompts, we mark after confirmation)
         if (!is_mine && seq) {
@@ -2720,6 +2739,7 @@ export function useWebSocket() {
               ...session,
               isRunning: false,
               isStreaming: false,
+              activeUIPrompt: null,
               info: {
                 ...session.info,
                 acp_ready: false,
@@ -4700,6 +4720,15 @@ export function useWebSocket() {
   const cancelPrompt = useCallback(() => {
     if (!activeSessionId) return;
     sendToSession(activeSessionId, { type: "cancel" });
+    // Clear any active UI prompt when user cancels
+    setSessions((prev) => {
+      const session = prev[activeSessionId];
+      if (!session || !session.activeUIPrompt) return prev;
+      return {
+        ...prev,
+        [activeSessionId]: { ...session, activeUIPrompt: null },
+      };
+    });
   }, [activeSessionId, sendToSession]);
 
   // Force reset a stuck session (when agent is unresponsive)
