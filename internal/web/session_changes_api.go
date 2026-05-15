@@ -80,7 +80,10 @@ func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request, se
 		}
 		indexStatus := line[0]
 		workTreeStatus := line[1]
-		filePath := strings.TrimSpace(line[3:])
+		filePath := strings.TrimSpace(line[2:])
+		if filePath == "" {
+			continue
+		}
 
 		// Handle renames: "R  old -> new"
 		var oldPath string
@@ -88,6 +91,11 @@ func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request, se
 			parts := strings.SplitN(filePath, " -> ", 2)
 			oldPath = parts[0]
 			filePath = parts[1]
+		}
+
+		// Skip directory entries (untracked directories appear with trailing slash)
+		if strings.HasSuffix(filePath, "/") {
+			continue
 		}
 
 		status := classifyGitStatus(indexStatus, workTreeStatus)

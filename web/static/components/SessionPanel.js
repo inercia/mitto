@@ -669,20 +669,21 @@ export function SessionPanel({
   // ---------------------------------------------------------------------------
   function renderChangesContent() {
     // Helper to build viewer URL with diff mode
-    const buildDiffViewerUrl = (filePath) => {
+    const buildDiffViewerUrl = (filePath, status) => {
       const apiPrefix = window.mittoApiPrefix || "";
       const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
       const wsPath = sessionInfo?.working_dir || window.mittoCurrentWorkspace || "";
       const relativePath = filePath.replace(/^\.\//, "");
       if (!workspaceUUID) return null;
-      let url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}&view=diff`;
+      let url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+      if (status !== "?") url += "&view=diff";
       if (wsPath) url += `&ws_path=${encodeURIComponent(wsPath)}`;
       return url;
     };
 
-    const openFileInViewer = (filePath, e) => {
+    const openFileInViewer = (filePath, e, status) => {
       if (e) { e.preventDefault(); e.stopPropagation(); }
-      const viewerUrl = buildDiffViewerUrl(filePath);
+      const viewerUrl = buildDiffViewerUrl(filePath, status);
       if (!viewerUrl) return;
       if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
         const fullUrl = new URL(viewerUrl, window.location.origin).href;
@@ -788,7 +789,7 @@ export function SessionPanel({
                       key=${file.path}
                       href="#"
                       class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700/50 transition-colors cursor-pointer group no-underline"
-                      onClick=${(e) => openFileInViewer(file.path, e)}
+                      onClick=${(e) => openFileInViewer(file.path, e, file.status)}
                       title=${file.old_path ? file.old_path + " → " + file.path : file.path}
                     >
                       <span
