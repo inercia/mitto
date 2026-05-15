@@ -640,6 +640,19 @@ void disableWindowFullscreen(void) {
     }
 }
 
+// setWindowFrameAutosaveName enables automatic saving/restoring of the main window's
+// frame (position and size) across app launches. Uses NSUserDefaults internally.
+// Must be called after the window is created (use w.Dispatch).
+void setWindowFrameAutosaveName(void) {
+    @autoreleasepool {
+        NSWindow *window = [[NSApplication sharedApplication] mainWindow];
+        if (window) {
+            [window setFrameAutosaveName:@"MittoMainWindow"];
+            NSLog(@"[Mitto] Window frame autosave enabled");
+        }
+    }
+}
+
 // setProcessName sets the process name for the current process.
 // This affects how the process appears in Activity Monitor and how WebKit child
 // processes (WebContent) derive their display names.

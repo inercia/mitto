@@ -1376,6 +1376,15 @@ func run() error {
 	w.SetSize(windowMinWidth, windowMinHeight, webview.HintMin)
 	w.Navigate(url)
 
+	// Enable window frame autosave so the window size and position
+	// persist across app launches. Must be dispatched to run after
+	// the window is fully created. The SetSize calls above provide
+	// defaults for the very first launch only.
+	w.Dispatch(func() {
+		C.setWindowFrameAutosaveName()
+		slog.Info("Window frame autosave enabled")
+	})
+
 	// Configure window to show in all Spaces if enabled
 	// This is dispatched to run after the window is fully created
 	showInAllSpaces := false
