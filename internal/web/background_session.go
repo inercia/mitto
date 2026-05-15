@@ -672,6 +672,19 @@ func (bs *BackgroundSession) IsClosed() bool {
 	return bs.closed.Load() != 0
 }
 
+// HasParent returns true if this session was spawned by another session (has a parent).
+// Used by the GC to apply ChildIdleTimeout instead of IdleTimeout for faster child GC.
+func (bs *BackgroundSession) HasParent() bool {
+	if bs.store == nil || bs.persistedID == "" {
+		return false
+	}
+	meta, err := bs.store.GetMetadata(bs.persistedID)
+	if err != nil {
+		return false
+	}
+	return meta.ParentSessionID != ""
+}
+
 // IsACPReady returns true if the ACP connection is initialized and ready for prompts.
 // This returns false while the session is starting up (ACP process not yet initialized)
 // or after the session has been closed.
@@ -2653,6 +2666,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		return &sessionError{"The AI agent is still starting up. Please wait a moment and try again."}
 	}
 
+retryAfterRestart:
 	bs.promptMu.Lock()
 	if bs.isPrompting {
 		// Check if the ACP connection is dead (process crashed)
@@ -2719,14 +2733,21 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					return &sessionError{"ACP process died and restart failed: " + err.Error()}
 				}
 
-				// Restart succeeded - notify user to retry the prompt
+				// Restart succeeded — automatically retry the prompt.
 				// Note: we say "restarted" (not "restarted successfully") because the
 				// process may crash again on the next prompt — we don't want to give
 				// false confidence.
 				bs.notifyObservers(func(o SessionObserver) {
-					o.OnError("AI agent restarted. Please resend your message.")
+					o.OnError("AI agent restarted. Retrying your message automatically...")
 				})
-				return &sessionError{"ACP process restarted - please resend your message"}
+				if bs.logger != nil {
+					bs.logger.Info("Auto-retrying prompt after ACP restart",
+						"session_id", bs.persistedID,
+						"reason", "crash_during_prompt")
+				}
+				// isPrompting was cleared above; re-acquire promptMu and proceed
+				// through the normal prompt path below.
+				goto retryAfterRestart
 			}
 
 			// Restart limit exceeded - notify user to manually restart
@@ -3081,20 +3102,43 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	// Run prompt in background
 	go func() {
+		// autoRetried guards a single automatic retry after an ACP crash during
+		// streaming. On the first crash we restart the process and jump back to
+		// retryPrompt; if the retry also crashes we fall through to the normal
+		// "please resend" message instead of looping forever.
+		autoRetried := false
+
+		// Declare all variables that are live across the retryPrompt goto target
+		// here, before the label, so that Go's "no jumping over declarations" rule
+		// is satisfied. They are assigned (not declared) inside the loop body.
+		var (
+			promptCtx       context.Context
+			promptCancel    context.CancelFunc
+			promptResp      acp.PromptResponse
+			err             error
+			promptStartedAt time.Time
+			promptEndedAt   time.Time
+			processDoneCh   <-chan struct{}
+			connDoneCh      <-chan struct{}
+		)
+
+	retryPrompt:
 		// Create a prompt context that gets cancelled when the ACP process dies.
 		// This ensures we fail fast instead of waiting for the ACP server's internal
 		// 60-second control request timeout when the CLI subprocess has crashed.
 		// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
-		promptCtx, promptCancel := context.WithCancel(bs.ctx)
-		defer promptCancel()
+		promptCtx, promptCancel = context.WithCancel(bs.ctx)
+		// NOTE: no defer — we call promptCancel() explicitly after the prompt
+		// returns so that (a) we clean up the health-monitor goroutine eagerly,
+		// and (b) a goto back to retryPrompt doesn't accumulate extra defers.
 
 		// Monitor ACP process health: if the connection's Done() channel closes
 		// or the OS process exits (acpProcessDone), cancel the prompt context immediately.
 		// The acpProcessDone channel provides faster detection than Done() because it
 		// uses OS-level process liveness checks (signal 0) rather than waiting for
 		// pipe EOF to propagate through the JSON-RPC transport layer.
-		processDoneCh := bs.acpProcessDone // capture for goroutine
-		var connDoneCh <-chan struct{}
+		processDoneCh = bs.acpProcessDone // refresh on each retry (new process after restart)
+		connDoneCh = nil                  // reset before assigning below
 		if bs.acpConn != nil {
 			connDoneCh = bs.acpConn.Done()
 		} else if bs.sharedProcess != nil {
@@ -3121,9 +3165,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			}()
 		}
 
-		var promptResp acp.PromptResponse
-		var err error
-		promptStartedAt := time.Now() // captured for after-phase processors
+		promptStartedAt = time.Now() // captured for after-phase processors
 		if bs.sharedProcess != nil {
 			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(bs.acpID), finalBlocks)
 		} else {
@@ -3132,7 +3174,8 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				Prompt:    finalBlocks,
 			})
 		}
-		promptEndedAt := time.Now() // captured for after-phase processors
+		promptCancel()             // cancel context to unblock the health-monitor goroutine
+		promptEndedAt = time.Now() // captured for after-phase processors
 
 		// Store token usage from the prompt response (if available).
 		if promptResp.Usage != nil {
@@ -3259,7 +3302,28 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					bs.notifyObservers(func(o SessionObserver) {
 						o.OnError(errMsg)
 					})
+				} else if !autoRetried {
+					// Restart succeeded on the first crash — automatically retry the prompt.
+					autoRetried = true
+					bs.notifyObservers(func(o SessionObserver) {
+						o.OnError("AI agent restarted. Retrying your message automatically...")
+					})
+					if bs.logger != nil {
+						bs.logger.Info("Auto-retrying prompt after ACP restart during stream",
+							"session_id", bs.persistedID)
+					}
+					// Re-acquire the prompting state so the retry runs under the
+					// same invariants as the original prompt call.
+					bs.promptMu.Lock()
+					bs.isPrompting = true
+					bs.promptStartTime = time.Now()
+					bs.promptMu.Unlock()
+					if bs.onStreamingStateChanged != nil {
+						bs.onStreamingStateChanged(bs.persistedID, true)
+					}
+					goto retryPrompt
 				} else {
+					// Already retried once — ask the user to resend manually.
 					bs.notifyObservers(func(o SessionObserver) {
 						o.OnError("AI agent restarted. Please resend your message.")
 					})
