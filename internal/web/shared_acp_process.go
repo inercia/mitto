@@ -60,6 +60,12 @@ type SharedACPProcessConfig struct {
 	Runner *runner.Runner
 	// Logger for process-level logging.
 	Logger *slog.Logger
+	// CanRestartGlobal is an optional callback that checks the global (cross-workspace)
+	// restart rate limiter. When set, Restart() checks this before proceeding.
+	// Returns true if restart is globally allowed, false to block.
+	CanRestartGlobal func() bool
+	// RecordRestart is an optional callback to record a restart in the global tracker.
+	RecordRestart func()
 }
 
 // SessionHandle is returned when creating a new session on a SharedACPProcess.
@@ -466,7 +472,11 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, p.logger)
 
-	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout)
+	// Use a larger notification queue for shared processes since all sessions
+	// multiplex over the same connection. The default 1024 can overflow when
+	// many sessions stream concurrently, killing the connection.
+	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout,
+		acp.WithMaxQueuedNotifications(8192))
 	if p.logger != nil {
 		p.conn.SetLogger(logging.DowngradeACPSDKErrors(p.logger))
 	}
@@ -1015,6 +1025,11 @@ func (p *SharedACPProcess) Restart() error {
 		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", MaxACPRestarts, ACPRestartWindow)
 	}
 
+	// Check global (cross-workspace) restart rate limiter before proceeding.
+	if p.config.CanRestartGlobal != nil && !p.config.CanRestartGlobal() {
+		return fmt.Errorf("global restart limit exceeded (cross-workspace cooldown active)")
+	}
+
 	// Apply backoff based on how many recent restarts have occurred.
 	p.restartMu.Lock()
 	recentCount := len(p.restartTimes)
@@ -1050,6 +1065,11 @@ func (p *SharedACPProcess) Restart() error {
 	p.mu.Unlock()
 
 	p.recordRestart()
+
+	// Record in the global restart tracker (cross-workspace rate limiter).
+	if p.config.RecordRestart != nil {
+		p.config.RecordRestart()
+	}
 
 	if err := p.startProcess(); err != nil {
 		if p.logger != nil {

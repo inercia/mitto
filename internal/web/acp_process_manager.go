@@ -62,6 +62,14 @@ type ACPProcessManager struct {
 	sessionQuery    SessionQueryFunc
 	sessionClose    SessionCloseFunc
 	gcMu            sync.Mutex // protects lastSessionSeen and gc lifecycle fields
+
+	// Global restart rate limiter — prevents cross-workspace restart cascades.
+	// When multiple workspaces crash simultaneously (e.g., system-wide OOM), individual
+	// per-process rate limiters are insufficient because each workspace independently
+	// restarts, compounding memory pressure.
+	globalRestartMu     sync.Mutex
+	globalRestartTimes  []time.Time
+	globalCooldownUntil time.Time
 }
 
 // auxSessionKey uniquely identifies an auxiliary session.
@@ -107,11 +115,9 @@ func mapsEqual(a, b map[string]string) bool {
 }
 
 // NewACPProcessManager creates a new process manager.
+// It does NOT perform orphan cleanup — call CleanupOrphanedProcesses() explicitly
+// at server startup if orphan cleanup is desired.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
-	// Clean up any orphaned ACP processes from a previous Mitto instance
-	// that may have crashed without running its shutdown sequence.
-	cleanupOrphanedACPProcesses(logger)
-
 	return &ACPProcessManager{
 		processes:    make(map[string]*SharedACPProcess),
 		auxProcesses: make(map[string]*SharedACPProcess),
@@ -119,6 +125,13 @@ func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessM
 		ctx:          ctx,
 		logger:       logger,
 	}
+}
+
+// CleanupOrphanedProcesses kills any ACP processes left over from a previous Mitto
+// instance that crashed without running its shutdown sequence. Call this once at
+// server startup, before creating any new processes. Not called in tests.
+func (m *ACPProcessManager) CleanupOrphanedProcesses() {
+	cleanupOrphanedACPProcesses(m.logger)
 }
 
 // Ensure ACPProcessManager implements auxiliary.ProcessProvider
@@ -188,14 +201,16 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		WorkspaceUUID: workspace.UUID,
-		ACPCommand:    workspace.ACPCommand,
-		ACPCwd:        workspace.ACPCwd,
-		ACPServer:     workspace.ACPServer,
-		WorkingDir:    workspace.WorkingDir,
-		Env:           workspace.ACPEnv,
-		Runner:        r,
-		Logger:        processLogger,
+		WorkspaceUUID:    workspace.UUID,
+		ACPCommand:       workspace.ACPCommand,
+		ACPCwd:           workspace.ACPCwd,
+		ACPServer:        workspace.ACPServer,
+		WorkingDir:       workspace.WorkingDir,
+		Env:              workspace.ACPEnv,
+		Runner:           r,
+		Logger:           processLogger,
+		CanRestartGlobal: m.CanRestartGlobally,
+		RecordRestart:    m.RecordGlobalRestart,
 	})
 	createDuration := time.Since(createStart)
 
@@ -312,13 +327,15 @@ func (m *ACPProcessManager) GetOrCreateAuxProcess(workspace *config.WorkspaceSet
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		WorkspaceUUID: workspace.UUID,
-		IsAuxiliary:   true,
-		ACPCommand:    auxACPCommand,
-		ACPServer:     workspace.AuxiliaryACPServer,
-		WorkingDir:    workspace.WorkingDir,
-		Runner:        r,
-		Logger:        processLogger,
+		WorkspaceUUID:    workspace.UUID,
+		IsAuxiliary:      true,
+		ACPCommand:       auxACPCommand,
+		ACPServer:        workspace.AuxiliaryACPServer,
+		WorkingDir:       workspace.WorkingDir,
+		Runner:           r,
+		Logger:           processLogger,
+		CanRestartGlobal: m.CanRestartGlobally,
+		RecordRestart:    m.RecordGlobalRestart,
 	})
 	createDuration := time.Since(createStart)
 
@@ -922,6 +939,31 @@ func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Durat
 	}
 
 	return len(staleKeys)
+}
+
+// EnsurePrewarmed checks whether the workspace has pre-warmed auxiliary sessions
+// (at minimum title-gen) and launches async pre-warming if not.
+// This is cheap to call repeatedly — it only checks the auxSessions map under a lock.
+//
+// This should be called when creating a new BackgroundSession on an existing shared
+// process. When a shared process is first created, prewarmAuxiliarySessions runs
+// automatically. But auxiliary sessions can be lost (server restart, process recreation,
+// idle reaping) and won't be re-created until something needs them. Without this,
+// title generation can block for minutes waiting for a NewSession RPC while the agent
+// is busy with extended thinking on the main prompt.
+func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.Logger) {
+	if m.DisableAuxiliary {
+		return
+	}
+
+	m.auxMu.Lock()
+	key := auxSessionKey{workspaceUUID, auxiliary.PurposeTitleGen}
+	_, exists := m.auxSessions[key]
+	m.auxMu.Unlock()
+
+	if !exists {
+		go m.prewarmAuxiliarySessions(workspaceUUID, logger)
+	}
 }
 
 // prewarmAuxiliarySessions eagerly creates auxiliary sessions for the most commonly used
