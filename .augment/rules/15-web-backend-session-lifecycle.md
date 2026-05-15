@@ -76,6 +76,10 @@ Two mechanisms keep auxiliary sessions fresh after crashes:
 
 Lock ordering: both must be called WITHOUT holding `m.mu`; they acquire `auxMu` internally.
 
+### Auxiliary Session GC (Tier 3)
+
+The GC's Tier 3 cleans up auxiliary sessions idle longer than `AuxIdleTimeout` (default: 10m) via `CleanupStaleAuxiliarySessions()`. Sessions are lazily re-created on next use via `getOrCreateAuxiliarySession()`. This prevents auxiliary sessions (title-gen, follow-up, mcp-check, etc.) from persisting indefinitely and accumulating stale context.
+
 ### ACP Process Death Detection (Three-Layer)
 
 Fast crash detection avoids waiting for the ACP SDK's 60-second control request timeout:
