@@ -1506,6 +1506,18 @@ export function useWebSocket() {
           timeoutSeconds: msg.data.timeout_seconds,
         });
 
+        // Dedup: ignore if already showing the same requestId (e.g. after reconnect re-send)
+        const alreadyActive =
+          sessionsRef.current[sessionId]?.activeUIPrompt?.requestId ===
+          msg.data.request_id;
+        if (alreadyActive) {
+          console.log(
+            "[UIPrompt] Ignoring duplicate ui_prompt for requestId:",
+            msg.data.request_id,
+          );
+          break;
+        }
+
         // Check if we should show a notification
         // Show notification when:
         // 1. This is not the active session, OR
@@ -1550,6 +1562,11 @@ export function useWebSocket() {
           const session = prev[sessionId];
           if (!session) {
             console.warn("[UIPrompt] Session not found:", sessionId);
+            return prev;
+          }
+
+          // Secondary dedup guard inside setSessions (handles concurrent state updates)
+          if (session.activeUIPrompt?.requestId === msg.data.request_id) {
             return prev;
           }
 
