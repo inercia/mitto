@@ -2360,6 +2360,7 @@ export function useWebSocket() {
           image_ids,
           sender_id,
           is_prompting,
+          prompt_name,
         } = msg.data;
         console.log("user_prompt received:", {
           seq,
@@ -2541,6 +2542,7 @@ export function useWebSocket() {
               timestamp: Date.now(),
               fromOtherClient: true,
               seq, // Include seq for ordering and deduplication
+              promptName: prompt_name || undefined,
             };
             // Add image references if present, constructing full image objects
             // with URLs so the Message component can render them immediately
@@ -4512,6 +4514,7 @@ export function useWebSocket() {
           role: ROLE_USER,
           text: message,
           timestamp: Date.now(),
+          promptName: options.promptName || undefined,
         };
         if (images.length > 0) {
           userMessage.images = images; // Array of { id, url, name, mimeType }
@@ -4557,6 +4560,7 @@ export function useWebSocket() {
             type: "prompt",
             data: {
               message,
+              prompt_name: options.promptName || undefined,
               image_ids: imageIds,
               file_ids: fileIds,
               prompt_id: promptId,
