@@ -547,7 +547,8 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 	// (e.g., ACP process crash).
 	meta := PromptMeta{
 		SenderID:         "periodic-runner",
-		PromptID:         "", // No client to confirm delivery to
+		PromptID:         "",                  // No client to confirm delivery to
+		PromptName:       periodic.PromptName, // Pass prompt name so UI can render a badge instead of full text
 		IsPeriodicForced: forced,
 		OnComplete: func(err error) {
 			if err != nil {

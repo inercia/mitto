@@ -151,6 +151,10 @@ type SessionManager struct {
 	// mcpToolsFetchedWorkspaces tracks which workspaces have had MCP tools fetched.
 	mcpToolsFetchedWorkspaces   map[string]bool
 	mcpToolsFetchedWorkspacesMu sync.RWMutex
+
+	// promptResolver resolves a named workspace prompt to its full text at send time.
+	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
+	promptResolver PromptResolverFunc
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -986,6 +990,14 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 	sm.auxiliaryManager = am
 }
 
+// SetPromptResolver sets the function used to resolve named workspace prompts to their full text.
+// The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetPromptResolver(resolver PromptResolverFunc) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.promptResolver = resolver
+}
+
 // resolveACPCommand resolves an ACP server name to its shell command.
 // Returns empty string if the server name cannot be resolved.
 func (sm *SessionManager) resolveACPCommand(serverName string) string {
@@ -1604,8 +1616,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		AvailableACPServers: availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
+		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -2084,8 +2097,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
+		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{

@@ -201,6 +201,11 @@ type BackgroundSession struct {
 	// resumeMethod tracks which method was used to establish the ACP session:
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
+
+	// promptResolver resolves a named workspace prompt to its full text at send time.
+	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
+	// When nil, PromptMeta.PromptName resolution is skipped.
+	promptResolver PromptResolverFunc
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -275,6 +280,10 @@ type BackgroundSessionConfig struct {
 	// When set, the recorder automatically prunes old events after each recording
 	// to keep the session within the configured limits (max messages, max size).
 	PruneConfig *session.PruneConfig
+
+	// PromptResolver resolves a named workspace prompt to its full text at send time.
+	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
+	PromptResolver PromptResolverFunc
 }
 
 // NewBackgroundSession creates a new background session.
@@ -308,6 +317,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		globalMcpServer:         cfg.GlobalMCPServer,     // Global MCP server for session registration
 		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
+		promptResolver:          cfg.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
 	}
 
 	// Wire prompt-mode processor execution to auxiliary sessions
@@ -493,6 +503,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		globalMcpServer:         config.GlobalMCPServer,     // Global MCP server for session registration
 		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
+		promptResolver:          config.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
 	}
 
 	// Wire prompt-mode processor execution to auxiliary sessions
@@ -2624,10 +2635,17 @@ func (bs *BackgroundSession) GetAuxiliaryManager() *auxiliary.WorkspaceAuxiliary
 	return bs.auxiliaryManager
 }
 
+// SetPromptResolver sets the function used to resolve named workspace prompts to their full text.
+// This is called by the server setup code (same resolver used by PeriodicRunner).
+func (bs *BackgroundSession) SetPromptResolver(resolver PromptResolverFunc) {
+	bs.promptResolver = resolver
+}
+
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
 	SenderID         string          // Unique identifier of the sending client (for broadcast deduplication)
 	PromptID         string          // Client-generated prompt ID (for delivery confirmation)
+	PromptName       string          // Name of workspace prompt (resolved to full text before ACP; empty for ad-hoc prompts)
 	ImageIDs         []string        // IDs of images attached to the prompt
 	FileIDs          []string        // IDs of files attached to the prompt
 	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
@@ -2657,6 +2675,19 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 // The meta parameter contains sender information for multi-client broadcast.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
+	// Resolve prompt name to full text before any other processing.
+	// meta.PromptName is UI metadata only; the ACP agent always receives the full text.
+	if meta.PromptName != "" && message == "" {
+		if bs.promptResolver == nil {
+			return fmt.Errorf("prompt %q cannot be resolved: no prompt resolver configured", meta.PromptName)
+		}
+		resolved, err := bs.promptResolver(meta.PromptName, bs.workingDir)
+		if err != nil {
+			return fmt.Errorf("failed to resolve prompt %q: %w", meta.PromptName, err)
+		}
+		message = resolved
+	}
+
 	imageIDs := meta.ImageIDs
 	fileIDs := meta.FileIDs
 	if bs.IsClosed() {
@@ -2902,7 +2933,7 @@ retryAfterRestart:
 	// The prompt ID is included so clients can clear pending prompts on reconnect
 	var userPromptSeq int64
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 		// Get the seq that was assigned to the user prompt (it's the current event count)
@@ -2918,7 +2949,7 @@ retryAfterRestart:
 		fileIDStrings[i] = f.ID
 	}
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName)
 	})
 
 	// Build the actual prompt to send to ACP.
