@@ -45,5 +45,10 @@ void disableWindowFullscreen(void);
 // This should be called as early as possible in app startup, before webview creation.
 void setProcessName(const char* name);
 
+// setWindowFrameAutosaveName enables automatic saving/restoring of the main window's
+// frame (position and size) across app launches.
+// This must be called after the window is created (use w.Dispatch).
+void setWindowFrameAutosaveName(void);
+
 #endif // MENU_DARWIN_H
 
