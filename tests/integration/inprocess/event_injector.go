@@ -129,6 +129,34 @@ func (inj *TestEventInjector) InjectMixed(rounds int) (firstSeq, lastSeq int64) 
 	return firstSeq, lastSeq
 }
 
+// InjectUserPromptWithName injects a single user_prompt event with the given
+// message text and prompt name. This simulates what the periodic runner records
+// when delivering a workspace prompt. Returns the seq of the injected event.
+func (inj *TestEventInjector) InjectUserPromptWithName(message, promptName string) int64 {
+	inj.t.Helper()
+
+	meta, err := inj.store.GetMetadata(inj.sessionID)
+	if err != nil {
+		inj.t.Fatalf("InjectUserPromptWithName: GetMetadata failed: %v", err)
+	}
+
+	seq := int64(meta.EventCount + 1)
+
+	ev := session.Event{
+		Type: session.EventTypeUserPrompt,
+		Data: session.UserPromptData{
+			Message:    message,
+			PromptName: promptName,
+		},
+	}
+	if err := inj.store.AppendEvent(inj.sessionID, ev); err != nil {
+		inj.t.Fatalf("InjectUserPromptWithName: AppendEvent failed: %v", err)
+	}
+
+	inj.t.Logf("Injected user_prompt with prompt_name=%q: seq %d", promptName, seq)
+	return seq
+}
+
 // CurrentMaxSeq returns the current highest seq in the session by reading metadata.
 // It returns max(MaxSeq, EventCount) to correctly handle sessions that mix
 // AppendEvent (updates EventCount only) and RecordEvent (updates both MaxSeq and EventCount).
