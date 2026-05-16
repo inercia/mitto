@@ -1984,8 +1984,9 @@ describe("mergeMessagesWithSync", () => {
       ];
       const result = mergeMessagesWithSync(existing, newMessages);
       expect(result.length).toBe(1);
-      // Existing message is kept
-      expect(result[0].timestamp).toBe(1000);
+      // New message replaces optimistic UI message (updates seq and timestamp)
+      expect(result[0].timestamp).toBe(5000);
+      expect(result[0].seq).toBe(1);
     });
 
     test("does not deduplicate messages with same content but different roles", () => {
@@ -2199,17 +2200,15 @@ describe("mergeMessagesWithSync", () => {
       expect(result[2].id).toBe("tool-1");
     });
 
-    test("prompt retry creates new seq - deduplicates by content", () => {
-      // This tests the critical bug fix for mobile wake + prompt retry:
-      // 1. User sends message, phone locks before user_prompt notification
-      // 2. Server persists message with seq=10
-      // 3. Phone wakes, events_loaded returns message with seq=10
-      // 4. Pending prompt retry sends same message again
-      // 5. Server persists AGAIN with seq=11 (new seq for same content)
-      // 6. user_prompt notification arrives with seq=11
+    test("prompt retry creates new seq - distinct events", () => {
+      // When both existing and new messages have seqs, they are treated as
+      // distinct server-side events — even if the text is identical.
+      // This is critical for periodic prompts which reuse the same text
+      // across different runs. Content hash dedup only applies when the
+      // existing message has NO seq (optimistic UI → server confirmation).
       //
-      // The deduplication must detect this as a duplicate by CONTENT,
-      // not just by seq (since seqs are different).
+      // Prompt retry dedup should be handled at the WebSocket handler level
+      // (via prompt_id matching), not in the merge function.
       const existing = [
         { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
         { role: ROLE_AGENT, html: "Hi there!", seq: 11, timestamp: 2000 },
@@ -2221,16 +2220,19 @@ describe("mergeMessagesWithSync", () => {
 
       const result = mergeMessagesWithSync(existing, syncEvents);
 
-      // Should deduplicate by content - only 2 messages (not 3)
-      expect(result.length).toBe(2);
+      // Both messages are kept — different seqs mean different server events
+      expect(result.length).toBe(3);
       expect(result[0].text).toBe("Hello world");
-      expect(result[0].seq).toBe(10); // Original seq preserved
+      expect(result[0].seq).toBe(10);
       expect(result[1].html).toBe("Hi there!");
+      expect(result[2].text).toBe("Hello world");
+      expect(result[2].seq).toBe(12);
     });
 
     test("prompt retry with no seq on existing - deduplicates by content", () => {
       // Scenario: User sends message, phone locks IMMEDIATELY (before any ACK)
       // The local message has no seq because user_prompt notification never arrived
+      // Content hash dedup correctly matches the seq-less optimistic message
       const existing = [
         { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq!
       ];
@@ -2241,17 +2243,18 @@ describe("mergeMessagesWithSync", () => {
 
       const result = mergeMessagesWithSync(existing, syncEvents);
 
-      // Should deduplicate by content
+      // Should deduplicate: existing has no seq (optimistic UI match)
       expect(result.length).toBe(1);
       expect(result[0].text).toBe("Hello world");
+      expect(result[0].seq).toBe(10); // Update applied to assign seq
     });
 
-    test("multiple prompt retries - all deduplicated by content", () => {
-      // Extreme case: Multiple retries created multiple events with different seqs
+    test("multiple prompt retries - distinct events when all have seqs", () => {
+      // When all messages have seqs, they are treated as distinct events.
+      // This ensures periodic prompts (same text, different runs) all appear.
       const existing = [
         { role: ROLE_USER, text: "Fix the bug", seq: 10, timestamp: 1000 },
       ];
-      // Multiple retries created multiple events
       const syncEvents = [
         { role: ROLE_USER, text: "Fix the bug", seq: 11, timestamp: 2000 },
         { role: ROLE_USER, text: "Fix the bug", seq: 12, timestamp: 3000 },
@@ -2260,10 +2263,12 @@ describe("mergeMessagesWithSync", () => {
 
       const result = mergeMessagesWithSync(existing, syncEvents);
 
-      // All should be deduplicated - only 1 message
-      expect(result.length).toBe(1);
-      expect(result[0].text).toBe("Fix the bug");
-      expect(result[0].seq).toBe(10); // Original preserved
+      // All kept — different seqs mean different server events
+      expect(result.length).toBe(4);
+      expect(result[0].seq).toBe(10);
+      expect(result[1].seq).toBe(11);
+      expect(result[2].seq).toBe(12);
+      expect(result[3].seq).toBe(13);
     });
   });
 

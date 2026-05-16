@@ -2400,13 +2400,12 @@ export function useWebSocket() {
         // Update last known seq from this event (after gap check)
         updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
 
-        // M1 fix: Mark seq as seen (for our own prompts, we mark after confirmation)
+        // Mark seq as seen for tracking (but don't use it for dedup — the
+        // alreadyExists check inside setSessions handles dedup by seq match).
+        // Previously, the M1 isSeqDuplicate check here would race with
+        // events_loaded marking seqs as seen, causing user_prompt messages
+        // to be silently dropped for periodic prompts.
         if (!is_mine && seq) {
-          // For other clients' prompts, check for duplicates
-          if (isSeqDuplicate(sessionId, seq, null)) {
-            console.log("M1 dedup: Skipping duplicate user_prompt seq", seq);
-            break; // Skip duplicate
-          }
           markSeqSeen(sessionId, seq);
         }
 

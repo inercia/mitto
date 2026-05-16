@@ -178,8 +178,14 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 		event.Timestamp = time.Now()
 	}
 
-	// Assign sequence number (1-based, so first event is seq=1)
-	event.Seq = int64(meta.EventCount + 1)
+	// Assign sequence number. Use max(EventCount, MaxSeq)+1 so that after
+	// pruning (which reduces EventCount but preserves MaxSeq), new events
+	// don't collide with existing seqs already written to the file.
+	nextSeq := int64(meta.EventCount) + 1
+	if meta.MaxSeq+1 > nextSeq {
+		nextSeq = meta.MaxSeq + 1
+	}
+	event.Seq = nextSeq
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -200,6 +206,9 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 
 	// Update metadata
 	meta.EventCount++
+	if event.Seq > meta.MaxSeq {
+		meta.MaxSeq = event.Seq
+	}
 	meta.UpdatedAt = time.Now()
 	// Track last user message time for sorting conversations
 	if event.Type == EventTypeUserPrompt {
@@ -232,10 +241,13 @@ func (s *Store) RecordEvent(sessionID string, event Event) error {
 		return err
 	}
 
-	// Validate monotonic ordering: event.Seq should be EventCount + 1
-	// With emit-time seq assignment, this should always match.
-	// Log at DEBUG level as a safety check - mismatches indicate a bug.
-	expectedSeq := int64(meta.EventCount + 1)
+	// Validate monotonic ordering: event.Seq should be max(EventCount, MaxSeq) + 1.
+	// After pruning, EventCount can be less than MaxSeq, so we use whichever is higher.
+	// Log at DEBUG level as a safety check — mismatches indicate a bug.
+	expectedSeq := int64(meta.EventCount) + 1
+	if meta.MaxSeq+1 > expectedSeq {
+		expectedSeq = meta.MaxSeq + 1
+	}
 	if event.Seq != expectedSeq {
 		log.Debug("seq_mismatch_on_persist",
 			"session_id", sessionID,

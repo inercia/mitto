@@ -2175,21 +2175,14 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // promptName is the name of the workspace prompt used (empty for ad-hoc prompts).
 // seq is the sequence number for this user prompt event.
 func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
-	// Check seq tracking
+	// Always deliver user_prompt to the client — do NOT skip based on lastSentSeq.
+	// Unlike streamed agent_message chunks, user_prompt is a one-shot event.
+	// The frontend's alreadyExists check (by seq) handles dedup if events_loaded
+	// also delivered this event. Skipping here races with handleLoadEvents:
+	// a concurrent load_events can update lastSentSeq to include this seq before
+	// the observer notification runs, silently dropping the live notification.
+	// This caused periodic prompt pills to never appear in real-time.
 	c.seqMu.Lock()
-	if seq > 0 && seq <= c.lastSentSeq {
-		// L1: Log skipped duplicate
-		if c.logger != nil {
-			c.logger.Debug("seq_skipped_duplicate",
-				"seq", seq,
-				"last_sent_seq", c.lastSentSeq,
-				"event_type", "user_prompt",
-				"prompt_id", promptID,
-				"client_id", c.clientID)
-		}
-		c.seqMu.Unlock()
-		return
-	}
 	if seq > c.lastSentSeq {
 		c.lastSentSeq = seq
 	}

@@ -782,6 +782,7 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
   // When a message with matching seq is found, compare content to keep the longer/complete version
   const filteredNewMessages = [];
   const seqsToUpdate = new Map(); // seq -> newMessage (for messages that should replace existing)
+  const pendingUpdates = new Map(); // hash -> newMessage (for optimistic UI messages that need a seq)
 
   for (const m of newMessages) {
     // If both have seq, check if we should prefer the new message
@@ -818,6 +819,25 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
       continue;
     }
 
+    // If the message has a seq, check if there's a seq-less existing message
+    // with matching content. This handles the optimistic UI → server confirmation
+    // case where the user's message was added before receiving a seq.
+    // If no seq-less match exists, the message is a genuinely new event (e.g.,
+    // periodic prompts with the same text across different runs) — skip the
+    // content hash check which would incorrectly deduplicate it.
+    if (m.seq) {
+      const hash = getMessageHash(m);
+      const hasPendingMatch = existingMessages.some(
+        (e) => !e.seq && getMessageHash(e) === hash,
+      );
+      if (hasPendingMatch) {
+        pendingUpdates.set(hash, m);
+      } else {
+        filteredNewMessages.push(m);
+      }
+      continue;
+    }
+
     // Fall back to content hash for messages without seq
     const hash = getMessageHash(m);
     if (!existingHashes.has(hash)) {
@@ -830,11 +850,17 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     if (m.seq && seqsToUpdate.has(m.seq)) {
       return seqsToUpdate.get(m.seq);
     }
+    if (!m.seq) {
+      const hash = getMessageHash(m);
+      if (pendingUpdates.has(hash)) {
+        return pendingUpdates.get(hash);
+      }
+    }
     return m;
   });
 
   // Add filtered new messages
-  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0) {
+  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0 && pendingUpdates.size === 0) {
     return existingMessages;
   }
 
