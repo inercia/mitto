@@ -84,6 +84,9 @@ type ConversationDetails struct {
 
 	// Available ACP servers that can be used when creating new conversations from this session
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
+
+	// Message queue
+	QueuedPrompts []QueuedPrompt `json:"queued_prompts,omitempty"` // Pending prompts in the queue
 }
 
 // AvailableACPServer describes an ACP server available for conversation creation.
@@ -92,6 +95,17 @@ type AvailableACPServer struct {
 	Type    string   `json:"type,omitempty"`    // Server type for prompt matching
 	Tags    []string `json:"tags,omitempty"`    // Optional categorization tags for this server
 	Current bool     `json:"current,omitempty"` // True if this is the current session's ACP server
+}
+
+// QueuedPrompt represents a queued prompt in the conversation details output.
+// Dates are formatted as ISO 8601 strings for consistent JSON output.
+type QueuedPrompt struct {
+	ID            string `json:"id"`                       // Unique message ID
+	Message       string `json:"message"`                  // Prompt text (truncated to 200 chars)
+	QueuedAt      string `json:"queued_at"`                // ISO 8601 format
+	ScheduledTime string `json:"scheduled_time,omitempty"` // ISO 8601 format, if scheduled for future delivery
+	ClientID      string `json:"client_id,omitempty"`      // Source client that queued this
+	Title         string `json:"title,omitempty"`          // Auto-generated title
 }
 
 // ConfigInfo contains the Mitto configuration info.

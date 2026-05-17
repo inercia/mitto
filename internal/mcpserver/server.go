@@ -906,6 +906,24 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
 			details.IsPeriodic = p.Enabled
 		}
+
+		// Load message queue
+		if msgs, err := store.Queue(meta.SessionID).List(); err == nil && len(msgs) > 0 {
+			details.QueuedPrompts = make([]QueuedPrompt, 0, len(msgs))
+			for _, msg := range msgs {
+				qp := QueuedPrompt{
+					ID:       msg.ID,
+					Message:  truncateForError(msg.Message, 200),
+					QueuedAt: msg.QueuedAt.Format("2006-01-02T15:04:05Z07:00"),
+					ClientID: msg.ClientID,
+					Title:    msg.Title,
+				}
+				if msg.ScheduledTime != nil {
+					qp.ScheduledTime = msg.ScheduledTime.Format("2006-01-02T15:04:05Z07:00")
+				}
+				details.QueuedPrompts = append(details.QueuedPrompts, qp)
+			}
+		}
 	}
 
 	// Get running session info if available (overrides lock-based IsPrompting)
@@ -1096,6 +1114,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
+			"Optionally provide 'initial_prompt_delay' to delay the initial prompt delivery instead of sending it immediately. " +
+			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
+			"Requires 'initial_prompt' to be set. " +
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
 			"Optionally configure the conversation as periodic by providing 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit'. " +
 			"This is equivalent to configuring periodic via 'mitto_conversation_update' after creation, but done in one step. " +
@@ -1111,7 +1132,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get",
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
-			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
+			"Returns metadata, status, runtime info including whether the agent is currently replying, " +
+			"and the list of queued prompts (with scheduled delivery times, if any). " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
@@ -2356,11 +2378,12 @@ func computeUnifiedDiff(original, edited, originalName, editedName string) strin
 
 // ConversationStartInput is the input for mitto_conversation_new tool.
 type ConversationStartInput struct {
-	SelfID        string `json:"self_id"`                  // YOUR session ID (the caller)
-	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
-	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
-	ACPServer     string `json:"acp_server,omitempty"`     // Optional ACP server name (defaults to parent's server)
-	Workspace     string `json:"workspace,omitempty"`      // Optional workspace UUID for cross-workspace operations
+	SelfID             string `json:"self_id"`                        // YOUR session ID (the caller)
+	Title              string `json:"title,omitempty"`                // Optional title for the new conversation
+	InitialPrompt      string `json:"initial_prompt,omitempty"`       // Optional initial message to queue
+	InitialPromptDelay string `json:"initial_prompt_delay,omitempty"` // Optional: delay initial prompt delivery (RFC 3339 timestamp or relative duration like "5m", "1h")
+	ACPServer          string `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
+	Workspace          string `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
 	// Periodic configuration (optional) - creates the conversation as periodic
 	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
 	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
@@ -2493,9 +2516,18 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 		for _, existingMeta := range allSessions {
 			if existingMeta.Name == input.Title {
-				return nil, ConversationStartOutput{}, fmt.Errorf(
-					"a conversation with the title '%s' already exists (session_id: %s). Please choose a different title",
+				errMsg := fmt.Sprintf(
+					"a conversation with the title '%s' already exists (conversation_id: %s)",
 					input.Title, existingMeta.SessionID)
+				if input.InitialPrompt != "" {
+					errMsg += fmt.Sprintf(
+						". To send a prompt to it, use 'mitto_conversation_send_prompt' with conversation_id='%s' and prompt='%s'",
+						existingMeta.SessionID, truncateForError(input.InitialPrompt, 200))
+					if input.InitialPromptDelay != "" {
+						errMsg += fmt.Sprintf(" and schedule_time='%s'", input.InitialPromptDelay)
+					}
+				}
+				return nil, ConversationStartOutput{}, fmt.Errorf("%s", errMsg)
 			}
 		}
 	}
@@ -2699,10 +2731,25 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		output.IsRunning = true
 	}
 
+	// Validate initial_prompt_delay requires initial_prompt
+	if input.InitialPromptDelay != "" && input.InitialPrompt == "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf("initial_prompt_delay requires initial_prompt to be set")
+	}
+
 	// If initial prompt provided, add it to the queue
 	if input.InitialPrompt != "" {
+		// Parse optional initial prompt delay
+		var scheduledTime *time.Time
+		if input.InitialPromptDelay != "" {
+			t, err := session.ParseScheduleTime(input.InitialPromptDelay)
+			if err != nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf("invalid initial_prompt_delay: %v", err)
+			}
+			scheduledTime = &t
+		}
+
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, nil, 0)
+		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, scheduledTime, 0)
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -2711,8 +2758,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			queueLen, _ := queue.Len()
 			output.QueuePosition = queueLen
 
-			// Try to process the queued message immediately if agent is idle
-			if bs != nil {
+			// Try to process the queued message immediately if agent is idle (skip if scheduled for later)
+			if bs != nil && scheduledTime == nil {
 				go bs.TryProcessQueuedMessage()
 			}
 		}
@@ -4593,4 +4640,12 @@ func historyTruncateDataStr(s string) string {
 		return s
 	}
 	return s[:historyMaxDataStr-3] + "..."
+}
+
+// truncateForError truncates a string for inclusion in error messages.
+func truncateForError(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

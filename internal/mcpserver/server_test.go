@@ -271,6 +271,129 @@ func TestConversationStartDuplicateTitle(t *testing.T) {
 	}
 }
 
+// setupDuplicateTitleStore creates a store with a parent session and an existing session titled "Test Title".
+// Returns (store, server, parentSessionID, existingSessionID).
+func setupDuplicateTitleStore(t *testing.T) (*session.Store, *Server, string, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	existingMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Test Title",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(existingMeta); err != nil {
+		t.Fatalf("Failed to create existing session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	return store, srv, parentMeta.SessionID, existingMeta.SessionID
+}
+
+func TestConversationStartDuplicateTitle_WithInitialPrompt(t *testing.T) {
+	_, srv, parentID, existingID := setupDuplicateTitleStore(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		Title:         "Test Title",
+		InitialPrompt: "Hello there",
+	})
+	if err == nil {
+		t.Fatal("Expected error for duplicate title, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "already exists") {
+		t.Errorf("Expected error to contain 'already exists', got: %v", err)
+	}
+	if !strings.Contains(errStr, "mitto_conversation_send_prompt") {
+		t.Errorf("Expected error to contain 'mitto_conversation_send_prompt', got: %v", err)
+	}
+	if !strings.Contains(errStr, existingID) {
+		t.Errorf("Expected error to contain existing session ID %q, got: %v", existingID, err)
+	}
+	if !strings.Contains(errStr, "Hello there") {
+		t.Errorf("Expected error to contain prompt text 'Hello there', got: %v", err)
+	}
+}
+
+func TestConversationStartDuplicateTitle_WithInitialPromptAndDelay(t *testing.T) {
+	_, srv, parentID, existingID := setupDuplicateTitleStore(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		Title:              "Test Title",
+		InitialPrompt:      "Hello there",
+		InitialPromptDelay: "5m",
+	})
+	if err == nil {
+		t.Fatal("Expected error for duplicate title, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "already exists") {
+		t.Errorf("Expected error to contain 'already exists', got: %v", err)
+	}
+	if !strings.Contains(errStr, "mitto_conversation_send_prompt") {
+		t.Errorf("Expected error to contain 'mitto_conversation_send_prompt', got: %v", err)
+	}
+	if !strings.Contains(errStr, existingID) {
+		t.Errorf("Expected error to contain existing session ID %q, got: %v", existingID, err)
+	}
+	if !strings.Contains(errStr, "schedule_time='5m'") {
+		t.Errorf("Expected error to contain \"schedule_time='5m'\", got: %v", err)
+	}
+}
+
+func TestConversationStartDuplicateTitle_NoPrompt(t *testing.T) {
+	_, srv, parentID, _ := setupDuplicateTitleStore(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Test Title",
+		// InitialPrompt intentionally omitted
+	})
+	if err == nil {
+		t.Fatal("Expected error for duplicate title, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "already exists") {
+		t.Errorf("Expected error to contain 'already exists', got: %v", err)
+	}
+	if strings.Contains(errStr, "mitto_conversation_send_prompt") {
+		t.Errorf("Expected error NOT to contain 'mitto_conversation_send_prompt' when no prompt given, got: %v", err)
+	}
+}
+
 func TestConversationStartUniqueTitleAllowed(t *testing.T) {
 	// Create a temporary store
 	tmpDir := t.TempDir()
@@ -359,6 +482,190 @@ func TestConversationStartUniqueTitleAllowed(t *testing.T) {
 	}
 	if !session.GetFlagValue(childMeta.AdvancedSettings, session.FlagAutoApprovePermissions) {
 		t.Error("Child should have inherited auto_approve_permissions=true from parent")
+	}
+}
+
+// setupConversationStartServer is a helper that creates a store, parent session, and server
+// for tests of handleConversationStart. Returns (store, server, parentSessionID).
+func setupConversationStartServer(t *testing.T) (*session.Store, *Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	return store, srv, parentMeta.SessionID
+}
+
+func TestConversationStart_InitialPromptDelay_RelativeDuration(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	before := time.Now()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "Delayed hello",
+		InitialPromptDelay: "5m",
+	})
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.Message != "Delayed hello" {
+		t.Errorf("Expected message text 'Delayed hello', got %q", msg.Message)
+	}
+	if msg.ScheduledTime == nil {
+		t.Fatal("Expected non-nil ScheduledTime for delayed message")
+	}
+
+	// Scheduled time should be approximately 5 minutes from now (within 10s tolerance)
+	expectedLow := before.Add(5 * time.Minute).Add(-10 * time.Second)
+	expectedHigh := after.Add(5 * time.Minute).Add(10 * time.Second)
+	if msg.ScheduledTime.Before(expectedLow) || msg.ScheduledTime.After(expectedHigh) {
+		t.Errorf("ScheduledTime %v not within expected range [%v, %v]", *msg.ScheduledTime, expectedLow, expectedHigh)
+	}
+}
+
+func TestConversationStart_InitialPromptDelay_AbsoluteTimestamp(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	targetTime := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
+	timestampStr := targetTime.Format(time.RFC3339)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "Absolute hello",
+		InitialPromptDelay: timestampStr,
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.ScheduledTime == nil {
+		t.Fatal("Expected non-nil ScheduledTime for delayed message")
+	}
+	// Should match the provided timestamp within 2 seconds
+	diff := msg.ScheduledTime.Sub(targetTime)
+	if diff < -2*time.Second || diff > 2*time.Second {
+		t.Errorf("ScheduledTime %v differs from expected %v by %v (want <= 2s)", *msg.ScheduledTime, targetTime, diff)
+	}
+}
+
+func TestConversationStart_InitialPromptDelay_WithoutInitialPrompt(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPromptDelay: "5m",
+		// InitialPrompt intentionally omitted
+	})
+	if err == nil {
+		t.Fatal("Expected error when initial_prompt_delay is set without initial_prompt")
+	}
+	if !strings.Contains(err.Error(), "initial_prompt_delay requires initial_prompt") {
+		t.Errorf("Expected error to contain 'initial_prompt_delay requires initial_prompt', got: %v", err)
+	}
+}
+
+func TestConversationStart_InitialPromptDelay_InvalidFormat(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "test",
+		InitialPromptDelay: "tomorrow",
+	})
+	if err == nil {
+		t.Fatal("Expected error for invalid initial_prompt_delay format")
+	}
+	if !strings.Contains(err.Error(), "invalid initial_prompt_delay") {
+		t.Errorf("Expected error to contain 'invalid initial_prompt_delay', got: %v", err)
+	}
+}
+
+func TestConversationStart_InitialPrompt_NoDelay_Immediate(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		InitialPrompt: "Immediate hello",
+		// InitialPromptDelay intentionally omitted
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.Message != "Immediate hello" {
+		t.Errorf("Expected message text 'Immediate hello', got %q", msg.Message)
+	}
+	if msg.ScheduledTime != nil {
+		t.Errorf("Expected nil ScheduledTime for immediate message, got %v", *msg.ScheduledTime)
 	}
 }
 
@@ -7328,5 +7635,227 @@ func TestHandleRunPeriodicNow_MissingConversationID(t *testing.T) {
 	}
 	if out.Success {
 		t.Error("Expected failure with empty conversation_id")
+	}
+}
+
+// =============================================================================
+// GetConversation Queue Tests
+// =============================================================================
+
+func TestGetConversation_QueuedPrompts_Empty(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Queue Test Empty",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+	_ = store // used by setupConversationStartServer
+
+	// Get conversation — queue should be empty/omitted
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 0 {
+		t.Errorf("Expected 0 queued prompts, got %d", len(output.QueuedPrompts))
+	}
+}
+
+func TestGetConversation_QueuedPrompts_Immediate(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation with an initial prompt
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		Title:         "Queue Test Immediate",
+		InitialPrompt: "Hello from queue",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+	_ = store
+
+	// Get conversation — should show the queued prompt
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 1 {
+		t.Fatalf("Expected 1 queued prompt, got %d", len(output.QueuedPrompts))
+	}
+	qp := output.QueuedPrompts[0]
+	if qp.ID == "" {
+		t.Error("Expected non-empty queue message ID")
+	}
+	if !strings.Contains(qp.Message, "Hello from queue") {
+		t.Errorf("Expected message to contain 'Hello from queue', got: %s", qp.Message)
+	}
+	if qp.QueuedAt == "" {
+		t.Error("Expected non-empty QueuedAt")
+	}
+	if qp.ScheduledTime != "" {
+		t.Errorf("Expected empty ScheduledTime for immediate prompt, got: %s", qp.ScheduledTime)
+	}
+}
+
+func TestGetConversation_QueuedPrompts_Scheduled(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation with a delayed initial prompt
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		Title:              "Queue Test Scheduled",
+		InitialPrompt:      "Delayed hello",
+		InitialPromptDelay: "10m",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+	_ = store
+
+	// Get conversation — should show the queued prompt with scheduled time
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 1 {
+		t.Fatalf("Expected 1 queued prompt, got %d", len(output.QueuedPrompts))
+	}
+	qp := output.QueuedPrompts[0]
+	if !strings.Contains(qp.Message, "Delayed hello") {
+		t.Errorf("Expected message to contain 'Delayed hello', got: %s", qp.Message)
+	}
+	if qp.ScheduledTime == "" {
+		t.Fatal("Expected non-empty ScheduledTime for delayed prompt")
+	}
+
+	// Parse and verify the scheduled time is approximately 10 minutes from now
+	scheduledTime, err := time.Parse("2006-01-02T15:04:05Z07:00", qp.ScheduledTime)
+	if err != nil {
+		t.Fatalf("Failed to parse ScheduledTime: %v", err)
+	}
+	expectedTime := time.Now().Add(10 * time.Minute)
+	diff := scheduledTime.Sub(expectedTime)
+	if diff < -10*time.Second || diff > 10*time.Second {
+		t.Errorf("ScheduledTime %v not within 10s of expected %v", scheduledTime, expectedTime)
+	}
+}
+
+func TestGetConversation_QueuedPrompts_Multiple(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Queue Test Multiple",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+
+	// Add multiple messages to the queue
+	queue := store.Queue(startOut.SessionID)
+	scheduledTime := time.Now().Add(30 * time.Minute)
+	if _, err := queue.Add("First message", nil, nil, "client-1", nil, 0); err != nil {
+		t.Fatalf("Failed to add first message: %v", err)
+	}
+	if _, err := queue.Add("Second message", nil, nil, "client-2", &scheduledTime, 0); err != nil {
+		t.Fatalf("Failed to add second message: %v", err)
+	}
+	if _, err := queue.Add("Third message", nil, nil, "client-1", nil, 0); err != nil {
+		t.Fatalf("Failed to add third message: %v", err)
+	}
+
+	// Get conversation — should show all queued prompts
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 3 {
+		t.Fatalf("Expected 3 queued prompts, got %d", len(output.QueuedPrompts))
+	}
+
+	// Verify first message (immediate)
+	if !strings.Contains(output.QueuedPrompts[0].Message, "First message") {
+		t.Errorf("First message mismatch: %s", output.QueuedPrompts[0].Message)
+	}
+	if output.QueuedPrompts[0].ScheduledTime != "" {
+		t.Errorf("First message should not have ScheduledTime")
+	}
+
+	// Verify second message (scheduled)
+	if !strings.Contains(output.QueuedPrompts[1].Message, "Second message") {
+		t.Errorf("Second message mismatch: %s", output.QueuedPrompts[1].Message)
+	}
+	if output.QueuedPrompts[1].ScheduledTime == "" {
+		t.Error("Second message should have ScheduledTime")
+	}
+	if output.QueuedPrompts[1].ClientID != "client-2" {
+		t.Errorf("Expected client_id 'client-2', got: %s", output.QueuedPrompts[1].ClientID)
+	}
+
+	// Verify third message (immediate)
+	if !strings.Contains(output.QueuedPrompts[2].Message, "Third message") {
+		t.Errorf("Third message mismatch: %s", output.QueuedPrompts[2].Message)
+	}
+}
+
+func TestGetConversation_QueuedPrompts_LongMessageTruncated(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Queue Test Truncation",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+
+	// Add a very long message
+	longMsg := strings.Repeat("x", 500)
+	queue := store.Queue(startOut.SessionID)
+	if _, err := queue.Add(longMsg, nil, nil, "", nil, 0); err != nil {
+		t.Fatalf("Failed to add message: %v", err)
+	}
+
+	// Get conversation — message should be truncated
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 1 {
+		t.Fatalf("Expected 1 queued prompt, got %d", len(output.QueuedPrompts))
+	}
+	// 200 chars + "..." = 203
+	if len(output.QueuedPrompts[0].Message) > 210 {
+		t.Errorf("Expected message to be truncated to ~203 chars, got %d chars", len(output.QueuedPrompts[0].Message))
+	}
+	if !strings.HasSuffix(output.QueuedPrompts[0].Message, "...") {
+		t.Error("Expected truncated message to end with '...'")
 	}
 }
