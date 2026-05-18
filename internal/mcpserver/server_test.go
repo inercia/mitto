@@ -3209,6 +3209,7 @@ func (m *mockBackgroundSessionForWait) IsPrompting() bool             { return m
 func (m *mockBackgroundSessionForWait) GetEventCount() int            { return 0 }
 func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64      { return 0 }
 func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool { return false }
+func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string) {}
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -4358,6 +4359,7 @@ func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                 
 func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                         { return 0 }
 func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                   { return 0 }
 func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool { return true }
+func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)              {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false

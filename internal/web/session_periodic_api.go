@@ -123,6 +123,19 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 
+	// If the session has no title, trigger title generation from the periodic prompt.
+	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
+		promptText := req.Prompt
+		if promptText == "" {
+			promptText = req.PromptName
+		}
+		if promptText != "" {
+			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+				bs.TriggerTitleGeneration(promptText)
+			}
+		}
+	}
+
 	// Broadcast periodic state change to all clients (includes full config)
 	s.BroadcastPeriodicUpdated(sessionID, updated)
 
@@ -157,6 +170,22 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 	if err != nil {
 		http.Error(w, "Failed to get updated periodic prompt", http.StatusInternalServerError)
 		return
+	}
+
+	// If the session has no title, trigger title generation from the periodic prompt.
+	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
+		promptText := ""
+		if updated != nil {
+			promptText = updated.Prompt
+			if promptText == "" {
+				promptText = updated.PromptName
+			}
+		}
+		if promptText != "" {
+			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+				bs.TriggerTitleGeneration(promptText)
+			}
+		}
 	}
 
 	// Broadcast periodic state change to all clients (includes full config)

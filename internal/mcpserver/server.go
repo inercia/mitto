@@ -192,6 +192,10 @@ type BackgroundSession interface {
 	// Returns true if the prompt completed within the timeout, false if it timed out.
 	// If no prompt is in progress, returns immediately with true.
 	WaitForResponseComplete(timeout time.Duration) bool
+	// TriggerTitleGeneration triggers async title generation if the session has no title yet.
+	// Used by MCP tools and API handlers to generate titles for sessions that received
+	// prompts via paths that don't normally trigger title generation (e.g., periodic config).
+	TriggerTitleGeneration(message string)
 }
 
 // Config holds the configuration for the MCP server.
@@ -2720,6 +2724,12 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// If no explicit title was provided and periodic was configured, trigger title
+	// generation from the periodic prompt text so the conversation has a name right away.
+	if input.Title == "" && periodicConfigured && bs != nil {
+		bs.TriggerTitleGeneration(input.PeriodicPrompt)
+	}
+
 	// Build unified conversation details
 	output := ConversationStartOutput{
 		ConversationDetails: s.buildConversationDetails(createdMeta, store.SessionDir(newSessionID)),
@@ -3506,6 +3516,28 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		}
 
 		updated = append(updated, "periodic")
+
+		// If the session has no title and a periodic prompt was set, trigger title generation.
+		if input.Name == nil && meta.Name == "" && sm != nil {
+			promptText := ""
+			if input.PeriodicPrompt != nil {
+				promptText = *input.PeriodicPrompt
+			}
+			if promptText == "" {
+				// Get prompt text from the updated periodic config
+				if p, getErr := periodicStore.Get(); getErr == nil && p != nil {
+					promptText = p.Prompt
+					if promptText == "" {
+						promptText = p.PromptName
+					}
+				}
+			}
+			if promptText != "" {
+				if bs := sm.GetSession(input.ConversationID); bs != nil {
+					bs.TriggerTitleGeneration(promptText)
+				}
+			}
+		}
 
 		s.logger.Info("Periodic configuration updated via MCP",
 			"source_session", realSessionID,

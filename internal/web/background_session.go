@@ -2625,6 +2625,14 @@ func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
 	})
 }
 
+// TriggerTitleGeneration triggers async title generation if the session has no title yet.
+// This is the public interface used by MCP tools and API handlers to generate titles
+// for sessions that received prompts via paths that don't normally trigger title generation
+// (e.g., periodic prompt configuration, queue processing).
+func (bs *BackgroundSession) TriggerTitleGeneration(message string) {
+	bs.retryTitleGenerationIfNeeded(message)
+}
+
 // GetWorkspaceUUID returns the workspace UUID associated with this session.
 func (bs *BackgroundSession) GetWorkspaceUUID() string {
 	return bs.workspaceUUID
