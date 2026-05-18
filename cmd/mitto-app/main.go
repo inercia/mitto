@@ -363,6 +363,9 @@ func goMenuActionCallback(action *C.char) {
 	case "close_conversation":
 		// Close the current conversation
 		js = "if (window.mittoCloseConversation) window.mittoCloseConversation();"
+	case "archive_conversation":
+		// Archive/unarchive the current conversation
+		js = "if (window.mittoArchiveConversation) window.mittoArchiveConversation();"
 	case "focus_input":
 		// Focus the chat input textarea
 		js = "if (window.mittoFocusInput) window.mittoFocusInput();"

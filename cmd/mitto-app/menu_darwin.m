@@ -13,6 +13,7 @@ extern void goAppDidBecomeActiveCallback(void);
 + (instancetype)sharedHandler;
 - (void)newConversation:(id)sender;
 - (void)closeConversation:(id)sender;
+- (void)archiveConversation:(id)sender;
 - (void)focusInput:(id)sender;
 - (void)toggleSidebar:(id)sender;
 - (void)showSettings:(id)sender;
@@ -36,6 +37,10 @@ extern void goAppDidBecomeActiveCallback(void);
 
 - (void)closeConversation:(id)sender {
     goMenuActionCallback((char*)"close_conversation");
+}
+
+- (void)archiveConversation:(id)sender {
+    goMenuActionCallback((char*)"archive_conversation");
 }
 
 - (void)focusInput:(id)sender {
@@ -271,6 +276,14 @@ void setupMacOSMenu(const char* appName) {
                                                          keyEquivalent:@"w"];
         [closeConvoItem setTarget:handler];
         [fileMenu addItem:closeConvoItem];
+
+        // Add "Archive Conversation" menu item with Cmd+Shift+A shortcut
+        NSMenuItem *archiveConvoItem = [[NSMenuItem alloc] initWithTitle:@"Archive Conversation"
+                                                                  action:@selector(archiveConversation:)
+                                                           keyEquivalent:@"a"];
+        [archiveConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift];
+        [archiveConvoItem setTarget:handler];
+        [fileMenu addItem:archiveConvoItem];
 
         // Create Edit menu (for copy/paste support in WebView)
         NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
