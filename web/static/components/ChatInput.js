@@ -706,13 +706,14 @@ export function ChatInput({
     };
   }, []);
 
-  // Handle textarea focus - show toolbar
+  // Handle textarea focus - show toolbar and close prompts menu
   const handleTextareaFocus = useCallback(() => {
     if (toolbarHideTimeoutRef.current) {
       clearTimeout(toolbarHideTimeoutRef.current);
       toolbarHideTimeoutRef.current = null;
     }
     setIsTextareaFocused(true);
+    setShowDropup(false);
   }, []);
 
   // Handle textarea blur - hide toolbar with delay to allow button clicks
@@ -2375,7 +2376,7 @@ ${activeUIPrompt.text || ""}</textarea
             hasPrompts &&
             html`
               <div
-                class="absolute bottom-full right-0 mb-2 w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
+                class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
                 style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
               >
                 <!-- Filter input -->
@@ -2434,7 +2435,7 @@ ${activeUIPrompt.text || ""}</textarea
                     class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
                   />
                 </div>
-                <div class="py-1 overflow-y-auto">
+                <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
                   ${(() => {
                     // Re-group the precomputed flat list for rendering with group headers
                     const groupedPrompts = {};
