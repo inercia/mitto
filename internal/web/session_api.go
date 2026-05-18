@@ -538,9 +538,12 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		s.BroadcastSessionPinned(sessionID, *req.Pinned)
 	}
 
-	// Broadcast the archived state change to all connected WebSocket clients
-	if req.Archived != nil {
-		s.BroadcastSessionArchived(sessionID, *req.Archived)
+	// Broadcast the archived state change to all connected WebSocket clients.
+	// For archive: broadcast immediately so clients know to disconnect.
+	// For unarchive: broadcast AFTER ResumeSession so the session is already in
+	// sm.sessions when clients reconnect (prevents pendingResumes race).
+	if req.Archived != nil && *req.Archived {
+		s.BroadcastSessionArchived(sessionID, true)
 	}
 
 	// Delete all child sessions when parent is archived
@@ -550,7 +553,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		}
 	}
 
-	// Handle unarchive lifecycle: restart ACP session
+	// Handle unarchive lifecycle: restart ACP session FIRST, then broadcast
 	if req.Archived != nil && !*req.Archived {
 		if s.sessionManager != nil {
 			// Resume the session to restart the ACP connection
@@ -574,6 +577,8 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 				s.BroadcastACPStarted(sessionID)
 			}
 		}
+		// Broadcast AFTER resume — session is now in sm.sessions
+		s.BroadcastSessionArchived(sessionID, false)
 	}
 
 	writeJSONOK(w, meta)

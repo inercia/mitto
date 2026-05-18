@@ -3078,9 +3078,12 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
-	// Broadcast the archived state change to all connected WebSocket clients
-	if s.sessionManager != nil {
-		s.sessionManager.BroadcastSessionArchived(input.ConversationID, archived)
+	// Broadcast the archived state change to all connected WebSocket clients.
+	// For archive: broadcast immediately so clients know to disconnect.
+	// For unarchive: broadcast AFTER ResumeSession so the session is already in
+	// sm.sessions when clients reconnect (prevents pendingResumes race).
+	if archived && s.sessionManager != nil {
+		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true)
 	}
 
 	// Delete all child sessions when parent is archived
@@ -3088,7 +3091,7 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		go s.sessionManager.DeleteChildSessions(input.ConversationID)
 	}
 
-	// Handle unarchive lifecycle: restart ACP session
+	// Handle unarchive lifecycle: restart ACP session FIRST, then broadcast
 	if !archived && sessionManager != nil {
 		_, err := sessionManager.ResumeSession(input.ConversationID, meta.Name, meta.WorkingDir)
 		if err != nil {
@@ -3099,6 +3102,10 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		} else {
 			s.logger.Info("Resumed ACP session after unarchive via MCP",
 				"session_id", input.ConversationID)
+		}
+		// Broadcast AFTER resume — session is now in sm.sessions
+		if s.sessionManager != nil {
+			s.sessionManager.BroadcastSessionArchived(input.ConversationID, false)
 		}
 	}
 

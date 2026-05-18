@@ -2205,6 +2205,12 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()
 
+	// Signal completion immediately after registration — this clears the pendingResumes
+	// entry so concurrent callers unblock and find the session via GetSession.
+	// Must happen before ensureMCPToolsFetch (which can block) to minimize the window
+	// where the session is in sm.sessions but pendingResumes hasn't been cleared yet.
+	signalDone(bs, nil)
+
 	if sm.logger != nil {
 		sm.logger.Debug("Resumed background session",
 			"session_id", bs.GetSessionID(),
@@ -2217,7 +2223,6 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Trigger early MCP tools fetch to warm the cache before the first message.
 	sm.ensureMCPToolsFetch(workspaceUUID)
 
-	signalDone(bs, nil)
 	return bs, nil
 }
 
