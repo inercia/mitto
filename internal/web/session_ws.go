@@ -103,6 +103,14 @@ type SessionWSClient struct {
 	// so that a second load_events arriving while one is in-flight is silently
 	// dropped (the client will get the results from the first one).
 	loadEventsMu sync.Mutex
+
+	// Deduplication for action_buttons: tracks the key of the last buttons sent to
+	// this client. Prevents flooding the client with identical button messages on
+	// every WebSocket reconnect (sendCachedActionButtonsTo fires on each AddObserver).
+	// An empty string means no buttons have been sent yet or the last send was a
+	// clear signal (empty buttons). Thread-safe because OnActionButtons is called
+	// from the observer notification goroutine, which is serialised per-client.
+	lastSentButtonsKey string
 }
 
 func hasRenderableConversationEvent(events []session.Event) bool {
@@ -2153,10 +2161,45 @@ func (c *SessionWSClient) OnContextUsageUpdate(size, used int) {
 	})
 }
 
+// actionButtonsKey builds a lightweight dedup key from a slice of buttons.
+// It concatenates "label\x00response" pairs separated by "\x01" so that
+// different label/response orderings produce different keys.
+// An empty slice returns "" (the sentinel for "no buttons / clear signal").
+func actionButtonsKey(buttons []ActionButton) string {
+	if len(buttons) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, btn := range buttons {
+		if i > 0 {
+			b.WriteByte('\x01')
+		}
+		b.WriteString(btn.Label)
+		b.WriteByte('\x00')
+		b.WriteString(btn.Response)
+	}
+	return b.String()
+}
+
 // OnActionButtons is called when action buttons are extracted from the agent's response.
 // An empty slice is a valid "clear" signal and must be forwarded to all clients.
 func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 	c.logger.Debug("action_buttons: OnActionButtons called", "button_count", len(buttons))
+
+	// Dedup: skip if these exact buttons were already sent to this client.
+	// This prevents storms of identical messages when sendCachedActionButtonsTo
+	// fires on every WebSocket reconnect (AddObserver is called on each reconnect).
+	// Empty-button clear signals (key=="") are never suppressed so the UI always
+	// sees the "buttons cleared" notification.
+	key := actionButtonsKey(buttons)
+	if key != "" && key == c.lastSentButtonsKey {
+		c.logger.Debug("action_buttons: skipping duplicate send (identical to last sent)",
+			"session_id", c.sessionID,
+			"button_count", len(buttons))
+		return
+	}
+	c.lastSentButtonsKey = key
+
 	c.logger.Debug("action_buttons: sending to WebSocket",
 		"session_id", c.sessionID,
 		"button_count", len(buttons))
