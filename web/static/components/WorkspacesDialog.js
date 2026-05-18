@@ -27,6 +27,7 @@ import {
   EditIcon,
   PlusIcon,
   RobotIcon,
+  GlobeIcon,
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -70,6 +71,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
 
   const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
   const [mcpInstallJson, setMcpInstallJson] = useState("");
+  const [mcpInstallName, setMcpInstallName] = useState("");
   const [mcpInstallScope, setMcpInstallScope] = useState("");
   const [mcpInstallLoading, setMcpInstallLoading] = useState(false);
   const [mcpInstallError, setMcpInstallError] = useState("");
@@ -354,10 +356,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       return;
     }
 
-    // Validate structure
-    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Object.keys(parsed.mcpServers).length === 0) {
-      setMcpInstallError('JSON must contain a non-empty "mcpServers" object.');
-      return;
+    // Normalize to { mcpServers: { ... } } — detect format automatically
+    if (parsed.mcpServers && typeof parsed.mcpServers === "object" && Object.keys(parsed.mcpServers).length > 0) {
+      // Format 1: already has mcpServers wrapper — use as-is
+    } else if (typeof parsed.command === "string" || typeof parsed.url === "string") {
+      // Format 3: single server definition without a name
+      if (!mcpInstallName.trim()) {
+        setMcpInstallError("Please enter a server name for the single server definition.");
+        return;
+      }
+      parsed = { mcpServers: { [mcpInstallName.trim()]: parsed } };
+    } else {
+      // Format 2: bare map of named servers — check all values look like server entries
+      const vals = Object.values(parsed);
+      if (vals.length > 0 && vals.every(v => v && typeof v === "object" && (typeof v.command === "string" || typeof v.url === "string"))) {
+        parsed = { mcpServers: parsed };
+      } else {
+        setMcpInstallError('Unrecognized JSON format. Paste a "mcpServers" object, a map of named servers, or a single server definition with "command" or "url".');
+        return;
+      }
     }
 
     setMcpInstallLoading(true);
@@ -396,6 +413,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
           loadMcpTools(acpServer, selectedWorkspace?.working_dir);
           setMcpInstallOpen(false);
           setMcpInstallJson("");
+          setMcpInstallName("");
           setMcpInstallSuccess("");
           setMcpInstallError("");
         }, 1500);
@@ -405,7 +423,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     } finally {
       setMcpInstallLoading(false);
     }
-  }, [mcpInstallJson, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools]);
+  }, [mcpInstallJson, mcpInstallName, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools]);
 
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
@@ -1420,8 +1438,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                                               <div class="flex items-center gap-2">
                                                 ${isPromptMode && html`<${RobotIcon} className="w-4 h-4 text-purple-400 flex-shrink-0" />`}
                                                 <span class="text-sm font-medium font-mono ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${proc.name}</span>
-                                                <span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>
-                                                ${isPromptMode && html`<span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">prompt</span>`}
+                                                ${proc.source === "global"
+                                                  ? html`<${GlobeIcon} className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" title="Global processor" />`
+                                                  : html`<span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>`
+                                                }
                                                 ${proc.on && html`<span class="text-xs text-gray-500">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
                                               </div>
                                               ${proc.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${proc.description}</p>`}
@@ -1576,12 +1596,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                             onClick=${() => {
                               setMcpInstallOpen(true);
                               setMcpInstallJson("");
+                              setMcpInstallName("");
                               setMcpInstallScope(mcpTools?.mcp_scopes?.[0] || "");
                               setMcpInstallError("");
                               setMcpInstallSuccess("");
                             }}
                             class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
-                            title="Install MCP server"
+                            title="Install MCP servers"
                           >
                             <${PlusIcon} className="w-4 h-4" />
                           </button>
@@ -1663,7 +1684,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     <!-- MCP Install Dialog -->
     <${ConfirmDialog}
       isOpen=${mcpInstallOpen}
-      title="Install MCP Server"
+      title="Install MCP Servers"
       confirmLabel="Install"
       cancelLabel="Cancel"
       isLoading=${mcpInstallLoading}
@@ -1671,6 +1692,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       onCancel=${() => {
         if (!mcpInstallLoading) {
           setMcpInstallOpen(false);
+          setMcpInstallName("");
           setMcpInstallError("");
           setMcpInstallSuccess("");
         }
@@ -1678,7 +1700,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     >
       <div class="space-y-4 mt-3">
         <p class="text-sm text-gray-400">
-          Paste an MCP server definition as JSON.
+          Paste one or more MCP server definitions as JSON.
         </p>
         <textarea
           value=${mcpInstallJson}
@@ -1688,6 +1710,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
           disabled=${mcpInstallLoading}
           spellcheck="false"
         />
+        ${(() => {
+          // Detect format 3 (single server def) to show the name input
+          try {
+            const p = JSON.parse(mcpInstallJson);
+            return (typeof p.command === "string" || typeof p.url === "string") && !p.mcpServers;
+          } catch { return false; }
+        })() && html`
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">Server name</label>
+            <input
+              type="text"
+              value=${mcpInstallName}
+              onInput=${(e) => { setMcpInstallName(e.target.value); setMcpInstallError(""); }}
+              placeholder="my-server"
+              class="w-full bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              disabled=${mcpInstallLoading}
+            />
+          </div>
+        `}
         ${mcpTools?.mcp_scopes?.length > 0 && html`
           <div>
             <label class="block text-sm text-gray-400 mb-1">Scope</label>
