@@ -264,6 +264,36 @@ func (c *BadgeClickActionConfig) GetCommand() string {
 	return c.Command
 }
 
+// TerminalActionConfig configures the terminal open behavior in the conversation list.
+// When enabled, the terminal button in group headers executes a shell command to open a terminal.
+type TerminalActionConfig struct {
+	// Enabled controls whether the terminal button appears in group headers.
+	// Default: true (enabled by default)
+	Enabled *bool `json:"enabled,omitempty"`
+	// Command is the shell command to execute to open a terminal.
+	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
+	// Default: "open -a Terminal ${MITTO_WORKING_DIR}" (opens Terminal.app on macOS)
+	Command string `json:"command,omitempty"`
+}
+
+// GetEnabled returns whether terminal action is enabled.
+// Defaults to true if not explicitly set.
+func (c *TerminalActionConfig) GetEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// GetCommand returns the command to execute.
+// Defaults to "open -a Terminal ${MITTO_WORKING_DIR}" if not set.
+func (c *TerminalActionConfig) GetCommand() string {
+	if c == nil || c.Command == "" {
+		return "open -a Terminal ${MITTO_WORKING_DIR}"
+	}
+	return c.Command
+}
+
 // MacUIConfig represents macOS-specific UI configuration.
 type MacUIConfig struct {
 	// Hotkeys contains hotkey configuration for macOS
@@ -278,10 +308,14 @@ type MacUIConfig struct {
 	// This uses macOS SMAppService API (requires macOS 13+).
 	// (default: false)
 	StartAtLogin bool `json:"start_at_login,omitempty"`
-	// BadgeClickAction configures the workspace badge click behavior.
-	// When enabled, clicking a workspace badge in the conversation list
-	// executes a shell command (e.g., opening the folder in Finder).
+	// BadgeClickAction configures the "open folder" action for workspace badges and folder buttons.
+	// When enabled, clicking a workspace badge or the folder icon button in group headers
+	// executes a shell command to open the workspace folder (e.g., in Finder or a file manager).
 	BadgeClickAction *BadgeClickActionConfig `json:"badge_click_action,omitempty"`
+	// TerminalAction configures the terminal open button behavior in group headers.
+	// When enabled, a terminal icon button appears in conversation list group headers,
+	// executing a shell command to open a terminal at the workspace directory.
+	TerminalAction *TerminalActionConfig `json:"terminal_action,omitempty"`
 }
 
 // ConfirmationsConfig represents confirmation dialog settings.
@@ -1146,6 +1180,10 @@ type rawConfig struct {
 				Enabled *bool  `yaml:"enabled"`
 				Command string `yaml:"command"`
 			} `yaml:"badge_click_action"`
+			TerminalAction *struct {
+				Enabled *bool  `yaml:"enabled"`
+				Command string `yaml:"command"`
+			} `yaml:"terminal_action"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 	Conversations *struct {
@@ -1402,6 +1440,14 @@ func Parse(data []byte) (*Config, error) {
 				cfg.UI.Mac.BadgeClickAction = &BadgeClickActionConfig{
 					Enabled: raw.UI.Mac.BadgeClickAction.Enabled,
 					Command: raw.UI.Mac.BadgeClickAction.Command,
+				}
+			}
+
+			// Populate terminal action setting
+			if raw.UI.Mac.TerminalAction != nil {
+				cfg.UI.Mac.TerminalAction = &TerminalActionConfig{
+					Enabled: raw.UI.Mac.TerminalAction.Enabled,
+					Command: raw.UI.Mac.TerminalAction.Command,
 				}
 			}
 		}

@@ -131,6 +131,8 @@ import {
   LayersIcon,
   TagIcon,
   SidePanelIcon,
+  TerminalIcon,
+  FolderOpenIcon,
 } from "./components/Icons.js";
 
 // Import constants
@@ -1594,6 +1596,9 @@ function SessionList({
   rcFilePath = null,
   badgeClickEnabled = false,
   onBadgeClick,
+  terminalActionEnabled = false,
+  onFolderOpen,
+  onTerminalClick,
   queueLength = 0,
 }) {
   // Combine active and stored sessions using shared helper function
@@ -1719,12 +1724,40 @@ function SessionList({
     const session = allSessions.find((s) => s.session_id === activeSessionId);
     let tabSwitched = false;
     if (session) {
-      // Determine target tab
+      // Determine target tab.
+      // Child sessions don't have periodic_enabled — they inherit their parent's
+      // category. Follow the parent chain (like getSessionCategory does) to find
+      // the root ancestor and use its properties to pick the correct tab.
       let targetTab = FILTER_TAB.CONVERSATIONS;
       if (session.archived) {
         targetTab = FILTER_TAB.ARCHIVED;
-      } else if (session.periodic_enabled) {
-        targetTab = FILTER_TAB.PERIODIC;
+      } else {
+        // Find the root parent to determine the correct tab category
+        let categorySession = session;
+        if (session.parent_session_id) {
+          const sessionMap = new Map(allSessions.map((s) => [s.session_id, s]));
+          let current = session;
+          let depth = 0;
+          while (current.parent_session_id && depth < 10) {
+            const parent = sessionMap.get(current.parent_session_id);
+            if (!parent) break;
+            // If any ancestor is archived, child belongs to the archived tab
+            if (parent.archived) {
+              categorySession = parent;
+              break;
+            }
+            current = parent;
+            depth++;
+          }
+          if (!categorySession.archived) {
+            categorySession = current; // root parent
+          }
+        }
+        if (categorySession.archived) {
+          targetTab = FILTER_TAB.ARCHIVED;
+        } else if (categorySession.periodic_enabled) {
+          targetTab = FILTER_TAB.PERIODIC;
+        }
       }
 
       // Switch tab if needed
@@ -2531,6 +2564,29 @@ function SessionList({
                 ></span>
               `}
               ${groupingMode === "workspace" &&
+              typeof window.mittoPickFolder === "function" &&
+              group.workingDir &&
+              html`
+                ${badgeClickEnabled && html`
+                  <button
+                    onClick=${(e) => { e.stopPropagation(); onFolderOpen && onFolderOpen(group.workingDir); }}
+                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                    title="Open folder: ${group.workingDir}"
+                  >
+                    <${FolderOpenIcon} className="w-3.5 h-3.5" />
+                  </button>
+                `}
+                ${terminalActionEnabled && html`
+                  <button
+                    onClick=${(e) => { e.stopPropagation(); onTerminalClick && onTerminalClick(group.workingDir); }}
+                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                    title="Open terminal: ${group.workingDir}"
+                  >
+                    <${TerminalIcon} className="w-3.5 h-3.5" />
+                  </button>
+                `}
+              `}
+              ${groupingMode === "workspace" &&
               (filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
                 <button
@@ -2700,6 +2756,28 @@ function SessionList({
                   class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
                   title="Agent responding in this folder"
                 ></span>
+              `}
+              ${typeof window.mittoPickFolder === "function" &&
+              folder.workingDir &&
+              html`
+                ${badgeClickEnabled && html`
+                  <button
+                    onClick=${(e) => { e.stopPropagation(); onFolderOpen && onFolderOpen(folder.workingDir); }}
+                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                    title="Open folder: ${folder.workingDir}"
+                  >
+                    <${FolderOpenIcon} className="w-3.5 h-3.5" />
+                  </button>
+                `}
+                ${terminalActionEnabled && html`
+                  <button
+                    onClick=${(e) => { e.stopPropagation(); onTerminalClick && onTerminalClick(folder.workingDir); }}
+                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                    title="Open terminal: ${folder.workingDir}"
+                  >
+                    <${TerminalIcon} className="w-3.5 h-3.5" />
+                  </button>
+                `}
               `}
               ${(filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
@@ -3877,8 +3955,14 @@ function App() {
   // UI confirmation settings (default: true - show confirmations)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
 
-  // Badge click action settings (macOS only, default: enabled)
-  const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
+  // Badge/folder click command (macOS only)
+  const [badgeClickCommand, setBadgeClickCommand] = useState("open ${MITTO_WORKING_DIR}");
+  // Terminal action command (macOS only)
+  const [terminalActionCommand, setTerminalActionCommand] = useState("open -a Terminal ${MITTO_WORKING_DIR}");
+
+  // Derive enabled state from non-empty command
+  const badgeClickEnabled = typeof window.mittoPickFolder === "function" && badgeClickCommand.trim() !== "";
+  const terminalActionEnabled = typeof window.mittoPickFolder === "function" && terminalActionCommand.trim() !== "";
 
   // Input font family setting (web UI, default: "system")
   const [inputFontFamily, setInputFontFamily] = useState("system");
@@ -3940,17 +4024,14 @@ function App() {
           console.log("[config] Setting native notifications ENABLED");
           window.mittoNativeNotificationsEnabled = true;
         }
-        // Load badge click action setting (macOS only, default: enabled)
-        // Only enable if running in native macOS app
-        if (typeof window.mittoPickFolder === "function") {
-          const badgeClickSetting =
-            config?.ui?.mac?.badge_click_action?.enabled;
-          // Default to enabled if not explicitly disabled
-          setBadgeClickEnabled(badgeClickSetting !== false);
-        } else {
-          // Disable for non-macOS environments
-          setBadgeClickEnabled(false);
-        }
+        // Load badge/folder click command (macOS only)
+        setBadgeClickCommand(
+          config?.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
+        );
+        // Load terminal action command (macOS only)
+        setTerminalActionCommand(
+          config?.ui?.mac?.terminal_action?.command || "open -a Terminal ${MITTO_WORKING_DIR}",
+        );
         // Load input font family setting (web UI)
         if (config?.ui?.web?.input_font_family) {
           setInputFontFamily(config.ui.web.input_font_family);
@@ -5425,13 +5506,74 @@ function App() {
 
         if (!res.ok) {
           const data = await res.json();
-          console.error("Badge click failed:", data.error || "Unknown error");
+          showToast({ style: "error", title: data.error || "Failed to open folder" });
+        } else {
+          const data = await res.json();
+          if (!data.success && data.error) {
+            showToast({ style: "error", title: data.error });
+          }
         }
       } catch (err) {
-        console.error("Badge click error:", err);
+        showToast({ style: "error", title: "Failed to open folder: " + err.message });
       }
     },
-    [badgeClickEnabled],
+    [badgeClickEnabled, showToast],
+  );
+
+  // Handle folder open action - calls API to open workspace folder
+  const handleFolderOpen = useCallback(
+    async (workspacePath) => {
+      if (!badgeClickEnabled || !workspacePath) return;
+
+      try {
+        const res = await authFetch(apiUrl("/api/badge-click"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace_path: workspacePath, action: "folder" }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          showToast({ style: "error", title: data.error || "Failed to open folder" });
+        } else {
+          const data = await res.json();
+          if (!data.success && data.error) {
+            showToast({ style: "error", title: data.error });
+          }
+        }
+      } catch (err) {
+        showToast({ style: "error", title: "Failed to open folder: " + err.message });
+      }
+    },
+    [badgeClickEnabled, showToast],
+  );
+
+  // Handle terminal action - calls API to open terminal at workspace path
+  const handleTerminalClick = useCallback(
+    async (workspacePath) => {
+      if (!terminalActionEnabled || !workspacePath) return;
+
+      try {
+        const res = await authFetch(apiUrl("/api/badge-click"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace_path: workspacePath, action: "terminal" }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          showToast({ style: "error", title: data.error || "Failed to open terminal" });
+        } else {
+          const data = await res.json();
+          if (!data.success && data.error) {
+            showToast({ style: "error", title: data.error });
+          }
+        }
+      } catch (err) {
+        showToast({ style: "error", title: "Failed to open terminal: " + err.message });
+      }
+    },
+    [terminalActionEnabled, showToast],
   );
 
   // Open the properties panel for a session (used by pencil button in session list)
@@ -5599,10 +5741,13 @@ function App() {
               setConfirmDeleteSession(
                 config?.ui?.confirmations?.delete_session !== false,
               );
-              // Reload badge click action settings (macOS only)
+              // Reload badge/folder click command (macOS only)
               if (typeof window.mittoPickFolder === "function") {
-                setBadgeClickEnabled(
-                  config?.ui?.mac?.badge_click_action?.enabled !== false,
+                setBadgeClickCommand(
+                  config?.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
+                );
+                setTerminalActionCommand(
+                  config?.ui?.mac?.terminal_action?.command || "open -a Terminal ${MITTO_WORKING_DIR}",
                 );
               }
               // Reload input font family setting
@@ -5671,6 +5816,9 @@ function App() {
           rcFilePath=${rcFilePath}
           badgeClickEnabled=${badgeClickEnabled}
           onBadgeClick=${handleBadgeClick}
+          terminalActionEnabled=${terminalActionEnabled}
+          onFolderOpen=${handleFolderOpen}
+          onTerminalClick=${handleTerminalClick}
           queueLength=${queueLength}
         />
       </div>
@@ -5702,6 +5850,9 @@ function App() {
               rcFilePath=${rcFilePath}
               badgeClickEnabled=${badgeClickEnabled}
               onBadgeClick=${handleBadgeClick}
+              terminalActionEnabled=${terminalActionEnabled}
+              onFolderOpen=${handleFolderOpen}
+              onTerminalClick=${handleTerminalClick}
               queueLength=${queueLength}
             />
           </div>

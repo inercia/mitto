@@ -1242,9 +1242,11 @@ export function SettingsDialog({
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
-  const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
   const [badgeClickCommand, setBadgeClickCommand] =
     useState("open ${MITTO_WORKING_DIR}");
+  const [terminalActionCommand, setTerminalActionCommand] = useState(
+    "open -a Terminal ${MITTO_WORKING_DIR}",
+  );
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
@@ -1562,11 +1564,14 @@ export function SettingsDialog({
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
 
       // Load badge click action settings (macOS only)
-      setBadgeClickEnabled(
-        config.ui?.mac?.badge_click_action?.enabled !== false,
-      );
       setBadgeClickCommand(
         config.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
+      );
+
+      // Load terminal action settings (macOS only)
+      setTerminalActionCommand(
+        config.ui?.mac?.terminal_action?.command ||
+          "open -a Terminal ${MITTO_WORKING_DIR}",
       );
 
       // Load notification permission status (macOS only) - used to show warning if denied
@@ -1823,8 +1828,12 @@ export function SettingsDialog({
           show_in_all_spaces: showInAllSpaces,
           start_at_login: startAtLogin,
           badge_click_action: {
-            enabled: badgeClickEnabled,
+            enabled: badgeClickCommand.trim() !== "",
             command: badgeClickCommand,
+          },
+          terminal_action: {
+            enabled: terminalActionCommand.trim() !== "",
+            command: terminalActionCommand,
           },
         };
       }
@@ -4210,53 +4219,61 @@ export function SettingsDialog({
                             </label>
                           `}
 
-                          <!-- Badge Click Action -->
-                          <label
-                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          <!-- Open Folder Action -->
+                          <div
+                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
                           >
-                            <input
-                              type="checkbox"
-                              checked=${badgeClickEnabled}
-                              onChange=${(e) =>
-                                setBadgeClickEnabled(e.target.checked)}
-                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                            />
-                            <div class="flex-1">
-                              <div class="font-medium text-sm">
-                                Workspace badge click action
-                              </div>
-                              <div class="text-xs text-gray-500">
-                                Click workspace badge in conversation list to
-                                run a command
-                              </div>
+                            <div class="font-medium text-sm">
+                              Open folder command
                             </div>
-                          </label>
-                          ${badgeClickEnabled &&
-                          html`
-                            <div
-                              class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
-                            >
-                              <div class="flex items-center gap-2">
-                                <label class="text-sm text-gray-400 w-20"
-                                  >Command</label
-                                >
-                                <input
-                                  type="text"
-                                  value=${badgeClickCommand}
-                                  onInput=${(e) =>
-                                    setBadgeClickCommand(e.target.value)}
-                                  placeholder="open \${MITTO_WORKING_DIR}"
-                                  class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                                />
-                              </div>
-                              <p class="text-xs text-gray-500">
-                                Use${" "}
-                                <code class="bg-slate-600 px-1 rounded"
-                                  >\${MITTO_WORKING_DIR}</code
-                                >${" "} as placeholder for the workspace path
-                              </p>
+                            <div class="text-xs text-gray-500 mb-2">
+                              Command to open workspace folder from badges and group header buttons. Leave empty to disable.
                             </div>
-                          `}
+                            <div class="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value=${badgeClickCommand}
+                                onInput=${(e) =>
+                                  setBadgeClickCommand(e.target.value)}
+                                placeholder="open \${MITTO_WORKING_DIR}"
+                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
+                            <p class="text-xs text-gray-500">
+                              Use${" "}
+                              <code class="bg-slate-600 px-1 rounded"
+                                >\${MITTO_WORKING_DIR}</code
+                              >${" "} as placeholder for the workspace path
+                            </p>
+                          </div>
+
+                          <!-- Terminal Action -->
+                          <div
+                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
+                          >
+                            <div class="font-medium text-sm">
+                              Open terminal command
+                            </div>
+                            <div class="text-xs text-gray-500 mb-2">
+                              Command to open a terminal at the workspace folder from group header buttons. Leave empty to disable.
+                            </div>
+                            <div class="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value=${terminalActionCommand}
+                                onInput=${(e) =>
+                                  setTerminalActionCommand(e.target.value)}
+                                placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
+                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
+                            <p class="text-xs text-gray-500">
+                              Use${" "}
+                              <code class="bg-slate-600 px-1 rounded"
+                                >\${MITTO_WORKING_DIR}</code
+                              >${" "} as placeholder for the workspace path
+                            </p>
+                          </div>
                         </div>
                       `}
 

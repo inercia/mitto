@@ -1085,3 +1085,42 @@ export function SidePanelIcon({ className = "w-5 h-5" }) {
     </svg>
   `;
 }
+
+
+/**
+ * Terminal/command prompt icon (Heroicons terminal-window)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function TerminalIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 17.25V6.75A2.25 2.25 0 0 0 18.75 4.5H5.25A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 20.25Z" />
+    </svg>
+  `;
+}
+
+/**
+ * Folder open icon (Heroicons folder-open) for opening workspace folder
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function FolderOpenIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6.228c0-1.168.895-2.128 2.033-2.216a48.394 48.394 0 0 1 5.274-.166c1.045.044 2.062.262 2.987.678l.724.33c.925.416 1.943.634 2.987.678a48.54 48.54 0 0 1 5.274.166 2.252 2.252 0 0 1 2.033 2.216v3.548" />
+    </svg>
+  `;
+}
