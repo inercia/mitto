@@ -3904,6 +3904,17 @@ function App() {
         }
       }
 
+      // Command+Shift+A to archive/unarchive current conversation
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+        if (e.key === "A" || e.key === "a") {
+          e.preventDefault();
+          if (window.mittoArchiveConversation) {
+            window.mittoArchiveConversation();
+          }
+          return;
+        }
+      }
+
       // Check for Command (macOS) or Ctrl (other platforms)
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
         const key = e.key;
@@ -4906,6 +4917,32 @@ function App() {
       fetchStoredSessions();
     };
 
+    // Archive Conversation - called from native Cmd+Shift+A menu or web shortcut
+    window.mittoArchiveConversation = async () => {
+      if (!activeSessionId) return;
+
+      // Find the current session
+      const currentSession =
+        activeSessions.find((s) => s.session_id === activeSessionId) ||
+        storedSessions.find((s) => s.session_id === activeSessionId);
+      if (!currentSession) return;
+
+      // Don't archive spawned (child) sessions
+      if (currentSession.parent_id) return;
+
+      // Check if already archived
+      const isArchived = currentSession.archived || currentSession.info?.archived;
+
+      // Toggle archive state
+      await archiveSession(activeSessionId, !isArchived);
+
+      // When unarchiving, switch to conversations tab and select the session
+      if (isArchived) {
+        setFilterTab(FILTER_TAB.CONVERSATIONS);
+        switchSession(activeSessionId);
+      }
+    };
+
     // Next Conversation - called from native swipe gesture (swipe left)
     window.mittoNextConversation = () => {
       navigateToNextSession();
@@ -4943,6 +4980,7 @@ function App() {
       delete window.mittoToggleSidebar;
       delete window.mittoShowSettings;
       delete window.mittoCloseConversation;
+      delete window.mittoArchiveConversation;
       delete window.mittoNextConversation;
       delete window.mittoPrevConversation;
       delete window.mittoSwitchToSession;
@@ -4963,6 +5001,7 @@ function App() {
     switchSession,
     forceReconnectActiveSession,
     reconnectAllSessionsStaggered,
+    archiveSession,
   ]);
 
   const handleNewSession = async (workspace = null, folderFilter = null, currentFilterTab = null) => {
@@ -5651,10 +5690,27 @@ function App() {
   const handleArchiveSession = async (session, archived) => {
     await archiveSession(session.session_id, archived);
 
-    // When unarchiving, switch to conversations tab and select the session
     if (!archived) {
+      // When unarchiving, switch to conversations tab and select the session
       setFilterTab(FILTER_TAB.CONVERSATIONS);
       switchSession(session.session_id);
+    } else if (session.session_id === activeSessionId) {
+      // When archiving the active session, switch to another session in the same tab.
+      // The session_archived WebSocket event handler also handles this, but we do it here
+      // too (via switchSession for a full load) in case the event arrives late.
+      const currentTab = getFilterTab();
+      const allSess = computeAllSessions(activeSessions, storedSessions);
+      const tabFiltered = allSess.filter((s) => {
+        if (s.session_id === session.session_id) return false; // exclude the one being archived
+        if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
+        if (currentTab === FILTER_TAB.PERIODIC) return !s.archived && s.periodic_enabled;
+        return !s.archived && !s.periodic_enabled; // conversations tab
+      });
+      if (tabFiltered.length > 0) {
+        switchSession(tabFiltered[0].session_id);
+      }
+      // If no sessions left in this tab, the session_archived WebSocket event handler
+      // will call setActiveSessionId(null) to clear the active session.
     }
   };
 

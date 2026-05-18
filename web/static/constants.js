@@ -134,6 +134,11 @@ export const KEYBOARD_SHORTCUTS = [
     macOnly: true,
     section: "Conversations",
   },
+  {
+    keys: "⌘⇧A",
+    description: "Archive conversation",
+    section: "Conversations",
+  },
   // Web shortcuts (work in both macOS app and browser)
   {
     keys: "⌘1-9",
