@@ -14,6 +14,8 @@ extern void goAppDidBecomeActiveCallback(void);
 - (void)newConversation:(id)sender;
 - (void)closeConversation:(id)sender;
 - (void)archiveConversation:(id)sender;
+- (void)prevConversation:(id)sender;
+- (void)nextConversation:(id)sender;
 - (void)focusInput:(id)sender;
 - (void)toggleSidebar:(id)sender;
 - (void)showSettings:(id)sender;
@@ -36,11 +38,37 @@ extern void goAppDidBecomeActiveCallback(void);
 }
 
 - (void)closeConversation:(id)sender {
+    // If a viewer window has focus, close it instead of closing the conversation
+    NSWindow *keyWindow = [[NSApplication sharedApplication] keyWindow];
+    if (keyWindow && [keyWindow.delegate isKindOfClass:NSClassFromString(@"MittoViewerWindowDelegate")]) {
+        [keyWindow close];
+        return;
+    }
     goMenuActionCallback((char*)"close_conversation");
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(closeConversation:)) {
+        NSWindow *keyWindow = [[NSApplication sharedApplication] keyWindow];
+        if (keyWindow && [keyWindow.delegate isKindOfClass:NSClassFromString(@"MittoViewerWindowDelegate")]) {
+            menuItem.title = @"Close Window";
+        } else {
+            menuItem.title = @"Close Conversation";
+        }
+    }
+    return YES;
 }
 
 - (void)archiveConversation:(id)sender {
     goMenuActionCallback((char*)"archive_conversation");
+}
+
+- (void)prevConversation:(id)sender {
+    goMenuActionCallback((char*)"prev_conversation");
+}
+
+- (void)nextConversation:(id)sender {
+    goMenuActionCallback((char*)"next_conversation");
 }
 
 - (void)focusInput:(id)sender {
@@ -284,6 +312,24 @@ void setupMacOSMenu(const char* appName) {
         [archiveConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift];
         [archiveConvoItem setTarget:handler];
         [fileMenu addItem:archiveConvoItem];
+
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+
+        // Add "Previous Conversation" menu item with Ctrl+Cmd+Up Arrow shortcut
+        NSMenuItem *prevConvoItem = [[NSMenuItem alloc] initWithTitle:@"Previous Conversation"
+                                                               action:@selector(prevConversation:)
+                                                        keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey]];
+        [prevConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagControl];
+        [prevConvoItem setTarget:handler];
+        [fileMenu addItem:prevConvoItem];
+
+        // Add "Next Conversation" menu item with Ctrl+Cmd+Down Arrow shortcut
+        NSMenuItem *nextConvoItem = [[NSMenuItem alloc] initWithTitle:@"Next Conversation"
+                                                               action:@selector(nextConversation:)
+                                                        keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey]];
+        [nextConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagControl];
+        [nextConvoItem setTarget:handler];
+        [fileMenu addItem:nextConvoItem];
 
         // Create Edit menu (for copy/paste support in WebView)
         NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
@@ -529,6 +575,37 @@ void setupSwipeGestureRecognizer(void) {
 
             // Always return the event so it can be processed normally by the WebView
             // This ensures normal scrolling still works within the content
+            return event;
+        }];
+    }
+}
+
+// setupKeyboardShortcutMonitor installs a local event monitor that intercepts
+// Ctrl+Cmd+Arrow key events to prevent the macOS system beep.
+// WKWebView's responder chain can produce a beep for unrecognized key combinations
+// even when a native menu item or JavaScript handler processes the shortcut.
+// By intercepting keyDown events and returning nil for our shortcuts, the event
+// is consumed before it reaches the responder chain.
+void setupKeyboardShortcutMonitor(void) {
+    @autoreleasepool {
+        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
+            // Check for Ctrl+Cmd modifier (no Shift, no Option)
+            NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+            NSEventModifierFlags required = NSEventModifierFlagCommand | NSEventModifierFlagControl;
+            NSEventModifierFlags unwanted = NSEventModifierFlagShift | NSEventModifierFlagOption;
+
+            if ((flags & required) == required && !(flags & unwanted)) {
+                unsigned short keyCode = event.keyCode;
+                // keyCode 125 = Down Arrow, keyCode 126 = Up Arrow
+                if (keyCode == 126) {
+                    goMenuActionCallback((char*)"prev_conversation");
+                    return nil;  // Consume event — no beep
+                }
+                if (keyCode == 125) {
+                    goMenuActionCallback((char*)"next_conversation");
+                    return nil;  // Consume event — no beep
+                }
+            }
             return event;
         }];
     }

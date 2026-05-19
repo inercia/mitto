@@ -35,6 +35,12 @@ void completeTermination(void);
 // with trackpad swipes: swipe left goes to next, swipe right goes to previous.
 void setupSwipeGestureRecognizer(void);
 
+// setupKeyboardShortcutMonitor installs a local key event monitor that intercepts
+// Ctrl+Cmd+Arrow key events and consumes them to prevent the macOS system beep.
+// This is needed because WKWebView's responder chain can produce a beep even when
+// native menu items or JavaScript handlers process the shortcut.
+void setupKeyboardShortcutMonitor(void);
+
 // disableWindowFullscreen prevents the window from entering fullscreen mode.
 // This removes the fullscreen button from the window's title bar.
 // This must be called after the window is created.

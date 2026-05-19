@@ -366,6 +366,12 @@ func goMenuActionCallback(action *C.char) {
 	case "archive_conversation":
 		// Archive/unarchive the current conversation
 		js = "if (window.mittoArchiveConversation) window.mittoArchiveConversation();"
+	case "prev_conversation":
+		// Navigate to previous conversation
+		js = "if (window.mittoPrevConversation) window.mittoPrevConversation();"
+	case "next_conversation":
+		// Navigate to next conversation
+		js = "if (window.mittoNextConversation) window.mittoNextConversation();"
 	case "focus_input":
 		// Focus the chat input textarea
 		js = "if (window.mittoFocusInput) window.mittoFocusInput();"
@@ -752,6 +758,12 @@ func setQuitConfirmEnabled(enabled bool) {
 // goes to previous conversation.
 func setupSwipeGesture() {
 	C.setupSwipeGestureRecognizer()
+}
+
+// setupKeyboardShortcutMonitor installs a local key event monitor that
+// intercepts Ctrl+Cmd+Arrow key events to prevent the macOS system beep.
+func setupKeyboardShortcutMonitor() {
+	C.setupKeyboardShortcutMonitor()
 }
 
 // openExternalURL opens a URL in the default browser.
@@ -1439,6 +1451,8 @@ func run() error {
 	w.Dispatch(func() {
 		setupSwipeGesture()
 		slog.Info("Two-finger swipe gesture enabled for conversation navigation")
+		setupKeyboardShortcutMonitor()
+		slog.Info("Keyboard shortcut monitor enabled for Ctrl+Cmd+Arrow navigation")
 	})
 
 	// Register screen sleep/wake observers so we can log events and trigger
