@@ -1807,11 +1807,12 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	if scheduledTime == nil {
 		if s.sessionManager != nil {
 			bs := s.sessionManager.GetSession(input.ConversationID)
-			if bs == nil && !targetMeta.Archived && targetMeta.Status != session.SessionStatusCompleted {
-				// Session is stored (not running) — try to resume it so the queue gets processed.
-				s.logger.Info("Auto-resuming stored session to process queued prompt",
+			if bs == nil && !targetMeta.Archived {
+				// Session is stored or completed (e.g., GC-closed) — try to resume it so the queue gets processed.
+				s.logger.Info("Auto-resuming session to process queued prompt",
 					"target_session", input.ConversationID,
-					"source_session", realSessionID)
+					"source_session", realSessionID,
+					"target_status", string(targetMeta.Status))
 				resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
 				if resumeErr != nil {
 					s.logger.Warn("Failed to auto-resume stored session",
@@ -3862,11 +3863,12 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		// Check if the child is currently running (registered with MCP server).
 		// If not running and not archived, try to auto-resume it.
 		childReg := s.getSession(childID)
-		if childReg == nil && !childMeta.Archived && childMeta.Status != session.SessionStatusCompleted && s.sessionManager != nil {
-			// Session is stored (not running) — try to resume it.
-			s.logger.Info("Auto-resuming stored child session",
+		if childReg == nil && !childMeta.Archived && s.sessionManager != nil {
+			// Session is stored or completed (e.g., GC-closed) — try to resume it.
+			s.logger.Info("Auto-resuming child session",
 				"parent_session", realSessionID,
-				"child_session", childID)
+				"child_session", childID,
+				"child_status", string(childMeta.Status))
 			resumed, resumeErr := s.sessionManager.ResumeSession(childID, childMeta.Name, childMeta.WorkingDir)
 			if resumeErr != nil {
 				s.logger.Warn("Failed to auto-resume child session",
@@ -3877,12 +3879,6 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				// Re-check registration after resume
 				childReg = s.getSession(childID)
 			}
-		} else if childReg == nil && childMeta.Status == session.SessionStatusCompleted {
-			// Session completed (e.g. GC-closed after idle timeout) — skip auto-resume to avoid
-			// creating a new BackgroundSession that would record a duplicate session_end event.
-			s.logger.Info("Skipping auto-resume of completed child session",
-				"parent_session", realSessionID,
-				"child_session", childID)
 		}
 		if childReg == nil {
 			notRunningChildren = append(notRunningChildren, childID)
