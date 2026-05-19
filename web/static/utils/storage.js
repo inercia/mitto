@@ -401,6 +401,119 @@ export function getUIPromptPanelHeightConstraints() {
 }
 
 // =============================================================================
+// Sidebar Width Persistence (localStorage)
+// =============================================================================
+
+const SIDEBAR_WIDTH_KEY = "mitto_sidebar_width";
+const DEFAULT_SIDEBAR_WIDTH = 320; // w-80 = 320px (current default)
+const MIN_SIDEBAR_WIDTH = 320; // Cannot shrink below current default
+const MAX_SIDEBAR_WIDTH = 640; // 2× default
+
+/**
+ * Get the user's preferred sidebar width from localStorage
+ * @returns {number} The width in pixels, or default if not set
+ */
+export function getSidebarWidth() {
+  try {
+    const value = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (value) {
+      const width = parseInt(value, 10);
+      return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, width));
+    }
+    return DEFAULT_SIDEBAR_WIDTH;
+  } catch (e) {
+    console.warn("Failed to read sidebar width from localStorage:", e);
+    return DEFAULT_SIDEBAR_WIDTH;
+  }
+}
+
+/**
+ * Save the user's preferred sidebar width to localStorage
+ * @param {number} width - The width in pixels
+ */
+export function setSidebarWidth(width) {
+  try {
+    const clampedWidth = Math.max(
+      MIN_SIDEBAR_WIDTH,
+      Math.min(MAX_SIDEBAR_WIDTH, width),
+    );
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clampedWidth));
+  } catch (e) {
+    console.warn("Failed to save sidebar width to localStorage:", e);
+  }
+}
+
+/**
+ * Get the constraints for sidebar width
+ * @returns {{min: number, max: number, default: number}}
+ */
+export function getSidebarWidthConstraints() {
+  return {
+    min: MIN_SIDEBAR_WIDTH,
+    max: MAX_SIDEBAR_WIDTH,
+    default: DEFAULT_SIDEBAR_WIDTH,
+  };
+}
+
+// =============================================================================
+// Textarea Max Height Persistence (localStorage)
+// =============================================================================
+
+const TEXTAREA_MAX_HEIGHT_KEY = "mitto_textarea_max_height";
+const DEFAULT_TEXTAREA_MAX_HEIGHT = 200; // Current hardcoded value
+const MIN_TEXTAREA_MAX_HEIGHT = 200; // Cannot shrink below current default
+const MAX_TEXTAREA_MAX_HEIGHT = 400; // 2× default
+
+/**
+ * Get the user's preferred textarea max height from localStorage
+ * @returns {number} The height in pixels, or default if not set
+ */
+export function getTextareaMaxHeight() {
+  try {
+    const value = localStorage.getItem(TEXTAREA_MAX_HEIGHT_KEY);
+    if (value) {
+      const height = parseInt(value, 10);
+      return Math.max(
+        MIN_TEXTAREA_MAX_HEIGHT,
+        Math.min(MAX_TEXTAREA_MAX_HEIGHT, height),
+      );
+    }
+    return DEFAULT_TEXTAREA_MAX_HEIGHT;
+  } catch (e) {
+    console.warn("Failed to read textarea max height from localStorage:", e);
+    return DEFAULT_TEXTAREA_MAX_HEIGHT;
+  }
+}
+
+/**
+ * Save the user's preferred textarea max height to localStorage
+ * @param {number} height - The height in pixels
+ */
+export function setTextareaMaxHeight(height) {
+  try {
+    const clampedHeight = Math.max(
+      MIN_TEXTAREA_MAX_HEIGHT,
+      Math.min(MAX_TEXTAREA_MAX_HEIGHT, height),
+    );
+    localStorage.setItem(TEXTAREA_MAX_HEIGHT_KEY, String(clampedHeight));
+  } catch (e) {
+    console.warn("Failed to save textarea max height to localStorage:", e);
+  }
+}
+
+/**
+ * Get the constraints for textarea max height
+ * @returns {{min: number, max: number, default: number}}
+ */
+export function getTextareaMaxHeightConstraints() {
+  return {
+    min: MIN_TEXTAREA_MAX_HEIGHT,
+    max: MAX_TEXTAREA_MAX_HEIGHT,
+    default: DEFAULT_TEXTAREA_MAX_HEIGHT,
+  };
+}
+
+// =============================================================================
 // Conversation Grouping Persistence (localStorage)
 // =============================================================================
 

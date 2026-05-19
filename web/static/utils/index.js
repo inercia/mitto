@@ -40,6 +40,9 @@ export {
   getFilterTabGrouping,
   setFilterTabGrouping,
   cycleFilterTabGrouping,
+  getSidebarWidth,
+  setSidebarWidth,
+  getSidebarWidthConstraints,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

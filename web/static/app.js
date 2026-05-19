@@ -71,6 +71,8 @@ import {
   cycleFilterTabGrouping,
   fetchConfig,
   invalidateConfigCache,
+  getSidebarWidth,
+  setSidebarWidth,
 } from "./utils/index.js";
 
 // Import hooks
@@ -80,6 +82,7 @@ import {
   useSwipeToAction,
   useInfiniteScroll,
   useToast,
+  useResizeHandle,
 } from "./hooks/index.js";
 
 // Import components
@@ -3231,6 +3234,21 @@ function App() {
 
   const { showToast, dismissToast, toasts } = useToast();
 
+  // Sidebar resize handle (horizontal direction)
+  const {
+    height: sidebarWidth,
+    isDragging: isSidebarDragging,
+    handleProps: sidebarHandleProps,
+  } = useResizeHandle({
+    initialHeight: getSidebarWidth(),
+    minHeight: 320,
+    maxHeight: 640,
+    direction: "horizontal",
+    onDragEnd: (finalWidth) => {
+      setSidebarWidth(finalWidth);
+    },
+  });
+
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
   const [sidePanelTab, setSidePanelTab] = useState("changes");
@@ -5849,7 +5867,8 @@ function App() {
 
       <!-- Sidebar (hidden on mobile by default) -->
       <div
-        class="hidden md:block w-80 bg-mitto-sidebar border-r border-slate-700 flex-shrink-0"
+        class="hidden md:block bg-mitto-sidebar border-r border-slate-700 flex-shrink-0 relative"
+        style="width: ${sidebarWidth}px;"
       >
         <${SessionList}
           activeSessions=${activeSessions}
@@ -5876,6 +5895,13 @@ function App() {
           onFolderOpen=${handleFolderOpen}
           onTerminalClick=${handleTerminalClick}
           queueLength=${queueLength}
+        />
+        <!-- Resize handle on right edge -->
+        <div
+          class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-blue-500/40' : ''}"
+          style="margin-right: -2px;"
+          ...${sidebarHandleProps}
+          title="Drag to resize sidebar"
         />
       </div>
 

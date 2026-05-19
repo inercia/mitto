@@ -18,6 +18,8 @@ import {
   getPromptSortMode,
   getUIPromptPanelHeight,
   setUIPromptPanelHeight,
+  getTextareaMaxHeight as getStoredTextareaMaxHeight,
+  setTextareaMaxHeight as setStoredTextareaMaxHeight,
 } from "../utils/storage.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
@@ -419,8 +421,19 @@ export function ChatInput({
   const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
   const [periodicPromptName, setPeriodicPromptName] = useState("");
 
-  // Max height for textarea
-  const textareaMaxHeight = 200;
+  // Resize handle for textarea max height
+  const {
+    height: textareaMaxHeight,
+    isDragging: isTextareaDragging,
+    handleProps: textareaHandleProps,
+  } = useResizeHandle({
+    initialHeight: getStoredTextareaMaxHeight(),
+    minHeight: 200,
+    maxHeight: 400,
+    onDragEnd: (finalHeight) => {
+      setStoredTextareaMaxHeight(finalHeight);
+    },
+  });
 
   // Scroll selected prompt into view when keyboard selection changes
   useEffect(() => {
@@ -1738,10 +1751,18 @@ export function ChatInput({
       onDrop=${handleDrop}
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
-      class="px-4 pt-2 pb-3 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
+      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
         ? "ring-2 ring-blue-500 ring-inset"
         : ""}"
     >
+      <!-- Resize handle for ChatInput height -->
+      <div
+        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-slate-600/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-slate-600/30' : ''}"
+        ...${textareaHandleProps}
+        title="Drag to resize input area"
+      >
+        <div class="w-8 h-0.5 rounded-full bg-slate-600 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
+      </div>
       <!-- Hidden file input for images -->
       <input
         ref=${imageInputRef}
@@ -2603,7 +2624,8 @@ ${activeUIPrompt.text || ""}</textarea
                 onBlur=${handleTextareaBlur}
                 placeholder=${getPlaceholder()}
                 rows="3"
-                class="chat-input-textarea max-h-[200px] overflow-y-auto ${isFullyDisabled ||
+                style="max-height: ${textareaMaxHeight}px;"
+                class="chat-input-textarea overflow-y-auto ${isFullyDisabled ||
                 isReadOnly ||
                 isImproving
                   ? "opacity-50 cursor-not-allowed"
