@@ -213,6 +213,42 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
+			name: "enabledWhen CEL children.promptingCount zero when none prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: false},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp", IsPrompting: false},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL children.promptingCount non-zero when child is prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp", IsPrompting: false},
+				},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name: "enabledWhen CEL children.idleCount correct",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.idleCount == 1`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp", IsPrompting: false},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
 			name: "enabledWhen CEL invalid expression fails open",
 			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `!!!invalid`},
 			input: &ProcessorInput{
@@ -2851,6 +2887,96 @@ printf '{"title":"interval","message":"fired"}'`), 0755)
 	r3 := m.ApplyAfter(context.Background(), input)
 	if len(r3.Notifications) != 1 {
 		t.Errorf("turn 3: expected 1 notification (interval elapsed), got %d", len(r3.Notifications))
+	}
+}
+
+// TestApplyAfter_Cadence_EveryNTokens verifies that a processor with
+// cadence.everyNTokens fires only after enough cumulative tokens have been
+// reported. This covers both real ACP usage and estimated token fallback
+// (where only Total is set, Input/Output are zero).
+func TestApplyAfter_Cadence_EveryNTokens(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"tokens","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "token-proc",
+		When: WhenConfig{
+			On:          PhaseAgentResponded,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTokens: 10000},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// Turn 1: 5000 tokens (below 10000 threshold) → skip
+	input1 := makeAfterInput("user", "end_turn")
+	input1.TokenUsage = &AfterTokenUsage{Total: 5000}
+	r1 := m.ApplyAfter(context.Background(), input1)
+	if len(r1.Notifications) != 0 {
+		t.Errorf("turn 1: expected 0 notifications (5000 < 10000), got %d", len(r1.Notifications))
+	}
+
+	// Turn 2: another 6000 tokens (cumulative 11000 ≥ 10000) → fires
+	input2 := makeAfterInput("user", "end_turn")
+	input2.TokenUsage = &AfterTokenUsage{Total: 6000}
+	r2 := m.ApplyAfter(context.Background(), input2)
+	if len(r2.Notifications) != 1 {
+		t.Errorf("turn 2: expected 1 notification (11000 >= 10000), got %d", len(r2.Notifications))
+	}
+
+	// Turn 3: 3000 tokens after reset (3000 < 10000) → skip
+	input3 := makeAfterInput("user", "end_turn")
+	input3.TokenUsage = &AfterTokenUsage{Total: 3000}
+	r3 := m.ApplyAfter(context.Background(), input3)
+	if len(r3.Notifications) != 0 {
+		t.Errorf("turn 3: expected 0 notifications (3000 < 10000 after reset), got %d", len(r3.Notifications))
+	}
+
+	// Turn 4: estimated tokens only (Total set, Input/Output zero — fallback path)
+	// 8000 more → cumulative 11000 ≥ 10000 → fires
+	input4 := makeAfterInput("user", "end_turn")
+	input4.TokenUsage = &AfterTokenUsage{Total: 8000} // simulates estimated fallback
+	r4 := m.ApplyAfter(context.Background(), input4)
+	if len(r4.Notifications) != 1 {
+		t.Errorf("turn 4: expected 1 notification (11000 >= 10000 via estimated tokens), got %d", len(r4.Notifications))
+	}
+}
+
+// TestApplyAfter_Cadence_EveryNTokens_NilUsage verifies that when TokenUsage
+// is nil (no ACP usage AND no estimation), the token counter stays at zero
+// and the everyNTokens threshold blocks the processor indefinitely.
+func TestApplyAfter_Cadence_EveryNTokens_NilUsage(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"tokens","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "token-nil-proc",
+		When: WhenConfig{
+			On:          PhaseAgentResponded,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTokens: 1000},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// 5 turns with nil TokenUsage → token counter stays at 0 → never fires
+	for i := 1; i <= 5; i++ {
+		input := makeAfterInput("user", "end_turn")
+		// input.TokenUsage is nil (default)
+		r := m.ApplyAfter(context.Background(), input)
+		if len(r.Notifications) != 0 {
+			t.Errorf("turn %d: expected 0 notifications (nil usage), got %d", i, len(r.Notifications))
+		}
 	}
 }
 

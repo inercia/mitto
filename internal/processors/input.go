@@ -93,6 +93,8 @@ type ChildSession struct {
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
 	// ChildOrigin indicates how the child was created: "auto", "mcp", or "human".
 	ChildOrigin string `json:"child_origin,omitempty"`
+	// IsPrompting indicates the child agent is currently responding.
+	IsPrompting bool `json:"is_prompting,omitempty"`
 }
 
 // ProcessorOutput contains the result of processor execution.

@@ -207,7 +207,11 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		if child.ChildOrigin == "mcp" {
 			ctx.Children.MCPCount++
 		}
+		if child.IsPrompting {
+			ctx.Children.PromptingCount++
+		}
 	}
+	ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
 
 	// Tools context
 	if len(input.MCPToolNames) > 0 {
