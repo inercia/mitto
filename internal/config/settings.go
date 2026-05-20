@@ -183,6 +183,9 @@ type ACPServerSettings struct {
 	AutoApprove bool `json:"auto_approve,omitempty"`
 	// Tags is an optional list of categorization tags for this ACP server.
 	Tags []string `json:"tags,omitempty"`
+	// Constraints is an optional map of config option auto-selection rules.
+	// The key is the config option category (e.g., "model", "mode").
+	Constraints map[string]*ACPServerConstraint `json:"constraints,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.

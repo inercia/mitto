@@ -776,6 +776,14 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
+  // Model constraint state
+  const [constraintModelMode, setConstraintModelMode] = useState(
+    server.constraints?.model?.matchMode || "",
+  );
+  const [constraintModelPattern, setConstraintModelPattern] = useState(
+    server.constraints?.model?.pattern || "",
+  );
+
   const [typeError, setTypeError] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -807,7 +815,16 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
       .split(",")
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
-    const err = onSave(name, command, type, autoApprove, envObj, parsedTags);
+    // Build constraints object
+    const constraints = {};
+    if (constraintModelMode && constraintModelPattern) {
+      constraints.model = {
+        matchMode: constraintModelMode,
+        pattern: constraintModelPattern,
+      };
+    }
+    const err = onSave(name, command, type, autoApprove, envObj, parsedTags,
+      Object.keys(constraints).length > 0 ? constraints : undefined);
     if (err) {
       setFormError(err);
     }
@@ -846,6 +863,35 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
           onInput=${(e) => setCommand(e.target.value)}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
+      </div>
+      <!-- Model Selection -->
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">Model Selection</label>
+        <p class="text-xs text-gray-500 mb-2">
+          Switch to a model based on some selection criteria
+        </p>
+        <div class="flex gap-2">
+          <select
+            value=${constraintModelMode}
+            onInput=${(e) => setConstraintModelMode(e.target.value)}
+            class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            style="flex: 0 0 auto; min-width: 140px;"
+          >
+            <option value="">-- None --</option>
+            <option value="contains">contains</option>
+            <option value="exact">exact</option>
+            <option value="startsWith">starts with</option>
+            <option value="regex">regex</option>
+          </select>
+          <input
+            type="text"
+            value=${constraintModelPattern}
+            onInput=${(e) => setConstraintModelPattern(e.target.value)}
+            placeholder="e.g., Opus 4.6"
+            disabled=${!constraintModelMode}
+            class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!constraintModelMode ? "opacity-50 cursor-not-allowed" : ""}"
+          />
+        </div>
       </div>
       <div>
         <label class="block text-sm text-gray-400 mb-1"
@@ -1874,6 +1920,7 @@ export function SettingsDialog({
           auto_approve: srv.auto_approve || false, // Include auto-approve setting
           env: srv.env || undefined, // Include env vars if present
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
+          constraints: srv.constraints || undefined, // Include constraints if present
         };
         // Only include type if specified (otherwise name is used as type)
         if (srv.type) {
@@ -2075,7 +2122,7 @@ export function SettingsDialog({
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags) => {
+  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags, constraints) => {
     if (!newName.trim() || !newCommand.trim()) {
       return "Server name and command cannot be empty";
     }
@@ -2103,6 +2150,7 @@ export function SettingsDialog({
           auto_approve: autoApprove || undefined, // undefined to omit if false
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
+          constraints: constraints || undefined, // undefined to omit if empty
         };
         // Only include type if specified (otherwise name is used as type)
         if (newType && newType.trim()) {
@@ -2471,7 +2519,7 @@ export function SettingsDialog({
                                           <${ServerEditForm}
                                             server=${srv}
                                             agentTypes=${agentTypes}
-                                            onSave=${(name, cmd, type, autoApprove, env, tags) =>
+                                            onSave=${(name, cmd, type, autoApprove, env, tags, constraints) =>
                                               updateServer(
                                                 srv.name,
                                                 name,
@@ -2480,6 +2528,7 @@ export function SettingsDialog({
                                                 autoApprove,
                                                 env,
                                                 tags,
+                                                constraints,
                                               )}
                                             onCancel=${() =>
                                               setEditingServer(null)}

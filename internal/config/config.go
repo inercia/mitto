@@ -11,6 +11,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ACPServerConstraint defines a pattern-matching rule for auto-selecting config option values.
+// Used by the constraints system to automatically configure sessions on startup.
+type ACPServerConstraint struct {
+	// MatchMode determines how Pattern is matched against option names.
+	// Valid values: "contains", "exact", "startsWith"
+	MatchMode string `json:"matchMode"`
+	// Pattern is the text to match against option names (e.g., "Opus 4.6").
+	Pattern string `json:"pattern"`
+}
+
 // ACPServer represents a single ACP server configuration.
 type ACPServer struct {
 	// Name is the identifier for this ACP server
@@ -40,6 +50,10 @@ type ACPServer struct {
 	// Tags is an optional list of categorization tags for this ACP server.
 	// Tags are single words or hyphenated-words (e.g., "coding", "fast-model").
 	Tags []string
+	// Constraints is an optional map of config option auto-selection rules.
+	// The key is the config option category (e.g., "model", "mode").
+	// When a session starts, matching constraints auto-select the appropriate option value.
+	Constraints map[string]*ACPServerConstraint
 }
 
 // GetType returns the type identifier for prompt matching.
