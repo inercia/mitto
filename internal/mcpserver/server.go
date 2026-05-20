@@ -878,6 +878,7 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		Archived:        meta.Archived,
 		SessionFolder:   sessionFolder,
 		ParentSessionID: meta.ParentSessionID,
+		ChildOrigin:     string(meta.ChildOrigin),
 	}
 
 	// Format dates as ISO 8601 strings
@@ -1138,6 +1139,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
 			"Returns metadata, status, runtime info including whether the agent is currently replying, " +
 			"and the list of queued prompts (with scheduled delivery times, if any). " +
+			"Also returns parent-child relationship info (parent_session_id, child_origin). " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
@@ -1166,13 +1168,13 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleArchiveConversation)
 
-	// mitto_conversation_delete - Delete (archive) a child conversation
+	// mitto_conversation_delete - Permanently delete a child conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_delete",
 		Description: "Delete a child conversation. " +
-			"This archives the child conversation, gracefully stopping any active agent response and closing its ACP connection. " +
+			"This permanently deletes the child conversation, gracefully stopping any active agent response and closing its ACP connection. " +
 			"The caller MUST be the parent of the target conversation (verified via the parent-child relationship). " +
-			"Deleted conversations become read-only and will no longer accept prompts. " +
+			"Deleted conversations are permanently removed and cannot be recovered. " +
 			selfIDNote,
 	}, s.handleDeleteConversation)
 
@@ -1500,6 +1502,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				Status:            string(meta.Status),
 				Archived:          meta.Archived,
 				SessionFolder:     store.SessionDir(meta.SessionID),
+				ChildOrigin:       string(meta.ChildOrigin),
 			}
 
 			// D) Enrich with workspace identity using composite key, falling back to working-dir-only lookup.

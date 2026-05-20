@@ -71,6 +71,8 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("children.mcp_count", cel.IntType), // deprecated alias for children.mcpCount
 		cel.Variable("children.names", cel.ListType(cel.StringType)),
 		cel.Variable("children.acpServers", cel.ListType(cel.StringType)),
+		cel.Variable("children.promptingCount", cel.IntType),
+		cel.Variable("children.idleCount", cel.IntType),
 
 		// Tools variables
 		cel.Variable("tools.available", cel.BoolType),
@@ -320,12 +322,14 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"parent.name":      ctx.Parent.Name,
 		"parent.acpServer": ctx.Parent.ACPServer,
 
-		"children.count":      int64(ctx.Children.Count),
-		"children.exists":     ctx.Children.Exists,
-		"children.mcpCount":   int64(ctx.Children.MCPCount),
-		"children.mcp_count":  int64(ctx.Children.MCPCount), // deprecated alias
-		"children.names":      ctx.Children.Names,
-		"children.acpServers": ctx.Children.ACPServers,
+		"children.count":          int64(ctx.Children.Count),
+		"children.exists":         ctx.Children.Exists,
+		"children.mcpCount":       int64(ctx.Children.MCPCount),
+		"children.mcp_count":      int64(ctx.Children.MCPCount), // deprecated alias
+		"children.names":          ctx.Children.Names,
+		"children.acpServers":     ctx.Children.ACPServers,
+		"children.promptingCount": int64(ctx.Children.PromptingCount),
+		"children.idleCount":      int64(ctx.Children.IdleCount),
 
 		"tools.available": ctx.Tools.Available,
 		"tools.names":     ctx.Tools.Names,

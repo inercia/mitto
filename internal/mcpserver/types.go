@@ -50,6 +50,7 @@ type ConversationInfo struct {
 	LockClientType string `json:"lock_client_type,omitempty"`
 	LastSeq        int64  `json:"last_seq,omitempty"`
 	IsPeriodic     bool   `json:"is_periodic"`
+	ChildOrigin    string `json:"child_origin,omitempty"`
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
@@ -80,6 +81,7 @@ type ConversationDetails struct {
 
 	// Parent/child relationship
 	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
+	ChildOrigin     string `json:"child_origin,omitempty"`      // How this child was created: "auto", "mcp", or "human" (empty for top-level)
 	IsPeriodic      bool   `json:"is_periodic"`                 // Whether the conversation has an active periodic prompt
 
 	// Available ACP servers that can be used when creating new conversations from this session

@@ -88,6 +88,10 @@ type ChildrenContext struct {
 	Names []string
 	// ACPServers contains the ACP server names of child sessions
 	ACPServers []string
+	// PromptingCount is the number of child sessions where the agent is currently responding
+	PromptingCount int
+	// IdleCount is the number of child sessions NOT currently prompting (Count - PromptingCount)
+	IdleCount int
 }
 
 // ToolsContext holds MCP tools context for CEL evaluation.
