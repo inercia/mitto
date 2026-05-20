@@ -142,10 +142,10 @@ func (w *cspNonceResponseWriter) setCSPHeader(includeNonce bool) {
 		// Use nonce for inline scripts
 		// Allow cdn.tailwindcss.com for Tailwind CSS, cdnjs.cloudflare.com for highlight.js,
 		// and cdn.jsdelivr.net for Mermaid.js (loaded dynamically for diagram rendering)
-		scriptSrc = "'self' 'nonce-" + w.nonce + "' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net"
+		scriptSrc = "'self' 'nonce-" + w.nonce + "' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh"
 	} else {
 		// For non-HTML responses, no inline scripts needed
-		scriptSrc = "'self' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net"
+		scriptSrc = "'self' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh"
 	}
 
 	// Build img-src based on configuration

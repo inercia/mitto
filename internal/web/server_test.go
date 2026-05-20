@@ -218,9 +218,7 @@ func TestServer_IsShutdown(t *testing.T) {
 	}
 
 	// Set shutdown
-	server.mu.Lock()
-	server.shutdown = true
-	server.mu.Unlock()
+	server.shutdown.Store(true)
 
 	if !server.IsShutdown() {
 		t.Error("IsShutdown should return true after setting")
@@ -325,9 +323,8 @@ func TestServer_HealthCheck_MethodNotAllowed(t *testing.T) {
 }
 
 func TestServer_HealthCheck_Shutdown(t *testing.T) {
-	server := &Server{
-		shutdown: true,
-	}
+	server := &Server{}
+	server.shutdown.Store(true)
 
 	req, err := http.NewRequest(http.MethodGet, "/api/health", nil)
 	if err != nil {

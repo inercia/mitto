@@ -298,6 +298,10 @@
         color: var(--text-secondary);
         cursor: pointer;
         transition: background-color 0.15s, color 0.15s;
+        /* Equal-width buttons so the toggle group doesn't shift when switching */
+        flex: 1;
+        text-align: center;
+        white-space: nowrap;
       }
       .toggle-btn:not(:last-child) { border-right: 1px solid var(--border-color); }
       .toggle-btn.active {
@@ -362,6 +366,56 @@
       @media (max-width: 640px) {
         .bottom-bar { padding: 6px 12px; gap: 4px; }
       }
+
+      /* CodeMirror editor container */
+      #editorContainer {
+        height: 100%;
+      }
+      #editorContainer .cm-editor {
+        height: 100%;
+      }
+      #editorContainer .cm-scroller {
+        overflow: auto;
+      }
+
+      /* CodeMirror diff editor container */
+      #diffEditorContainer {
+        height: 100%;
+      }
+      #diffEditorContainer .cm-editor {
+        height: 100%;
+      }
+      #diffEditorContainer .cm-scroller {
+        overflow: auto;
+      }
+
+      /* Conflict banner */
+      .conflict-banner {
+        background: #9a6700;
+        color: #fff;
+        padding: 8px 16px;
+        font-size: 13px;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .conflict-banner .btn {
+        padding: 2px 8px;
+        font-size: 11px;
+        background: rgba(255,255,255,0.2);
+        border-color: rgba(255,255,255,0.3);
+        color: #fff;
+      }
+
+      /* Edit / Save button styles */
+      .btn-save {
+        background-color: #238636 !important;
+        border-color: #238636 !important;
+        color: #fff !important;
+      }
+      .btn-save:hover {
+        background-color: #2ea043 !important;
+      }
     </style>
   </head>
   <body>
@@ -379,6 +433,18 @@
         <div class="toggle-group" id="fontSizeToggle">
           <button class="toggle-btn" id="decreaseFontBtn" title="Decrease font size">A-</button>
           <button class="toggle-btn" id="increaseFontBtn" title="Increase font size">A+</button>
+        </div>
+        <button class="btn" id="editBtn" title="Edit file" style="display: none">
+          <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.757l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/></svg>
+          <span class="btn-label">Edit</span>
+        </button>
+        <div class="actions" id="editControls" style="display: none">
+          <button class="btn btn-save" id="saveBtn">
+            <span class="btn-label">Save</span>
+          </button>
+          <button class="btn" id="cancelEditBtn">
+            <span class="btn-label">Cancel</span>
+          </button>
         </div>
         <div class="toggle-group" id="renderToggle" style="display: none">
           <button class="toggle-btn active" id="renderBtn" title="Render preview">
@@ -407,6 +473,11 @@
       </div>
     </div>
 
+    <div id="conflictBanner" class="conflict-banner" style="display: none;">
+      <span>⚠️ File changed on disk</span>
+      <button class="btn" id="conflictReload" style="padding: 2px 8px; font-size: 11px;">Reload</button>
+      <button class="btn" id="conflictKeepMine" style="padding: 2px 8px; font-size: 11px;">Keep mine</button>
+    </div>
     <div class="code-container">
       <div class="loading" id="loading">
         <div class="spinner"></div>
@@ -416,9 +487,11 @@
         <span id="errorMessage">Failed to load file</span>
       </div>
       <pre id="codeBlock" style="display: none"><code id="code"></code></pre>
+      <div id="editorContainer" style="display: none; height: 100%;"></div>
       <article id="markdownContent" class="markdown-body" style="display: none"></article>
       <iframe id="renderedFrame" class="rendered-frame" style="display: none" sandbox="allow-same-origin allow-scripts"></iframe>
       <div id="diffContent" class="diff-container" style="display: none"></div>
+      <div id="diffEditorContainer" style="display: none; height: 100%;"></div>
     </div>
 
     <!-- Bottom bar: Back, [spacer], Download, Refresh, Open, Close -->
@@ -685,12 +758,16 @@
             );
           }
 
+          // Capture ETag/Last-Modified for optimistic concurrency (edit/save)
+          let currentETag = response.headers.get("ETag");
+          let currentLastModified = response.headers.get("Last-Modified");
+
           const isMarkdown = (ext === "md" || ext === "markdown");
           const isHTML = (ext === "html" || ext === "htm");
           const canRender = isMarkdown || isHTML;
 
           // Fetch raw content for all text files
-          const rawContent = await response.text();
+          let rawContent = await response.text();
           const size = new Blob([rawContent]).size;
           document.getElementById("fileSize").textContent = formatSize(size);
 
@@ -710,11 +787,20 @@
           let diffLoaded = false;
           let diffContent = null;
 
+          // CodeMirror editor state
+          let codeEditor = null;
+          let editorLoadPromise = null; // tracks in-flight CodeMirror load
+          let diffEditor = null;
+
           function hideAll() {
             document.getElementById("codeBlock").style.display = "none";
+            document.getElementById("editorContainer").style.display = "none";
             document.getElementById("markdownContent").style.display = "none";
             document.getElementById("renderedFrame").style.display = "none";
             document.getElementById("diffContent").style.display = "none";
+            document.getElementById("diffEditorContainer").style.display = "none";
+            // Hide edit button when not in source mode
+            document.getElementById("editBtn").style.display = "none";
           }
 
           function clearAllActive() {
@@ -739,9 +825,8 @@
             currentMode = "render";
           }
 
-          function showSource() {
+          async function showSource() {
             hideAll();
-            document.getElementById("codeBlock").style.display = "block";
             document.getElementById("fontSizeToggle").style.display = "";
 
             clearAllActive();
@@ -752,7 +837,25 @@
             }
             currentMode = "source";
 
-            // Highlight source if not already done
+            // Show edit button in source mode
+            document.getElementById("editBtn").style.display = "";
+
+            // If CodeMirror is already initialized, just show it
+            if (codeEditor && codeEditor.isInitialized()) {
+              document.getElementById("editorContainer").style.display = "block";
+              return;
+            }
+
+            // If CodeMirror is currently loading, wait for it instead of flashing the hljs fallback
+            if (editorLoadPromise) {
+              await editorLoadPromise;
+              if (currentMode === "source" && codeEditor && codeEditor.isInitialized()) {
+                document.getElementById("editorContainer").style.display = "block";
+              }
+              return;
+            }
+
+            // Show highlight.js fallback immediately while CodeMirror loads
             const codeElement = document.getElementById("code");
             if (!codeElement._highlighted) {
               codeElement.textContent = rawContent;
@@ -762,13 +865,42 @@
               hljs.lineNumbersBlock(codeElement);
               codeElement._highlighted = true;
             }
+            document.getElementById("codeBlock").style.display = "block";
+
+            // Try to load CodeMirror; fall back to highlight.js on failure
+            editorLoadPromise = (async () => {
+              try {
+                const { CodeEditor } = await import("./utils/code-editor.js");
+                const container = document.getElementById("editorContainer");
+                const fileExt = path.split(".").pop().toLowerCase();
+                const isDark = !document.body.classList.contains("light");
+
+                codeEditor = new CodeEditor(container, {
+                  readOnly: true,
+                  darkMode: isDark,
+                  fontSize: currentFontSize,
+                  language: fileExt,
+                });
+                await codeEditor.init(rawContent);
+
+                // Switch from highlight.js to CodeMirror (only if still in source mode)
+                if (currentMode === "source") {
+                  document.getElementById("codeBlock").style.display = "none";
+                  container.style.display = "block";
+                }
+              } catch (err) {
+                console.warn("CodeMirror failed to load, using highlight.js fallback:", err);
+                // highlight.js fallback is already showing — leave it
+                // Hide edit button since editing requires CodeMirror
+                document.getElementById("editBtn").style.display = "none";
+              }
+            })();
+            await editorLoadPromise;
           }
 
           async function showDiff() {
             hideAll();
             document.getElementById("fontSizeToggle").style.display = "";
-            const diffEl = document.getElementById("diffContent");
-            diffEl.style.display = "block";
 
             clearAllActive();
             if (canRender) {
@@ -780,6 +912,9 @@
 
             // Fetch diff if not already loaded
             if (!diffLoaded) {
+              // Show loading in the fallback container
+              const diffEl = document.getElementById("diffContent");
+              diffEl.style.display = "block";
               diffEl.innerHTML = '<div class="diff-no-changes">Loading diff...</div>';
               try {
                 const diffUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&diff=true`;
@@ -791,28 +926,76 @@
               }
             }
 
-            // Render diff with syntax coloring
+            // Handle "no changes" / "not a git repo" messages
             if (diffContent === "No changes" || diffContent === "Not a git repository") {
+              const diffEl = document.getElementById("diffContent");
+              diffEl.style.display = "block";
+              document.getElementById("diffEditorContainer").style.display = "none";
               diffEl.innerHTML = `<div class="diff-no-changes">${diffContent === "No changes" ? "No uncommitted changes" : diffContent}</div>`;
-            } else {
-              const lines = diffContent.split("\n");
-              diffEl.innerHTML = lines.map(line => {
-                const escaped = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                if (line.startsWith("+++ ") || line.startsWith("--- ")) {
-                  return `<div class="diff-line diff-meta">${escaped}</div>`;
-                } else if (line.startsWith("@@")) {
-                  return `<div class="diff-line diff-hunk">${escaped}</div>`;
-                } else if (line.startsWith("+")) {
-                  return `<div class="diff-line diff-add">${escaped}</div>`;
-                } else if (line.startsWith("-")) {
-                  return `<div class="diff-line diff-del">${escaped}</div>`;
-                } else if (line.startsWith("diff ") || line.startsWith("index ")) {
-                  return `<div class="diff-line diff-meta">${escaped}</div>`;
-                } else {
-                  return `<div class="diff-line">${escaped}</div>`;
-                }
-              }).join("");
+              return;
             }
+
+            // If CodeMirror diff editor is already initialized, update and show it
+            if (diffEditor && diffEditor.isInitialized()) {
+              if (diffEditor.getValue() !== diffContent) {
+                diffEditor.setValue(diffContent);
+              }
+              document.getElementById("diffContent").style.display = "none";
+              document.getElementById("diffEditorContainer").style.display = "block";
+              return;
+            }
+
+            // Try to load CodeMirror for diff display
+            try {
+              const { CodeEditor } = await import("./utils/code-editor.js");
+              const container = document.getElementById("diffEditorContainer");
+              const isDark = !document.body.classList.contains("light");
+
+              diffEditor = new CodeEditor(container, {
+                readOnly: true,
+                darkMode: isDark,
+                fontSize: currentFontSize,
+                language: "diff",
+              });
+              await diffEditor.init(diffContent);
+
+              // Switch from manual rendering to CodeMirror (only if still in diff mode)
+              if (currentMode === "diff") {
+                document.getElementById("diffContent").style.display = "none";
+                container.style.display = "block";
+              }
+            } catch (err) {
+              console.warn("CodeMirror failed to load for diff, using fallback:", err);
+              // Fall back to manual rendering (only if still in diff mode)
+              if (currentMode === "diff") {
+                renderDiffFallback();
+              }
+            }
+          }
+
+          // Manual diff rendering fallback (used if CodeMirror fails to load)
+          function renderDiffFallback() {
+            const diffEl = document.getElementById("diffContent");
+            diffEl.style.display = "block";
+            document.getElementById("diffEditorContainer").style.display = "none";
+
+            const lines = diffContent.split("\n");
+            diffEl.innerHTML = lines.map(line => {
+              const escaped = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+              if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+                return `<div class="diff-line diff-meta">${escaped}</div>`;
+              } else if (line.startsWith("@@")) {
+                return `<div class="diff-line diff-hunk">${escaped}</div>`;
+              } else if (line.startsWith("+")) {
+                return `<div class="diff-line diff-add">${escaped}</div>`;
+              } else if (line.startsWith("-")) {
+                return `<div class="diff-line diff-del">${escaped}</div>`;
+              } else if (line.startsWith("diff ") || line.startsWith("index ")) {
+                return `<div class="diff-line diff-meta">${escaped}</div>`;
+              } else {
+                return `<div class="diff-line">${escaped}</div>`;
+              }
+            }).join("");
           }
 
           // Show appropriate toggle for file type
@@ -828,6 +1011,251 @@
             document.getElementById("sourceOnlyBtn").addEventListener("click", showSource);
             document.getElementById("diffOnlyBtn").addEventListener("click", showDiff);
           }
+
+          // --- Editor state machine ---
+          let editorState = "viewing"; // "viewing" | "editing" | "saving"
+          let snapshot = { content: null, etag: null, lastModified: null };
+          let conflictPollTimer = null;
+
+          // CSRF token helper (inline, since viewer.html uses a plain inline script)
+          function getCSRFToken() {
+            const match = document.cookie.match(/(^| )mitto_csrf=([^;]+)/);
+            return match ? match[2] : null;
+          }
+
+          async function ensureCSRFToken() {
+            let token = getCSRFToken();
+            if (token) return token;
+            try {
+              const resp = await fetch(`${apiPrefix}/api/csrf-token`, { credentials: "include" });
+              if (resp.ok) {
+                const data = await resp.json();
+                return data.token;
+              }
+            } catch (e) { /* ignore */ }
+            return null;
+          }
+
+          function enterEditMode() {
+            if (!codeEditor || !codeEditor.isInitialized()) return;
+
+            editorState = "editing";
+            snapshot = {
+              content: codeEditor.getValue(),
+              etag: currentETag,
+              lastModified: currentLastModified,
+            };
+
+            codeEditor.setReadOnly(false);
+            codeEditor.focus();
+
+            // Update UI
+            document.getElementById("editBtn").style.display = "none";
+            document.getElementById("editControls").style.display = "flex";
+
+            // Hide tab toggles while editing (prevent switching away with unsaved changes)
+            document.getElementById("renderToggle").style.display = "none";
+            document.getElementById("sourceOnlyToggle").style.display = "none";
+
+            startConflictPolling();
+          }
+
+          function exitEditMode(restoreContent) {
+            editorState = "viewing";
+            stopConflictPolling();
+            hideConflictBanner();
+
+            if (restoreContent && codeEditor) {
+              codeEditor.setValue(snapshot.content);
+            }
+
+            if (codeEditor) {
+              codeEditor.setReadOnly(true);
+            }
+
+            // Update UI
+            document.getElementById("editBtn").style.display = "";
+            document.getElementById("editControls").style.display = "none";
+
+            // Restore tab toggles
+            if (canRender) {
+              document.getElementById("renderToggle").style.display = "";
+            } else {
+              document.getElementById("sourceOnlyToggle").style.display = "";
+            }
+          }
+
+          async function saveFile() {
+            if (editorState !== "editing" || !codeEditor) return;
+
+            editorState = "saving";
+            const saveBtn = document.getElementById("saveBtn");
+            const originalText = saveBtn.textContent;
+            saveBtn.textContent = "Saving...";
+            saveBtn.disabled = true;
+
+            try {
+              const content = codeEditor.getValue();
+              const headers = { "Content-Type": "text/plain" };
+
+              const csrfToken = await ensureCSRFToken();
+              if (csrfToken) {
+                headers["X-CSRF-Token"] = csrfToken;
+              }
+
+              // Use ETag for optimistic concurrency, or "*" to force save (after "Keep Mine")
+              headers["If-Match"] = snapshot.etag || "*";
+
+              const resp = await fetch(fileUrl, {
+                method: "PUT",
+                headers,
+                credentials: "include",
+                body: content,
+              });
+
+              if (resp.ok) {
+                const data = await resp.json();
+                currentETag = data.etag;
+                currentLastModified = data.last_modified;
+                rawContent = content;
+
+                const newSize = new Blob([content]).size;
+                document.getElementById("fileSize").textContent = formatSize(newSize);
+
+                // Reset diff cache so next diff view reflects the save
+                diffLoaded = false;
+                diffContent = null;
+
+                // Destroy diff editor so it gets re-created with fresh content
+                if (diffEditor) {
+                  diffEditor.destroy();
+                  diffEditor = null;
+                }
+
+                exitEditMode(false);
+              } else if (resp.status === 412) {
+                showConflictBanner();
+                snapshot.etag = null; // Clear stale etag so next save forces overwrite
+                editorState = "editing";
+              } else if (resp.status === 413) {
+                alert("File is too large to save (1MB limit)");
+                editorState = "editing";
+              } else {
+                const text = await resp.text();
+                alert("Save failed: " + (text || resp.statusText));
+                editorState = "editing";
+              }
+            } catch (err) {
+              alert("Save failed: " + err.message);
+              editorState = "editing";
+            } finally {
+              saveBtn.textContent = originalText;
+              saveBtn.disabled = false;
+            }
+          }
+
+          function cancelEdit() {
+            if (editorState !== "editing") return;
+
+            const hasChanges = codeEditor && codeEditor.getValue() !== snapshot.content;
+            if (hasChanges) {
+              if (!confirm("Discard unsaved changes?")) return;
+            }
+
+            exitEditMode(true);
+          }
+
+          // Wire up edit/save/cancel buttons
+          document.getElementById("editBtn").addEventListener("click", enterEditMode);
+          document.getElementById("saveBtn").addEventListener("click", saveFile);
+          document.getElementById("cancelEditBtn").addEventListener("click", cancelEdit);
+
+          // --- Phase 4: Conflict polling ---
+          function startConflictPolling() {
+            stopConflictPolling();
+            conflictPollTimer = setInterval(async () => {
+              if (editorState !== "editing") return;
+              try {
+                const resp = await fetch(fileUrl, { method: "HEAD", credentials: "include" });
+                const newETag = resp.headers.get("ETag");
+                if (newETag && snapshot.etag && newETag !== snapshot.etag) {
+                  showConflictBanner();
+                }
+              } catch (err) {
+                // Network error — ignore, will retry on next poll
+              }
+            }, 3000);
+          }
+
+          function stopConflictPolling() {
+            if (conflictPollTimer) {
+              clearInterval(conflictPollTimer);
+              conflictPollTimer = null;
+            }
+          }
+
+          function showConflictBanner() {
+            document.getElementById("conflictBanner").style.display = "flex";
+          }
+
+          function hideConflictBanner() {
+            document.getElementById("conflictBanner").style.display = "none";
+          }
+
+          // Conflict resolution buttons
+          document.getElementById("conflictReload").addEventListener("click", async () => {
+            try {
+              const resp = await fetch(fileUrl, { credentials: "include" });
+              if (resp.ok) {
+                const newContent = await resp.text();
+                currentETag = resp.headers.get("ETag");
+                currentLastModified = resp.headers.get("Last-Modified");
+                rawContent = newContent;
+
+                if (codeEditor) {
+                  codeEditor.setValue(newContent);
+                }
+
+                snapshot.content = newContent;
+                snapshot.etag = currentETag;
+                snapshot.lastModified = currentLastModified;
+
+                hideConflictBanner();
+              }
+            } catch (err) {
+              console.error("Failed to reload file:", err);
+            }
+          });
+
+          document.getElementById("conflictKeepMine").addEventListener("click", () => {
+            snapshot.etag = null;
+            hideConflictBanner();
+          });
+
+          // --- Phase 5: Keyboard shortcuts ---
+          document.addEventListener("keydown", (e) => {
+            if (editorState === "editing") {
+              if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+                e.preventDefault();
+                saveFile();
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                cancelEdit();
+              }
+            }
+          });
+
+          // --- Phase 5: Beforeunload warning ---
+          window.addEventListener("beforeunload", (e) => {
+            if (editorState === "editing" && codeEditor) {
+              const hasChanges = codeEditor.getValue() !== snapshot.content;
+              if (hasChanges) {
+                e.preventDefault();
+                e.returnValue = "";
+              }
+            }
+          });
 
           document.getElementById("loading").style.display = "none";
 
@@ -905,13 +1333,12 @@
             // Render HTML in iframe by default
             showRendered();
           } else {
-            // Plain source code
-            showSource();
-          }
-
-          // Override default view if view=diff is specified in URL
-          if (viewMode === "diff") {
-            showDiff();
+            // Plain source code — skip if we'll immediately switch to diff
+            if (viewMode === "diff") {
+              showDiff();
+            } else {
+              showSource();
+            }
           }
 
           // Font size management (shared across all modes)
@@ -937,6 +1364,12 @@
               currentFontSize--;
               document.documentElement.style.setProperty("--code-font-size", `${currentFontSize}px`);
               try { localStorage.setItem("mitto-viewer-font-size", currentFontSize.toString()); } catch (e) {}
+              if (codeEditor && codeEditor.isInitialized()) {
+                codeEditor.setFontSize(currentFontSize);
+              }
+              if (diffEditor && diffEditor.isInitialized()) {
+                diffEditor.setFontSize(currentFontSize);
+              }
             }
           };
 
@@ -945,6 +1378,12 @@
               currentFontSize++;
               document.documentElement.style.setProperty("--code-font-size", `${currentFontSize}px`);
               try { localStorage.setItem("mitto-viewer-font-size", currentFontSize.toString()); } catch (e) {}
+              if (codeEditor && codeEditor.isInitialized()) {
+                codeEditor.setFontSize(currentFontSize);
+              }
+              if (diffEditor && diffEditor.isInitialized()) {
+                diffEditor.setFontSize(currentFontSize);
+              }
             }
           };
 

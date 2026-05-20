@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	builtinConfig "github.com/inercia/mitto/config"
@@ -122,8 +123,7 @@ type Server struct {
 	config     Config
 	httpServer *http.Server
 	logger     *slog.Logger
-	mu         sync.Mutex
-	shutdown   bool
+	shutdown   atomic.Bool
 
 	// apiPrefix is the URL prefix for all API and WebSocket endpoints.
 	// Static assets and root landing page are not prefixed.
@@ -803,12 +803,15 @@ func (s *Server) Handler() http.Handler {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.shutdown = true
+	// Use CompareAndSwap as a guard: return early if already shut down.
+	// This also sets the flag atomically before we start any blocking work,
+	// so IsShutdown() (called by in-flight handlers) does not need s.mu.
+	if !s.shutdown.CompareAndSwap(false, true) {
+		return nil
+	}
 
-	// Stop external listener if running
-	s.stopExternalListenerLocked()
+	// Stop external listener if running (uses its own externalMu internally)
+	s.StopExternalListener()
 
 	// Close all background sessions
 	if s.sessionManager != nil {
@@ -873,14 +876,22 @@ func (s *Server) Shutdown() error {
 		s.promptsWatcher.Close()
 	}
 
-	return s.httpServer.Shutdown(context.Background())
+	// Shut down the HTTP server with a timeout so we don't hang indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("HTTP server shutdown timed out or errored", "error", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // IsShutdown returns whether the server has been shut down.
 func (s *Server) IsShutdown() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.shutdown
+	return s.shutdown.Load()
 }
 
 // Logger returns the server's logger.

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -204,7 +205,7 @@ func TestFileServer_MethodNotAllowed(t *testing.T) {
 
 	fs := NewFileServer(sm, nil)
 
-	methods := []string{"POST", "PUT", "DELETE", "PATCH"}
+	methods := []string{"POST", "DELETE", "PATCH"}
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
 			req := httptest.NewRequest(method, "/api/files?ws="+wsUUID+"&path=test.txt", nil)
@@ -647,6 +648,242 @@ func TestFileServer_MarkdownRenderingDarkLightMode(t *testing.T) {
 	}
 	if !contains(body, "Theme Test") {
 		t.Error("Expected rendered HTML to contain heading text")
+	}
+}
+
+// createPUTTestSetup creates a common test setup for PUT tests.
+func createPUTTestSetup(t *testing.T) (tmpDir, wsUUID string, fs *FileServer) {
+	t.Helper()
+	tmpDir = t.TempDir()
+	wsUUID = "put-test-uuid"
+
+	// Create a test file
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("original content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	// Create a sensitive file
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("SECRET=value"), 0644); err != nil {
+		t.Fatalf("Failed to create .env file: %v", err)
+	}
+	// Create an executable file
+	if err := os.WriteFile(filepath.Join(tmpDir, "script.sh"), []byte("#!/bin/bash"), 0755); err != nil {
+		t.Fatalf("Failed to create executable file: %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{{
+			UUID:       wsUUID,
+			WorkingDir: tmpDir,
+			ACPServer:  "test",
+			ACPCommand: "echo test",
+		}},
+	})
+
+	fs = NewFileServer(sm, nil)
+	return
+}
+
+func TestFileServer_PUT_Success(t *testing.T) {
+	tmpDir, wsUUID, fs := createPUTTestSetup(t)
+
+	newContent := "updated content"
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=test.txt", strings.NewReader(newContent))
+	req.Header.Set("If-Match", "*")
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Read back and verify
+	data, err := os.ReadFile(filepath.Join(tmpDir, "test.txt"))
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if string(data) != newContent {
+		t.Errorf("Expected content %q, got %q", newContent, string(data))
+	}
+}
+
+func TestFileServer_PUT_MissingIfMatch(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=test.txt", strings.NewReader("data"))
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusPreconditionRequired {
+		t.Errorf("Expected status 428, got %d. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFileServer_PUT_ReturnsETagAndLastModified(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=test.txt", strings.NewReader("new data"))
+	req.Header.Set("If-Match", "*")
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse response JSON: %v", err)
+	}
+
+	if _, ok := resp["etag"]; !ok {
+		t.Error("Response missing 'etag' field")
+	}
+	if _, ok := resp["last_modified"]; !ok {
+		t.Error("Response missing 'last_modified' field")
+	}
+	if _, ok := resp["size"]; !ok {
+		t.Error("Response missing 'size' field")
+	}
+
+	// Also check headers
+	if w.Header().Get("ETag") == "" {
+		t.Error("Response missing ETag header")
+	}
+	if w.Header().Get("Last-Modified") == "" {
+		t.Error("Response missing Last-Modified header")
+	}
+}
+
+func TestFileServer_GET_ReturnsETag(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("GET", "/api/files?ws="+wsUUID+"&path=test.txt", nil)
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Error("GET response missing ETag header")
+	}
+	if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
+		t.Errorf("ETag should be quoted, got %q", etag)
+	}
+}
+
+func TestFileServer_PUT_ETagMatch(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	// First GET to obtain the ETag
+	getReq := httptest.NewRequest("GET", "/api/files?ws="+wsUUID+"&path=test.txt", nil)
+	getW := httptest.NewRecorder()
+	fs.ServeHTTP(getW, getReq)
+
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("GET didn't return ETag")
+	}
+
+	// PUT with correct If-Match
+	putReq := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=test.txt", strings.NewReader("updated"))
+	putReq.Header.Set("If-Match", etag)
+	putW := httptest.NewRecorder()
+	fs.ServeHTTP(putW, putReq)
+
+	if putW.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", putW.Code, putW.Body.String())
+	}
+}
+
+func TestFileServer_PUT_ETagMismatch(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	// PUT with stale If-Match
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=test.txt", strings.NewReader("updated"))
+	req.Header.Set("If-Match", `"stale-etag"`)
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusPreconditionFailed {
+		t.Errorf("Expected status 412, got %d. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFileServer_PUT_PathTraversal(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=../etc/passwd", strings.NewReader("hacked"))
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403, got %d", w.Code)
+	}
+}
+
+func TestFileServer_PUT_SensitiveFile(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=.env", strings.NewReader("overwritten"))
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403, got %d", w.Code)
+	}
+}
+
+func TestFileServer_PUT_ExecutableFile(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=script.sh", strings.NewReader("overwritten"))
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403, got %d", w.Code)
+	}
+}
+
+func TestFileServer_PUT_SizeLimit(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	// Create content larger than 1MB
+	bigContent := strings.Repeat("x", (1<<20)+1)
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=test.txt", strings.NewReader(bigContent))
+	req.Header.Set("If-Match", "*")
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("Expected status 413, got %d. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFileServer_PUT_NonExistentFile(t *testing.T) {
+	_, wsUUID, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws="+wsUUID+"&path=nonexistent.txt", strings.NewReader("data"))
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFileServer_PUT_InvalidWorkspace(t *testing.T) {
+	_, _, fs := createPUTTestSetup(t)
+
+	req := httptest.NewRequest("PUT", "/api/files?ws=nonexistent-uuid&path=test.txt", strings.NewReader("data"))
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403, got %d. Body: %s", w.Code, w.Body.String())
 	}
 }
 
