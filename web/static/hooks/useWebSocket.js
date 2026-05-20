@@ -59,12 +59,25 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
+  calculateSessionCreationDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   isReconnectLimitReached,
   checkSessionExists,
   isTerminalSessionError,
 } from "../utils/websocket.js";
+
+// =============================================================================
+// Session creation backoff state (module-level, persists across re-renders)
+// Prevents hammering POST /api/sessions when the ACP process is overloaded.
+// =============================================================================
+
+// Number of consecutive session creation failures since last success
+let _sessionCreationFailureCount = 0;
+
+// Timestamp (ms) after which the next session creation attempt is allowed
+// 0 means no restriction (first attempt or after a success)
+let _sessionCreationNextAllowedMs = 0;
 
 // Time threshold (in ms) for considering the session potentially stale
 // If the page has been hidden for longer than this, we do an explicit auth check
@@ -302,6 +315,11 @@ export function useWebSocket() {
   // { sessionId, sessionName, question, timestamp }
   const [backgroundUIPrompt, setBackgroundUIPrompt] = useState(null);
 
+  // Track background UI prompt timeouts for native OS notifications
+  // Fired when a blocking prompt in a background session times out with no active viewer.
+  // { sessionId, sessionName, question, timestamp }
+  const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] = useState(null);
+
   // Queue length for the active session
   const [queueLength, setQueueLength] = useState(0);
 
@@ -418,6 +436,11 @@ export function useWebSocket() {
 
   // Track last force-reconnect time per session to debounce duplicate reconnects
   const reconnectDebounceRef = useRef(createReconnectDebounceTracker());
+
+  // Track whether the server is in the process of shutting down.
+  // Set to true when an acp_stopped message with reason "server_shutdown" is received.
+  // Prevents reconnection attempts after intentional server shutdown.
+  const serverShuttingDownRef = useRef(false);
 
   // Track pending staggered background-session reconnect timers.
   // Cancelled and replaced whenever reconnectAllSessionsStaggered fires again,
@@ -2786,6 +2809,27 @@ export function useWebSocket() {
           ),
         );
 
+        // When the server is shutting down, suppress reconnection.
+        // Close the WebSocket preemptively so onclose doesn't trigger reconnect.
+        if (msg.data?.reason === "server_shutdown") {
+          serverShuttingDownRef.current = true;
+          console.log(
+            `Server shutdown detected for session ${sessionId}, suppressing reconnect`,
+          );
+          const ws = sessionWsRefs.current[sessionId];
+          if (ws) {
+            // Delete ref BEFORE closing so onclose sees no ref and skips reconnect
+            delete sessionWsRefs.current[sessionId];
+            ws.close();
+          }
+          // Also cancel any pending reconnect timer for this session
+          if (sessionReconnectRefs.current[sessionId]) {
+            clearTimeout(sessionReconnectRefs.current[sessionId]);
+            delete sessionReconnectRefs.current[sessionId];
+          }
+          break; // Skip the delayed sync — server is going away
+        }
+
         // Delayed sync to catch session_end event.
         // The server writes session_end AFTER sending acp_stopped (see background_session.go Close()),
         // so we need a short delay to allow recorder.End() to complete before requesting the event.
@@ -3201,6 +3245,14 @@ export function useWebSocket() {
         const isAuthenticated = await checkAuthOrRedirect();
         if (!isAuthenticated) {
           // checkAuthOrRedirect already redirected to login if 401
+          return;
+        }
+
+        // Don't reconnect if the server is shutting down
+        if (serverShuttingDownRef.current) {
+          console.log(
+            `Server shutdown in progress, not reconnecting session ${sessionId}`,
+          );
           return;
         }
 
@@ -3845,6 +3897,22 @@ export function useWebSocket() {
         });
         break;
 
+      case "background_ui_prompt_timeout": {
+        // A blocking UI prompt timed out in a session the user was not actively viewing.
+        // Show a native OS notification (sticky) so the user knows the session needed input.
+        const { session_id: timedOutSessionId, session_name: timedOutSessionName, question: timedOutQuestion } = msg.data;
+        console.log(
+          `[global] Background UI prompt timed out: ${timedOutSessionId} (${timedOutSessionName})`,
+        );
+        setBackgroundUIPromptTimeout({
+          sessionId: timedOutSessionId,
+          sessionName: timedOutSessionName,
+          question: timedOutQuestion,
+          timestamp: Date.now(),
+        });
+        break;
+      }
+
       case "periodic_updated":
         // Update session periodic state
         // This is broadcast when any session's periodic state changes
@@ -4187,6 +4255,14 @@ export function useWebSocket() {
         return;
       }
 
+      // Don't reconnect if the server is shutting down
+      if (serverShuttingDownRef.current) {
+        console.log(
+          "Server is shutting down, not reconnecting global events WebSocket",
+        );
+        return;
+      }
+
       // M2: Use exponential backoff for reconnection
       const attempt = eventsReconnectAttemptRef.current;
       const delay = calculateReconnectDelay(attempt);
@@ -4216,6 +4292,21 @@ export function useWebSocket() {
   // Returns: { sessionId: string } on success, { error: string, errorCode?: string } on failure, or null on network error
   const createNewSession = useCallback(
     async (options = {}) => {
+      // --- Backoff guard ---
+      // Reject immediately if still within the cooldown window from previous failures.
+      // This prevents hammering POST /api/sessions when the ACP process is overloaded.
+      const now = Date.now();
+      if (_sessionCreationNextAllowedMs > now) {
+        const waitSecs = Math.ceil((_sessionCreationNextAllowedMs - now) / 1000);
+        console.warn(
+          `[createNewSession] Backoff active — ${waitSecs}s remaining (failure #${_sessionCreationFailureCount})`,
+        );
+        return {
+          error: `Please wait ${waitSecs} second${waitSecs !== 1 ? "s" : ""} before creating another conversation`,
+          errorCode: "session_creation_backoff",
+        };
+      }
+
       try {
         // Support both old (name string) and new (options object) signatures
         const opts = typeof options === "string" ? { name: options } : options;
@@ -4231,6 +4322,14 @@ export function useWebSocket() {
         });
 
         if (!response.ok) {
+          // Record failure and schedule next allowed attempt
+          _sessionCreationFailureCount++;
+          const delay = calculateSessionCreationDelay(_sessionCreationFailureCount - 1);
+          _sessionCreationNextAllowedMs = Date.now() + delay;
+          console.warn(
+            `[createNewSession] Failure #${_sessionCreationFailureCount} — backoff ${delay}ms`,
+          );
+
           // Try to parse as JSON for structured error
           const contentType = response.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
@@ -4245,6 +4344,10 @@ export function useWebSocket() {
           console.error("Failed to create session:", error);
           return { error: error || "Failed to create session" };
         }
+
+        // Success — reset backoff state
+        _sessionCreationFailureCount = 0;
+        _sessionCreationNextAllowedMs = 0;
 
         const data = await response.json();
         const sessionId = data.session_id;
@@ -4288,7 +4391,14 @@ export function useWebSocket() {
 
         return { sessionId };
       } catch (err) {
-        console.error("Failed to create session:", err);
+        // Network/fetch error — also apply backoff
+        _sessionCreationFailureCount++;
+        const delay = calculateSessionCreationDelay(_sessionCreationFailureCount - 1);
+        _sessionCreationNextAllowedMs = Date.now() + delay;
+        console.error(
+          `[createNewSession] Network error (failure #${_sessionCreationFailureCount}, backoff ${delay}ms):`,
+          err,
+        );
         return { error: err.message || "Network error" };
       }
     },
@@ -5492,6 +5602,11 @@ export function useWebSocket() {
     setBackgroundUIPrompt(null);
   }, []);
 
+  // Clear background UI prompt timeout notification
+  const clearBackgroundUIPromptTimeout = useCallback(() => {
+    setBackgroundUIPromptTimeout(null);
+  }, []);
+
   // Send UI prompt answer (yes/no or select response)
   const sendUIPromptAnswer = useCallback(
     (sessionId, requestId, optionId, label, freeText = "") => {
@@ -5581,6 +5696,8 @@ export function useWebSocket() {
     clearPeriodicStarted,
     backgroundUIPrompt,
     clearBackgroundUIPrompt,
+    backgroundUIPromptTimeout,
+    clearBackgroundUIPromptTimeout,
     queueLength,
     queueMessages,
     queueConfig,

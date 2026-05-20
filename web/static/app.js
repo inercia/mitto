@@ -264,6 +264,44 @@ if (isNativeApp()) {
   });
 }
 // =============================================================================
+// Mouse Position Tracker (for native swipe gesture hit-testing)
+// =============================================================================
+
+// Track the last known cursor position so native macOS swipe gestures can
+// check whether the cursor is over horizontally scrollable content before
+// triggering conversation navigation.
+let lastMouseX = 0;
+let lastMouseY = 0;
+document.addEventListener("mousemove", (e) => {
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+});
+
+/**
+ * Returns true if the element currently under the cursor belongs to a
+ * horizontally scrollable container (overflow-x: auto/scroll with actual
+ * overflow). Used to suppress swipe-navigation when the user is scrolling
+ * a table left/right with a two-finger trackpad gesture.
+ */
+function isOverHorizontallyScrollable() {
+  const el = document.elementFromPoint(lastMouseX, lastMouseY);
+  if (!el) return false;
+  let node = el;
+  while (node) {
+    const style = window.getComputedStyle(node);
+    const overflowX = style.overflowX;
+    if (
+      (overflowX === "auto" || overflowX === "scroll") &&
+      node.scrollWidth > node.clientWidth
+    ) {
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+// =============================================================================
 // Workspace Badge Component
 // =============================================================================
 
@@ -3210,6 +3248,8 @@ function App() {
     clearPeriodicStarted,
     backgroundUIPrompt,
     clearBackgroundUIPrompt,
+    backgroundUIPromptTimeout,
+    clearBackgroundUIPromptTimeout,
     queueLength,
     queueMessages,
     queueConfig,
@@ -3435,6 +3475,35 @@ function App() {
       clearBackgroundUIPrompt();
     }
   }, [backgroundUIPrompt, clearBackgroundUIPrompt, showToast, switchSession]);
+
+  // Show toast and native notification when a background UI prompt times out
+  // This fires when a blocking prompt expired while the user was not viewing the session.
+  useEffect(() => {
+    if (backgroundUIPromptTimeout) {
+      const sessionName = backgroundUIPromptTimeout.sessionName || "Conversation";
+      // Show native macOS notification (sticky — user needs to go check the session)
+      if (
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
+        window.mittoShowNativeNotification(
+          sessionName,
+          backgroundUIPromptTimeout.question || "Agent needed your input",
+          backgroundUIPromptTimeout.sessionId,
+          true, // sticky — keep until dismissed
+        );
+      }
+      // Show in-app toast
+      showToast({
+        style: "warning",
+        title: `Missed prompt in ${sessionName}`,
+        message: backgroundUIPromptTimeout.question || "Agent needed your input",
+        duration: 10000,
+        onClick: () => switchSession(backgroundUIPromptTimeout.sessionId),
+      });
+      clearBackgroundUIPromptTimeout();
+    }
+  }, [backgroundUIPromptTimeout, clearBackgroundUIPromptTimeout, showToast, switchSession]);
 
   // Listen for runner fallback events
   useEffect(() => {
@@ -4879,7 +4948,9 @@ function App() {
           await applyPeriodicConfig(result.sessionId);
         }
         // If session creation failed due to no workspace configured, open settings
-        if (
+        if (result?.errorCode === "session_creation_backoff") {
+          showToast({ style: "warning", title: result.error, duration: 5000 });
+        } else if (
           result?.errorCode === "no_workspace_configured" &&
           !configReadonly
         ) {
@@ -4963,11 +5034,16 @@ function App() {
 
     // Next Conversation - called from native swipe gesture (swipe left)
     window.mittoNextConversation = () => {
+      // Don't navigate if the cursor is over a horizontally scrollable element
+      // (e.g. a wide table) — the user is scrolling the table, not navigating.
+      if (isOverHorizontallyScrollable()) return;
       navigateToNextSession();
     };
 
     // Previous Conversation - called from native swipe gesture (swipe right)
     window.mittoPrevConversation = () => {
+      // Don't navigate if the cursor is over a horizontally scrollable element.
+      if (isOverHorizontallyScrollable()) return;
       navigateToPreviousSession();
     };
 
@@ -5036,7 +5112,9 @@ function App() {
         await applyPeriodicConfig(result.sessionId);
       }
       // If session creation failed due to no workspace configured, open settings
-      if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+      if (result?.errorCode === "session_creation_backoff") {
+        showToast({ style: "warning", title: result.error, duration: 5000 });
+      } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
       } else {
         // Focus the input after creating new session
@@ -5064,7 +5142,9 @@ function App() {
         if (result?.sessionId && isPeriodic) {
           await applyPeriodicConfig(result.sessionId);
         }
-        if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+        if (result?.errorCode === "session_creation_backoff") {
+          showToast({ style: "warning", title: result.error, duration: 5000 });
+        } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
         } else {
           setTimeout(() => {
@@ -5104,7 +5184,9 @@ function App() {
         await applyPeriodicConfig(result.sessionId);
       }
       // If session creation failed due to no workspace configured, open settings
-      if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+      if (result?.errorCode === "session_creation_backoff") {
+        showToast({ style: "warning", title: result.error, duration: 5000 });
+      } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
       } else {
         // Focus the input after creating new session
@@ -5129,7 +5211,9 @@ function App() {
       await applyPeriodicConfig(result.sessionId);
     }
     // If session creation failed due to no workspace configured, open settings (unless config is read-only)
-    if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+    if (result?.errorCode === "session_creation_backoff") {
+      showToast({ style: "warning", title: result.error, duration: 5000 });
+    } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
       setSettingsDialog({ isOpen: true, forceOpen: true });
     } else {
       // Focus the input after creating new session

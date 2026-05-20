@@ -1890,8 +1890,8 @@ export function ChatInput({
 
                       <!-- Title -->
                       <div class="px-4 pt-2 pb-2 flex-shrink-0">
-                        <p class="ui-prompt-question text-sm font-medium">
-                          ${activeUIPrompt.title || activeUIPrompt.question}
+                        <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
+                          ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
                         </p>
                       </div>
 
@@ -1991,8 +1991,8 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Title -->
                         <div class="px-4 pt-2 pb-2 flex-shrink-0">
-                          <p class="ui-prompt-question text-sm font-medium">
-                            ${activeUIPrompt.title || activeUIPrompt.question}
+                          <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
+                            ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
                           </p>
                         </div>
 
@@ -2108,7 +2108,7 @@ ${activeUIPrompt.text || ""}</textarea
                         <!-- Question -->
                         <div class="px-4 pt-2 pb-2 flex-shrink-0">
                           <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                            ${activeUIPrompt.question}
+                            ${activeUIPrompt.question?.replace(/\\n/g, '\n')}
                           </p>
                         </div>
 
