@@ -559,7 +559,7 @@ func TestPeriodicRunner_AutoArchiveSkipsPeriodicSessions(t *testing.T) {
 	}
 }
 
-func TestPeriodicRunner_AutoArchiveDisabledPeriodicConfig(t *testing.T) {
+func TestPeriodicRunner_AutoArchiveSkipsPausedPeriodicSessions(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
@@ -601,13 +601,13 @@ func TestPeriodicRunner_AutoArchiveDisabledPeriodicConfig(t *testing.T) {
 	// Run auto-archive check
 	runner.RunOnce()
 
-	// Verify session WAS archived (disabled periodic config should not prevent archiving)
+	// Verify session was NOT archived (paused periodic config should prevent archiving)
 	updatedMeta, err := store.GetMetadata("disabled-periodic-session")
 	if err != nil {
 		t.Fatalf("GetMetadata() error = %v", err)
 	}
-	if !updatedMeta.Archived {
-		t.Error("Session with disabled periodic config SHOULD be auto-archived when inactive")
+	if updatedMeta.Archived {
+		t.Error("Session with paused periodic config should NOT be auto-archived")
 	}
 }
 

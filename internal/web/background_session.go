@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -140,6 +141,10 @@ type BackgroundSession struct {
 	// onUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	onUIPromptStateChanged func(sessionID string, isWaiting bool)
 
+	// onUIPromptTimeout is called when a blocking UI prompt times out with no active viewer.
+	// Used to broadcast a native notification to all connected clients.
+	onUIPromptTimeout func(sessionID string, req UIPromptRequest, sessionName string)
+
 	// onPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	onPlanStateChanged func(sessionID string, entries []PlanEntry)
@@ -147,6 +152,10 @@ type BackgroundSession struct {
 	// onTitleGenerated is called when a title is auto-generated for this session.
 	// Used to broadcast session_renamed events to all clients.
 	onTitleGenerated func(sessionID, title string)
+
+	// isChildPrompting checks if a child session is currently prompting.
+	// Set by SessionManager to enable children.promptingCount CEL context.
+	isChildPrompting func(childSessionID string) bool
 
 	// Available slash commands from the agent
 	availableCommandsMu sync.RWMutex
@@ -156,13 +165,14 @@ type BackgroundSession struct {
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
 	// To prevent infinite restart loops, we limit restarts to MaxACPRestarts within
 	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
-	acpCommand        string          // Command used to start ACP process (for restart)
-	acpCwd            string          // Working directory for ACP process (for restart)
-	restartCount      int             // Total number of restarts across the session lifetime
-	restartTimes      []time.Time     // Timestamps of recent restarts (for rate limiting)
-	restartReasons    []RestartReason // Reasons for recent restarts (parallel to restartTimes)
-	permanentlyFailed bool            // Circuit breaker: true when ACP cannot be restarted (permanent error or lifetime cap hit)
-	restartMu         sync.Mutex      // Protects restart tracking fields (restartCount, restartTimes, restartReasons, permanentlyFailed)
+	acpCommand           string                                 // Command used to start ACP process (for restart)
+	acpCwd               string                                 // Working directory for ACP process (for restart)
+	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
+	restartCount         int                                    // Total number of restarts across the session lifetime
+	restartTimes         []time.Time                            // Timestamps of recent restarts (for rate limiting)
+	restartReasons       []RestartReason                        // Reasons for recent restarts (parallel to restartTimes)
+	permanentlyFailed    bool                                   // Circuit breaker: true when ACP cannot be restarted (permanent error or lifetime cap hit)
+	restartMu            sync.Mutex                             // Protects restart tracking fields (restartCount, restartTimes, restartReasons, permanentlyFailed)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -201,6 +211,13 @@ type BackgroundSession struct {
 	// resumeMethod tracks which method was used to establish the ACP session:
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
+
+	// creationCtx is the context passed for the initial ACP session creation RPC.
+	// It is set from BackgroundSessionConfig.CreationCtx and nil'd out after the RPC
+	// completes so we don't hold a reference longer than necessary.
+	// It is ONLY used in startSharedACPSession and resumeSharedACPSession, never for
+	// the session's lifetime. Use creationRPCCtx() to obtain a ready-to-use context.
+	creationCtx context.Context
 
 	// promptResolver resolves a named workspace prompt to its full text at send time.
 	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
@@ -251,6 +268,10 @@ type BackgroundSessionConfig struct {
 	// OnUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	OnUIPromptStateChanged func(sessionID string, isWaiting bool)
 
+	// OnUIPromptTimeout is called when a blocking UI prompt times out with no active viewer.
+	// Used to trigger a native OS notification so the user knows the session needed input.
+	OnUIPromptTimeout func(sessionID string, req UIPromptRequest, sessionName string)
+
 	// OnPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	OnPlanStateChanged func(sessionID string, entries []PlanEntry)
@@ -284,6 +305,18 @@ type BackgroundSessionConfig struct {
 	// PromptResolver resolves a named workspace prompt to its full text at send time.
 	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
 	PromptResolver PromptResolverFunc
+
+	// IsChildPrompting checks if a child session's agent is currently responding.
+	// Used to populate children.promptingCount in the CEL context for enabledWhen.
+	IsChildPrompting func(childSessionID string) bool
+
+	// CreationCtx is the context for the initial ACP session creation RPC (NewSession).
+	// If nil or missing a deadline, a default sessionCreationRPCTimeout is applied.
+	// This context is NOT used for the session's lifetime — only for the blocking
+	// NewSession RPC call in startSharedACPSession / resumeSharedACPSession.
+	// Pass r.Context() from HTTP handlers so that the 30s request-timeout middleware
+	// can cancel the RPC and free the goroutine if the agent is busy.
+	CreationCtx context.Context
 }
 
 // NewBackgroundSession creates a new background session.
@@ -309,6 +342,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		runner:                  cfg.Runner,
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onUIPromptStateChanged:  cfg.OnUIPromptStateChanged,
+		onUIPromptTimeout:       cfg.OnUIPromptTimeout,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
 		onTitleGenerated:        cfg.OnTitleGenerated,
@@ -318,6 +352,18 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
 		promptResolver:          cfg.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
+		isChildPrompting:        cfg.IsChildPrompting,    // Callback to check if a child session is prompting
+		creationCtx:             cfg.CreationCtx,         // Context for initial ACP session creation RPC only
+	}
+
+	// Look up ACP server constraints from config
+	if cfg.MittoConfig != nil {
+		for _, srv := range cfg.MittoConfig.ACPServers {
+			if srv.Name == cfg.ACPServer {
+				bs.acpServerConstraints = srv.Constraints
+				break
+			}
+		}
 	}
 
 	// Wire prompt-mode processor execution to auxiliary sessions
@@ -495,6 +541,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		runner:                  config.Runner,
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onUIPromptStateChanged:  config.OnUIPromptStateChanged,
+		onUIPromptTimeout:       config.OnUIPromptTimeout,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
 		onTitleGenerated:        config.OnTitleGenerated,
@@ -504,6 +551,18 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
 		promptResolver:          config.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
+		isChildPrompting:        config.IsChildPrompting,    // Callback to check if a child session is prompting
+		creationCtx:             config.CreationCtx,         // Context for initial ACP session creation RPC only
+	}
+
+	// Look up ACP server constraints from config
+	if config.MittoConfig != nil {
+		for _, srv := range config.MittoConfig.ACPServers {
+			if srv.Name == config.ACPServer {
+				bs.acpServerConstraints = srv.Constraints
+				break
+			}
+		}
 	}
 
 	// Wire prompt-mode processor execution to auxiliary sessions
@@ -1242,6 +1301,12 @@ func (bs *BackgroundSession) killACPProcess() {
 		bs.acpWait = nil // Prevent double cleanup
 	}
 }
+
+// sessionCreationRPCTimeout is the default timeout for the initial ACP session creation RPC
+// (NewSession call). It is intentionally shorter than the HTTP middleware's 30s request
+// timeout so that if the RPC times out, the HTTP handler can still return a proper error
+// response instead of a generic "Request timeout" from the middleware.
+const sessionCreationRPCTimeout = 25 * time.Second
 
 // maxACPStartRetries is the maximum number of times to retry starting the ACP process
 // if the initial connection fails (e.g., "peer disconnected before response").
@@ -2285,6 +2350,25 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	return cfg
 }
 
+// creationRPCCtx returns a context suitable for the initial ACP session creation RPC.
+// It uses CreationCtx from the config if it already has a deadline; otherwise it
+// applies sessionCreationRPCTimeout.  The returned cancel function must be called.
+//
+// Design rationale: The 25s default is shorter than the HTTP middleware's 30s request
+// timeout so that if the RPC times out, the HTTP handler can still return a proper
+// error response (503 with a helpful message) rather than a generic "Request timeout".
+func (bs *BackgroundSession) creationRPCCtx() (context.Context, context.CancelFunc) {
+	base := bs.creationCtx
+	if base == nil {
+		base = bs.ctx
+	}
+	if _, hasDeadline := base.Deadline(); hasDeadline {
+		// Caller already set a deadline — honour it, just make it cancellable.
+		return context.WithCancel(base)
+	}
+	return context.WithTimeout(base, sessionCreationRPCTimeout)
+}
+
 // startSharedACPSession sets up this BackgroundSession to use a session on the
 // given shared ACP process instead of starting its own OS process.
 // The session is registered with the shared process's MultiplexClient so that it
@@ -2303,7 +2387,11 @@ func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProce
 	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
 
 	// Create a session on the shared process.
-	handle, err := sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
+	// Use the creation context so that the HTTP handler's timeout can cancel the RPC.
+	rpcCtx, rpcCancel := bs.creationRPCCtx()
+	handle, err := sharedProcess.NewSession(rpcCtx, workingDir, mcpServers)
+	rpcCancel()
+	bs.creationCtx = nil // Release reference — only needed for this one RPC.
 	if err != nil {
 		bs.stopSessionMcpServer()
 		bs.acpClient.Close()
@@ -2444,7 +2532,10 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 	// Final fallback: create new session
 	if handle == nil {
 		bs.resumeMethod = "new"
-		handle, err = sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
+		// Use the creation context so the HTTP handler's timeout can cancel this RPC.
+		rpcCtx, rpcCancel := bs.creationRPCCtx()
+		handle, err = sharedProcess.NewSession(rpcCtx, workingDir, mcpServers)
+		rpcCancel()
 		if err != nil {
 			bs.stopSessionMcpServer()
 			bs.acpClient.Close()
@@ -2453,6 +2544,7 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 			return fmt.Errorf("failed to create session on shared process: %w", err)
 		}
 	}
+	bs.creationCtx = nil // Release reference — only needed for the creation RPCs above.
 
 	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
 		OnSessionUpdate:       bs.acpClient.SessionUpdate,
@@ -2987,12 +3079,17 @@ retryAfterRestart:
 		// Resolve child sessions for @mitto:children variable
 		if children, childErr := bs.store.ListChildSessions(bs.persistedID); childErr == nil {
 			for _, child := range children {
+				isPrompting := false
+				if bs.isChildPrompting != nil {
+					isPrompting = bs.isChildPrompting(child.SessionID)
+				}
 				childSessions = append(childSessions, processors.ChildSession{
 					ID:          child.SessionID,
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
 					IsAutoChild: child.ChildOrigin == session.ChildOriginAuto,
 					ChildOrigin: string(child.ChildOrigin),
+					IsPrompting: isPrompting,
 				})
 			}
 		}
@@ -3611,13 +3708,26 @@ func (bs *BackgroundSession) applyAfterProcessors(
 		}
 	}
 
-	// Build token usage snapshot (nil if ACP did not report usage).
+	// Build token usage snapshot.
+	// Use actual ACP usage when available; otherwise estimate from message text
+	// so that cadence token thresholds (everyNTokens) can still be met.
 	var tokenUsage *processors.AfterTokenUsage
 	if promptResp.Usage != nil {
 		tokenUsage = &processors.AfterTokenUsage{
 			Input:  int64(promptResp.Usage.InputTokens),
 			Output: int64(promptResp.Usage.OutputTokens),
 			Total:  int64(promptResp.Usage.TotalTokens),
+		}
+	} else {
+		// Fallback: estimate tokens from user prompt + agent response text.
+		estimated := int64(processors.EstimateTokens(userPrompt))
+		for _, msg := range agentMessages {
+			estimated += int64(processors.EstimateTokens(msg))
+		}
+		if estimated > 0 {
+			tokenUsage = &processors.AfterTokenUsage{
+				Total: estimated,
+			}
 		}
 	}
 
@@ -4750,6 +4860,107 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 	}
 	bs.configOptions = append(filtered, modelOption)
 	bs.configMu.Unlock()
+
+	// Apply any ACP server constraints for the model category
+	go bs.applyConfigConstraints(ConfigOptionCategoryModel)
+}
+
+// applyConfigConstraints checks ACP server constraints and auto-selects matching config option values.
+// Called after config options (like models) become available during ACP initialization.
+// Only applies constraints for config option categories that are present in the constraints map.
+func (bs *BackgroundSession) applyConfigConstraints(category string) {
+	if len(bs.acpServerConstraints) == 0 {
+		return
+	}
+
+	constraint, ok := bs.acpServerConstraints[category]
+	if !ok || constraint == nil || constraint.Pattern == "" {
+		return
+	}
+
+	bs.configMu.RLock()
+	var targetOption *SessionConfigOption
+	for i := range bs.configOptions {
+		if bs.configOptions[i].Category == category {
+			targetOption = &bs.configOptions[i]
+			break
+		}
+	}
+	bs.configMu.RUnlock()
+
+	if targetOption == nil || len(targetOption.Options) == 0 {
+		return
+	}
+
+	// Find the first matching option by name (case-insensitive)
+	patternLower := strings.ToLower(constraint.Pattern)
+	var matchedValue string
+	for _, opt := range targetOption.Options {
+		nameLower := strings.ToLower(opt.Name)
+		switch constraint.MatchMode {
+		case "contains":
+			if strings.Contains(nameLower, patternLower) {
+				matchedValue = opt.Value
+			}
+		case "exact":
+			if nameLower == patternLower {
+				matchedValue = opt.Value
+			}
+		case "startsWith":
+			if strings.HasPrefix(nameLower, patternLower) {
+				matchedValue = opt.Value
+			}
+		case "regex":
+			if matched, _ := regexp.MatchString("(?i)"+constraint.Pattern, opt.Name); matched {
+				matchedValue = opt.Value
+			}
+		}
+		if matchedValue != "" {
+			break
+		}
+	}
+
+	if matchedValue == "" {
+		if bs.logger != nil {
+			bs.logger.Warn("ACP server constraint: no matching option found",
+				"category", category,
+				"match_mode", constraint.MatchMode,
+				"pattern", constraint.Pattern,
+				"available_count", len(targetOption.Options))
+		}
+		return
+	}
+
+	// Skip if already set to the matching value
+	if targetOption.CurrentValue == matchedValue {
+		if bs.logger != nil {
+			bs.logger.Debug("ACP server constraint: already set to matching value",
+				"category", category,
+				"value", matchedValue)
+		}
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("ACP server constraint: auto-selecting option",
+			"category", category,
+			"match_mode", constraint.MatchMode,
+			"pattern", constraint.Pattern,
+			"selected_value", matchedValue)
+	}
+
+	// Use a background context since this is called during initialization
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := bs.SetConfigOption(ctx, category, matchedValue); err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("ACP server constraint: failed to auto-select option",
+				"category", category,
+				"value", matchedValue,
+				"error", err)
+		}
+	}
 }
 
 // ConfigOptions returns a copy of all session config options.
@@ -5103,7 +5314,19 @@ func (bs *BackgroundSession) UIPrompt(ctx context.Context, req UIPromptRequest) 
 		if bs.logger != nil {
 			bs.logger.Info("UI prompt timed out",
 				"session_id", bs.persistedID,
-				"request_id", req.RequestID)
+				"request_id", req.RequestID,
+				"has_observers", bs.HasObservers())
+		}
+		// Notify all clients if the user was not actively viewing this session.
+		// This triggers a native OS notification so the user knows they missed a prompt.
+		if req.Blocking && !bs.HasObservers() && bs.onUIPromptTimeout != nil {
+			sessionName := ""
+			if bs.store != nil {
+				if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil {
+					sessionName = meta.Name
+				}
+			}
+			go bs.onUIPromptTimeout(bs.persistedID, req, sessionName)
 		}
 		return UIPromptResponse{RequestID: req.RequestID, TimedOut: true}, nil
 

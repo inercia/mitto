@@ -622,7 +622,7 @@ const autoArchiveWaitTimeout = 30 * time.Second
 
 // checkAutoArchive archives sessions that have been inactive for longer than autoArchiveAfter.
 // It skips sessions that are already archived, child sessions (children are archived via parent cascade),
-// or sessions with enabled periodic prompts (they should remain active indefinitely).
+// or sessions with periodic prompts — enabled or paused (they should remain active indefinitely).
 func (r *PeriodicRunner) checkAutoArchive(sessions []session.Metadata, now time.Time) {
 	r.mu.Lock()
 	threshold := r.autoArchiveAfter
@@ -647,9 +647,11 @@ func (r *PeriodicRunner) checkAutoArchive(sessions []session.Metadata, now time.
 			continue
 		}
 
-		// Skip sessions with enabled periodic prompts — they should remain active indefinitely
+		// Skip sessions with periodic prompts (enabled or paused) — they should remain active indefinitely.
+		// A paused periodic conversation is still a periodic conversation and should not be auto-archived;
+		// the user may re-enable it at any time.
 		periodicStore := r.store.Periodic(meta.SessionID)
-		periodic, err := periodicStore.Get()
+		_, err := periodicStore.Get()
 		if err != nil && err != session.ErrPeriodicNotFound {
 			if r.logger != nil {
 				r.logger.Error("Failed to read periodic config during auto-archive check",
@@ -659,7 +661,7 @@ func (r *PeriodicRunner) checkAutoArchive(sessions []session.Metadata, now time.
 			// Continue processing other sessions even if we can't read this one's config
 			continue
 		}
-		if err == nil && periodic.Enabled {
+		if err == nil {
 			if r.logger != nil {
 				r.logger.Debug("Skipping auto-archive for periodic session",
 					"session_id", meta.SessionID,

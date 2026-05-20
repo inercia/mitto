@@ -251,6 +251,15 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					clientLogger.Debug("Session is archived, not resuming ACP",
 						"session_id", sessionID)
 				}
+			} else if s.IsShutdown() {
+				// Server is shutting down — don't resume ACP. A reconnecting
+				// frontend WebSocket briefly succeeds before the HTTP server fully
+				// stops, but starting a new ACP process here would leave it
+				// orphaned and cause the UI to get stuck on "Resuming session…".
+				if clientLogger != nil {
+					clientLogger.Debug("Server is shutting down, not resuming ACP",
+						"session_id", sessionID)
+				}
 			} else {
 				// Session exists in store and is not archived.
 				// Resume ACP asynchronously to avoid blocking the WebSocket handler.
@@ -1721,12 +1730,12 @@ func (c *SessionWSClient) tryAttachToSession() {
 	c.bgSession = bs
 	bs.AddConnectedClient()
 
-	// Add as observer if initial load is done
+	// Determine if we should add the observer now.
 	c.initialLoadMu.Lock()
-	shouldAddObserver := c.initialLoadDone
-	c.initialLoadMu.Unlock()
-
-	if shouldAddObserver {
+	if c.initialLoadDone {
+		// Normal case: initial load already completed with bgSession available.
+		// Add observer immediately.
+		c.initialLoadMu.Unlock()
 		bs.AddObserver(c)
 		if c.logger != nil {
 			c.logger.Debug("Attached to session after unarchive",
@@ -1734,23 +1743,60 @@ func (c *SessionWSClient) tryAttachToSession() {
 				"acp_id", bs.GetACPID(),
 				"observer_count", bs.ObserverCount())
 		}
-		// Re-send any active UI prompt to the newly attached client.
-		// This handles the case where a session is unarchived while a blocking
-		// UI prompt is waiting, ensuring the dialog appears for the client.
-		if activePrompt := bs.GetActiveUIPrompt(); activePrompt != nil {
+	} else {
+		// Check if the client already completed its initial load while bgSession was nil.
+		// This happens when ACP resumes AFTER the initial load_events has already run.
+		// In this case, initialLoadDone is still false because postLoadProcessing
+		// skipped observer registration (bgSession was nil at that time).
+		// We detect this by checking lastSentSeq > 0 (events were already sent to client).
+		c.seqMu.Lock()
+		alreadyLoaded := c.lastSentSeq > 0
+		lastSeq := c.lastSentSeq
+		c.seqMu.Unlock()
+
+		if alreadyLoaded {
+			// The client already loaded events but was never registered as an observer
+			// because bgSession was nil at load time. Register now and sync any missed events.
+			c.initialLoadDone = true
+			c.initialLoadMu.Unlock()
+			bs.AddObserver(c)
 			if c.logger != nil {
-				c.logger.Info("Re-sending active UI prompt to attached client",
+				c.logger.Debug("Attached to session after unarchive (observer added — load was already done)",
 					"session_id", c.sessionID,
-					"client_id", c.clientID,
-					"request_id", activePrompt.RequestID,
-					"prompt_type", activePrompt.Type)
+					"acp_id", bs.GetACPID(),
+					"last_sent_seq", lastSeq,
+					"observer_count", bs.ObserverCount())
 			}
-			c.OnUIPrompt(*activePrompt)
+			// Sync any events that were persisted between the initial load and now.
+			// This covers the window where events arrived after the client's load_events
+			// but before we registered as an observer.
+			if lastSeq > 0 {
+				c.syncMissedEventsDuringRegistration(lastSeq)
+			}
+		} else {
+			// Client hasn't loaded events yet. Observer will be added in postLoadProcessing
+			// when load_events arrives.
+			c.initialLoadMu.Unlock()
+			if c.logger != nil {
+				c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
+					"session_id", c.sessionID,
+					"acp_id", bs.GetACPID())
+			}
 		}
-	} else if c.logger != nil {
-		c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
-			"session_id", c.sessionID,
-			"acp_id", bs.GetACPID())
+	}
+
+	// Re-send any active UI prompt to the newly attached client.
+	// This handles the case where a session is unarchived while a blocking
+	// UI prompt is waiting, ensuring the dialog appears for the client.
+	if activePrompt := bs.GetActiveUIPrompt(); activePrompt != nil {
+		if c.logger != nil {
+			c.logger.Info("Re-sending active UI prompt to attached client",
+				"session_id", c.sessionID,
+				"client_id", c.clientID,
+				"request_id", activePrompt.RequestID,
+				"prompt_type", activePrompt.Type)
+		}
+		c.OnUIPrompt(*activePrompt)
 	}
 
 	// Send a notification to the client that the session is now running,

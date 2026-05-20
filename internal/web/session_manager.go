@@ -24,6 +24,13 @@ import (
 // This limits running sessions (those with an active ACP process), not stored/archived sessions.
 const MaxSessions = 64
 
+// maxConcurrentSessionResumes is the maximum number of sessions that can be simultaneously
+// resuming their ACP process (calling LoadSession/NewSession). Without this limit, when the
+// app starts with many sessions and the browser connects to all of them simultaneously,
+// 17+ concurrent goroutines each call LoadSession on the ACP process, overwhelming it and
+// causing cascade failures (26-second RPC times, context deadline exceeded, process crashes).
+const maxConcurrentSessionResumes = 5
+
 // ACPStartFailureThreshold is the number of consecutive ACP start failures after which
 // a session is automatically archived to prevent infinite retry loops on app restart.
 const ACPStartFailureThreshold = 3
@@ -155,6 +162,14 @@ type SessionManager struct {
 	// promptResolver resolves a named workspace prompt to its full text at send time.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptResolver PromptResolverFunc
+
+	// resumeSemaphore limits the number of sessions that can simultaneously resume their
+	// ACP process (start the OS subprocess and/or call LoadSession/NewSession).
+	// Initialized as a buffered channel of size maxConcurrentSessionResumes.
+	// The primary goroutine for each session acquires a slot before the expensive ACP
+	// startup work and releases it when done.  Secondary goroutines that coalesce onto
+	// the same session via pendingResumes never need to acquire the semaphore.
+	resumeSemaphore chan struct{}
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -178,6 +193,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
+		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
 }
 
@@ -216,6 +232,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
+		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
 
 	for i := range opts.Workspaces {
@@ -1405,13 +1422,17 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 // CreateSession creates a new background session and registers it.
 // Returns ErrTooManySessions if the session limit is reached.
 // Uses the workspace configuration for the given working directory, or the default if not found.
-func (sm *SessionManager) CreateSession(name, workingDir string) (*BackgroundSession, error) {
-	return sm.CreateSessionWithWorkspace(name, workingDir, nil)
+// ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
+// so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
+func (sm *SessionManager) CreateSession(ctx context.Context, name, workingDir string) (*BackgroundSession, error) {
+	return sm.CreateSessionWithWorkspace(ctx, name, workingDir, nil)
 }
 
 // CreateSessionWithWorkspace creates a new session using the specified workspace configuration.
 // If workspace is nil, looks up the workspace by workingDir or uses the default.
-func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
+// ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
+// so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
+func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
 	createStart := time.Now()
 
 	sm.mu.Lock()
@@ -1597,6 +1618,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
+		CreationCtx:         ctx, // Propagate caller's context for the initial NewSession RPC
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
 		ACPServer:           acpServer,
@@ -1635,6 +1657,20 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 				})
 			}
 		},
+		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
+			if sm.eventsManager != nil {
+				question := req.Question
+				if len([]rune(question)) > 200 {
+					runes := []rune(question)
+					question = string(runes[:197]) + "..."
+				}
+				sm.eventsManager.Broadcast(WSMsgTypeBackgroundUIPromptTimeout, map[string]interface{}{
+					"session_id":   sessionID,
+					"session_name": sessionName,
+					"question":     question,
+				})
+			}
+		},
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
@@ -1654,6 +1690,15 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 					"name":       title,
 				})
 			}
+		},
+		IsChildPrompting: func(childSessionID string) bool {
+			sm.mu.RLock()
+			childBS := sm.sessions[childSessionID]
+			sm.mu.RUnlock()
+			if childBS != nil {
+				return childBS.IsPrompting()
+			}
+			return false
 		},
 	})
 	if err != nil {
@@ -1783,7 +1828,7 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 	// Not running - create new session
 	// Note: We can't truly "resume" an ACP session, but we can start a new one
 	// with the same persisted ID for continuity
-	bs, err := sm.CreateSession("", workingDir)
+	bs, err := sm.CreateSession(context.Background(), "", workingDir)
 	if err != nil {
 		return nil, false, err
 	}
@@ -2062,6 +2107,28 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		}
 	}
 
+	// Acquire the startup semaphore before the expensive ACP work (getSharedProcess may start
+	// a new OS subprocess; ResumeBackgroundSession calls LoadSession/NewSession RPC).
+	// Without this limit, when the app starts with many sessions and the browser connects to
+	// all of them simultaneously, N goroutines each call LoadSession concurrently, overwhelming
+	// the ACP process and causing cascade failures (26-second RPCs, context deadlines, crashes).
+	//
+	// The semaphore is released as soon as ResumeBackgroundSession returns, so the next queued
+	// goroutine can start immediately — the fast post-startup bookkeeping runs concurrently.
+	//
+	// Only the "primary" goroutine for each session reaches this point; secondary goroutines
+	// that coalesce via pendingResumes return early above and never acquire the semaphore.
+	if sm.logger != nil {
+		sm.logger.Debug("Acquiring session-resume semaphore",
+			"session_id", sessionID,
+			"max_concurrent", maxConcurrentSessionResumes)
+	}
+	sm.resumeSemaphore <- struct{}{}
+	if sm.logger != nil {
+		sm.logger.Debug("Acquired session-resume semaphore, starting ACP",
+			"session_id", sessionID)
+	}
+
 	// Resolve shared ACP process for this workspace (if shared mode is enabled).
 	// IMPORTANT: Do NOT fall back to an arbitrary default workspace here. For resumed
 	// sessions, foundWs has already been resolved against the session's ACP server.
@@ -2077,6 +2144,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+		// CreationCtx: use a background context with the default timeout. ResumeSession is
+		// called from a goroutine (session_ws.go), not directly from an HTTP handler, so
+		// there is no request context to propagate. The 25s timeout in creationRPCCtx()
+		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
+		// agent is busy.
 		PersistedID:         sessionID,
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
@@ -2116,6 +2188,20 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
+		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
+			if sm.eventsManager != nil {
+				question := req.Question
+				if len([]rune(question)) > 200 {
+					runes := []rune(question)
+					question = string(runes[:197]) + "..."
+				}
+				sm.eventsManager.Broadcast(WSMsgTypeBackgroundUIPromptTimeout, map[string]interface{}{
+					"session_id":   sessionID,
+					"session_name": sessionName,
+					"question":     question,
+				})
+			}
+		},
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
@@ -2136,7 +2222,27 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
+		IsChildPrompting: func(childSessionID string) bool {
+			sm.mu.RLock()
+			childBS := sm.sessions[childSessionID]
+			sm.mu.RUnlock()
+			if childBS != nil {
+				return childBS.IsPrompting()
+			}
+			return false
+		},
 	})
+	// Release the startup semaphore now that the expensive ACP work is done.
+	// This happens on BOTH the success and error paths (both are immediately below).
+	// Releasing here (rather than at the end of the function) lets the next queued
+	// goroutine start its ACP session while we do fast post-startup bookkeeping.
+	<-sm.resumeSemaphore
+	if sm.logger != nil {
+		sm.logger.Debug("Released session-resume semaphore",
+			"session_id", sessionID,
+			"success", err == nil)
+	}
+
 	if err != nil {
 		// Persist the failure count and auto-archive if threshold is reached.
 		if store != nil {

@@ -146,6 +146,13 @@ const (
 	// Data: { "session_id": string, "is_waiting": bool }
 	WSMsgTypeSessionUIPrompt = "session_ui_prompt"
 
+	// WSMsgTypeBackgroundUIPromptTimeout notifies all clients that a blocking UI prompt
+	// timed out in a session the user was not actively viewing.
+	// This triggers a native OS notification so the user knows the session needed input.
+	// Sent on /api/events to all connected clients.
+	// Data: { "session_id": string, "session_name": string, "question": string }
+	WSMsgTypeBackgroundUIPromptTimeout = "background_ui_prompt_timeout"
+
 	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }

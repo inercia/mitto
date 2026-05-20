@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -109,11 +111,21 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Note: The session manager already has the store set by the server at startup.
 	// No need to create a new store here.
 
-	// Create the background session with workspace configuration
-	bs, err := s.sessionManager.CreateSessionWithWorkspace(req.Name, req.WorkingDir, workspace)
+	// Create the background session with workspace configuration.
+	// Pass r.Context() so that the 30s request-timeout middleware can cancel the
+	// blocking NewSession RPC if the agent is busy, freeing the goroutine immediately.
+	bs, err := s.sessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
 	if err != nil {
 		if err == ErrTooManySessions {
 			http.Error(w, "Maximum number of sessions reached (32)", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			if s.logger != nil {
+				s.logger.Warn("Session creation timed out or was cancelled", "error", err)
+			}
+			writeErrorJSON(w, http.StatusServiceUnavailable, "session_creation_timeout",
+				"Agent is busy — please try again in a moment")
 			return
 		}
 		if s.logger != nil {
@@ -1375,7 +1387,12 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		for _, child := range children {
 			ctx.Children.Names = append(ctx.Children.Names, child.Name)
 			ctx.Children.ACPServers = append(ctx.Children.ACPServers, child.ACPServer)
+			// Check if child is currently prompting
+			if childBS := s.sessionManager.GetSession(child.SessionID); childBS != nil && childBS.IsPrompting() {
+				ctx.Children.PromptingCount++
+			}
 		}
+		ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
 	}
 
 	// ACP context from session metadata
