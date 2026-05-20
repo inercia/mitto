@@ -358,9 +358,9 @@ Returns (embeds `ConversationDetails`):
 
 #### `mitto_conversation_delete`
 
-Delete (archive) a child conversation. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
+Permanently delete a child conversation. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
 
-The child conversation is gracefully stopped (waits for any active response to complete) and then archived. Archived conversations are read-only and will no longer accept prompts.
+The child conversation is gracefully stopped (waits for any active response to complete) and then permanently deleted from disk. Deleted conversations cannot be recovered.
 
 | Parameter         | Type   | Required | Description                      |
 | ----------------- | ------ | -------- | -------------------------------- |

@@ -54,7 +54,7 @@ session:
   auto_archive_inactive_after: "1w"  # implemented in checkAutoArchive()
 ```
 
-Excluded from auto-archive: already-archived sessions, child sessions, sessions with enabled periodic prompts.
+Excluded from auto-archive: already-archived sessions, child sessions, sessions with periodic prompts (enabled or paused).
 
 ## ACP Process Crash Recovery
 
