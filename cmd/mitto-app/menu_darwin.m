@@ -498,14 +498,20 @@ static BOOL gSwipeInProgress = NO;
 // The implementation tracks accumulated scroll delta during a gesture and only
 // triggers navigation when the gesture ends with a significant horizontal
 // displacement and minimal vertical displacement.
+//
+// Swipe events from viewer windows (identified by a MittoViewerWindowDelegate
+// window delegate) are ignored so that horizontal scrolling in the viewer does
+// not inadvertently switch conversations.
 void setupSwipeGestureRecognizer(void) {
     @autoreleasepool {
         // Monitor scroll wheel events to detect two-finger swipe gestures
         // We track the full gesture from start to end to accumulate the total delta
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel handler:^NSEvent *(NSEvent *event) {
-            // Only process events from the main window to avoid interfering with viewer windows
-            NSWindow *mainWindow = [NSApplication sharedApplication].mainWindow;
-            if (!mainWindow || ![event.window isEqual:mainWindow]) {
+            // Skip swipe navigation for viewer windows — viewer windows use
+            // MittoViewerWindowDelegate, so checking the delegate class is the
+            // most reliable way to distinguish them from the main window.
+            NSWindow *eventWindow = event.window;
+            if (!eventWindow || [eventWindow.delegate isKindOfClass:NSClassFromString(@"MittoViewerWindowDelegate")]) {
                 return event;
             }
 
