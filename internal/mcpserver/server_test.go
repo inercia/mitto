@@ -731,7 +731,8 @@ func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer,
 	})
 }
 
-func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool)     {}
+func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+}
 func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                     {}
 func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {}
 func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
@@ -2832,8 +2833,9 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspacesForFolder(folder string) 
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
 }
-func (m *mockSessionManagerForWorkspaces) BroadcastSessionArchived(sessionID string, archived bool) {}
-func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID string)                 {}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID string) {}
 func (m *mockSessionManagerForWorkspaces) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
 }
 func (m *mockSessionManagerForWorkspaces) DeleteChildSessions(parentID string) {}
@@ -3248,7 +3250,8 @@ func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.Work
 }
 func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)               {}
+func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
 func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
 func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
@@ -3932,7 +3935,8 @@ func (m *mockSessionManagerForChildren) GetWorkspacesForFolder(string) []config.
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool)     {}
+func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForChildren) DeleteChildSessions(string)                {}
@@ -4121,7 +4125,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []
 }
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)               {}
@@ -4426,7 +4431,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []confi
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool)     {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)                {}
@@ -5891,7 +5897,8 @@ func (m *mockSessionManagerCrossWorkspace) BroadcastSessionCreated(sessionID, na
 	})
 }
 
-func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerCrossWorkspace) DeleteChildSessions(string)               {}

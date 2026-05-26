@@ -655,27 +655,11 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.sessionManager.SetGlobalConversations(settings.Conversations)
 	}
 
-	// Update workspaces - need to resolve ACP commands and environment variables
-	acpCommandMap := make(map[string]string)
-	acpEnvMap := make(map[string]map[string]string)
-	for _, srv := range newACPServers {
-		acpCommandMap[srv.Name] = srv.Command
-		if len(srv.Env) > 0 {
-			acpEnvMap[srv.Name] = srv.Env
-		}
-	}
-
+	// ACP command/cwd/env are resolved from global config at runtime and are never
+	// stored on the workspace. Just copy the workspace as-is from the request.
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
 	for i, ws := range req.Workspaces {
-		// Copy the full workspace from the request and resolve the ACP command
-		// from the server map (since the frontend may not have the latest command).
 		newWorkspaces[i] = ws
-		newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
-		newWorkspaces[i].ACPEnv = acpEnvMap[ws.ACPServer]
-		// Apply user-provided command override if set
-		if ws.ACPCommandOverride != "" {
-			newWorkspaces[i].ACPCommand = ws.ACPCommandOverride
-		}
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
@@ -998,9 +982,10 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 	agentsDir, err := appdir.AgentsDir()
 	if err != nil {
 		writeJSONOK(w, map[string]interface{}{
-			"servers":    []interface{}{},
-			"error":      "Failed to get agents directory: " + err.Error(),
-			"agent_name": "",
+			"servers":        []interface{}{},
+			"error":          "Failed to get agents directory: " + err.Error(),
+			"agent_name":     "",
+			"has_mcp_remove": false,
 		})
 		return
 	}
@@ -1011,9 +996,10 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		// No matching agent found - not an error, just no MCP tools
 		writeJSONOK(w, map[string]interface{}{
-			"servers":    []interface{}{},
-			"agent_name": "",
-			"message":    fmt.Sprintf("No agent definition found for ACP type %q", acpType),
+			"servers":        []interface{}{},
+			"agent_name":     "",
+			"message":        fmt.Sprintf("No agent definition found for ACP type %q", acpType),
+			"has_mcp_remove": false,
 		})
 		return
 	}
@@ -1032,6 +1018,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 			"message":         "Agent does not support MCP listing",
 			"mcp_scopes":      mcpScopes,
 			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+			"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 		})
 		return
 	}
@@ -1050,6 +1037,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 			"error":           "Failed to list MCP servers: " + err.Error(),
 			"mcp_scopes":      mcpScopes,
 			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+			"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 		})
 		return
 	}
@@ -1059,6 +1047,101 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 		"agent_name":      agent.Metadata.DisplayName,
 		"mcp_scopes":      mcpScopes,
 		"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+		"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
+	})
+}
+
+// handleWorkspaceMCPRemove handles POST /api/workspace-mcp-remove
+// Removes an MCP server from a workspace's ACP agent by running mcp-remove.sh.
+func (s *Server) handleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	type mcpRemoveRequest struct {
+		ACPServer string `json:"acp_server"`
+		Dir       string `json:"dir"`
+		Scope     string `json:"scope"`
+		Name      string `json:"name"`
+	}
+
+	var req mcpRemoveRequest
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	if req.ACPServer == "" {
+		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve ACP server type from config
+	var acpType string
+	if s.config.MittoConfig != nil {
+		acpType = s.config.MittoConfig.GetServerType(req.ACPServer)
+	}
+	if acpType == "" {
+		acpType = req.ACPServer
+	}
+
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		http.Error(w, "Failed to get agents directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	mgr := agents.NewManager(agentsDir, s.logger)
+	agent, err := mgr.GetAgentByACPId(acpType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("No agent definition found for ACP type %q", acpType), http.StatusBadRequest)
+		return
+	}
+
+	if !agent.HasCommand(agents.CommandMCPRemove) {
+		http.Error(w, fmt.Sprintf("Agent %q does not support MCP removal", agent.Metadata.DisplayName), http.StatusBadRequest)
+		return
+	}
+
+	// Validate scope if agent declares supported scopes
+	if agent.Metadata.MCP != nil && len(agent.Metadata.MCP.Scopes) > 0 && req.Scope != "" {
+		validScope := false
+		for _, sc := range agent.Metadata.MCP.Scopes {
+			if sc == req.Scope {
+				validScope = true
+				break
+			}
+		}
+		if !validScope {
+			http.Error(w, fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			return
+		}
+	}
+
+	input := &agents.MCPRemoveInput{
+		Name:  req.Name,
+		Scope: req.Scope,
+		Path:  req.Dir,
+	}
+
+	output, err := mgr.RemoveMCPServer(r.Context(), agent.DirName, input)
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{
+			"success": false,
+			"message": err.Error(),
+			"name":    req.Name,
+		})
+		return
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"success": output.Success,
+		"message": output.Message,
+		"name":    output.Name,
 	})
 }
 

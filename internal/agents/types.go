@@ -37,6 +37,9 @@ const (
 
 	// CommandMCPInstall installs an MCP server for the agent.
 	CommandMCPInstall AgentCommand = "mcp-install.sh"
+
+	// CommandMCPRemove removes an MCP server from the agent's configuration.
+	CommandMCPRemove AgentCommand = "mcp-remove.sh"
 )
 
 // KnownCommands is the list of all well-known agent commands.
@@ -45,6 +48,7 @@ var KnownCommands = []AgentCommand{
 	CommandStatus,
 	CommandMCPList,
 	CommandMCPInstall,
+	CommandMCPRemove,
 }
 
 // DefaultTimeout is the default timeout for running agent commands.
@@ -175,6 +179,23 @@ type InstallOutput struct {
 
 // MCPInstallOutput is the expected JSON output from mcp-install.sh.
 type MCPInstallOutput struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Name    string `json:"name,omitempty"`
+}
+
+// MCPRemoveInput is the expected JSON input for mcp-remove.sh.
+type MCPRemoveInput struct {
+	// Name is the MCP server name to remove
+	Name string `json:"name"`
+	// Scope is the MCP scope (e.g., "user", "project")
+	Scope string `json:"scope,omitempty"`
+	// Path is the workspace path (for project-scoped removal)
+	Path string `json:"path,omitempty"`
+}
+
+// MCPRemoveOutput is the expected JSON output from mcp-remove.sh.
+type MCPRemoveOutput struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Name    string `json:"name,omitempty"`

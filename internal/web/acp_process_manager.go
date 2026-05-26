@@ -86,18 +86,21 @@ type auxiliarySessionState struct {
 	lastUsed  time.Time
 }
 
-func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, workspace *config.WorkspaceSettings) bool {
-	if p == nil || workspace == nil {
+// sharedProcessConfigMatchesWorkspace returns true if the running process config
+// matches the resolved ACP parameters for the workspace.
+// acpCommand, acpCwd, and acpEnv are the runtime-resolved values (not stored on workspace).
+func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, acpServer, acpCommand, acpCwd string, acpEnv map[string]string) bool {
+	if p == nil {
 		return false
 	}
-	if p.config.ACPServer != workspace.ACPServer ||
-		p.config.ACPCommand != workspace.ACPCommand ||
-		p.config.ACPCwd != workspace.ACPCwd {
+	if p.config.ACPServer != acpServer ||
+		p.config.ACPCommand != acpCommand ||
+		p.config.ACPCwd != acpCwd {
 		return false
 	}
 	// Compare environment variables — a change to Env (e.g., NODE_OPTIONS)
 	// should trigger process recreation so the new values take effect.
-	return mapsEqual(p.config.Env, workspace.ACPEnv)
+	return mapsEqual(p.config.Env, acpEnv)
 }
 
 // mapsEqual returns true if two string maps have identical key-value pairs.
@@ -140,7 +143,11 @@ var _ auxiliary.ProcessProvider = (*ACPProcessManager)(nil)
 // GetOrCreateProcess returns the shared ACP process for the given workspace,
 // creating one if it doesn't exist yet. If prewarm is true and a new process is
 // created, auxiliary sessions are pre-warmed in the background.
-func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettings, r *runner.Runner, prewarm bool) (*SharedACPProcess, error) {
+//
+// acpCommand, acpCwd, and acpEnv are the runtime-resolved ACP connection parameters.
+// They must NOT be read from the workspace struct (those fields no longer exist) and
+// must be resolved from global config by the caller (e.g. via resolveWorkspaceACPLocked).
+func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner, prewarm bool) (*SharedACPProcess, error) {
 	if workspace == nil {
 		return nil, fmt.Errorf("workspace is required")
 	}
@@ -167,14 +174,14 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 			delete(m.processes, workspace.UUID)
 			recreated = true
 		default:
-			if !sharedProcessConfigMatchesWorkspace(p, workspace) {
+			if !sharedProcessConfigMatchesWorkspace(p, workspace.ACPServer, acpCommand, acpCwd, acpEnv) {
 				if m.logger != nil {
 					m.logger.Warn("Shared ACP process config changed, recreating",
 						"workspace_uuid", workspace.UUID,
 						"existing_acp_server", p.config.ACPServer,
 						"new_acp_server", workspace.ACPServer,
 						"existing_acp_command", p.config.ACPCommand,
-						"new_acp_command", workspace.ACPCommand)
+						"new_acp_command", acpCommand)
 				}
 				p.Close()
 				delete(m.processes, workspace.UUID)
@@ -202,11 +209,11 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
 		WorkspaceUUID:    workspace.UUID,
-		ACPCommand:       workspace.ACPCommand,
-		ACPCwd:           workspace.ACPCwd,
+		ACPCommand:       acpCommand,
+		ACPCwd:           acpCwd,
 		ACPServer:        workspace.ACPServer,
 		WorkingDir:       workspace.WorkingDir,
-		Env:              workspace.ACPEnv,
+		Env:              acpEnv,
 		Runner:           r,
 		Logger:           processLogger,
 		CanRestartGlobal: m.CanRestartGlobally,
@@ -405,14 +412,17 @@ func (m *ACPProcessManager) StopAuxProcess(workspaceUUID string) {
 
 // CreateSession creates a new ACP session on the shared process for the given workspace.
 // If no shared process exists yet, one is created.
+// acpCommand, acpCwd, acpEnv are the runtime-resolved ACP connection parameters.
 func (m *ACPProcessManager) CreateSession(
 	ctx context.Context,
 	workspace *config.WorkspaceSettings,
+	acpCommand, acpCwd string,
+	acpEnv map[string]string,
 	r *runner.Runner,
 	cwd string,
 	mcpServers []acp.McpServer,
 ) (*SessionHandle, error) {
-	process, err := m.GetOrCreateProcess(workspace, r, true)
+	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		return nil, err
 	}
@@ -421,15 +431,18 @@ func (m *ACPProcessManager) CreateSession(
 }
 
 // LoadSession attempts to load/resume an existing ACP session on the shared process.
+// acpCommand, acpCwd, acpEnv are the runtime-resolved ACP connection parameters.
 func (m *ACPProcessManager) LoadSession(
 	ctx context.Context,
 	workspace *config.WorkspaceSettings,
+	acpCommand, acpCwd string,
+	acpEnv map[string]string,
 	r *runner.Runner,
 	acpSessionID string,
 	cwd string,
 	mcpServers []acp.McpServer,
 ) (*SessionHandle, error) {
-	process, err := m.GetOrCreateProcess(workspace, r, true)
+	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		return nil, err
 	}

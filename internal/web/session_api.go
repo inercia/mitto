@@ -72,13 +72,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		// If not found in workspaces but working dir provided, create ad-hoc workspace
 		if workspace == nil {
-			// Use default workspace's ACP config with the requested directory
+			// Use default workspace's ACP server with the requested directory.
+			// Command/cwd/env are resolved from global config at runtime — not cached here.
 			defaultWs := s.sessionManager.GetDefaultWorkspace()
 			if defaultWs != nil {
 				workspace = &config.WorkspaceSettings{
-					ACPServer:  defaultWs.ACPServer,
-					ACPCommand: defaultWs.ACPCommand,
-					WorkingDir: req.WorkingDir,
+					ACPServer:          defaultWs.ACPServer,
+					ACPCommandOverride: defaultWs.ACPCommandOverride,
+					WorkingDir:         req.WorkingDir,
 				}
 				// Ensure the ad-hoc workspace has a UUID for auxiliary sessions
 				workspace.EnsureUUID()
@@ -102,7 +103,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate that we have a valid ACP configuration
-	if workspace == nil || workspace.ACPCommand == "" {
+	if workspace == nil || workspace.ACPServer == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "no_workspace_configured",
 			"No workspace configured. Please configure a workspace in Settings first.")
 		return
@@ -132,7 +133,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Failed to create session", "error", err)
 		}
 		// Broadcast ACP start failure to all clients (use empty session_id since session wasn't created)
-		s.BroadcastACPStartFailed("", req.Name, err, workspace.ACPCommand)
+		s.BroadcastACPStartFailed("", req.Name, err, workspace.ACPServer)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -513,11 +514,13 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		if req.Archived != nil {
 			meta.Archived = *req.Archived
 			if *req.Archived {
-				// Set archived timestamp when archiving
+				// Set archived timestamp and reason when archiving
 				meta.ArchivedAt = time.Now()
+				meta.ArchiveReason = session.ArchiveReasonManual
 			} else {
-				// Clear archived timestamp when unarchiving
+				// Clear archived timestamp and reason when unarchiving
 				meta.ArchivedAt = time.Time{}
+				meta.ArchiveReason = ""
 			}
 		}
 	})
@@ -555,7 +558,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 	// For unarchive: broadcast AFTER ResumeSession so the session is already in
 	// sm.sessions when clients reconnect (prevents pendingResumes race).
 	if req.Archived != nil && *req.Archived {
-		s.BroadcastSessionArchived(sessionID, true)
+		s.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonManual)
 	}
 
 	// Delete all child sessions when parent is archived
@@ -802,18 +805,12 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the ACP server command from config
-	var acpCommand string
+	// Validate the ACP server exists in global config.
 	if s.config.MittoConfig != nil {
-		srv, err := s.config.MittoConfig.GetServer(req.ACPServer)
-		if err != nil {
+		if _, err := s.config.MittoConfig.GetServer(req.ACPServer); err != nil {
 			http.Error(w, fmt.Sprintf("Unknown ACP server: %s", req.ACPServer), http.StatusBadRequest)
 			return
 		}
-		acpCommand = srv.Command
-	} else {
-		// Fallback: use server name as command
-		acpCommand = req.ACPServer
 	}
 
 	// Check if workspace already exists
@@ -832,10 +829,10 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add the workspace
+	// Add the workspace. ACP command/cwd/env are resolved from global config at runtime —
+	// they are never stored on the workspace struct.
 	newWorkspace := config.WorkspaceSettings{
 		ACPServer:          req.ACPServer,
-		ACPCommand:         acpCommand,
 		WorkingDir:         req.WorkingDir,
 		Name:               req.Name,
 		Color:              req.Color,

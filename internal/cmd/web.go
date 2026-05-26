@@ -82,9 +82,8 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		for i, ws := range cliWorkspaces {
 			webWorkspaces[i] = config.WorkspaceSettings{
 				ACPServer:  ws.ServerName,
-				ACPCommand: ws.Server.Command,
-				ACPEnv:     ws.Server.Env,
 				WorkingDir: ws.Dir,
+				// ACP command/cwd/env are resolved from global config at runtime
 			}
 			// Ensure workspace has a UUID for auxiliary sessions
 			webWorkspaces[i].EnsureUUID()

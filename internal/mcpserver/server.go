@@ -149,7 +149,7 @@ type SessionManager interface {
 	// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string)
 	// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
-	BroadcastSessionArchived(sessionID string, archived bool)
+	BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason)
 	// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
 	BroadcastSessionDeleted(sessionID string)
 	// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
@@ -876,6 +876,7 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		MessageCount:    meta.EventCount,
 		Status:          string(meta.Status),
 		Archived:        meta.Archived,
+		ArchiveReason:   string(meta.ArchiveReason),
 		SessionFolder:   sessionFolder,
 		ParentSessionID: meta.ParentSessionID,
 		ChildOrigin:     string(meta.ChildOrigin),
@@ -1501,6 +1502,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				MessageCount:      meta.EventCount,
 				Status:            string(meta.Status),
 				Archived:          meta.Archived,
+				ArchiveReason:     string(meta.ArchiveReason),
 				SessionFolder:     store.SessionDir(meta.SessionID),
 				ChildOrigin:       string(meta.ChildOrigin),
 			}
@@ -3081,8 +3083,10 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		if archived {
 			archivedAt = time.Now()
 			m.ArchivedAt = archivedAt
+			m.ArchiveReason = session.ArchiveReasonManual
 		} else {
 			m.ArchivedAt = time.Time{}
+			m.ArchiveReason = ""
 		}
 	})
 	if err != nil {
@@ -3097,7 +3101,7 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 	// For unarchive: broadcast AFTER ResumeSession so the session is already in
 	// sm.sessions when clients reconnect (prevents pendingResumes race).
 	if archived && s.sessionManager != nil {
-		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true)
+		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true, session.ArchiveReasonManual)
 	}
 
 	// Delete all child sessions when parent is archived

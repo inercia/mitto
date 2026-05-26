@@ -46,8 +46,9 @@ func TestConfig_GetWorkspaces_LegacyFields(t *testing.T) {
 	if workspaces[0].ACPServer != "legacy-server" {
 		t.Errorf("ACPServer = %q, want %q", workspaces[0].ACPServer, "legacy-server")
 	}
-	if workspaces[0].ACPCommand != "legacy-command" {
-		t.Errorf("ACPCommand = %q, want %q", workspaces[0].ACPCommand, "legacy-command")
+	// Legacy CLI command is stored as ACPCommandOverride (per-workspace override)
+	if workspaces[0].ACPCommandOverride != "legacy-command" {
+		t.Errorf("ACPCommandOverride = %q, want %q", workspaces[0].ACPCommandOverride, "legacy-command")
 	}
 	if workspaces[0].WorkingDir != "/legacy/dir" {
 		t.Errorf("WorkingDir = %q, want %q", workspaces[0].WorkingDir, "/legacy/dir")

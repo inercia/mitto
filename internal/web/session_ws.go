@@ -394,6 +394,12 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 				// Archived sessions don't have ACP connections, so mark as "ready"
 				// to prevent the "Reconnecting to AI agent..." banner
 				data["acp_ready"] = true
+				if meta.ArchiveReason != "" {
+					data["archive_reason"] = string(meta.ArchiveReason)
+				}
+			}
+			if !meta.ArchivedAt.IsZero() {
+				data["archived_at"] = meta.ArchivedAt.Format(time.RFC3339)
 			}
 			// Include parent-child relationship fields for session tree rendering
 			if meta.ParentSessionID != "" {

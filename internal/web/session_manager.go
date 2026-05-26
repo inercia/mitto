@@ -175,11 +175,12 @@ type SessionManager struct {
 // NewSessionManager creates a new session manager with a single workspace configuration.
 // This is used when running from CLI with explicit --acp-command and --acp-server flags.
 func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *slog.Logger) *SessionManager {
-	// Create a default workspace from the provided configuration
+	// Create a default workspace from the provided configuration.
+	// CLI-supplied command is stored as ACPCommandOverride since it acts as a user override.
 	defaultWS := &config.WorkspaceSettings{
-		ACPCommand: acpCommand,
-		ACPServer:  acpServer,
-		WorkingDir: "", // Will be set at session creation time
+		ACPCommandOverride: acpCommand, // CLI command acts as an override
+		ACPServer:          acpServer,
+		WorkingDir:         "", // Will be set at session creation time
 	}
 	return &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
@@ -308,7 +309,7 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 
 	if len(sm.workspaces) == 0 {
 		// Return default workspace if it has valid configuration
-		if sm.defaultWorkspace != nil && sm.defaultWorkspace.ACPCommand != "" {
+		if sm.defaultWorkspace != nil && (sm.defaultWorkspace.ACPServer != "" || sm.defaultWorkspace.ACPCommandOverride != "") {
 			return []config.WorkspaceSettings{*sm.defaultWorkspace}
 		}
 		// No valid workspace configuration - return empty slice
@@ -1037,6 +1038,34 @@ func (sm *SessionManager) resolveACPCommand(serverName string) string {
 	return srv.Command
 }
 
+// resolveWorkspaceACPLocked resolves the effective ACP command, cwd, and env for a workspace.
+// Resolution priority:
+//  1. ACPCommandOverride (per-workspace user override) — for command only
+//  2. Global ACP server config (looked up by workspace.ACPServer name)
+//
+// Returns empty values if the server cannot be resolved.
+// Caller MUST hold sm.mu (at least for read).
+func (sm *SessionManager) resolveWorkspaceACPLocked(ws *config.WorkspaceSettings) (acpCommand, acpCwd string, acpEnv map[string]string) {
+	if ws == nil {
+		return "", "", nil
+	}
+
+	if ws.ACPServer != "" && sm.mittoConfig != nil {
+		if server, err := sm.mittoConfig.GetServer(ws.ACPServer); err == nil {
+			acpCommand = server.Command
+			acpCwd = server.Cwd
+			acpEnv = server.Env
+		}
+	}
+
+	// Apply per-workspace command override (takes priority over server config)
+	if ws.ACPCommandOverride != "" {
+		acpCommand = ws.ACPCommandOverride
+	}
+
+	return
+}
+
 // EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
 // starting it on demand if necessary. This allows auxiliary features (e.g. "improve prompt") to
 // work even when no user session is currently active for that workspace.
@@ -1061,7 +1090,12 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 		r = nil
 	}
 
-	p := sm.getSharedProcess(ws, r)
+	// Resolve ACP command/cwd/env from global config (must not hold sm.mu here)
+	sm.mu.RLock()
+	acpCommand, acpCwd, acpEnv := sm.resolveWorkspaceACPLocked(ws)
+	sm.mu.RUnlock()
+
+	p := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
 	}
@@ -1101,8 +1135,10 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 
 // getSharedProcess returns the shared ACP process for the given workspace,
 // or nil if shared process management is not enabled.
+// acpCommand, acpCwd, acpEnv are the resolved ACP connection parameters
+// (from resolveWorkspaceACPLocked or directly from global config).
 // The caller must NOT hold sm.mu when calling this method.
-func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, r *runner.Runner) *SharedACPProcess {
+func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) *SharedACPProcess {
 	sm.mu.RLock()
 	pm := sm.acpProcessManager
 	sm.mu.RUnlock()
@@ -1111,7 +1147,7 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 		return nil
 	}
 
-	process, err := pm.GetOrCreateProcess(workspace, r, true)
+	process, err := pm.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		if sm.logger != nil {
 			sm.logger.Warn("Failed to get shared ACP process, falling back to per-session",
@@ -1166,7 +1202,8 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 
 // BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
 // This is called when a session is archived or unarchived (via HTTP API or MCP tools).
-func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bool) {
+// The optional reason parameter specifies why the session was archived (omit for unarchive).
+func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -1175,10 +1212,14 @@ func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bo
 		return
 	}
 
-	em.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+	data := map[string]interface{}{
 		"session_id": sessionID,
 		"archived":   archived,
-	})
+	}
+	if len(reason) > 0 && reason[0] != "" {
+		data["archive_reason"] = string(reason[0])
+	}
+	em.Broadcast(WSMsgTypeSessionArchived, data)
 
 	if sm.logger != nil {
 		sm.logger.Debug("Broadcast session archived",
@@ -1444,13 +1485,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	globalConv := sm.globalConversations
 	procMgr := sm.processorManager
 
-	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
+	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration.
+	// Command/cwd/env are always resolved from global ACP server config at runtime.
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
+	var acpEnv map[string]string
 	var foundWs *config.WorkspaceSettings // Track which workspace is used for later auto-approve check
 
 	if workspace != nil {
-		acpCommand = workspace.ACPCommand
-		acpCwd = workspace.ACPCwd
+		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(workspace)
 		acpServer = workspace.ACPServer
 		workspaceUUID = workspace.UUID
 		if workingDir == "" {
@@ -1465,13 +1507,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 			}
 		}
 		if foundWs != nil {
-			acpCommand = foundWs.ACPCommand
-			acpCwd = foundWs.ACPCwd
+			acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
 			acpServer = foundWs.ACPServer
 			workspaceUUID = foundWs.UUID
 		} else if sm.defaultWorkspace != nil {
-			acpCommand = sm.defaultWorkspace.ACPCommand
-			acpCwd = sm.defaultWorkspace.ACPCwd
+			acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(sm.defaultWorkspace)
 			acpServer = sm.defaultWorkspace.ACPServer
 			workspaceUUID = sm.defaultWorkspace.UUID
 		}
@@ -1596,7 +1636,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		effectiveWs = sm.defaultWorkspace
 	}
 	sharedProcessStart := time.Now()
-	sharedProcess := sm.getSharedProcess(effectiveWs, r)
+	sharedProcess := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
 	sharedProcessDuration := time.Since(sharedProcessStart)
 
 	// Ensure auxiliary sessions (title-gen, follow-up, etc.) are pre-warmed for
@@ -1888,21 +1928,22 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	globalConv := sm.globalConversations
 	procMgr := sm.processorManager
 
-	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
+	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration.
+	// Command/cwd/env are always resolved from global ACP server config at runtime via
+	// resolveWorkspaceACPLocked; ACPCommandOverride (per-workspace) takes priority.
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
+	var acpEnv map[string]string
 	// Try to find a workspace by working directory. If the session metadata later
 	// identifies a specific ACP server, this provisional choice will be replaced
 	// with the exact workspace for that server.
 	var foundWs *config.WorkspaceSettings
 	foundWs = sm.getWorkspaceByDirAndACPLocked(workingDir, "")
 	if foundWs != nil {
-		acpCommand = foundWs.ACPCommand
-		acpCwd = foundWs.ACPCwd
+		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
 		acpServer = foundWs.ACPServer
 		workspaceUUID = foundWs.UUID
 	} else if sm.defaultWorkspace != nil {
-		acpCommand = sm.defaultWorkspace.ACPCommand
-		acpCwd = sm.defaultWorkspace.ACPCwd
+		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(sm.defaultWorkspace)
 		acpServer = sm.defaultWorkspace.ACPServer
 		workspaceUUID = sm.defaultWorkspace.UUID
 	}
@@ -1928,67 +1969,46 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				foundWs = sm.resolveWorkspaceForACPLocked(workingDir, acpServer)
 				if foundWs != nil {
 					workspaceUUID = foundWs.UUID
-					if foundWs.ACPCommand != "" {
-						acpCommand = foundWs.ACPCommand
-					}
-					if foundWs.ACPCwd != "" {
-						acpCwd = foundWs.ACPCwd
+					// Resolve command/cwd/env from the re-resolved workspace.
+					// resolveWorkspaceACPLocked applies ACPCommandOverride if set,
+					// otherwise looks up from global config.
+					acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
+					if sm.logger != nil && foundWs.ACPCommandOverride != "" {
+						sm.logger.Debug("Using workspace command override",
+							"session_id", sessionID,
+							"acp_server", acpServer,
+							"acp_command", acpCommand,
+							"acp_command_override", foundWs.ACPCommandOverride)
+					} else if sm.logger != nil {
+						sm.logger.Debug("Using ACP command from session metadata server",
+							"session_id", sessionID,
+							"acp_server", acpServer,
+							"acp_command", acpCommand)
 					}
 				} else {
 					// No compatible workspace exists for this ACP server. Do NOT keep a
 					// mismatched workspace from the same directory, otherwise shared ACP
 					// process lookup can mix different agents.
 					workspaceUUID = ""
-					acpCommand = ""
-					acpCwd = ""
+					// Resolve directly from global config for this server.
+					if sm.mittoConfig != nil {
+						if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+							acpCommand = server.Command
+							acpCwd = server.Cwd
+							acpEnv = server.Env
+						} else {
+							acpCommand = ""
+							acpCwd = ""
+							acpEnv = nil
+						}
+					}
 					if sm.logger != nil {
 						sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
-
 							"session_id", sessionID,
 							"working_dir", workingDir,
 							"acp_server", acpServer)
 					}
 				}
-
-				// IMPORTANT: Look up the correct command for the session's ACP server.
-				// The workspace loop above may have found a different workspace (same dir,
-				// different ACP server), so we must update the command to match.
-				// However, if the workspace has a user-provided command override, prefer that.
-				if foundWs == nil || foundWs.ACPCommandOverride == "" {
-					if sm.mittoConfig != nil {
-						if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
-							acpCommand = server.Command
-							acpCwd = server.Cwd
-							if sm.logger != nil {
-								sm.logger.Debug("Using ACP command from session metadata server",
-									"session_id", sessionID,
-									"acp_server", acpServer,
-									"acp_command", acpCommand)
-							}
-						}
-					}
-				} else if sm.logger != nil {
-					sm.logger.Debug("Using workspace command override",
-						"session_id", sessionID,
-						"acp_server", acpServer,
-						"acp_command", acpCommand,
-						"acp_command_override", foundWs.ACPCommandOverride)
-				}
-			}
-		}
-	}
-
-	// If we still have an ACP server name but no command, look it up from global config
-	// This handles cases where workspace config didn't provide a command
-	if acpCommand == "" && acpServer != "" && sm.mittoConfig != nil {
-		if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
-			acpCommand = server.Command
-			acpCwd = server.Cwd // Also get cwd from server config
-			if sm.logger != nil {
-				sm.logger.Debug("Using ACP command from global config",
-					"session_id", sessionID,
-					"acp_server", acpServer,
-					"acp_command", acpCommand)
 			}
 		}
 	}
@@ -2133,7 +2153,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// IMPORTANT: Do NOT fall back to an arbitrary default workspace here. For resumed
 	// sessions, foundWs has already been resolved against the session's ACP server.
 	// Falling back again would risk mixing different ACP servers on the same folder.
-	sharedProcess := sm.getSharedProcess(foundWs, r)
+	sharedProcess := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
 
 	// Build pruning configuration from global settings (with default)
 	pruneConfig := sm.buildPruneConfig()
@@ -2253,6 +2273,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				if failureCount >= ACPStartFailureThreshold {
 					m.Archived = true
 					m.ArchivedAt = time.Now()
+					m.ArchiveReason = session.ArchiveReasonACPFailures
 				}
 			})
 			if updateErr != nil && sm.logger != nil {
@@ -2266,7 +2287,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 						"failure_count", failureCount,
 						"threshold", ACPStartFailureThreshold)
 				}
-				sm.BroadcastSessionArchived(sessionID, true)
+				sm.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonACPFailures)
 			} else if sm.logger != nil {
 				sm.logger.Warn("ACP start failed, incremented failure count",
 					"session_id", sessionID,

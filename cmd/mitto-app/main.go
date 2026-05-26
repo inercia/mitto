@@ -1144,9 +1144,8 @@ func run() error {
 			if !exists {
 				workspaces = append(workspaces, config.WorkspaceSettings{
 					ACPServer:  server.Name,
-					ACPCommand: server.Command,
-					ACPEnv:     server.Env,
 					WorkingDir: absPath,
+					// ACP command/cwd/env are resolved from global config at runtime
 				})
 			}
 		}
@@ -1219,7 +1218,6 @@ func run() error {
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
-	webConfig.ACPCommand = server.Command
 	webConfig.ACPServer = server.Name
 
 	srv, err := web.NewServer(webConfig)

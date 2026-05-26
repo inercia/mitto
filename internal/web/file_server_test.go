@@ -51,7 +51,6 @@ func TestFileServer_ServeFile(t *testing.T) {
 			UUID:       workspaceUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -176,7 +175,6 @@ func TestFileServer_SymlinkSecurity(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: workspaceDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -199,7 +197,6 @@ func TestFileServer_MethodNotAllowed(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: "/tmp",
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -245,7 +242,6 @@ func TestFileServer_ContentType(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -288,7 +284,6 @@ func TestFileServer_ActiveSessionWorkspace(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: sessionWorkspace,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -423,7 +418,6 @@ func main() {
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -528,7 +522,6 @@ func TestFileServer_MarkdownRenderingSecurityHeaders(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -578,7 +571,6 @@ func TestFileServer_MarkdownRenderingCodeHighlighting(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -625,7 +617,6 @@ func TestFileServer_MarkdownRenderingDarkLightMode(t *testing.T) {
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 
@@ -675,7 +666,6 @@ func createPUTTestSetup(t *testing.T) (tmpDir, wsUUID string, fs *FileServer) {
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
 			ACPServer:  "test",
-			ACPCommand: "echo test",
 		}},
 	})
 

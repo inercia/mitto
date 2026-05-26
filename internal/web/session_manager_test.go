@@ -22,8 +22,9 @@ func TestSessionManager_NewSessionManager(t *testing.T) {
 	if ws == nil {
 		t.Fatal("GetDefaultWorkspace returned nil")
 	}
-	if ws.ACPCommand != "echo test" {
-		t.Errorf("defaultWorkspace.ACPCommand = %q, want %q", ws.ACPCommand, "echo test")
+	// CLI command is stored as ACPCommandOverride (per-workspace override)
+	if ws.ACPCommandOverride != "echo test" {
+		t.Errorf("defaultWorkspace.ACPCommandOverride = %q, want %q", ws.ACPCommandOverride, "echo test")
 	}
 	if ws.ACPServer != "test-server" {
 		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", ws.ACPServer, "test-server")
@@ -166,8 +167,8 @@ func TestSessionManager_ResumeSession_AlreadyRunning(t *testing.T) {
 
 func TestNewSessionManagerWithOptions(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
+		{ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -184,22 +185,19 @@ func TestNewSessionManagerWithOptions(t *testing.T) {
 		t.Errorf("workspaces count = %d, want 2", len(sm.workspaces))
 	}
 
-	// Check default workspace
+	// Check default workspace (command is resolved from global config at runtime, not stored here)
 	if sm.defaultWorkspace == nil {
 		t.Fatal("defaultWorkspace should not be nil")
 	}
 	if sm.defaultWorkspace.ACPServer != "server1" {
 		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", sm.defaultWorkspace.ACPServer, "server1")
 	}
-	if sm.defaultWorkspace.ACPCommand != "echo server1" {
-		t.Errorf("defaultWorkspace.ACPCommand = %q, want %q", sm.defaultWorkspace.ACPCommand, "echo server1")
-	}
 }
 
 func TestSessionManager_GetWorkspaces(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
+		{ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -215,8 +213,8 @@ func TestSessionManager_GetWorkspaces(t *testing.T) {
 
 func TestSessionManager_GetWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
+		{ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -242,7 +240,7 @@ func TestSessionManager_GetWorkspace(t *testing.T) {
 
 func TestSessionManager_GetDefaultWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -269,8 +267,9 @@ func TestSessionManager_GetDefaultWorkspace_Legacy(t *testing.T) {
 	if ws.ACPServer != "legacy-server" {
 		t.Errorf("default workspace ACPServer = %q, want %q", ws.ACPServer, "legacy-server")
 	}
-	if ws.ACPCommand != "echo legacy" {
-		t.Errorf("default workspace ACPCommand = %q, want %q", ws.ACPCommand, "echo legacy")
+	// CLI command is stored as ACPCommandOverride
+	if ws.ACPCommandOverride != "echo legacy" {
+		t.Errorf("default workspace ACPCommandOverride = %q, want %q", ws.ACPCommandOverride, "echo legacy")
 	}
 }
 
@@ -301,7 +300,6 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 	// Add a workspace
 	ws := config.WorkspaceSettings{
 		ACPServer:  "new-server",
-		ACPCommand: "echo new",
 		WorkingDir: "/path/to/project",
 	}
 	sm.AddWorkspace(ws)
@@ -329,8 +327,8 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 
 func TestSessionManager_RemoveWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{UUID: "uuid-1", ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{UUID: "uuid-2", ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{UUID: "uuid-1", ACPServer: "server1", WorkingDir: "/path1"},
+		{UUID: "uuid-2", ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -1261,14 +1259,12 @@ func TestSessionManager_WorkspaceAutoApprove_Enabled(t *testing.T) {
 		{
 			UUID:        "ws-auto-approve",
 			ACPServer:   "test-server",
-			ACPCommand:  "echo test",
 			WorkingDir:  "/path/auto-approve",
 			AutoApprove: &autoApproveTrue, // Per-workspace auto-approve enabled
 		},
 		{
 			UUID:       "ws-no-auto-approve",
 			ACPServer:  "test-server",
-			ACPCommand: "echo test",
 			WorkingDir: "/path/no-auto-approve",
 			// AutoApprove is nil (not set)
 		},
@@ -1307,7 +1303,6 @@ func TestSessionManager_WorkspaceAutoApprove_Disabled(t *testing.T) {
 		{
 			UUID:        "ws-explicit-false",
 			ACPServer:   "test-server",
-			ACPCommand:  "echo test",
 			WorkingDir:  "/path/explicit-false",
 			AutoApprove: &autoApproveFalse, // Explicitly disabled
 		},
@@ -1341,7 +1336,6 @@ func TestSessionManager_WorkspaceAutoApprove_SetWorkspaces(t *testing.T) {
 		{
 			UUID:        "ws-with-auto",
 			ACPServer:   "test-server",
-			ACPCommand:  "echo test",
 			WorkingDir:  "/path/with-auto",
 			AutoApprove: &autoApproveTrue,
 		},
@@ -1367,7 +1361,6 @@ func TestSessionManager_WorkspaceAutoApprove_AddWorkspace(t *testing.T) {
 	ws := config.WorkspaceSettings{
 		UUID:        "ws-added",
 		ACPServer:   "test-server",
-		ACPCommand:  "echo test",
 		WorkingDir:  "/path/added",
 		AutoApprove: &autoApproveTrue,
 	}
@@ -1535,21 +1528,18 @@ func TestSessionManager_WorkspaceAutoApprove_GetWorkspaces(t *testing.T) {
 		{
 			UUID:        "ws-1",
 			ACPServer:   "server1",
-			ACPCommand:  "echo server1",
 			WorkingDir:  "/path1",
 			AutoApprove: &autoApproveTrue,
 		},
 		{
 			UUID:        "ws-2",
 			ACPServer:   "server2",
-			ACPCommand:  "echo server2",
 			WorkingDir:  "/path2",
 			AutoApprove: &autoApproveFalse,
 		},
 		{
 			UUID:       "ws-3",
 			ACPServer:  "server3",
-			ACPCommand: "echo server3",
 			WorkingDir: "/path3",
 			// AutoApprove is nil
 		},

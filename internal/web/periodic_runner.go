@@ -705,6 +705,7 @@ func (r *PeriodicRunner) checkAutoArchive(sessions []session.Metadata, now time.
 		err = r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
 			m.Archived = true
 			m.ArchivedAt = now
+			m.ArchiveReason = session.ArchiveReasonInactivity
 		})
 		if err != nil {
 			if r.logger != nil {

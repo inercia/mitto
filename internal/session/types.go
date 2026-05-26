@@ -104,6 +104,18 @@ const (
 	SessionStatusError SessionStatus = "error"
 )
 
+// ArchiveReason represents the reason why a session was archived.
+type ArchiveReason string
+
+const (
+	// ArchiveReasonManual indicates the session was manually archived by the user.
+	ArchiveReasonManual ArchiveReason = "manual"
+	// ArchiveReasonInactivity indicates the session was automatically archived due to inactivity.
+	ArchiveReasonInactivity ArchiveReason = "inactivity"
+	// ArchiveReasonACPFailures indicates the session was automatically archived due to repeated ACP process start failures.
+	ArchiveReasonACPFailures ArchiveReason = "acp_start_failures"
+)
+
 // Event represents a single event in the session log.
 type Event struct {
 	Seq       int64       `json:"seq"` // Sequence number (1-based, monotonically increasing per session)
@@ -223,6 +235,7 @@ type Metadata struct {
 	Pinned                  bool            `json:"pinned,omitempty"`                    // Deprecated: use Archived instead. If true, session cannot be deleted
 	Archived                bool            `json:"archived,omitempty"`                  // If true, session is archived (hidden from main list by default)
 	ArchivedAt              time.Time       `json:"archived_at,omitempty"`               // Time when session was archived (cleared when unarchived)
+	ArchiveReason           ArchiveReason   `json:"archived_reason,omitempty"`           // Reason why the session was archived (cleared when unarchived)
 	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
 	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
 	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")

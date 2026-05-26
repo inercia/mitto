@@ -84,10 +84,12 @@ func (c *Config) GetWorkspaces() []configPkg.WorkspaceSettings {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
+	// ACPCommandOverride is set from ACPCommand if it's a legacy override value.
+	// For the CLI legacy path, ACPCommand on Config is the user-provided command.
 	return []configPkg.WorkspaceSettings{{
-		ACPServer:  c.ACPServer,
-		ACPCommand: c.ACPCommand,
-		WorkingDir: workDir,
+		ACPServer:          c.ACPServer,
+		ACPCommandOverride: c.ACPCommand, // Legacy: CLI-provided command becomes an override
+		WorkingDir:         workDir,
 	}}
 }
 
@@ -110,9 +112,9 @@ func (c *Config) GetWorkspaceByDir(dir string) *configPkg.WorkspaceSettings {
 	// Check legacy fields
 	if len(c.Workspaces) == 0 && c.DefaultWorkingDir == dir {
 		return &configPkg.WorkspaceSettings{
-			ACPServer:  c.ACPServer,
-			ACPCommand: c.ACPCommand,
-			WorkingDir: dir,
+			ACPServer:          c.ACPServer,
+			ACPCommandOverride: c.ACPCommand, // Legacy: CLI-provided command becomes an override
+			WorkingDir:         dir,
 		}
 	}
 	return nil
@@ -259,17 +261,9 @@ func NewServer(config Config) (*Server, error) {
 		apiPrefix = config.MittoConfig.Web.APIPrefix
 	}
 
-	// Reconcile workspace ACPEnv from server definitions.
-	// workspaces.json may not have ACPEnv if it was saved before this feature existed,
-	// so we resolve it from the current ACP server configuration on every startup.
+	// ACP command/cwd/env are always resolved from global config at runtime —
+	// they are never stored on the workspace struct (those fields were removed).
 	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
-	if config.MittoConfig != nil && len(workspaces) > 0 {
-		for i := range workspaces {
-			if srv, err := config.MittoConfig.GetServer(workspaces[i].ACPServer); err == nil {
-				workspaces[i].ACPEnv = srv.Env
-			}
-		}
-	}
 
 	// Create session manager with workspace support
 	var sessionMgr *SessionManager
@@ -649,6 +643,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.handleWorkspaceProcessorsToggleEnabled)
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.handleWorkspaceMCPTools)
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.handleWorkspaceMCPInstall)
+	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.handleWorkspaceMCPRemove)
 	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
@@ -1044,11 +1039,15 @@ func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
 }
 
 // BroadcastSessionArchived notifies all connected clients that a session's archived state changed.
-func (s *Server) BroadcastSessionArchived(sessionID string, archived bool) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+func (s *Server) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+	data := map[string]interface{}{
 		"session_id": sessionID,
 		"archived":   archived,
-	})
+	}
+	if len(reason) > 0 && reason[0] != "" {
+		data["archive_reason"] = string(reason[0])
+	}
+	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, data)
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session archived", "session_id", sessionID, "archived", archived,
@@ -1372,8 +1371,8 @@ func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServ
 }
 
 // BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
-func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archived bool) {
-	a.sm.BroadcastSessionArchived(sessionID, archived)
+func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+	a.sm.BroadcastSessionArchived(sessionID, archived, reason...)
 }
 
 // BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.

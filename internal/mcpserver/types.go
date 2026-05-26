@@ -40,6 +40,7 @@ type ConversationInfo struct {
 	MessageCount      int       `json:"message_count"`
 	Status            string    `json:"status"`
 	Archived          bool      `json:"archived"`
+	ArchiveReason     string    `json:"archive_reason,omitempty"`
 	SessionFolder     string    `json:"session_folder"`
 
 	// Runtime status (only available when session is running)
@@ -69,6 +70,7 @@ type ConversationDetails struct {
 	MessageCount      int    `json:"message_count"`
 	Status            string `json:"status,omitempty"`
 	Archived          bool   `json:"archived"`
+	ArchiveReason     string `json:"archive_reason,omitempty"`
 	SessionFolder     string `json:"session_folder,omitempty"`
 
 	// Runtime status (reflects current state if session is running)

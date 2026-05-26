@@ -334,6 +334,25 @@ func (m *Manager) InstallMCPServer(ctx context.Context, agentName string, input 
 	return &output, nil
 }
 
+// RemoveMCPServer runs mcp-remove.sh and parses the JSON output.
+func (m *Manager) RemoveMCPServer(ctx context.Context, agentName string, input *MCPRemoveInput) (*MCPRemoveOutput, error) {
+	if input == nil || input.Name == "" {
+		return nil, fmt.Errorf("MCP server name is required")
+	}
+	result, err := m.RunCommand(ctx, agentName, CommandMCPRemove, input)
+	if err != nil {
+		return nil, err
+	}
+	if result.Error != nil {
+		return nil, fmt.Errorf("mcp-remove command failed: %w", result.Error)
+	}
+	var output MCPRemoveOutput
+	if err := json.Unmarshal([]byte(result.Stdout), &output); err != nil {
+		return nil, fmt.Errorf("failed to parse mcp-remove output: %w (output: %s)", err, result.Stdout)
+	}
+	return &output, nil
+}
+
 // loadAgent reads metadata.yaml and discovers available commands for a single agent.
 func (m *Manager) loadAgent(source, dirName, agentDir string) (*AgentDefinition, error) {
 	metaPath := filepath.Join(agentDir, "metadata.yaml")
