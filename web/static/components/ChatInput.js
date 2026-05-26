@@ -18,8 +18,8 @@ import {
   getPromptSortMode,
   getUIPromptPanelHeight,
   setUIPromptPanelHeight,
-  getTextareaMaxHeight as getStoredTextareaMaxHeight,
-  setTextareaMaxHeight as setStoredTextareaMaxHeight,
+  getTextareaMinHeight as getStoredTextareaMinHeight,
+  setTextareaMinHeight as setStoredTextareaMinHeight,
 } from "../utils/storage.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
@@ -421,17 +421,26 @@ export function ChatInput({
   const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
   const [periodicPromptName, setPeriodicPromptName] = useState("");
 
-  // Resize handle for textarea max height
+  // Resize handle for textarea min height (controls the visual size of the input area)
+  // Hard max for auto-grow (scrollbar appears beyond this)
+  const textareaHardMax = 500;
   const {
-    height: textareaMaxHeight,
+    height: textareaMinHeight,
     isDragging: isTextareaDragging,
     handleProps: textareaHandleProps,
   } = useResizeHandle({
-    initialHeight: getStoredTextareaMaxHeight(),
-    minHeight: 200,
+    initialHeight: getStoredTextareaMinHeight(),
+    minHeight: 80,
     maxHeight: 400,
+    onHeightChange: (newHeight) => {
+      // During drag, directly set textarea height for real-time visual feedback
+      const textarea = textareaRef.current;
+      if (textarea) {
+        textarea.style.height = newHeight + "px";
+      }
+    },
     onDragEnd: (finalHeight) => {
-      setStoredTextareaMaxHeight(finalHeight);
+      setStoredTextareaMinHeight(finalHeight);
     },
   });
 
@@ -701,14 +710,19 @@ export function ChatInput({
 
   // Adjust textarea height when draft changes (e.g., switching sessions)
   // Also re-adjusts when periodic lock state changes (collapse when locked, expand when unlocked)
+  // Auto-sizing: grow to content, but respect min-height from resize handle and hard max
   useEffect(() => {
+    if (isTextareaDragging) return; // Skip auto-sizing during drag (onHeightChange handles it)
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = "auto";
-      textarea.style.height =
-        Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+      const targetHeight = Math.max(
+        textareaMinHeight,
+        Math.min(textarea.scrollHeight, textareaHardMax),
+      );
+      textarea.style.height = targetHeight + "px";
     }
-  }, [text, textareaMaxHeight]);
+  }, [text, textareaMinHeight, isTextareaDragging, textareaHardMax]);
 
   // Clean up toolbar hide timeout on unmount
   useEffect(() => {
@@ -1069,7 +1083,7 @@ export function ChatInput({
     const textarea = e.target;
     textarea.style.height = "auto";
     textarea.style.height =
-      Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+      Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
 
     // Show slash command picker when typing '/' at the start
     if (
@@ -1105,7 +1119,7 @@ export function ChatInput({
         // Adjust height to fit content
         textarea.style.height = "auto";
         textarea.style.height =
-          Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+          Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
       });
     } else {
       // Fallback: just set the text
@@ -1160,7 +1174,7 @@ export function ChatInput({
             if (textarea) {
               textarea.style.height = "auto";
               textarea.style.height =
-                Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+                Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
               textarea.focus();
             }
           });
@@ -1738,11 +1752,11 @@ export function ChatInput({
           textarea.focus();
           textarea.style.height = "auto";
           textarea.style.height =
-            Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+            Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
         }
       });
     },
-    [setText, textareaMaxHeight],
+    [setText, textareaMinHeight, textareaHardMax],
   );
 
   return html`
@@ -2624,7 +2638,7 @@ ${activeUIPrompt.text || ""}</textarea
                 onBlur=${handleTextareaBlur}
                 placeholder=${getPlaceholder()}
                 rows="3"
-                style="max-height: ${textareaMaxHeight}px;"
+                style="min-height: ${textareaMinHeight}px; max-height: ${textareaHardMax}px;"
                 class="chat-input-textarea overflow-y-auto ${isFullyDisabled ||
                 isReadOnly ||
                 isImproving

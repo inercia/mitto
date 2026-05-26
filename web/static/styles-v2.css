@@ -1658,3 +1658,20 @@ a:hover {
   background: var(--accent-hover, #ff7070) !important;
   color: var(--accent-foreground, #fafafa) !important;
 }
+
+
+/* =============================================================================
+   Settings Dialog - Normalize select/input heights
+   ============================================================================= */
+
+/* Ensure select elements in settings dialog match input element heights */
+.settings-dialog select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none'%3E%3Cpath d='M1 2l5 4 5-4' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2.5rem;
+  height: 38px; /* Match input height: py-2 (8px * 2) + text-sm line-height (~20px) + border */
+}

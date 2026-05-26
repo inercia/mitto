@@ -456,60 +456,62 @@ export function getSidebarWidthConstraints() {
 }
 
 // =============================================================================
-// Textarea Max Height Persistence (localStorage)
+// Textarea Min Height Persistence (localStorage)
 // =============================================================================
 
-const TEXTAREA_MAX_HEIGHT_KEY = "mitto_textarea_max_height";
-const DEFAULT_TEXTAREA_MAX_HEIGHT = 200; // Current hardcoded value
-const MIN_TEXTAREA_MAX_HEIGHT = 200; // Cannot shrink below current default
-const MAX_TEXTAREA_MAX_HEIGHT = 400; // 2× default
+const TEXTAREA_MIN_HEIGHT_KEY = "mitto_textarea_min_height";
+const DEFAULT_TEXTAREA_MIN_HEIGHT = 80; // Current CSS min-height (rows="3")
+const MIN_TEXTAREA_MIN_HEIGHT = 80; // Cannot shrink below current default
+const MAX_TEXTAREA_MIN_HEIGHT = 400; // Allow generous resize range
+const TEXTAREA_HARD_MAX_HEIGHT = 500; // Hard cap for auto-grow
 
 /**
- * Get the user's preferred textarea max height from localStorage
+ * Get the user's preferred textarea min height from localStorage
  * @returns {number} The height in pixels, or default if not set
  */
-export function getTextareaMaxHeight() {
+export function getTextareaMinHeight() {
   try {
-    const value = localStorage.getItem(TEXTAREA_MAX_HEIGHT_KEY);
+    const value = localStorage.getItem(TEXTAREA_MIN_HEIGHT_KEY);
     if (value) {
       const height = parseInt(value, 10);
       return Math.max(
-        MIN_TEXTAREA_MAX_HEIGHT,
-        Math.min(MAX_TEXTAREA_MAX_HEIGHT, height),
+        MIN_TEXTAREA_MIN_HEIGHT,
+        Math.min(MAX_TEXTAREA_MIN_HEIGHT, height),
       );
     }
-    return DEFAULT_TEXTAREA_MAX_HEIGHT;
+    return DEFAULT_TEXTAREA_MIN_HEIGHT;
   } catch (e) {
-    console.warn("Failed to read textarea max height from localStorage:", e);
-    return DEFAULT_TEXTAREA_MAX_HEIGHT;
+    console.warn("Failed to read textarea min height from localStorage:", e);
+    return DEFAULT_TEXTAREA_MIN_HEIGHT;
   }
 }
 
 /**
- * Save the user's preferred textarea max height to localStorage
+ * Save the user's preferred textarea min height to localStorage
  * @param {number} height - The height in pixels
  */
-export function setTextareaMaxHeight(height) {
+export function setTextareaMinHeight(height) {
   try {
     const clampedHeight = Math.max(
-      MIN_TEXTAREA_MAX_HEIGHT,
-      Math.min(MAX_TEXTAREA_MAX_HEIGHT, height),
+      MIN_TEXTAREA_MIN_HEIGHT,
+      Math.min(MAX_TEXTAREA_MIN_HEIGHT, height),
     );
-    localStorage.setItem(TEXTAREA_MAX_HEIGHT_KEY, String(clampedHeight));
+    localStorage.setItem(TEXTAREA_MIN_HEIGHT_KEY, String(clampedHeight));
   } catch (e) {
-    console.warn("Failed to save textarea max height to localStorage:", e);
+    console.warn("Failed to save textarea min height to localStorage:", e);
   }
 }
 
 /**
- * Get the constraints for textarea max height
- * @returns {{min: number, max: number, default: number}}
+ * Get the constraints for textarea min height
+ * @returns {{min: number, max: number, default: number, hardMax: number}}
  */
-export function getTextareaMaxHeightConstraints() {
+export function getTextareaMinHeightConstraints() {
   return {
-    min: MIN_TEXTAREA_MAX_HEIGHT,
-    max: MAX_TEXTAREA_MAX_HEIGHT,
-    default: DEFAULT_TEXTAREA_MAX_HEIGHT,
+    min: MIN_TEXTAREA_MIN_HEIGHT,
+    max: MAX_TEXTAREA_MIN_HEIGHT,
+    default: DEFAULT_TEXTAREA_MIN_HEIGHT,
+    hardMax: TEXTAREA_HARD_MAX_HEIGHT,
   };
 }
 

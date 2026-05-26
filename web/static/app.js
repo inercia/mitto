@@ -148,6 +148,30 @@ import {
 } from "./constants.js";
 
 // =============================================================================
+// Archive Reason Helpers
+// =============================================================================
+
+/**
+ * Returns a human-readable description of why a session was archived.
+ * @param {string} reason - The archive reason code (e.g. "manual", "inactivity", "acp_start_failures")
+ * @param {string|null} archivedAt - ISO 8601 timestamp when the session was archived
+ * @returns {string}
+ */
+function getArchiveReasonText(reason, archivedAt) {
+  const dateStr = archivedAt ? new Date(archivedAt).toLocaleDateString() : "";
+  switch (reason) {
+    case "manual":
+      return `Archived by user${dateStr ? ` on ${dateStr}` : ""}`;
+    case "inactivity":
+      return `Auto-archived due to inactivity${dateStr ? ` on ${dateStr}` : ""}`;
+    case "acp_start_failures":
+      return `Auto-archived: agent failed to start after repeated attempts${dateStr ? ` on ${dateStr}` : ""}`;
+    default:
+      return `Archived${dateStr ? ` on ${dateStr}` : ""}`;
+  }
+}
+
+// =============================================================================
 // Global Link Click Handler
 // =============================================================================
 
@@ -299,6 +323,15 @@ function isOverHorizontallyScrollable() {
     node = node.parentElement;
   }
   return false;
+}
+
+/**
+ * Returns true if a modal dialog overlay is currently open.
+ * All modal dialogs use a fixed full-screen z-50 overlay as their backdrop.
+ * Used to suppress swipe-navigation when the user is interacting with a dialog.
+ */
+function isModalDialogOpen() {
+  return !!document.querySelector('.fixed.inset-0.z-50');
 }
 
 // =============================================================================
@@ -1579,7 +1612,7 @@ function SessionItem({
                       title="${!canArchive
                         ? archiveBlockedReason
                         : isArchived
-                          ? "Unarchive"
+                          ? `Unarchive${session.archive_reason ? " — " + getArchiveReasonText(session.archive_reason, session.archived_at) : ""}`
                           : "Archive"}"
                     >
                       ${isArchived
@@ -3291,7 +3324,7 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
-  const [sidePanelTab, setSidePanelTab] = useState("changes");
+  const [sidePanelTab, setSidePanelTab] = useState("properties");
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
   const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
@@ -5037,6 +5070,8 @@ function App() {
       // Don't navigate if the cursor is over a horizontally scrollable element
       // (e.g. a wide table) — the user is scrolling the table, not navigating.
       if (isOverHorizontallyScrollable()) return;
+      // Don't navigate if a modal dialog is open.
+      if (isModalDialogOpen()) return;
       navigateToNextSession();
     };
 
@@ -5044,6 +5079,8 @@ function App() {
     window.mittoPrevConversation = () => {
       // Don't navigate if the cursor is over a horizontally scrollable element.
       if (isOverHorizontallyScrollable()) return;
+      // Don't navigate if a modal dialog is open.
+      if (isModalDialogOpen()) return;
       navigateToPreviousSession();
     };
 
@@ -5531,7 +5568,10 @@ function App() {
 
   // Unified side panel handlers
   const handleToggleSidePanel = useCallback(() => {
-    setShowSidePanel((prev) => !prev);
+    setShowSidePanel((prev) => {
+      if (!prev) setSidePanelTab("properties");
+      return !prev;
+    });
   }, []);
 
   const handleCloseSidePanel = useCallback(() => {
@@ -6302,6 +6342,26 @@ function App() {
               class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
             ></span>
             Reconnecting to AI agent...
+          </div>
+        `}
+
+        <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
+        ${sessionInfo?.archived &&
+        sessionInfo?.archive_reason &&
+        html`
+          <div
+            class="flex items-center justify-center gap-2 py-2 px-4 text-sm ${sessionInfo.archive_reason ===
+            "manual"
+              ? "text-slate-400"
+              : "text-amber-400"}"
+          >
+            <span class="flex-shrink-0">ℹ️</span>
+            <span
+              >${getArchiveReasonText(
+                sessionInfo.archive_reason,
+                sessionInfo.archived_at,
+              )}</span
+            >
           </div>
         `}
 

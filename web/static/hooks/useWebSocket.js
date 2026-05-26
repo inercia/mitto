@@ -1214,6 +1214,8 @@ export function useWebSocket() {
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Use server-sent archived flag, falling back to existing session info
                 archived: msg.data.archived ?? session.info?.archived ?? false,
+                archive_reason: msg.data.archive_reason ?? session.info?.archive_reason ?? "",
+                archived_at: msg.data.archived_at ?? session.info?.archived_at ?? null,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
                 // Periodic enabled state from server
@@ -3271,6 +3273,8 @@ export function useWebSocket() {
           //    server (the server only keeps sessions alive while the binary is
           //    running; after a restart old sessions are gone). Reconnecting them
           //    only causes the readyState: 3 CLOSED log-spam that triggered this fix.
+          //    NOTE: Periodic sessions are exempt from this age check — they are
+          //    long-lived by design and must always be allowed to reconnect.
           //
           // 2. Attempt cap (isReconnectLimitReached from utils/websocket.js):
           //    even for recent sessions, if we have repeatedly failed to
@@ -3279,8 +3283,17 @@ export function useWebSocket() {
           //    The counter resets on the next successful onopen, and is cleared
           //    when the user explicitly switches to this session (switchSession).
 
+          // Check if this is a periodic session — they're long-lived by design
+          // and should always be allowed to reconnect regardless of age.
+          const isPeriodic =
+            sessionsRef.current[sessionId]?.info?.periodic_enabled ||
+            storedSessionsRef.current?.find(
+              (s) => s.session_id === sessionId,
+            )?.periodic_enabled;
+
           const sessionAgeMs = getSessionAgeMs(sessionId);
           const isTooOld =
+            !isPeriodic &&
             sessionAgeMs !== null &&
             sessionAgeMs > SESSION_MAX_RECONNECT_AGE_MS;
 
@@ -3744,7 +3757,7 @@ export function useWebSocket() {
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
-              ? { ...s, archived: msg.data.archived, archive_pending: false }
+              ? { ...s, archived: msg.data.archived, archive_pending: false, archive_reason: msg.data.archive_reason || "" }
               : s,
           ),
         );
@@ -3760,6 +3773,7 @@ export function useWebSocket() {
                 ...session.info,
                 archived: msg.data.archived,
                 archive_pending: false,
+                archive_reason: msg.data.archive_reason || "",
               },
             },
           };

@@ -760,7 +760,7 @@ function WorkspaceEditForm({
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
-function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
+function ServerEditForm({ server, agentTypes = [], onChange }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
@@ -784,50 +784,51 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
     server.constraints?.model?.pattern || "",
   );
 
-  const [typeError, setTypeError] = useState(false);
-  const [formError, setFormError] = useState("");
+  // Build the current server state and notify the parent
+  const emitChange = (overrides = {}) => {
+    const currentState = {
+      name: overrides.name !== undefined ? overrides.name : name,
+      command: overrides.command !== undefined ? overrides.command : command,
+      type: overrides.type !== undefined ? overrides.type : type,
+      autoApprove: overrides.autoApprove !== undefined ? overrides.autoApprove : autoApprove,
+      tags: overrides.tags !== undefined ? overrides.tags : tags,
+      envVars: overrides.envVars !== undefined ? overrides.envVars : envVars,
+      constraintModelMode: overrides.constraintModelMode !== undefined ? overrides.constraintModelMode : constraintModelMode,
+      constraintModelPattern: overrides.constraintModelPattern !== undefined ? overrides.constraintModelPattern : constraintModelPattern,
+    };
 
-  const handleSave = () => {
-    setFormError("");
-    if (!name.trim()) {
-      setFormError("Server name cannot be empty");
-      return;
-    }
-    if (!command.trim()) {
-      setFormError("Server command cannot be empty");
-      return;
-    }
-    if (!type.trim()) {
-      setTypeError(true);
-      setFormError("Please select an agent type");
-      return;
-    }
-    setTypeError(false);
-    // Convert envVars array back to object, filtering out empty keys
+    // Convert envVars array to object, filtering out empty keys
     const envObj = {};
-    envVars.forEach(({ key, value }) => {
+    currentState.envVars.forEach(({ key, value }) => {
       if (key && key.trim()) {
         envObj[key.trim()] = value || "";
       }
     });
-    // Parse tags: split by comma, trim whitespace, filter empty strings
-    const parsedTags = tags
+
+    // Parse tags
+    const parsedTags = currentState.tags
       .split(",")
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
-    // Build constraints object
+
+    // Build constraints
     const constraints = {};
-    if (constraintModelMode && constraintModelPattern) {
+    if (currentState.constraintModelMode && currentState.constraintModelPattern) {
       constraints.model = {
-        matchMode: constraintModelMode,
-        pattern: constraintModelPattern,
+        matchMode: currentState.constraintModelMode,
+        pattern: currentState.constraintModelPattern,
       };
     }
-    const err = onSave(name, command, type, autoApprove, envObj, parsedTags,
-      Object.keys(constraints).length > 0 ? constraints : undefined);
-    if (err) {
-      setFormError(err);
-    }
+
+    onChange(
+      currentState.name,
+      currentState.command,
+      currentState.type,
+      currentState.autoApprove,
+      envObj,
+      parsedTags,
+      Object.keys(constraints).length > 0 ? constraints : undefined,
+    );
   };
 
   const addEnvVar = () => {
@@ -835,13 +836,16 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
   };
 
   const removeEnvVar = (index) => {
-    setEnvVars(envVars.filter((_, i) => i !== index));
+    const newVars = envVars.filter((_, i) => i !== index);
+    setEnvVars(newVars);
+    emitChange({ envVars: newVars });
   };
 
   const updateEnvVar = (index, field, value) => {
     const updated = [...envVars];
     updated[index] = { ...updated[index], [field]: value };
     setEnvVars(updated);
+    emitChange({ envVars: updated });
   };
 
   return html`
@@ -851,7 +855,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="text"
           value=${name}
-          onInput=${(e) => setName(e.target.value)}
+          onInput=${(e) => { setName(e.target.value); emitChange({ name: e.target.value }); }}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
@@ -860,7 +864,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="text"
           value=${command}
-          onInput=${(e) => setCommand(e.target.value)}
+          onInput=${(e) => { setCommand(e.target.value); emitChange({ command: e.target.value }); }}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
@@ -870,12 +874,12 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <p class="text-xs text-gray-500 mb-2">
           Switch to a model based on some selection criteria
         </p>
-        <div class="flex gap-2">
+        <div class="flex gap-2 items-center">
           <select
             value=${constraintModelMode}
-            onInput=${(e) => setConstraintModelMode(e.target.value)}
-            class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            style="flex: 0 0 auto; min-width: 140px;"
+            onInput=${(e) => { setConstraintModelMode(e.target.value); emitChange({ constraintModelMode: e.target.value }); }}
+            class="px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            style="flex: 0 0 auto; min-width: 140px; max-width: 160px;"
           >
             <option value="">-- None --</option>
             <option value="contains">contains</option>
@@ -886,7 +890,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
           <input
             type="text"
             value=${constraintModelPattern}
-            onInput=${(e) => setConstraintModelPattern(e.target.value)}
+            onInput=${(e) => { setConstraintModelPattern(e.target.value); emitChange({ constraintModelPattern: e.target.value }); }}
             placeholder="e.g., Opus 4.6"
             disabled=${!constraintModelMode}
             class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!constraintModelMode ? "opacity-50 cursor-not-allowed" : ""}"
@@ -900,20 +904,14 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         >
         <select
           value=${type}
-          onChange=${(e) => {
-            setType(e.target.value);
-            if (e.target.value) setTypeError(false);
-          }}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${typeError ? "ring-2 ring-red-500" : "focus:ring-blue-500"}"
+          onChange=${(e) => { setType(e.target.value); emitChange({ type: e.target.value }); }}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="">-- Select agent type --</option>
           ${agentTypes.map(
             (t) => html`<option key=${t} value=${t}>${t}</option>`,
           )}
         </select>
-        ${typeError && html`<p class="text-xs text-red-400 mt-1">
-          Agent type is required.
-        </p>`}
         <p class="text-xs text-gray-500 mt-1">
           Servers with the same type share prompts and agent configuration.
         </p>
@@ -928,7 +926,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="text"
           value=${tags}
-          onInput=${(e) => setTags(e.target.value)}
+          onInput=${(e) => { setTags(e.target.value); emitChange({ tags: e.target.value }); }}
           placeholder="e.g., coding, fast-model, production"
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
@@ -944,7 +942,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="checkbox"
           checked=${autoApprove}
-          onChange=${(e) => setAutoApprove(e.target.checked)}
+          onChange=${(e) => { setAutoApprove(e.target.checked); emitChange({ autoApprove: e.target.checked }); }}
           class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
         />
         <div class="flex-1">
@@ -1052,29 +1050,6 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         </div>
       `}
 
-      ${formError &&
-      html`
-        <div
-          class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
-        >
-          ⚠️ ${formError}
-        </div>
-      `}
-
-      <div class="flex justify-end gap-2">
-        <button
-          onClick=${onCancel}
-          class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick=${handleSave}
-          class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
-        >
-          Save
-        </button>
-      </div>
     </div>
   `;
 }
@@ -1743,6 +1718,28 @@ export function SettingsDialog({
       return;
     }
 
+    // Validate all ACP servers have required fields
+    for (const srv of acpServers) {
+      if (!srv.name || !srv.name.trim()) {
+        setError("All ACP servers must have a name");
+        setActiveTab("servers");
+        return;
+      }
+      if (!srv.command || !srv.command.trim()) {
+        setError(`ACP server "${srv.name}" must have a command`);
+        setActiveTab("servers");
+        return;
+      }
+    }
+    // Check for duplicate server names
+    const serverNames = acpServers.map((s) => s.name.trim());
+    const duplicates = serverNames.filter((n, i) => serverNames.indexOf(n) !== i);
+    if (duplicates.length > 0) {
+      setError(`Duplicate ACP server name: "${duplicates[0]}"`);
+      setActiveTab("servers");
+      return;
+    }
+
     if (authEnabled && authUsername.trim()) {
       const usernameError = validateUsername(authUsername);
       if (usernameError) {
@@ -2123,28 +2120,13 @@ export function SettingsDialog({
   };
 
   const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags, constraints) => {
-    if (!newName.trim() || !newCommand.trim()) {
-      return "Server name and command cannot be empty";
-    }
-    if (!newType || !newType.trim()) {
-      return "Please select an agent type";
-    }
-
-    // Check for duplicate name (excluding current)
-    if (
-      newName !== oldName &&
-      acpServers.some((s) => s.name === newName.trim())
-    ) {
-      return "A server with this name already exists";
-    }
-
-    // Update server (prompts are now read-only from files)
+    // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
       acpServers.map((s) => {
         if (s.name !== oldName) return s;
         const updated = {
-          name: newName.trim(),
-          command: newCommand.trim(),
+          name: (newName || "").trim() || oldName, // Fall back to old name if empty
+          command: (newCommand || "").trim() || s.command, // Fall back to old command if empty
           prompts: s.prompts, // Preserve existing prompts (read-only from files)
           source: s.source, // Preserve source (rcfile or settings)
           auto_approve: autoApprove || undefined, // undefined to omit if false
@@ -2160,39 +2142,28 @@ export function SettingsDialog({
       }),
     );
 
-    // Update workspaces that reference this server
-    if (newName !== oldName) {
+    // Update workspaces and editingServer tracking for renames
+    const trimmedNewName = (newName || "").trim();
+    if (trimmedNewName && trimmedNewName !== oldName) {
+      // Keep the edit form open on the renamed server
+      if (editingServer === oldName) {
+        setEditingServer(trimmedNewName);
+      }
       setWorkspaces(
         workspaces.map((ws) =>
-          ws.acp_server === oldName
-            ? { ...ws, acp_server: newName.trim() }
-            : ws,
+          ws.acp_server === oldName ? { ...ws, acp_server: trimmedNewName } : ws,
         ),
       );
-
-      // Track server rename so backend can update sessions
-      // If oldName was already a rename target, follow the chain to the original name
-      const trimmedNewName = newName.trim();
+      // Track server rename
       const originalName = Object.entries(serverRenames).find(
         ([, target]) => target === oldName,
       )?.[0];
       if (originalName) {
-        // Update the existing rename entry
-        setServerRenames({
-          ...serverRenames,
-          [originalName]: trimmedNewName,
-        });
+        setServerRenames({ ...serverRenames, [originalName]: trimmedNewName });
       } else {
-        // Add a new rename entry
-        setServerRenames({
-          ...serverRenames,
-          [oldName]: trimmedNewName,
-        });
+        setServerRenames({ ...serverRenames, [oldName]: trimmedNewName });
       }
     }
-
-    setEditingServer(null);
-    setError("");
   };
 
   const removeServer = (serverName) => {
@@ -2294,7 +2265,7 @@ export function SettingsDialog({
       onClick=${canClose ? handleClose : null}
     >
       <div
-        class="bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
+        class="settings-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
         onClick=${(e) => e.stopPropagation()}
       >
         <!-- Header -->
@@ -2519,7 +2490,7 @@ export function SettingsDialog({
                                           <${ServerEditForm}
                                             server=${srv}
                                             agentTypes=${agentTypes}
-                                            onSave=${(name, cmd, type, autoApprove, env, tags, constraints) =>
+                                            onChange=${(name, cmd, type, autoApprove, env, tags, constraints) =>
                                               updateServer(
                                                 srv.name,
                                                 name,
@@ -2530,8 +2501,6 @@ export function SettingsDialog({
                                                 tags,
                                                 constraints,
                                               )}
-                                            onCancel=${() =>
-                                              setEditingServer(null)}
                                           />
                                         `
                                       : html`
@@ -2614,7 +2583,7 @@ export function SettingsDialog({
                                               </button>
                                               <button
                                                 onClick=${() =>
-                                                  setEditingServer(srv.name)}
+                                                  setEditingServer(editingServer === srv.name ? null : srv.name)}
                                                 class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                                 title="Edit server"
                                               >

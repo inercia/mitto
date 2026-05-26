@@ -77,6 +77,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const [mcpInstallError, setMcpInstallError] = useState("");
   const [mcpInstallSuccess, setMcpInstallSuccess] = useState("");
 
+  const [mcpRemoveLoading, setMcpRemoveLoading] = useState(false);
+  const mcpRemoveScopeRef = useRef("");
+
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
 
@@ -425,14 +428,69 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     }
   }, [mcpInstallJson, mcpInstallName, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools]);
 
+  const handleMcpRemove = useCallback(async (serverName, scope) => {
+    setMcpRemoveLoading(true);
+    try {
+      const acpServer = editAcpServer || selectedWorkspace?.acp_server;
+      const res = await secureFetch(apiUrl("/api/workspace-mcp-remove"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          acp_server: acpServer,
+          dir: selectedWorkspace?.working_dir,
+          scope: scope || mcpTools?.mcp_scopes?.[0] || "",
+          name: serverName,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (!data.success) {
+        setMcpToolsError(data.message || "Failed to remove MCP server");
+      }
+      // Refresh the MCP tools list
+      await loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+    } catch (err) {
+      setMcpToolsError("Failed to remove MCP server: " + err.message);
+    } finally {
+      setMcpRemoveLoading(false);
+    }
+  }, [editAcpServer, selectedWorkspace, mcpTools, loadMcpTools]);
+
+  const handleMcpRemoveConfirm = useCallback((serverName) => {
+    const defaultScope = mcpTools?.mcp_scopes?.[0] || "";
+    mcpRemoveScopeRef.current = defaultScope;
+    setConfirmDialog({
+      title: "Remove MCP Server",
+      message: `Remove MCP server "${serverName}"?`,
+      confirmLabel: "Remove",
+      confirmVariant: "danger",
+      children: mcpTools?.mcp_scopes?.length > 0 ? html`
+        <div class="mt-3">
+          <label class="block text-sm text-gray-400 mb-1">Scope</label>
+          <select
+            value=${defaultScope}
+            onInput=${(e) => { mcpRemoveScopeRef.current = e.target.value; }}
+            class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white"
+          >
+            ${mcpTools.mcp_scopes.map(scope => html`
+              <option key=${scope} value=${scope}>${scope}</option>
+            `)}
+          </select>
+        </div>
+      ` : null,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await handleMcpRemove(serverName, mcpRemoveScopeRef.current || defaultScope);
+      },
+    });
+  }, [mcpTools, handleMcpRemove]);
+
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
-    const server = acpServers.find((s) => s.name === editAcpServer);
     return {
       ...ws,
       acp_server: editAcpServer,
-      acp_command: server ? server.command : ws.acp_command,
       auxiliary_acp_server: editAuxAcpServer || undefined,
       restricted_runner: editRunner,
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
@@ -590,7 +648,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       uuid: crypto.randomUUID(),
       working_dir: "",
       acp_server: server.name,
-      acp_command: server.command,
       restricted_runner: "exec",
     };
     const key = getWorkspaceKey(newWs);
@@ -641,7 +698,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       uuid: crypto.randomUUID(),
       working_dir: ws.working_dir,
       acp_server: altName,
-      acp_command: altSrv.command,
       restricted_runner: ws.restricted_runner || "exec",
       ...(ws.name && { name: ws.name }),
       ...(ws.code && { code: ws.code }),
@@ -674,7 +730,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       uuid: crypto.randomUUID(),
       working_dir: firstWs.working_dir,
       acp_server: unusedServer,
-      acp_command: server.command,
       restricted_runner: "exec",
       ...(firstWs.name && { name: firstWs.name }),
       ...(firstWs.code && { code: firstWs.code }),
@@ -1618,20 +1673,40 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                               </div>`
                             : html`
                               <div class="border border-mitto-border rounded-lg overflow-hidden">
-                                <table class="w-full text-sm">
+                                <table class="w-full text-sm" style="table-layout: fixed;">
+                                  <colgroup>
+                                    <col style="width: 140px;" />
+                                    <col />
+                                    ${mcpTools?.has_mcp_remove && html`<col style="width: 44px;" />`}
+                                  </colgroup>
                                   <thead>
                                     <tr class="bg-slate-800/50">
                                       <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Name</th>
                                       <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Command / URL</th>
+                                      ${mcpTools?.has_mcp_remove && html`
+                                        <th class="px-2 py-2.5"></th>
+                                      `}
                                     </tr>
                                   </thead>
                                   <tbody>
                                     ${mcpTools?.servers?.map((srv, i) => html`
                                       <tr key=${srv.name || i} class="border-t border-mitto-border hover:bg-slate-800/30">
-                                        <td class="px-4 py-2.5 font-medium">${srv.name}</td>
-                                        <td class="px-4 py-2.5 text-gray-400 font-mono text-xs truncate max-w-[400px]" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
+                                        <td class="px-4 py-2.5 font-medium truncate" title=${srv.name}>${srv.name}</td>
+                                        <td class="px-4 py-2.5 text-gray-400 font-mono text-xs truncate" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
                                           ${srv.url || [srv.command, ...(srv.args || [])].join(" ")}
                                         </td>
+                                        ${mcpTools?.has_mcp_remove && html`
+                                          <td class="px-2 py-2.5 text-center">
+                                            <button
+                                              onClick=${() => handleMcpRemoveConfirm(srv.name)}
+                                              class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
+                                              title="Remove MCP server"
+                                              disabled=${mcpRemoveLoading}
+                                            >
+                                              <${TrashIcon} className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                                            </button>
+                                          </td>
+                                        `}
                                       </tr>
                                     `)}
                                   </tbody>
@@ -1679,7 +1754,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       confirmVariant=${confirmDialog?.confirmVariant || "primary"}
       onConfirm=${confirmDialog?.onConfirm}
       onCancel=${() => setConfirmDialog(null)}
-    />
+    >
+      ${confirmDialog?.children}
+    <//>
 
     <!-- MCP Install Dialog -->
     <${ConfirmDialog}

@@ -11,6 +11,8 @@ import {
   FolderIcon,
   PeriodicFilledIcon,
   ChevronDownIcon,
+  SettingsIcon,
+  SlidersIcon,
 } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -189,7 +191,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
 export function SessionPanel({
   isOpen,
   onClose,
-  activeTab = "changes",
+  activeTab = "properties",
   onTabChange,
   sessionId,
   sessionInfo,
@@ -227,7 +229,7 @@ export function SessionPanel({
       }, 150);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, shouldRender]);
+  }, [isOpen]);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -625,28 +627,33 @@ export function SessionPanel({
           <!-- Tab switcher -->
           <div class="flex border-b border-slate-700 flex-shrink-0">
             <button
-              class="flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${currentTab === "changes" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
-              onClick=${() => handleTabChange("changes")}
-            >
-              Changes
-            </button>
-            <button
-              class="flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${currentTab === "properties" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
+              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "properties" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
               onClick=${() => handleTabChange("properties")}
+              title="Properties"
             >
-              Properties
+              <${SettingsIcon} className="w-4 h-4" />
             </button>
             <button
-              class="flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${currentTab === "userdata" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
-              onClick=${() => handleTabChange("userdata")}
+              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "changes" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
+              onClick=${() => handleTabChange("changes")}
+              title="Changes"
             >
-              User Data
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+              </svg>
+            </button>
+            <button
+              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "advanced" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
+              onClick=${() => handleTabChange("advanced")}
+              title="Advanced"
+            >
+              <${SlidersIcon} className="w-4 h-4" />
             </button>
           </div>
 
-          <!-- Tab content -->
-          <div class="flex-1 overflow-y-auto">
-            ${currentTab === "changes" ? renderChangesContent() : currentTab === "properties" ? renderPropertiesContent() : renderUserDataContent()}
+          <!-- Tab content (key forces Preact to fully remount on tab switch) -->
+          <div class="flex-1 overflow-y-auto" key=${currentTab}>
+            ${currentTab === "properties" ? renderPropertiesContent() : currentTab === "changes" ? renderChangesContent() : renderAdvancedTabContent()}
           </div>
         </div>
       </div>
@@ -943,37 +950,6 @@ export function SessionPanel({
           </div>
         </div>
 
-        <!-- Session Config Options -->
-        ${configOptions?.length > 0 && configOptions.map((configOption) => html`
-          <div key=${configOption.id}>
-            <label class="block text-sm font-medium text-slate-400 mb-2">${configOption.name}</label>
-            ${configOption.type === "select" && html`
-              <${ConfigOptionSelect} configOption=${configOption} onSetConfigOption=${onSetConfigOption} isStreaming=${isStreaming} />
-            `}
-            ${configOption.type === "toggle" && html`
-              <div class="flex items-center justify-between">
-                <button
-                  class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${configOption.current_value === "true" ? "bg-blue-600" : "bg-slate-600"}"
-                  role="switch"
-                  aria-checked=${configOption.current_value === "true"}
-                  onClick=${() => onSetConfigOption?.(configOption.id, configOption.current_value === "true" ? "false" : "true")}
-                  disabled=${isStreaming}
-                  title=${isStreaming ? `Cannot change ${configOption.name.toLowerCase()} while streaming` : configOption.description || `Toggle ${configOption.name.toLowerCase()}`}
-                >
-                  <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${configOption.current_value === "true" ? "translate-x-5" : "translate-x-0"}" />
-                </button>
-              </div>
-              ${configOption.description && html`<p class="mt-1 text-xs text-slate-500">${configOption.description}</p>`}
-            `}
-            ${configOption.type !== "select" && configOption.type !== "toggle" && html`
-              <div class="w-full bg-slate-700/50 text-slate-400 rounded-lg px-3 py-2 text-sm border border-slate-600" title=${`Unsupported config type: ${configOption.type}`}>
-                ${configOption.current_value || "(not set)"}
-              </div>
-              ${configOption.description && html`<p class="mt-1 text-xs text-slate-500">${configOption.description}</p>`}
-            `}
-          </div>
-        `)}
-
         <!-- Periodic Prompts Section -->
         ${periodicConfig?.enabled && html`
           <div>
@@ -1024,9 +1000,112 @@ export function SessionPanel({
           </div>
         `}
 
+        <!-- User Data Section -->
+        ${(() => {
+          const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
+          if (isLoadingUserData) return html`<div class="text-sm text-slate-500">Loading user data...</div>`;
+          if (!hasSchema) return null;
+          return html`
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-2">User Data</label>
+              ${userDataError && html`<div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1 mb-2">${userDataError}</div>`}
+              <div class="space-y-3">
+                ${userDataSchema.fields.map((field) => {
+                  const value = getAttributeValue(field.name);
+                  const isEditing = editingAttribute === field.name;
+                  return html`
+                    <div key=${field.name}>
+                      <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>${field.name}</label>
+                      ${isEditing
+                        ? html`
+                            <div class="flex items-center gap-2">
+                              <input
+                                ref=${attributeInputRef}
+                                type=${field.type === "url" ? "url" : "text"}
+                                class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                                value=${editedAttributeValue}
+                                onInput=${(e) => setEditedAttributeValue(e.target.value)}
+                                onKeyDown=${handleAttributeKeyDown}
+                                onBlur=${() => { setTimeout(() => { if (editingAttribute && !isSavingAttribute) setEditingAttribute(null); }, 150); }}
+                                disabled=${isSavingAttribute}
+                              />
+                              <button class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400" onClick=${handleSaveAttribute} title="Save" disabled=${isSavingAttribute}>
+                                <${CheckIcon} className="w-4 h-4" />
+                              </button>
+                            </div>
+                          `
+                        : html`
+                            <div class="flex items-center gap-2 group">
+                              <span
+                                class="flex-1 text-sm truncate ${value ? "text-slate-300" : "text-slate-600 italic"} ${field.type === "url" && value ? "cursor-pointer hover:text-blue-400" : ""}"
+                                onClick=${() => {
+                                  if (field.type === "url" && value) window.open(value, "_blank", "noopener,noreferrer");
+                                }}
+                                title=${value || "(not set)"}
+                              >
+                                ${value || "(not set)"}
+                              </span>
+                              <button
+                                class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
+                                onClick=${() => handleStartEditAttribute({ name: field.name, value })}
+                                title="Edit"
+                              >
+                                <${EditIcon} className="w-3 h-3" />
+                              </button>
+                            </div>
+                          `}
+                    </div>
+                  `;
+                })}
+              </div>
+            </div>
+          `;
+        })()}
+      </div>
+    `;
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Advanced tab content (MCP Tools + Permissions)
+  // ---------------------------------------------------------------------------
+  function renderAdvancedTabContent() {
+    return html`
+      <div class="p-4 space-y-6">
+        <!-- Session Config Options (Mode, Model) -->
+        ${configOptions?.length > 0 && configOptions.map((configOption) => html`
+          <div key=${configOption.id}>
+            <label class="block text-sm font-medium text-slate-400 mb-2">${configOption.name}</label>
+            ${configOption.type === "select" && html`
+              <${ConfigOptionSelect} configOption=${configOption} onSetConfigOption=${onSetConfigOption} isStreaming=${isStreaming} />
+            `}
+            ${configOption.type === "toggle" && html`
+              <div class="flex items-center justify-between">
+                <button
+                  class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${configOption.current_value === "true" ? "bg-blue-600" : "bg-slate-600"}"
+                  role="switch"
+                  aria-checked=${configOption.current_value === "true"}
+                  onClick=${() => onSetConfigOption?.(configOption.id, configOption.current_value === "true" ? "false" : "true")}
+                  disabled=${isStreaming}
+                  title=${isStreaming ? `Cannot change ${configOption.name.toLowerCase()} while streaming` : configOption.description || `Toggle ${configOption.name.toLowerCase()}`}
+                >
+                  <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${configOption.current_value === "true" ? "translate-x-5" : "translate-x-0"}" />
+                </button>
+              </div>
+              ${configOption.description && html`<p class="mt-1 text-xs text-slate-500">${configOption.description}</p>`}
+            `}
+            ${configOption.type !== "select" && configOption.type !== "toggle" && html`
+              <div class="w-full bg-slate-700/50 text-slate-400 rounded-lg px-3 py-2 text-sm border border-slate-600" title=${`Unsupported config type: ${configOption.type}`}>
+                ${configOption.current_value || "(not set)"}
+              </div>
+              ${configOption.description && html`<p class="mt-1 text-xs text-slate-500">${configOption.description}</p>`}
+            `}
+          </div>
+        `)}
+
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools && mcpTools.length > 0 && html`
-          <div class="pt-4">
+          <div>
             <button type="button" class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors" style="background: transparent; border: none; padding: 0; cursor: pointer;" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
               <span class="transition-transform ${isMcpToolsExpanded ? "" : "-rotate-90"}">
                 <${ChevronDownIcon} className="w-4 h-4" />
@@ -1047,17 +1126,17 @@ export function SessionPanel({
           </div>
         `}
 
-        <!-- Advanced Section (Collapsible) -->
-        ${renderAdvancedSection()}
+        <!-- Permissions Section (Collapsible) -->
+        ${renderPermissionsSection()}
       </div>
     `;
   }
 
 
   // ---------------------------------------------------------------------------
-  // Advanced section (feature flags)
+  // Permissions section (feature flags)
   // ---------------------------------------------------------------------------
-  function renderAdvancedSection() {
+  function renderPermissionsSection() {
     if (!availableFlags || availableFlags.length === 0) return null;
 
     return html`
@@ -1071,7 +1150,7 @@ export function SessionPanel({
           <span class="transition-transform ${isAdvancedExpanded ? "" : "-rotate-90"}">
             <${ChevronDownIcon} className="w-4 h-4" />
           </span>
-          <span>Advanced</span>
+          <span>Permissions</span>
         </button>
 
         ${isAdvancedExpanded && html`
@@ -1109,100 +1188,5 @@ export function SessionPanel({
     `;
   }
 
-  // ---------------------------------------------------------------------------
-  // User Data tab content
-  // ---------------------------------------------------------------------------
-  function renderUserDataContent() {
-    const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
-
-    if (isLoadingUserData) {
-      return html`<div class="p-4 text-sm text-slate-500">Loading...</div>`;
-    }
-
-    if (!hasSchema) {
-      return html`
-        <div class="p-4 text-sm text-slate-500 italic">
-          No user data schema configured for this workspace.
-        </div>
-      `;
-    }
-
-    return html`
-      <div class="p-4 space-y-3">
-        ${userDataError && html`<div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1">${userDataError}</div>`}
-        ${userDataSchema.fields.map((field) => {
-          const value = getAttributeValue(field.name);
-          const isEditing = editingAttribute === field.name;
-
-          return html`
-            <div key=${field.name}>
-              <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>${field.name}</label>
-              ${isEditing
-                ? html`
-                    <div class="flex items-center gap-2">
-                      <input
-                        ref=${attributeInputRef}
-                        type=${field.type === "url" ? "url" : "text"}
-                        class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
-                        value=${editedAttributeValue}
-                        onInput=${(e) => setEditedAttributeValue(e.target.value)}
-                        onKeyDown=${handleAttributeKeyDown}
-                        onBlur=${() => { setTimeout(() => { if (editingAttribute === field.name && !isSavingAttribute) setEditingAttribute(null); }, 150); }}
-                        disabled=${isSavingAttribute}
-                        placeholder=${field.description ? field.description : field.type === "url" ? "https://..." : "Enter value..."}
-                      />
-                      <button class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400" onClick=${handleSaveAttribute} title="Save" disabled=${isSavingAttribute}>
-                        <${CheckIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `
-                : html`
-                    <div class="flex items-center gap-2 group">
-                      ${field.type === "url" && value
-                        ? html`<a href=${value} target="_blank" rel="noopener noreferrer" class="flex-1 text-sm text-blue-400 hover:underline truncate" title=${value}>${value}</a>`
-                        : (() => {
-                            if (value && looksLikeFilePath(value)) {
-                              const apiPrefix = getAPIPrefix();
-                              const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
-                              const wsPath = window.mittoCurrentWorkspace || "";
-                              const relativePath = value.replace(/^\.\//, "");
-                              let viewerUrl = null;
-                              if (workspaceUUID) {
-                                viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
-                                if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
-                              }
-                              const href = viewerUrl || "#";
-                              return html`
-                                <a
-                                  href=${href}
-                                  class="file-link flex-1 text-sm text-blue-400 hover:underline truncate"
-                                  title=${value}
-                                  onClick=${(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    if (!viewerUrl) return;
-                                    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
-                                      const fullUrl = new URL(viewerUrl, window.location.origin).href;
-                                      window.mittoOpenViewer(fullUrl);
-                                    } else {
-                                      window.open(viewerUrl, "_blank", "noopener,noreferrer");
-                                    }
-                                  }}
-                                >${value}</a>
-                              `;
-                            }
-                            return html`<span class="flex-1 text-sm truncate ${!value ? "text-slate-500 italic" : ""}" title=${value}>${value || "Not set"}</span>`;
-                          })()}
-                      <button class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100" onClick=${() => handleStartEditAttribute({ name: field.name, value })} title="Edit">
-                        <${EditIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `}
-            </div>
-          `;
-        })}
-      </div>
-    `;
-  }
 
 }
