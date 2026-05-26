@@ -97,6 +97,7 @@
       .actions {
         display: flex;
         gap: 8px;
+        align-items: center;
       }
 
       .btn {
@@ -405,6 +406,16 @@
         background: rgba(255,255,255,0.2);
         border-color: rgba(255,255,255,0.3);
         color: #fff;
+      }
+
+      /* Header edit button — match toggle-btn height to prevent header height shift */
+      #editBtn {
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      #editControls .btn {
+        padding: 4px 10px;
+        font-size: 12px;
       }
 
       /* Edit / Save button styles */
@@ -791,6 +802,7 @@
           let codeEditor = null;
           let editorLoadPromise = null; // tracks in-flight CodeMirror load
           let diffEditor = null;
+          let renderedStale = false; // true after save — rendered view needs refresh
 
           function hideAll() {
             document.getElementById("codeBlock").style.display = "none";
@@ -808,12 +820,43 @@
             document.querySelectorAll(".toggle-btn").forEach(btn => btn.classList.remove("active"));
           }
 
-          function showRendered() {
+          async function showRendered() {
             hideAll();
             document.getElementById("fontSizeToggle").style.display = "none";
 
             if (isMarkdown) {
-              document.getElementById("markdownContent").style.display = "block";
+              const markdownEl = document.getElementById("markdownContent");
+              // Re-fetch rendered HTML if content was saved since last render
+              if (renderedStale) {
+                renderedStale = false;
+                try {
+                  const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
+                  const renderResponse = await fetch(renderUrl);
+                  if (renderResponse.ok) {
+                    let htmlContent = await renderResponse.text();
+                    if (htmlContent.trimStart().startsWith("<!DOCTYPE") || htmlContent.trimStart().toLowerCase().startsWith("<html")) {
+                      const parser = new DOMParser();
+                      const doc = parser.parseFromString(htmlContent, "text/html");
+                      const article = doc.querySelector("article");
+                      htmlContent = article ? article.innerHTML : doc.body.innerHTML;
+                    }
+                    markdownEl.innerHTML = htmlContent;
+                    // Rewrite relative image paths
+                    markdownEl.querySelectorAll('img').forEach(img => {
+                      const src = img.getAttribute('src');
+                      if (!src) return;
+                      if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
+                      const resolved = resolveWorkspacePath(src);
+                      if (resolved) {
+                        img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+                      }
+                    });
+                  }
+                } catch (err) {
+                  console.warn("Failed to refresh rendered markdown:", err);
+                }
+              }
+              markdownEl.style.display = "block";
             } else if (isHTML) {
               const iframe = document.getElementById("renderedFrame");
               iframe.srcdoc = rawContent;
@@ -849,8 +892,13 @@
             // If CodeMirror is currently loading, wait for it instead of flashing the hljs fallback
             if (editorLoadPromise) {
               await editorLoadPromise;
-              if (currentMode === "source" && codeEditor && codeEditor.isInitialized()) {
+              if (currentMode !== "source") return;
+              if (codeEditor && codeEditor.isInitialized()) {
                 document.getElementById("editorContainer").style.display = "block";
+              } else {
+                // CodeMirror failed — show hljs fallback so user sees content (not blank page)
+                document.getElementById("codeBlock").style.display = "block";
+                document.getElementById("editBtn").style.display = "none";
               }
               return;
             }
@@ -890,6 +938,8 @@
                 }
               } catch (err) {
                 console.warn("CodeMirror failed to load, using highlight.js fallback:", err);
+                // Reset codeEditor so future attempts don't see a half-constructed object
+                codeEditor = null;
                 // highlight.js fallback is already showing — leave it
                 // Hide edit button since editing requires CodeMirror
                 document.getElementById("editBtn").style.display = "none";
@@ -1125,6 +1175,9 @@
                 // Reset diff cache so next diff view reflects the save
                 diffLoaded = false;
                 diffContent = null;
+
+                // Mark rendered view as stale so it refreshes on next show
+                renderedStale = true;
 
                 // Destroy diff editor so it gets re-created with fresh content
                 if (diffEditor) {
