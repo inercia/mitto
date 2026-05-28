@@ -28,6 +28,15 @@ type GCConfig struct {
 	// than user-created sessions and should be reclaimed faster to reduce memory pressure.
 	// Default: 5m (same as IdleTimeout). Set shorter than IdleTimeout for faster child GC.
 	ChildIdleTimeout time.Duration
+	// PeriodicSuspendThreshold is the minimum time until the next periodic prompt
+	// before a periodic session is eligible for suspension. Periodic sessions whose
+	// next run is farther away than this threshold will have their ACP connection
+	// closed even if they have active WebSocket observers. The session is NOT archived —
+	// it remains visible in the sidebar and resumes transparently via ensure_resumed
+	// when the user focuses it, or via the PeriodicRunner when the prompt is due.
+	// This saves significant memory by stopping MCP server processes for idle periodic
+	// conversations. Set to 0 to disable periodic suspension (default: 30m).
+	PeriodicSuspendThreshold time.Duration
 }
 
 type SessionInfo struct {
@@ -65,13 +74,14 @@ type SessionCloseFunc func(sessionID string)
 // defaultGCConfig returns a GCConfig with sensible defaults.
 func defaultGCConfig() GCConfig {
 	return GCConfig{
-		Interval:            30 * time.Second,
-		GracePeriod:         60 * time.Second,
-		ObserverGracePeriod: 60 * time.Second,
-		IdleTimeout:         5 * time.Minute,
-		ChildIdleTimeout:    5 * time.Minute,
-		MaxClosuresPerCycle: 3,
-		AuxIdleTimeout:      10 * time.Minute,
+		Interval:                 30 * time.Second,
+		GracePeriod:              60 * time.Second,
+		ObserverGracePeriod:      60 * time.Second,
+		IdleTimeout:              5 * time.Minute,
+		ChildIdleTimeout:         5 * time.Minute,
+		MaxClosuresPerCycle:      3,
+		AuxIdleTimeout:           10 * time.Minute,
+		PeriodicSuspendThreshold: 30 * time.Minute,
 	}
 }
 
@@ -104,6 +114,13 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 	if config.ChildIdleTimeout <= 0 {
 		config.ChildIdleTimeout = defaultGCConfig().ChildIdleTimeout
 	}
+	// PeriodicSuspendThreshold: 0 means "not set" → use default.
+	// Negative means "explicitly disabled" → set to 0 so RunGCOnce skips the heuristic.
+	if config.PeriodicSuspendThreshold == 0 {
+		config.PeriodicSuspendThreshold = defaultGCConfig().PeriodicSuspendThreshold
+	} else if config.PeriodicSuspendThreshold < 0 {
+		config.PeriodicSuspendThreshold = 0
+	}
 	// Note: MaxClosuresPerCycle == 0 means unlimited — no default applied.
 
 	m.gcConfig = config
@@ -123,6 +140,18 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 		m.logger.Debug("ACP process GC started",
 			"interval", config.Interval,
 			"grace_period", config.GracePeriod)
+	}
+}
+
+// UpdatePeriodicSuspendThreshold updates the periodic suspend threshold on the
+// running GC. This is safe to call while the GC is running. A threshold of 0
+// disables the periodic suspend heuristic.
+func (m *ACPProcessManager) UpdatePeriodicSuspendThreshold(d time.Duration) {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	m.gcConfig.PeriodicSuspendThreshold = d
+	if m.logger != nil {
+		m.logger.Info("GC: updated periodic suspend threshold", "threshold", d)
 	}
 }
 
@@ -172,6 +201,13 @@ func (m *ACPProcessManager) gcLoop() {
 // Tier 1 closes idle sessions — those with no WebSocket observers, no active
 // prompt, an empty queue, and no periodic prompt due within 2× the GC interval.
 //
+// Periodic suspend heuristic: periodic sessions whose next prompt is farther
+// away than PeriodicSuspendThreshold (default 30m) are eligible for suspension
+// even when they have active WebSocket observers. The session is NOT archived —
+// it stays visible and resumes transparently via ensure_resumed (user focus)
+// or PeriodicRunner (when the prompt is due). This saves memory by stopping
+// MCP server processes for idle periodic conversations.
+//
 // Tier 2 stops shared ACP processes that have had no active sessions for longer
 // than the configured grace period.
 //
@@ -213,52 +249,77 @@ gcTier1:
 				}
 				continue
 			}
-			if s.HasObservers {
-				if m.logger != nil {
-					m.logger.Debug("GC: skipping session (has observers)",
-						"session_id", s.SessionID,
-						"workspace_uuid", workspaceUUID)
+
+			// Determine if this is a periodic session eligible for suspension.
+			// A periodic session qualifies when:
+			//   1. It has a NextPeriodicAt set (i.e., has an enabled periodic prompt)
+			//   2. The next prompt is farther away than PeriodicSuspendThreshold
+			//   3. The session is not actively prompting (checked above)
+			//   4. The queue is empty (checked below)
+			// When eligible, we bypass the observer, connected-client, and idle-timeout
+			// checks — the session is suspended even if the user has it open in the
+			// sidebar. The user will see it transition to "not running" and it resumes
+			// instantly via ensure_resumed when they focus it.
+			periodicSuspendEligible := false
+			if m.gcConfig.PeriodicSuspendThreshold > 0 && s.NextPeriodicAt != nil {
+				suspendThreshold := now.Add(m.gcConfig.PeriodicSuspendThreshold)
+				if s.NextPeriodicAt.After(suspendThreshold) {
+					periodicSuspendEligible = true
 				}
-				continue
 			}
-			// Skip sessions where observers recently disconnected — they may be
-			// in the middle of a reconnect (e.g., macOS app staggered reconnect).
-			if !s.LastObserverRemovedAt.IsZero() && now.Sub(s.LastObserverRemovedAt) < m.gcConfig.ObserverGracePeriod {
-				if m.logger != nil {
-					m.logger.Debug("GC: skipping session (observers recently disconnected)",
-						"session_id", s.SessionID,
-						"workspace_uuid", workspaceUUID,
-						"observer_removed_ago", now.Sub(s.LastObserverRemovedAt))
+
+			if !periodicSuspendEligible {
+				// Standard idle-session checks (apply only to non-suspend-eligible sessions).
+				if s.HasObservers {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping session (has observers)",
+							"session_id", s.SessionID,
+							"workspace_uuid", workspaceUUID)
+					}
+					continue
 				}
-				continue
-			}
-			// Skip sessions with connected WebSocket clients — they may be
-			// reconnecting or haven't sent load_events yet.
-			if s.HasConnectedClients {
-				if m.logger != nil {
-					m.logger.Debug("GC: skipping session (has connected clients)",
-						"session_id", s.SessionID,
-						"workspace_uuid", workspaceUUID)
+				// Skip sessions where observers recently disconnected — they may be
+				// in the middle of a reconnect (e.g., macOS app staggered reconnect).
+				if !s.LastObserverRemovedAt.IsZero() && now.Sub(s.LastObserverRemovedAt) < m.gcConfig.ObserverGracePeriod {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping session (observers recently disconnected)",
+							"session_id", s.SessionID,
+							"workspace_uuid", workspaceUUID,
+							"observer_removed_ago", now.Sub(s.LastObserverRemovedAt))
+					}
+					continue
 				}
-				continue
-			}
-			// Skip sessions with recent activity — keepalive, prompt, or observer
-			// changes within the idle timeout window. Child sessions use ChildIdleTimeout
-			// which can be set shorter than IdleTimeout for faster GC under memory pressure.
-			idleTimeout := m.gcConfig.IdleTimeout
-			if s.IsChild && m.gcConfig.ChildIdleTimeout > 0 {
-				idleTimeout = m.gcConfig.ChildIdleTimeout
-			}
-			if !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < idleTimeout {
-				if m.logger != nil {
-					m.logger.Debug("GC: skipping session (recent activity)",
-						"session_id", s.SessionID,
-						"workspace_uuid", workspaceUUID,
-						"last_activity_ago", now.Sub(s.LastActivityAt),
-						"is_child", s.IsChild)
+				// Skip sessions with connected WebSocket clients — they may be
+				// reconnecting or haven't sent load_events yet.
+				if s.HasConnectedClients {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping session (has connected clients)",
+							"session_id", s.SessionID,
+							"workspace_uuid", workspaceUUID)
+					}
+					continue
 				}
-				continue
+				// Skip sessions with recent activity — keepalive, prompt, or observer
+				// changes within the idle timeout window. Child sessions use ChildIdleTimeout
+				// which can be set shorter than IdleTimeout for faster GC under memory pressure.
+				idleTimeout := m.gcConfig.IdleTimeout
+				if s.IsChild && m.gcConfig.ChildIdleTimeout > 0 {
+					idleTimeout = m.gcConfig.ChildIdleTimeout
+				}
+				if !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < idleTimeout {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping session (recent activity)",
+							"session_id", s.SessionID,
+							"workspace_uuid", workspaceUUID,
+							"last_activity_ago", now.Sub(s.LastActivityAt),
+							"is_child", s.IsChild)
+					}
+					continue
+				}
 			}
+
+			// Queue and periodic-due-soon checks apply to both standard and
+			// periodic-suspend-eligible sessions.
 			if s.QueueLength > 0 {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping session (non-empty queue)",
@@ -281,10 +342,25 @@ gcTier1:
 				}
 			}
 
-			if m.logger != nil {
-				m.logger.Info("GC: closing idle session",
-					"session_id", s.SessionID,
-					"workspace_uuid", workspaceUUID)
+			if periodicSuspendEligible {
+				if m.logger != nil {
+					m.logger.Info("GC: suspending periodic session (next run far away)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID,
+						"next_periodic_at", s.NextPeriodicAt,
+						"threshold", m.gcConfig.PeriodicSuspendThreshold)
+				}
+				// Mark session as GC-suspended BEFORE closing, so the WebSocket
+				// auto-resume handler sees the flag and skips resume. This prevents
+				// the suspend/resume thrashing loop where reconnectAllSessionsStaggered
+				// immediately re-opens what the GC just closed.
+				m.MarkGCSuspended(s.SessionID)
+			} else {
+				if m.logger != nil {
+					m.logger.Info("GC: closing idle session",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID)
+				}
 			}
 			m.sessionClose(s.SessionID)
 			closedCount++

@@ -63,6 +63,17 @@ type ACPProcessManager struct {
 	sessionClose    SessionCloseFunc
 	gcMu            sync.Mutex // protects lastSessionSeen and gc lifecycle fields
 
+	// gcSuspendedSessions tracks session IDs that were intentionally suspended
+	// by the GC's periodic-suspend heuristic. When a periodic session's next run
+	// is far away, the GC closes it and adds it here. The WebSocket auto-resume
+	// handler checks this set and skips resume for flagged sessions, preventing
+	// a suspend/resume thrashing loop (GC closes → WS reconnects → auto-resume
+	// → GC closes again). The flag is cleared by:
+	//   - ensure_resumed (explicit user focus)
+	//   - PeriodicRunner (when the prompt is due)
+	//   - ResumeSession (any explicit resume call)
+	gcSuspendedSessions map[string]bool // protected by gcMu
+
 	// Global restart rate limiter — prevents cross-workspace restart cascades.
 	// When multiple workspaces crash simultaneously (e.g., system-wide OOM), individual
 	// per-process rate limiters are insufficient because each workspace independently
@@ -70,6 +81,35 @@ type ACPProcessManager struct {
 	globalRestartMu     sync.Mutex
 	globalRestartTimes  []time.Time
 	globalCooldownUntil time.Time
+}
+
+// MarkGCSuspended records that a session was intentionally suspended by the GC's
+// periodic-suspend heuristic. The WebSocket auto-resume handler checks this flag
+// and skips resume to prevent suspend/resume thrashing.
+func (m *ACPProcessManager) MarkGCSuspended(sessionID string) {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	if m.gcSuspendedSessions == nil {
+		m.gcSuspendedSessions = make(map[string]bool)
+	}
+	m.gcSuspendedSessions[sessionID] = true
+}
+
+// ClearGCSuspended removes the GC-suspended flag for a session, allowing
+// WebSocket auto-resume to proceed normally. Called by ensure_resumed (explicit
+// user focus), PeriodicRunner (when the prompt is due), and ResumeSession.
+func (m *ACPProcessManager) ClearGCSuspended(sessionID string) {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	delete(m.gcSuspendedSessions, sessionID)
+}
+
+// IsGCSuspended returns true if the session was intentionally suspended by the
+// GC and should not be auto-resumed by WebSocket reconnections.
+func (m *ACPProcessManager) IsGCSuspended(sessionID string) bool {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	return m.gcSuspendedSessions[sessionID]
 }
 
 // auxSessionKey uniquely identifies an auxiliary session.
