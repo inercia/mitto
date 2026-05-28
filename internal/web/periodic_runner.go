@@ -15,7 +15,7 @@ const (
 	DefaultPollInterval = 1 * time.Minute
 
 	// MaxPeriodicResumeFailures is the number of consecutive ACP resume failures
-	// after which a periodic session's schedule is automatically disabled.
+	// after which a periodic session is automatically archived.
 	MaxPeriodicResumeFailures = 3
 )
 
@@ -70,7 +70,7 @@ type PeriodicRunner struct {
 
 	// consecutiveFailures tracks how many times in a row a session's periodic
 	// prompt delivery failed due to ACP resume errors. After MaxPeriodicResumeFailures
-	// consecutive failures, the periodic config is automatically disabled.
+	// consecutive failures, the session is automatically archived.
 	consecutiveFailures   map[string]int
 	consecutiveFailuresMu sync.Mutex
 
@@ -447,24 +447,45 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 					"error", err)
 			}
 
-			// After too many consecutive failures, disable the periodic schedule
-			// to stop the retry storm. The user can re-enable it manually.
+			// After too many consecutive failures, archive the session
+			// to stop the retry storm. The user can unarchive it manually.
 			if failures >= MaxPeriodicResumeFailures {
 				if r.logger != nil {
-					r.logger.Warn("Disabling periodic schedule after repeated failures",
+					r.logger.Warn("Archiving session after repeated ACP resume failures",
 						"session_id", sessionID,
 						"session_name", meta.Name,
 						"consecutive_failures", failures)
 				}
-				disabled := false
-				if updateErr := periodicStore.Update(nil, nil, nil, &disabled); updateErr != nil {
+
+				// Note: the session is NOT running (resume failed), so no need to close it gracefully.
+
+				// Update metadata to mark as archived
+				if updateErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+					m.Archived = true
+					m.ArchivedAt = time.Now()
+					m.ArchiveReason = session.ArchiveReasonACPFailures
+				}); updateErr != nil {
 					if r.logger != nil {
-						r.logger.Error("Failed to disable periodic schedule",
+						r.logger.Error("Failed to archive session after ACP failures",
 							"session_id", sessionID,
 							"error", updateErr)
 					}
+				} else {
+					// Notify via callback (broadcasts to WebSocket clients)
+					if r.onAutoArchive != nil {
+						r.onAutoArchive(sessionID)
+					}
+					// Delete child sessions (async, same as manual archive)
+					go r.sessionManager.DeleteChildSessions(sessionID)
+
+					if r.logger != nil {
+						r.logger.Info("Session archived after repeated ACP resume failures",
+							"session_id", sessionID,
+							"session_name", meta.Name)
+					}
 				}
-				// Reset counter after disabling
+
+				// Reset counter after archiving
 				r.consecutiveFailuresMu.Lock()
 				delete(r.consecutiveFailures, sessionID)
 				r.consecutiveFailuresMu.Unlock()
