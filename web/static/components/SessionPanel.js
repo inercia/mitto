@@ -706,7 +706,7 @@ export function SessionPanel({
       "D": "bg-red-600 text-white",
       "R": "bg-blue-600 text-white",
       "C": "bg-purple-600 text-white",
-      "?": "bg-slate-500 text-white",
+      "?": "bg-slate-700 text-slate-300 ring-1 ring-slate-500",
     };
 
     const handleRefreshChanges = async () => {
@@ -802,7 +802,7 @@ export function SessionPanel({
                       <span
                         class="flex-shrink-0 w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${statusColors[file.status] || "bg-slate-600 text-white"}"
                       >${file.status}</span>
-                      <span class="flex-1 text-sm text-slate-300 truncate group-hover:text-slate-100">${file.path}</span>
+                      <span class="flex-1 text-sm truncate ${file.status === '?' ? 'text-slate-400 italic' : 'text-slate-300'} group-hover:text-slate-100">${file.path}</span>
                       ${(file.additions > 0 || file.deletions > 0) &&
                       html`
                         <span class="flex-shrink-0 text-xs font-mono whitespace-nowrap">

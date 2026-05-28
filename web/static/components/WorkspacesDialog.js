@@ -80,6 +80,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
 
   const [mcpRemoveLoading, setMcpRemoveLoading] = useState(false);
   const mcpRemoveScopeRef = useRef("");
+  const scrollContainerRef = useRef(null);
 
   // Ephemeral restart state — resets when dialog closes (component state)
   const [needsRestart, setNeedsRestart] = useState(false);
@@ -208,6 +209,19 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
       }
     }
   }, [isOpen, initialWorkingDir, groupedWorkspaces]);
+
+  // Scroll selected folder into view in the tree
+  useEffect(() => {
+    if (!isOpen || !selectedFolder) return;
+    requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const el = container.querySelector(`[data-folder-name="${CSS.escape(selectedFolder)}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    });
+  }, [isOpen, selectedFolder, loading]);
 
   // When a workspace child is selected, populate workspace-level edit fields
   useEffect(() => {
@@ -1001,7 +1015,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
 
           <!-- Left panel: workspace list -->
           <div class="flex-shrink-0 flex flex-col" style="width: ${leftPanelWidth}px">
-            <div class="flex-1 overflow-y-auto p-3 space-y-1.5">
+            <div ref=${scrollContainerRef} class="flex-1 overflow-y-auto p-3 space-y-1.5">
               ${loading
                 ? html`<div class="flex items-center justify-center py-8"><${SpinnerIcon} className="w-6 h-6 text-blue-400" /></div>`
                 : workspaces.length === 0
@@ -1016,6 +1030,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                         <div key=${displayName} class="mb-1.5">
                           <!-- Folder header -->
                           <div
+                            data-folder-name=${displayName}
                             class="group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${isFolderSelected ? "bg-blue-500/10" : "hover:bg-slate-700/30"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
