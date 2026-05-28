@@ -1006,70 +1006,6 @@ export function ConversationPropertiesPanel({
                 </span>
               </p>
             `}
-            ${callbackConfig?.callback_url && html`
-              <div class="mt-3 pt-3 border-t border-slate-700/50">
-                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
-                <div class="flex items-center gap-1.5">
-                  <button
-                    onClick=${handleCopyCallbackUrl}
-                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-                    title="Copy callback URL to clipboard"
-                  >
-                    ${callbackCopied ? '✓ Copied!' : '📋 Copy URL'}
-                  </button>
-                  <button
-                    onClick=${handleRotateCallback}
-                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-                    title="Generate new callback URL (invalidates old one)"
-                  >
-                    🔄 Rotate
-                  </button>
-                  <button
-                    onClick=${handleRevokeCallback}
-                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors"
-                    title="Revoke callback URL"
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            `}
-            ${!callbackConfig?.callback_url && html`
-              <div class="mt-3 pt-3 border-t border-slate-700/50">
-                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
-                <button
-                  onClick=${handleEnableCallback}
-                  class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-                  title="Generate a callback URL for triggering this periodic conversation externally"
-                >
-                  🔗 Enable Callback URL
-                </button>
-              </div>
-            `}
-          </div>
-        `}
-
-        <!-- Callback URL when periodic is disabled -->
-        ${!periodicConfig?.enabled && callbackConfig?.callback_url && html`
-          <div class="mt-2">
-            <label class="block text-xs font-medium text-slate-500 mb-1">Callback URL</label>
-            <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
-            <div class="flex items-center gap-1.5">
-              <button
-                onClick=${handleCopyCallbackUrl}
-                class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors"
-                title="Copy callback URL"
-              >
-                ${callbackCopied ? '✓ Copied!' : '📋 Copy URL'}
-              </button>
-              <button
-                onClick=${handleRevokeCallback}
-                class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors"
-                title="Revoke callback URL"
-              >
-                ✕ Revoke
-              </button>
-            </div>
           </div>
         `}
 
@@ -1117,13 +1053,45 @@ export function ConversationPropertiesPanel({
   }
 
   function renderAdvancedSection() {
-    // Only show if there are available flags
-    if (!availableFlags || availableFlags.length === 0) {
+    // Only show if there are available flags or periodic config (for callback URL)
+    if ((!availableFlags || availableFlags.length === 0) && !periodicConfig) {
       return null;
     }
 
     return html`
       <div class="pt-4">
+        <!-- Callback URL Section (only for periodic conversations) -->
+        ${periodicConfig && html`
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Callback URL</label>
+            ${periodicConfig.enabled ? html`
+              ${callbackConfig?.callback_url ? html`
+                <div class="flex items-center gap-1.5">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Copy callback URL to clipboard">
+                    ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
+                  </button>
+                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
+                </div>
+              ` : html`
+                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
+                  🔗 Enable Callback URL
+                </button>
+              `}
+            ` : html`
+              ${callbackConfig?.callback_url ? html`
+                <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
+                <div class="flex items-center gap-1.5">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">✕ Revoke</button>
+                </div>
+              ` : html`
+                <p class="text-xs text-slate-500">No callback URL configured.</p>
+              `}
+            `}
+          </div>
+        `}
+
         <!-- Collapsible Header -->
         <button
           type="button"
