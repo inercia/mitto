@@ -25,14 +25,15 @@ import (
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
-		Name        string                     `json:"name"`
-		Command     string                     `json:"command"`
-		Type        string                     `json:"type,omitempty"` // Optional type for prompt matching
-		Env         map[string]string          `json:"env,omitempty"`  // Environment variables
-		Prompts     []configPkg.WebPrompt      `json:"prompts,omitempty"`
-		Source      configPkg.ConfigItemSource `json:"source,omitempty"`       // Source of the server (rcfile, settings)
-		AutoApprove bool                       `json:"auto_approve,omitempty"` // Auto-approve permission requests
-		Tags        []string                   `json:"tags,omitempty"`         // Optional categorization tags
+		Name        string                                    `json:"name"`
+		Command     string                                    `json:"command"`
+		Type        string                                    `json:"type,omitempty"` // Optional type for prompt matching
+		Env         map[string]string                         `json:"env,omitempty"`  // Environment variables
+		Prompts     []configPkg.WebPrompt                     `json:"prompts,omitempty"`
+		Source      configPkg.ConfigItemSource                `json:"source,omitempty"`       // Source of the server (rcfile, settings)
+		AutoApprove bool                                      `json:"auto_approve,omitempty"` // Auto-approve permission requests
+		Tags        []string                                  `json:"tags,omitempty"`         // Optional categorization tags
+		Constraints map[string]*configPkg.ACPServerConstraint `json:"constraints,omitempty"`  // Config option auto-selection rules
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
@@ -195,6 +196,11 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				// SECURITY: mask values of keys that look like API keys / tokens / secrets.
 				"env":  sanitizeEnvVars(srv.Env),
 				"tags": srv.Tags, // Include categorization tags
+			}
+
+			// Include constraints if present
+			if srv.Constraints != nil {
+				acpServers[i]["constraints"] = srv.Constraints
 			}
 
 			// Include type if specified (for prompt matching)
@@ -446,6 +452,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			Source:      configPkg.SourceSettings, // Mark as settings-sourced
 			AutoApprove: srv.AutoApprove,          // Auto-approve permission requests
 			Tags:        srv.Tags,                 // Categorization tags
+			Constraints: srv.Constraints,          // Config option auto-selection rules
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
 		}
