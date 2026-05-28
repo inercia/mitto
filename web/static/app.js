@@ -1665,6 +1665,7 @@ function SessionList({
   onToggleFontSize,
   onShowSettings,
   onShowWorkspaces,
+  onShowWorkspacesForFolder,
   onShowKeyboardShortcuts,
   configReadonly = false,
   rcFilePath = null,
@@ -1696,6 +1697,10 @@ function SessionList({
   const [sidebarExpandedGroups, setSidebarExpandedGroups] = useState(() =>
     getExpandedGroups(),
   );
+
+  // Group header context menu state: { x, y, workingDir, label }
+  const [groupContextMenu, setGroupContextMenu] = useState(null);
+  const closeGroupContextMenu = () => setGroupContextMenu(null);
 
   // Track new sessions for blink animation
   const [newSessionIds, setNewSessionIds] = useState(new Set());
@@ -2603,8 +2608,16 @@ function SessionList({
         return html`
           <div key=${group.key} class="group-section">
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer group/header"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer select-none group/header"
               onClick=${() => handleToggleGroup(group.key, allGroupKeys)}
+              onContextMenu=${(e) => {
+                if (group.workingDir) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setGroupContextMenu({ x: e.clientX, y: e.clientY, workingDir: group.workingDir, label: group.label });
+                }
+              }}
+              data-has-context-menu=${group.workingDir ? "true" : undefined}
             >
               <span
                 class="transition-transform ${expanded ? "" : "-rotate-90"}"
@@ -2808,8 +2821,16 @@ function SessionList({
           <div key=${folder.key} class="folder-group">
             <!-- Level 1: Folder header -->
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer select-none"
               onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
+              onContextMenu=${(e) => {
+                if (folder.workingDir) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setGroupContextMenu({ x: e.clientX, y: e.clientY, workingDir: folder.workingDir, label: folder.label });
+                }
+              }}
+              data-has-context-menu=${folder.workingDir ? "true" : undefined}
             >
               <span
                 class="transition-transform ${folderExpanded
@@ -3056,7 +3077,32 @@ function SessionList({
   };
 
   return html`
-    <div class="h-full flex flex-col">
+    <${Fragment}>
+      ${groupContextMenu && html`
+        <${ContextMenu}
+          x=${groupContextMenu.x}
+          y=${groupContextMenu.y}
+          items=${[
+            ...(badgeClickEnabled && groupContextMenu.workingDir ? [{
+              label: "Open Folder",
+              icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
+              onClick: () => onFolderOpen && onFolderOpen(groupContextMenu.workingDir),
+            }] : []),
+            ...(terminalActionEnabled && groupContextMenu.workingDir ? [{
+              label: "Open Terminal",
+              icon: html`<${TerminalIcon} className="w-4 h-4" />`,
+              onClick: () => onTerminalClick && onTerminalClick(groupContextMenu.workingDir),
+            }] : []),
+            ...(!configReadonly && groupContextMenu.workingDir ? [{
+              label: "Configure Workspace",
+              icon: html`<${SettingsIcon} className="w-4 h-4" />`,
+              onClick: () => onShowWorkspacesForFolder && onShowWorkspacesForFolder(groupContextMenu.workingDir),
+            }] : []),
+          ]}
+          onClose=${closeGroupContextMenu}
+        />
+      `}
+      <div class="h-full flex flex-col">
       <div
         class="p-4 border-b border-slate-700 flex items-center justify-between"
       >
@@ -3243,6 +3289,7 @@ function SessionList({
         </div>
       </div>
     </div>
+    </${Fragment}>
   `;
 }
 
@@ -5275,6 +5322,11 @@ function App() {
     setWorkspacesDialog({ isOpen: true });
   };
 
+  const handleShowWorkspacesForFolder = useCallback((workingDir) => {
+    if (configReadonly) return;
+    setWorkspacesDialog({ isOpen: true, workingDir });
+  }, [configReadonly]);
+
   const handleShowKeyboardShortcuts = () => {
     setKeyboardShortcutsDialog({ isOpen: true });
   };
@@ -5972,6 +6024,7 @@ function App() {
       <!-- Workspaces Dialog -->
       <${WorkspacesDialog}
         isOpen=${workspacesDialog.isOpen}
+        initialWorkingDir=${workspacesDialog.workingDir || null}
         onClose=${() => setWorkspacesDialog({ isOpen: false })}
         WorkspaceBadge=${WorkspaceBadge}
         onSave=${async () => {
@@ -6010,6 +6063,7 @@ function App() {
           onToggleFontSize=${toggleFontSize}
           onShowSettings=${handleShowSettings}
           onShowWorkspaces=${handleShowWorkspaces}
+          onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
           onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
           configReadonly=${configReadonly}
           rcFilePath=${rcFilePath}
@@ -6051,6 +6105,7 @@ function App() {
               onToggleFontSize=${toggleFontSize}
               onShowSettings=${handleShowSettings}
               onShowWorkspaces=${handleShowWorkspaces}
+              onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
               onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
               configReadonly=${configReadonly}
               rcFilePath=${rcFilePath}
@@ -6250,14 +6305,32 @@ function App() {
               ${[...displayMessages]
                 .reverse()
                 .map(
-                  (msg, i, arr) => html`
-                    <${Message}
-                      key=${msg.timestamp + "-" + (arr.length - 1 - i)}
-                      message=${msg}
-                      isLast=${i === 0}
-                      isStreaming=${isStreaming}
-                    />
-                  `,
+                  (msg, i, arr) => {
+                    // For error messages, find the last user prompt before this error
+                    // and offer a retry button to resend it (including any attached images).
+                    let retryHandler = undefined;
+                    if (msg.role === "error") {
+                      const origIdx = arr.length - 1 - i;
+                      for (let j = origIdx - 1; j >= 0; j--) {
+                        const prev = displayMessages[j];
+                        if (prev.role === "user" && prev.text) {
+                          const retryText = prev.text;
+                          const retryImages = prev.images || [];
+                          retryHandler = () => handleSendPrompt(retryText, retryImages);
+                          break;
+                        }
+                      }
+                    }
+                    return html`
+                      <${Message}
+                        key=${msg.timestamp + "-" + (arr.length - 1 - i)}
+                        message=${msg}
+                        isLast=${i === 0}
+                        isStreaming=${isStreaming}
+                        onRetry=${retryHandler}
+                      />
+                    `;
+                  },
                 )}
               ${
                 /* Load more button / loading indicator / limit reached - at DOM end = visual top */ ""
