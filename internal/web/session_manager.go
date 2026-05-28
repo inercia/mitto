@@ -1955,6 +1955,18 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			// Get ACP session ID for potential resumption
 			acpSessionID = meta.ACPSessionID
 
+			// On the final retry attempt before archiving, skip ACP session resume
+			// and try a fresh session instead. The resume itself may be causing the failure.
+			if meta.ACPStartFailureCount >= ACPStartFailureThreshold-1 && acpSessionID != "" {
+				if sm.logger != nil {
+					sm.logger.Info("Final retry: skipping ACP resume, trying fresh session",
+						"session_id", sessionID,
+						"failure_count", meta.ACPStartFailureCount,
+						"threshold", ACPStartFailureThreshold)
+				}
+				acpSessionID = ""
+			}
+
 			// IMPORTANT: Use ACP server from session metadata, not workspace config.
 			// The session was created with a specific ACP server, and resuming it
 			// should use the same server regardless of current workspace defaults.
