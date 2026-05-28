@@ -250,6 +250,7 @@ export function ChatInput({
   const [showDropup, setShowDropup] = useState(false);
   const [promptFilterText, setPromptFilterText] = useState("");
   const [promptSelectedIndex, setPromptSelectedIndex] = useState(-1);
+  const [shiftHeld, setShiftHeld] = useState(false);
   const promptFilterInputRef = useRef(null);
   const selectedPromptItemRef = useRef(null);
 
@@ -708,6 +709,21 @@ export function ChatInput({
     }
   }, [showDropup]);
 
+  // Track Shift key state while prompt dropdown is open
+  useEffect(() => {
+    if (!showDropup) {
+      setShiftHeld(false);
+      return;
+    }
+    const onKey = (e) => setShiftHeld(e.shiftKey);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+    };
+  }, [showDropup]);
+
   // Adjust textarea height when draft changes (e.g., switching sessions)
   // Also re-adjusts when periodic lock state changes (collapse when locked, expand when unlocked)
   // Auto-sizing: grow to content, but respect min-height from resize handle and hard max
@@ -1097,34 +1113,38 @@ export function ChatInput({
     }
   };
 
-  const handlePredefinedPrompt = (prompt) => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      // Get cursor position and insert prompt text at that position
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const newText =
-        text.substring(0, start) + prompt.prompt + text.substring(end);
-      setText(newText);
+  const handlePredefinedPrompt = (prompt, event) => {
+    setShowDropup(false);
 
-      // Close dropdown and focus textarea
-      setShowDropup(false);
+    // Shift+click/Enter = insert into composition area (legacy behavior)
+    if (event && event.shiftKey) {
+      const textarea = textareaRef.current;
+      if (textarea) {
+        // Get cursor position and insert prompt text at that position
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const newText =
+          text.substring(0, start) + prompt.prompt + text.substring(end);
+        setText(newText);
 
-      // Set cursor position after inserted text and adjust textarea height
-      requestAnimationFrame(() => {
-        const newCursorPos = start + prompt.prompt.length;
-        textarea.selectionStart = newCursorPos;
-        textarea.selectionEnd = newCursorPos;
-        textarea.focus();
-        // Adjust height to fit content
-        textarea.style.height = "auto";
-        textarea.style.height =
-          Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
-      });
-    } else {
-      // Fallback: just set the text
-      setText(prompt.prompt);
-      setShowDropup(false);
+        // Set cursor position after inserted text and adjust textarea height
+        requestAnimationFrame(() => {
+          const newCursorPos = start + prompt.prompt.length;
+          textarea.selectionStart = newCursorPos;
+          textarea.selectionEnd = newCursorPos;
+          textarea.focus();
+          // Adjust height to fit content
+          textarea.style.height = "auto";
+          textarea.style.height =
+            Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+        });
+      }
+      return;
+    }
+
+    // Default: send prompt immediately by name
+    if (onSend && prompt.name) {
+      onSend("", [], [], { promptName: prompt.name });
     }
   };
 
@@ -2406,221 +2426,6 @@ ${activeUIPrompt.text || ""}</textarea
               onSelectedIndexChange=${setSlashSelectedIndex}
             />
 
-            <!-- Prompts dropdown - anchored above the box -->
-            ${showDropup &&
-            hasPrompts &&
-            html`
-              <div
-                class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
-                style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
-              >
-                <!-- Filter input -->
-                <div class="px-2 pt-2 pb-1 flex-shrink-0">
-                  <input
-                    ref=${promptFilterInputRef}
-                    type="text"
-                    value=${promptFilterText}
-                    onInput=${(e) => {
-                      setPromptFilterText(e.target.value);
-                      setPromptSelectedIndex(-1);
-                    }}
-                    onKeyDown=${(e) => {
-                      // Prevent the event from bubbling to the textarea
-                      e.stopPropagation();
-                      if (e.key === "Escape") {
-                        setShowDropup(false);
-                        return;
-                      }
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setPromptSelectedIndex((prev) =>
-                          Math.min(prev + 1, flatFilteredPrompts.length - 1),
-                        );
-                        return;
-                      }
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setPromptSelectedIndex((prev) =>
-                          Math.max(-1, prev - 1),
-                        );
-                        return;
-                      }
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        if (
-                          promptSelectedIndex >= 0 &&
-                          flatFilteredPrompts.length > 0
-                        ) {
-                          const clampedIndex = Math.min(
-                            Math.max(promptSelectedIndex, 0),
-                            flatFilteredPrompts.length - 1,
-                          );
-                          handlePredefinedPrompt(
-                            flatFilteredPrompts[clampedIndex],
-                          );
-                        }
-                        return;
-                      }
-                    }}
-                    placeholder="Filter prompts..."
-                    autocomplete="off"
-                    autocorrect="off"
-                    autocapitalize="off"
-                    spellcheck=${false}
-                    class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
-                  />
-                </div>
-                <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
-                  ${(() => {
-                    // Re-group the precomputed flat list for rendering with group headers
-                    const groupedPrompts = {};
-                    const ungroupedPrompts = [];
-                    flatFilteredPrompts.forEach((prompt) => {
-                      if (prompt.group) {
-                        if (!groupedPrompts[prompt.group])
-                          groupedPrompts[prompt.group] = [];
-                        groupedPrompts[prompt.group].push(prompt);
-                      } else {
-                        ungroupedPrompts.push(prompt);
-                      }
-                    });
-                    const sortedGroupNames = Object.keys(groupedPrompts).sort();
-                    const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
-
-                    // Build a lookup: prompt -> flat index for selection highlighting
-                    const promptToFlatIdx = new Map();
-                    flatFilteredPrompts.forEach((p, i) =>
-                      promptToFlatIdx.set(p, i),
-                    );
-
-                    const clampedIndex =
-                      flatFilteredPrompts.length === 0
-                        ? -1
-                        : Math.min(
-                            promptSelectedIndex,
-                            flatFilteredPrompts.length - 1,
-                          );
-
-                    // Helper to get badge info based on source
-                    const getBadgeInfo = (source) => {
-                      if (source === "workspace") {
-                        return {
-                          label: "W",
-                          title: "Workspace prompt",
-                          bgColor: "bg-green-600/80",
-                        };
-                      } else if (source === "file") {
-                        return {
-                          label: "F",
-                          title: "File-based prompt",
-                          bgColor: "bg-purple-600/80",
-                        };
-                      } else {
-                        return {
-                          label: "S",
-                          title: "Settings prompt",
-                          bgColor: "bg-blue-600/80",
-                        };
-                      }
-                    };
-
-                    // Render function for a single prompt using flat index lookup
-                    const renderPrompt = (prompt) => {
-                      const fi = promptToFlatIdx.get(prompt);
-                      const isSelected = fi === clampedIndex;
-                      const baseStyle = prompt.backgroundColor
-                        ? {
-                            backgroundColor: prompt.backgroundColor,
-                            color: getContrastColor(prompt.backgroundColor),
-                          }
-                        : {};
-                      const selectedStyle = isSelected
-                        ? {
-                            ...baseStyle,
-                            backgroundColor:
-                              baseStyle.backgroundColor ||
-                              "rgba(220, 38, 38, 0.15)",
-                            boxShadow: "inset 3px 0 0 0 var(--accent)",
-                          }
-                        : baseStyle;
-                      return html`
-                        <button
-                          key=${"prompt-" + fi}
-                          type="button"
-                          onClick=${() => handlePredefinedPrompt(prompt)}
-                          title=${prompt.description || prompt.name}
-                          class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                          style=${selectedStyle}
-                          ref=${isSelected ? selectedPromptItemRef : null}
-                        >
-                          <svg
-                            class="w-4 h-4 flex-shrink-0 opacity-60"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M13 10V3L4 14h7v7l9-11h-7z"
-                            />
-                          </svg>
-                          <span class="truncate flex-1">${prompt.name}</span>
-                          <span
-                            class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
-                              prompt.source,
-                            ).bgColor} text-white/90 flex-shrink-0"
-                            title=${getBadgeInfo(prompt.source).title}
-                          >
-                            ${getBadgeInfo(prompt.source).label}
-                          </span>
-                        </button>
-                      `;
-                    };
-
-                    return html`
-                      ${sortedGroupNames.map(
-                        (groupName) => html`
-                          <div key=${"group-" + groupName}>
-                            <div
-                              class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
-                            >
-                              ${groupName}
-                            </div>
-                            ${groupedPrompts[groupName].map((prompt) =>
-                              renderPrompt(prompt),
-                            )}
-                          </div>
-                        `,
-                      )}
-                      ${sortedUngrouped.length > 0
-                        ? html`
-                            <div key="group-other">
-                              <div
-                                class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
-                              >
-                                Other
-                              </div>
-                              ${sortedUngrouped.map((prompt) =>
-                                renderPrompt(prompt),
-                              )}
-                            </div>
-                          `
-                        : ""}
-                      ${flatFilteredPrompts.length === 0
-                        ? html`<div
-                            class="px-4 py-3 text-xs text-gray-500 text-center"
-                          >
-                            No matching prompts
-                          </div>`
-                        : ""}
-                    `;
-                  })()}
-                </div>
-              </div>
-            `}
-
             <!-- Textarea - borderless, transparent background; relative wrapper for improving overlay -->
             <div class="relative">
               <textarea
@@ -2911,23 +2716,239 @@ ${activeUIPrompt.text || ""}</textarea
                 <!-- Prompts Toggle Button -->
                 ${hasPrompts &&
                 html`
-                  <button
-                    type="button"
-                    onClick=${handleTogglePrompts}
-                    onMouseDown=${(e) => e.preventDefault()}
-                    disabled=${isFullyDisabled || isReadOnly}
-                    class="chat-input-action"
-                    title="Insert predefined prompt"
-                  >
-                    <svg
-                      class="w-4 h-4 transition-transform ${showDropup ? "rotate-180" : ""}"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
+                  <div class="relative">
+                    <!-- Prompts dropdown - anchored above the button -->
+                    ${showDropup &&
+                    html`
+                      <div
+                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
+                        style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+                      >
+                        <!-- Filter input -->
+                        <div class="px-2 pt-2 pb-1 flex-shrink-0">
+                          <input
+                            ref=${promptFilterInputRef}
+                            type="text"
+                            value=${promptFilterText}
+                            onInput=${(e) => {
+                              setPromptFilterText(e.target.value);
+                              setPromptSelectedIndex(-1);
+                            }}
+                            onKeyDown=${(e) => {
+                              // Prevent the event from bubbling to the textarea
+                              e.stopPropagation();
+                              if (e.key === "Escape") {
+                                setShowDropup(false);
+                                return;
+                              }
+                              if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                setPromptSelectedIndex((prev) =>
+                                  Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                                );
+                                return;
+                              }
+                              if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                setPromptSelectedIndex((prev) =>
+                                  Math.max(-1, prev - 1),
+                                );
+                                return;
+                              }
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                if (
+                                  promptSelectedIndex >= 0 &&
+                                  flatFilteredPrompts.length > 0
+                                ) {
+                                  const clampedIndex = Math.min(
+                                    Math.max(promptSelectedIndex, 0),
+                                    flatFilteredPrompts.length - 1,
+                                  );
+                                  handlePredefinedPrompt(
+                                    flatFilteredPrompts[clampedIndex],
+                                    e,
+                                  );
+                                }
+                                return;
+                              }
+                            }}
+                            placeholder="Filter prompts..."
+                            autocomplete="off"
+                            autocorrect="off"
+                            autocapitalize="off"
+                            spellcheck=${false}
+                            class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
+                          />
+                        </div>
+                        <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
+                          ${(() => {
+                            // Re-group the precomputed flat list for rendering with group headers
+                            const groupedPrompts = {};
+                            const ungroupedPrompts = [];
+                            flatFilteredPrompts.forEach((prompt) => {
+                              if (prompt.group) {
+                                if (!groupedPrompts[prompt.group])
+                                  groupedPrompts[prompt.group] = [];
+                                groupedPrompts[prompt.group].push(prompt);
+                              } else {
+                                ungroupedPrompts.push(prompt);
+                              }
+                            });
+                            const sortedGroupNames = Object.keys(groupedPrompts).sort();
+                            const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
+
+                            // Build a lookup: prompt -> flat index for selection highlighting
+                            const promptToFlatIdx = new Map();
+                            flatFilteredPrompts.forEach((p, i) =>
+                              promptToFlatIdx.set(p, i),
+                            );
+
+                            const clampedIndex =
+                              flatFilteredPrompts.length === 0
+                                ? -1
+                                : Math.min(
+                                    promptSelectedIndex,
+                                    flatFilteredPrompts.length - 1,
+                                  );
+
+                            // Helper to get badge info based on source
+                            const getBadgeInfo = (source) => {
+                              if (source === "workspace") {
+                                return {
+                                  label: "W",
+                                  title: "Workspace prompt",
+                                  bgColor: "bg-green-600/80",
+                                };
+                              } else if (source === "file") {
+                                return {
+                                  label: "F",
+                                  title: "File-based prompt",
+                                  bgColor: "bg-purple-600/80",
+                                };
+                              } else {
+                                return {
+                                  label: "S",
+                                  title: "Settings prompt",
+                                  bgColor: "bg-blue-600/80",
+                                };
+                              }
+                            };
+
+                            // Render function for a single prompt using flat index lookup
+                            const renderPrompt = (prompt) => {
+                              const fi = promptToFlatIdx.get(prompt);
+                              const isSelected = fi === clampedIndex;
+                              const baseStyle = prompt.backgroundColor
+                                ? {
+                                    backgroundColor: prompt.backgroundColor,
+                                    color: getContrastColor(prompt.backgroundColor),
+                                  }
+                                : {};
+                              const selectedStyle = isSelected
+                                ? {
+                                    ...baseStyle,
+                                    backgroundColor:
+                                      baseStyle.backgroundColor ||
+                                      "rgba(220, 38, 38, 0.15)",
+                                    boxShadow: "inset 3px 0 0 0 var(--accent)",
+                                  }
+                                : baseStyle;
+                              return html`
+                                <button
+                                  key=${"prompt-" + fi}
+                                  type="button"
+                                  onClick=${(e) => handlePredefinedPrompt(prompt, e)}
+                                  title=${prompt.description || prompt.name}
+                                  class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                                  style=${selectedStyle}
+                                  ref=${isSelected ? selectedPromptItemRef : null}
+                                >
+                                  ${shiftHeld
+                                    ? html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                      </svg>`
+                                    : html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                      </svg>`
+                                  }
+                                  <span class="truncate flex-1">${prompt.name}</span>
+                                  <span
+                                    class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
+                                      prompt.source,
+                                    ).bgColor} text-white/90 flex-shrink-0"
+                                    title=${getBadgeInfo(prompt.source).title}
+                                  >
+                                    ${getBadgeInfo(prompt.source).label}
+                                  </span>
+                                </button>
+                              `;
+                            };
+
+                            return html`
+                              ${sortedGroupNames.map(
+                                (groupName) => html`
+                                  <div key=${"group-" + groupName}>
+                                    <div
+                                      class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
+                                    >
+                                      ${groupName}
+                                    </div>
+                                    ${groupedPrompts[groupName].map((prompt) =>
+                                      renderPrompt(prompt),
+                                    )}
+                                  </div>
+                                `,
+                              )}
+                              ${sortedUngrouped.length > 0
+                                ? html`
+                                    <div key="group-other">
+                                      <div
+                                        class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
+                                      >
+                                        Other
+                                      </div>
+                                      ${sortedUngrouped.map((prompt) =>
+                                        renderPrompt(prompt),
+                                      )}
+                                    </div>
+                                  `
+                                : ""}
+                              ${flatFilteredPrompts.length === 0
+                                ? html`<div
+                                    class="px-4 py-3 text-xs text-gray-500 text-center"
+                                  >
+                                    No matching prompts
+                                  </div>`
+                                : ""}
+                            `;
+                          })()}
+                        </div>
+                        <div class="px-3 py-1.5 border-t border-slate-700 flex-shrink-0">
+                          <span class="text-[10px] ${shiftHeld ? 'text-blue-400' : 'text-gray-500'}">
+                            ${shiftHeld ? '✏️ Will insert into editor' : '⇧ Hold Shift to edit before sending'}
+                          </span>
+                        </div>
+                      </div>
+                    `}
+                    <button
+                      type="button"
+                      onClick=${handleTogglePrompts}
+                      onMouseDown=${(e) => e.preventDefault()}
+                      disabled=${isFullyDisabled || isReadOnly}
+                      class="chat-input-action"
+                      title="Insert predefined prompt"
                     >
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                    </svg>
-                  </button>
+                      <svg
+                        class="w-4 h-4 transition-transform ${showDropup ? "rotate-180" : ""}"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                      </svg>
+                    </button>
+                  </div>
                 `}
 
                 <!-- Enqueue button: shown when streaming (so user can enqueue while agent works) -->
