@@ -135,8 +135,9 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
  * @param {Object} props.message - The message object
  * @param {boolean} props.isLast - Whether this is the last message
  * @param {boolean} props.isStreaming - Whether the session is currently streaming
+ * @param {Function} [props.onRetry] - Optional callback to retry (resend last prompt). Shown on error messages.
  */
-export function Message({ message, isLast, isStreaming }) {
+export function Message({ message, isLast, isStreaming, onRetry }) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
   const isThought = message.role === ROLE_THOUGHT;
@@ -302,13 +303,36 @@ export function Message({ message, isLast, isStreaming }) {
     );
     return html`
       <div class="message-enter flex justify-start mb-3">
-        <div
-          class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl error-message-bubble rounded-bl-sm"
-        >
-          <div class="flex items-start gap-2">
-            <span>❌</span>
-            <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
+        <div class="flex items-center gap-2">
+          <div
+            class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl error-message-bubble rounded-bl-sm"
+          >
+            <div class="flex items-start gap-2">
+              <span>❌</span>
+              <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
+            </div>
           </div>
+          ${onRetry &&
+          html`<button
+            type="button"
+            class="flex-shrink-0 p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
+            onClick=${onRetry}
+            title="Retry — resend the last prompt"
+          >
+            <svg
+              class="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.66v4.992"
+              />
+            </svg>
+          </button>`}
         </div>
       </div>
     `;
