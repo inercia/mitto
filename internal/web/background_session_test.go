@@ -2676,6 +2676,43 @@ func TestFormatACPError(t *testing.T) {
 			contains: "too large",
 		},
 		// ---
+		// --- HTTP status extraction from -32603 errors ---
+		{
+			name:     "HTTP 408 request timeout",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 408 Request Timeout","data":{"httpStatus":408}}`,
+			contains: "timed out",
+		},
+		{
+			name:     "HTTP 500 server error",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 500 Internal Server Error","data":{"httpStatus":500}}`,
+			contains: "server error",
+		},
+		{
+			name:     "HTTP 502 bad gateway",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 502 Bad Gateway","data":{"httpStatus":502}}`,
+			contains: "temporarily unavailable",
+		},
+		{
+			name:     "HTTP 503 service unavailable",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 503 Service Unavailable","data":{"httpStatus":503}}`,
+			contains: "temporarily unavailable",
+		},
+		{
+			name:     "HTTP 504 gateway timeout",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 504 Gateway Timeout","data":{"httpStatus":504}}`,
+			contains: "gateway timed out",
+		},
+		{
+			name:     "unknown HTTP status in -32603",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 422 Unprocessable Entity","data":{"httpStatus":422}}`,
+			contains: "HTTP 422",
+		},
+		{
+			name:     "generic internal error without HTTP status",
+			errMsg:   `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`,
+			contains: "internal error",
+		},
+		// ---
 		{
 			name:     "unknown error",
 			errMsg:   "some unknown error occurred",

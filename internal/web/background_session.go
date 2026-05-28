@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1787,6 +1788,10 @@ func (c *stderrCollector) Close() {
 //
 // Fix C: These patterns come from the claude-code-agent-sdk Rust layer which logs
 // to stderr when the CLI subprocess dies unexpectedly.
+// httpStatusRegex matches HTTP status codes in ACP error strings.
+// It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
+var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
+
 var stderrCrashPatterns = []string{
 	"stream ended unexpectedly",
 	"EOF received from CLI stdout",
@@ -5212,17 +5217,45 @@ func formatACPError(err error) string {
 		return "Rate limit reached. Please wait a moment before sending another message."
 	}
 
-	// Generic JSON-RPC internal error (-32603).
+	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.
 	// Previously this required "details" to be present in the message; without it the
 	// raw JSON-RPC error string was shown to the user. Now we always return a
 	// user-friendly message whenever the -32603 code is detected.
 	if strings.Contains(errMsg, "-32603") && strings.Contains(errMsg, "Internal error") {
+		if httpStatus := extractHTTPStatus(errMsg); httpStatus > 0 {
+			switch httpStatus {
+			case 408:
+				return fmt.Sprintf("The AI service request timed out (HTTP %d). The service may be overloaded — please try again in a moment.", httpStatus)
+			case 500:
+				return fmt.Sprintf("The AI service encountered a server error (HTTP %d). Please try again.", httpStatus)
+			case 502, 503:
+				return fmt.Sprintf("The AI service is temporarily unavailable (HTTP %d). Please try again shortly.", httpStatus)
+			case 504:
+				return fmt.Sprintf("The AI service gateway timed out (HTTP %d). Please try again.", httpStatus)
+			default:
+				return fmt.Sprintf("The AI service returned an error (HTTP %d). Please try again, or simplify your request if the problem persists.", httpStatus)
+			}
+		}
 		return "The AI agent encountered an internal error. Please try again, " +
 			"or simplify your request if the problem persists."
 	}
 
 	// Default: return original error with prefix
 	return "Prompt failed: " + errMsg
+}
+
+// extractHTTPStatus tries to extract an HTTP status code from an error string.
+// It searches for common patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
+// Returns 0 if no HTTP status code is found or the extracted value is outside the 4xx–5xx range.
+func extractHTTPStatus(errMsg string) int {
+	matches := httpStatusRegex.FindStringSubmatch(errMsg)
+	if len(matches) >= 2 {
+		status, err := strconv.Atoi(matches[1])
+		if err == nil && status >= 400 && status < 600 {
+			return status
+		}
+	}
+	return 0
 }
 
 // =============================================================================
