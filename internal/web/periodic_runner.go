@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -51,6 +52,14 @@ type PeriodicRunner struct {
 
 	pollInterval time.Duration
 
+	// startupDelay is how long to wait before the first poll on startup.
+	// This gives interactive sessions time to resume first via WebSocket connections.
+	startupDelay time.Duration
+
+	// resumeStagger is the delay between consecutive session resumes within a single poll.
+	// This prevents thundering herd when many periodic sessions are due simultaneously.
+	resumeStagger time.Duration
+
 	// onPeriodicStarted is called when a periodic prompt is delivered
 	onPeriodicStarted PeriodicStartedCallback
 
@@ -94,6 +103,19 @@ func NewPeriodicRunner(store *session.Store, sm *SessionManager, logger *slog.Lo
 // SetPollInterval sets the polling interval. Must be called before Start().
 func (r *PeriodicRunner) SetPollInterval(interval time.Duration) {
 	r.pollInterval = interval
+}
+
+// SetStartupDelay sets the delay before the first poll on startup.
+// This gives interactive sessions time to resume first via WebSocket connections.
+// Must be called before Start().
+func (r *PeriodicRunner) SetStartupDelay(d time.Duration) {
+	r.startupDelay = d
+}
+
+// SetResumeStagger sets the stagger delay between consecutive session resumes within a poll.
+// When non-zero, the runner waits this long between each resume to prevent thundering herd.
+func (r *PeriodicRunner) SetResumeStagger(d time.Duration) {
+	r.resumeStagger = d
 }
 
 // SetOnPeriodicStarted sets the callback for when a periodic prompt is delivered.
@@ -254,7 +276,21 @@ func (r *PeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
 func (r *PeriodicRunner) pollLoop() {
 	defer close(r.doneCh)
 
-	// Run immediately on start to handle any prompts that were due
+	// Wait before first poll to let interactive sessions resume first via WebSocket.
+	// Periodic sessions can afford to wait since their prompts are scheduled.
+	if r.startupDelay > 0 {
+		if r.logger != nil {
+			r.logger.Info("Deferring periodic poll to let interactive sessions resume first",
+				"startup_delay", r.startupDelay)
+		}
+		select {
+		case <-r.stopCh:
+			return
+		case <-time.After(r.startupDelay):
+		}
+	}
+
+	// Run after delay to handle any prompts that were due
 	r.RunOnce()
 
 	ticker := time.NewTicker(r.pollInterval)
@@ -290,11 +326,52 @@ func (r *PeriodicRunner) RunOnce() (delivered, skipped, errored int) {
 
 	now := time.Now().UTC()
 
+	// Sort sessions so most-overdue periodic prompts are processed first.
+	// Non-periodic sessions are kept in original order (sorted to the end).
+	sort.SliceStable(sessions, func(i, j int) bool {
+		pi := r.getNextScheduledAt(sessions[i])
+		pj := r.getNextScheduledAt(sessions[j])
+		if pi == nil && pj == nil {
+			return false
+		}
+		if pi == nil {
+			return false // non-periodic sorts after periodic
+		}
+		if pj == nil {
+			return true // periodic sorts before non-periodic
+		}
+		return pi.Before(*pj) // most overdue (earliest NextScheduledAt) first
+	})
+
+	// Collect sessions that have due periodic prompts and need resuming.
+	// Process them with stagger delay to prevent thundering herd.
+	var lastResumeTime time.Time
+
 	for _, meta := range sessions {
+		// Apply stagger delay between resume-triggering periodic checks.
+		// Only stagger when we actually resumed a session in a previous iteration.
+		if r.resumeStagger > 0 && !lastResumeTime.IsZero() {
+			elapsed := time.Since(lastResumeTime)
+			if elapsed < r.resumeStagger {
+				wait := r.resumeStagger - elapsed
+				if r.logger != nil {
+					r.logger.Debug("Staggering periodic session resume",
+						"session_id", meta.SessionID,
+						"wait_ms", wait.Milliseconds())
+				}
+				time.Sleep(wait)
+			}
+		}
+
+		willResume := r.sessionNeedsResume(meta, now)
 		d, s, e := r.checkSession(meta, now)
 		delivered += d
 		skipped += s
 		errored += e
+
+		if willResume && d > 0 {
+			lastResumeTime = time.Now()
+		}
 	}
 
 	// Check scheduled queue messages across all active sessions
@@ -314,6 +391,41 @@ func (r *PeriodicRunner) RunOnce() (delivered, skipped, errored int) {
 	}
 
 	return delivered, skipped, errored
+}
+
+// sessionNeedsResume returns true if checkSession would trigger a ResumeSession call.
+// Used to apply stagger delays between consecutive resume attempts.
+func (r *PeriodicRunner) sessionNeedsResume(meta session.Metadata, now time.Time) bool {
+	if meta.Archived {
+		return false
+	}
+
+	periodicStore := r.store.Periodic(meta.SessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil || !periodic.Enabled {
+		return false
+	}
+
+	if periodic.NextScheduledAt == nil || periodic.NextScheduledAt.After(now) {
+		return false
+	}
+
+	// Will need resume if not currently running
+	bs := r.sessionManager.GetSession(meta.SessionID)
+	return bs == nil
+}
+
+// getNextScheduledAt returns the NextScheduledAt for a session's periodic config, or nil if not periodic/not enabled.
+func (r *PeriodicRunner) getNextScheduledAt(meta session.Metadata) *time.Time {
+	if meta.Archived {
+		return nil
+	}
+	periodicStore := r.store.Periodic(meta.SessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil || !periodic.Enabled {
+		return nil
+	}
+	return periodic.NextScheduledAt
 }
 
 // checkScheduledQueues checks all active sessions for scheduled queue messages
