@@ -227,6 +227,7 @@ export function ChatInput({
   periodicEnabled = false,
   agentSupportsImages = false,
   acpReady = true,
+  gcSuspended = false,
   activeUIPrompt = null,
   onUIPromptAnswer,
   workingDir = "",
@@ -677,7 +678,8 @@ export function ChatInput({
 
   // Session exists but ACP agent hasn't started yet (e.g., during resume).
   // Blocks sending and action buttons, but allows typing so drafts are preserved.
-  const isResuming = !isRunning && !isArchived && !noSession && !disabled;
+  // GC-suspended sessions are intentionally paused — don't show the "Resuming" banner.
+  const isResuming = !isRunning && !isArchived && !noSession && !disabled && !gcSuspended;
 
   // Expose focus and togglePrompts methods via inputRef for external control
   useEffect(() => {

@@ -1282,6 +1282,9 @@ export function SettingsDialog({
   const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
   const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(2000);
 
+  // Periodic suspend timeout setting (default "" = 30 minutes)
+  const [periodicSuspendTimeout, setPeriodicSuspendTimeout] = useState("");
+
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
 
@@ -1640,6 +1643,11 @@ export function SettingsDialog({
         setMaxMessagesPerSession(rawMaxMessages || 2000);
       }
 
+      // Load periodic suspend timeout (default "" = 30 minutes)
+      setPeriodicSuspendTimeout(
+        config.session?.periodic_suspend_timeout || "",
+      );
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -1905,6 +1913,7 @@ export function SettingsDialog({
         auto_archive_inactive_after: autoArchiveInactiveAfter,
         max_messages_per_session:
           maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
+        periodic_suspend_timeout: periodicSuspendTimeout,
       };
 
       // ACP servers are saved with source field so backend can filter out RC file servers
@@ -3371,6 +3380,44 @@ export function SettingsDialog({
                               <option value="1w">After 1 week</option>
                               <option value="1m">After 1 month</option>
                               <option value="3m">After 3 months</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Suspend Settings -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Suspend Settings
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Suspend periodic conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Automatically suspend idle periodic conversations
+                                when their next run is farther away than this
+                                timeout. Saves memory by stopping ACP and MCP
+                                processes. Conversations resume transparently
+                                when focused.
+                              </div>
+                            </div>
+                            <select
+                              value=${periodicSuspendTimeout}
+                              onInput=${(e) =>
+                                setPeriodicSuspendTimeout(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="">After 30 minutes</option>
+                              <option value="15m">After 15 minutes</option>
+                              <option value="30m">After 30 minutes</option>
+                              <option value="1h">After 1 hour</option>
+                              <option value="2h">After 2 hours</option>
+                              <option value="disabled">Disabled</option>
                             </select>
                           </div>
                         </div>

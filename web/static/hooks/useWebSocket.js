@@ -1114,6 +1114,7 @@ export function useWebSocket() {
         messageCount: data.messages?.length || 0,
         archived: isArchived,
         archive_pending: isArchivePending,
+        gc_suspended: data.info?.gc_suspended || false,
       };
     });
 
@@ -1124,7 +1125,7 @@ export function useWebSocket() {
     const fingerprint = result
       .map(
         (s) =>
-          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}`,
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}`,
       )
       .sort()
       .join("\n");
@@ -2771,15 +2772,26 @@ export function useWebSocket() {
           const session = prev[sessionId];
           if (!session) return prev;
 
-          // For archived sessions, show a neutral system message
-          // For other stop reasons (errors, crashes), show an error message
+          // Categorize the stop reason for appropriate UX:
+          // - archived/archived_timeout: neutral system message
+          // - gc_suspended: friendly info message (session will auto-resume)
+          // - anything else: error message
           const reason = msg.data?.reason || "unknown reason";
           const isArchived =
             reason === "archived" || reason === "archived_timeout";
-          const messageRole = isArchived ? "system" : "error";
-          const messageText = isArchived
-            ? "Session archived. Unarchive to continue."
-            : `Session stopped: ${reason}. Unarchive to continue.`;
+          const isGCSuspended = reason === "gc_suspended";
+
+          let messageRole, messageText;
+          if (isArchived) {
+            messageRole = "system";
+            messageText = "Session archived. Unarchive to continue.";
+          } else if (isGCSuspended) {
+            messageRole = "system";
+            messageText = "Session suspended to save resources. It will resume when you need it.";
+          } else {
+            messageRole = "error";
+            messageText = `Session stopped: ${reason}. Unarchive to continue.`;
+          }
 
           return {
             ...prev,
@@ -2791,6 +2803,9 @@ export function useWebSocket() {
               info: {
                 ...session.info,
                 acp_ready: false,
+                // Track GC-suspended state so the UI can suppress the
+                // "Reconnecting to AI agent..." spinner for suspended sessions.
+                gc_suspended: isGCSuspended || false,
               },
               // Add a system/error message to inform the user
               messages: [
@@ -3513,6 +3528,28 @@ export function useWebSocket() {
     [],
   );
 
+  // Send message to the current session's WebSocket
+  const sendToSession = useCallback((sessionId, msg) => {
+    const ws = sessionWsRefs.current[sessionId];
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Send ensure_resumed to the active session's WebSocket.
+  // Called when the user focuses on a conversation so the server can resume
+  // the ACP connection immediately, bypassing any startup stagger delay.
+  const ensureResumed = useCallback(
+    (sessionId) => {
+      const targetId = sessionId || activeSessionIdRef.current;
+      if (!targetId) return;
+      sendToSession(targetId, { type: "ensure_resumed", data: {} });
+    },
+    [sendToSession],
+  );
+
   // Switch to an existing session
   // Uses reverse-order loading for better UX: newest messages load first,
   // so the conversation opens already positioned at the latest message.
@@ -3565,6 +3602,16 @@ export function useWebSocket() {
             existingWs.close();
           }
           connectToSession(sessionId);
+        } else {
+          // WebSocket is already open — hint the server to resume ACP if not running.
+          // This bypasses any startup stagger and allows the session to become
+          // interactive immediately when the user navigates to it.
+          // Skip for archived sessions — they have no ACP connection to resume.
+          const isArchived =
+            existingSession?.info?.archived || storedSession?.archived || false;
+          if (!isArchived) {
+            ensureResumed(sessionId);
+          }
         }
         return;
       }
@@ -3659,7 +3706,7 @@ export function useWebSocket() {
         console.error("Failed to switch session:", err);
       }
     },
-    [connectToSession, expandGroupForSession],
+    [connectToSession, expandGroupForSession, ensureResumed],
   );
 
   // Handle global events (session lifecycle)
@@ -4069,6 +4116,7 @@ export function useWebSocket() {
               info: {
                 ...session.info,
                 acp_ready: true,
+                gc_suspended: false, // Clear GC-suspended state on resume
               },
               // Add a system message to inform the user
               messages: [
@@ -4446,16 +4494,6 @@ export function useWebSocket() {
       if (!session || !session.actionButtons?.length) return prev;
       return { ...prev, [sessionId]: { ...session, actionButtons: [] } };
     });
-  }, []);
-
-  // Send message to the current session's WebSocket
-  const sendToSession = useCallback((sessionId, msg) => {
-    const ws = sessionWsRefs.current[sessionId];
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-      return true;
-    }
-    return false;
   }, []);
 
   // Timeout configuration for message delivery with automatic retry
@@ -5731,5 +5769,6 @@ export function useWebSocket() {
     setConfigOption,
     activeUIPrompt,
     sendUIPromptAnswer,
+    ensureResumed,
   };
 }

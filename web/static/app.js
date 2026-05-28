@@ -1269,6 +1269,11 @@ function SessionItem({
       parts.push(`Archived: ${archivedDate.toLocaleString()}`);
     }
 
+    // GC-suspended status (for periodic sessions paused to save resources)
+    if (session.gc_suspended) {
+      parts.push("Status: Suspended (saving resources)");
+    }
+
     // Next scheduled run (for periodic sessions)
     if (isPeriodicEnabled && session.next_scheduled_at) {
       const nextDate = new Date(session.next_scheduled_at);
@@ -6401,11 +6406,13 @@ function App() {
 
         <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
         <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+        <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
         ${connected &&
         activeSessionId &&
         sessionInfo &&
         !sessionInfo.acp_ready &&
         !sessionInfo.archived &&
+        !sessionInfo.gc_suspended &&
         messages.length > 0 &&
         html`
           <div
@@ -6419,22 +6426,19 @@ function App() {
         `}
 
         <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
+        <!-- Uses the same balloon style as system messages for visual consistency -->
         ${sessionInfo?.archived &&
         sessionInfo?.archive_reason &&
         html`
-          <div
-            class="flex items-center justify-center gap-2 py-2 px-4 text-sm ${sessionInfo.archive_reason ===
-            "manual"
-              ? "text-slate-400"
-              : "text-amber-400"}"
-          >
-            <span class="flex-shrink-0">ℹ️</span>
-            <span
-              >${getArchiveReasonText(
+          <div class="flex justify-center mb-3">
+            <div
+              class="text-xs text-gray-500 bg-slate-800/50 px-3 py-1 rounded-full"
+            >
+              ${getArchiveReasonText(
                 sessionInfo.archive_reason,
                 sessionInfo.archived_at,
-              )}</span
-            >
+              )}
+            </div>
           </div>
         `}
 
@@ -6480,6 +6484,7 @@ function App() {
             periodicEnabled=${sessionInfo?.periodic_enabled || false}
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
+            gcSuspended=${sessionInfo?.gc_suspended || false}
             activeUIPrompt=${activeUIPrompt}
             onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText)}
