@@ -63,7 +63,7 @@ func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request, se
 	branch := strings.TrimSpace(string(branchOut))
 
 	// Get file statuses using git status --porcelain
-	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-uall")
 	statusCmd.Dir = workDir
 	statusOut, err := statusCmd.Output()
 	if err != nil {

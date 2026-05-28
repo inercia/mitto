@@ -88,6 +88,13 @@ const (
 	// Sent when the user clicks a button in response to a ui_prompt message.
 	// Data: { "request_id": string, "option_id": string, "label": string }
 	WSMsgTypeUIPromptAnswer = "ui_prompt_answer"
+
+	// WSMsgTypeEnsureResumed requests the server to ensure the session's ACP connection is running.
+	// Sent by the frontend when the user focuses on or navigates to a conversation.
+	// If the session is not running and not archived, the server will resume it immediately,
+	// bypassing any startup stagger delay.
+	// Data: none
+	WSMsgTypeEnsureResumed = "ensure_resumed"
 )
 
 // =============================================================================

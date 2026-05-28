@@ -1882,6 +1882,13 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+	// Clear GC-suspended flag — any explicit resume (ensure_resumed, periodic runner,
+	// queue processing) should allow the session to run. This must happen before the
+	// "already running" check to avoid stale flags.
+	if sm.acpProcessManager != nil {
+		sm.acpProcessManager.ClearGCSuspended(sessionID)
+	}
+
 	// Check if already running
 	if bs := sm.GetSession(sessionID); bs != nil {
 		return bs, nil
@@ -2848,12 +2855,19 @@ func (sm *SessionManager) CloseIdleSession(sessionID string) {
 	sm.ClearCachedPlanState(sessionID)
 
 	if bs != nil {
+		// Use a distinct reason for periodic suspensions so the frontend can show
+		// a friendly "Session suspended" message instead of an error balloon.
+		reason := "gc_idle"
+		if sm.acpProcessManager != nil && sm.acpProcessManager.IsGCSuspended(sessionID) {
+			reason = "gc_suspended"
+		}
 		if sm.logger != nil {
 			sm.logger.Info("Closing idle session (GC)",
 				"session_id", sessionID,
-				"workspace_uuid", bs.GetWorkspaceUUID())
+				"workspace_uuid", bs.GetWorkspaceUUID(),
+				"reason", reason)
 		}
-		bs.Close("gc_idle")
+		bs.Close(reason)
 	}
 }
 

@@ -660,6 +660,15 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 
 		// Update session manager's global conversations config so new sessions use the updated settings
 		s.sessionManager.SetGlobalConversations(settings.Conversations)
+
+		// Update GC periodic suspend threshold at runtime if session config changed
+		if settings.Session != nil && s.acpProcessManager != nil {
+			if d, enabled := settings.Session.ParsePeriodicSuspendTimeout(); enabled {
+				s.acpProcessManager.UpdatePeriodicSuspendThreshold(d)
+			} else {
+				s.acpProcessManager.UpdatePeriodicSuspendThreshold(0)
+			}
+		}
 	}
 
 	// ACP command/cwd/env are resolved from global config at runtime and are never

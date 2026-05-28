@@ -303,7 +303,18 @@ func NewServer(config Config) (*Server, error) {
 	// The GC periodically checks for sessions with no observers, no active prompts,
 	// and no pending work, and stops shared ACP processes that have no active sessions.
 	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
-		acpProcessMgr.StartGC(GCConfig{}, func() map[string][]SessionInfo {
+		gcConfig := GCConfig{}
+		// Apply periodic suspend threshold from settings if configured.
+		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+			if d, enabled := config.MittoConfig.Session.ParsePeriodicSuspendTimeout(); enabled {
+				gcConfig.PeriodicSuspendThreshold = d
+			} else {
+				// Explicitly disabled — set to 0 so StartGC doesn't apply default.
+				// We need to bypass StartGC's "apply default for <= 0" logic.
+				gcConfig.PeriodicSuspendThreshold = -1
+			}
+		}
+		acpProcessMgr.StartGC(gcConfig, func() map[string][]SessionInfo {
 			return sessionMgr.GetSessionInfoByWorkspace()
 		}, func(sessionID string) {
 			sessionMgr.CloseIdleSession(sessionID)
@@ -562,6 +573,26 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
 	})
+
+	// Configure startup delay for periodic runner to avoid thundering herd.
+	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
+	startupPeriodicDelay := configPkg.DefaultStartupPeriodicDelay
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		startupPeriodicDelay = config.MittoConfig.Session.GetStartupPeriodicDelay()
+	}
+	if startupPeriodicDelay > 0 {
+		s.periodicRunner.SetStartupDelay(startupPeriodicDelay)
+	}
+
+	// Configure stagger delay between consecutive periodic session resumes.
+	// Uses the same startup_stagger_ms config as the queue's ProcessPendingQueues.
+	staggerMs := configPkg.DefaultStartupStaggerMs
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		staggerMs = config.MittoConfig.Session.GetStartupStaggerMs()
+	}
+	if staggerMs > 0 {
+		s.periodicRunner.SetResumeStagger(time.Duration(staggerMs) * time.Millisecond)
+	}
 
 	// Initialize callback index and rate limiter
 	s.callbackIndex = NewCallbackIndex()

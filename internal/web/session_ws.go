@@ -260,6 +260,16 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					clientLogger.Debug("Server is shutting down, not resuming ACP",
 						"session_id", sessionID)
 				}
+			} else if s.acpProcessManager != nil && s.acpProcessManager.IsGCSuspended(sessionID) {
+				// Session was intentionally suspended by the GC's periodic-suspend
+				// heuristic. Skip auto-resume to prevent the suspend/resume thrashing
+				// loop (GC closes → frontend reconnects WS → auto-resume → GC closes).
+				// The session will be resumed by ensure_resumed (user focus) or the
+				// PeriodicRunner (when the prompt is due).
+				if clientLogger != nil {
+					clientLogger.Debug("Session is GC-suspended, not auto-resuming",
+						"session_id", sessionID)
+				}
 			} else {
 				// Session exists in store and is not archived.
 				// Resume ACP asynchronously to avoid blocking the WebSocket handler.
@@ -640,6 +650,9 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label, data.FreeText)
+
+	case WSMsgTypeEnsureResumed:
+		c.handleEnsureResumed()
 	}
 }
 
@@ -678,7 +691,11 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 
 	// Auto-generate title if session has no title yet
 	if shouldGenerateTitle {
-		go c.generateAndSetTitle(message)
+		titleMessage := message
+		if titleMessage == "" && promptName != "" {
+			titleMessage = promptName
+		}
+		go c.generateAndSetTitle(titleMessage)
 	}
 }
 
@@ -1717,6 +1734,77 @@ func (c *SessionWSClient) sendPromptError(message string, promptID string) {
 		"session_id": c.sessionID,
 		"prompt_id":  promptID,
 	})
+}
+
+// handleEnsureResumed ensures the session's ACP connection is running.
+// This is called when the user focuses on a conversation, providing an explicit
+// hint that this session should be resumed immediately (bypassing any startup stagger).
+func (c *SessionWSClient) handleEnsureResumed() {
+	// Already attached to a running session
+	if c.bgSession != nil {
+		return
+	}
+
+	// Try to attach to a session that may have been resumed by another path
+	c.tryAttachToSession()
+	if c.bgSession != nil {
+		return
+	}
+
+	// Session not running - check if we should resume it
+	if c.store == nil {
+		return
+	}
+
+	meta, err := c.store.GetMetadata(c.sessionID)
+	if err != nil {
+		return
+	}
+
+	// Don't resume archived sessions
+	if meta.Archived {
+		return
+	}
+
+	// Don't resume during shutdown
+	if c.server.IsShutdown() {
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Info("User focused conversation, ensuring ACP is resumed",
+			"session_id", c.sessionID)
+	}
+
+	// Clear GC-suspended flag — the user explicitly focused this session,
+	// so it should resume regardless of the periodic suspend heuristic.
+	if c.server.acpProcessManager != nil {
+		c.server.acpProcessManager.ClearGCSuspended(c.sessionID)
+	}
+
+	// Resume asynchronously (same pattern as the WebSocket connect handler)
+	cwd := meta.WorkingDir
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	sessionName := meta.Name
+	go func() {
+		resumedBS, err := c.server.sessionManager.ResumeSession(c.sessionID, sessionName, cwd)
+		if err != nil {
+			if c.logger != nil {
+				c.logger.Error("Failed to resume session (ensure_resumed)", "error", err)
+			}
+			c.server.BroadcastACPStartFailed(c.sessionID, sessionName, err, "")
+			return
+		}
+		if c.logger != nil {
+			c.logger.Debug("Resumed session via ensure_resumed",
+				"acp_id", resumedBS.GetACPID())
+		}
+		c.tryAttachToSession()
+		c.server.BroadcastACPStarted(c.sessionID)
+		resumedBS.TriggerFollowUpSuggestions()
+	}()
 }
 
 // tryAttachToSession attempts to attach to a running BackgroundSession.
