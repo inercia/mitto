@@ -601,11 +601,13 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 
 // RunningSessionInfo contains information about a running session.
 type RunningSessionInfo struct {
-	SessionID   string `json:"session_id"`
-	Name        string `json:"name"`
-	WorkingDir  string `json:"working_dir"`
-	IsPrompting bool   `json:"is_prompting"`
-	PromptCount int    `json:"prompt_count"`
+	SessionID     string `json:"session_id"`
+	Name          string `json:"name"`
+	WorkingDir    string `json:"working_dir"`
+	IsPrompting   bool   `json:"is_prompting"`
+	PromptCount   int    `json:"prompt_count"`
+	WorkspaceUUID string `json:"workspace_uuid"`
+	ACPServer     string `json:"acp_server"`
 }
 
 // RunningSessionsResponse is the response for GET /api/sessions/running
@@ -645,9 +647,10 @@ func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		info := RunningSessionInfo{
-			SessionID:   sessionID,
-			IsPrompting: bs.IsPrompting(),
-			PromptCount: bs.GetPromptCount(),
+			SessionID:     sessionID,
+			IsPrompting:   bs.IsPrompting(),
+			PromptCount:   bs.GetPromptCount(),
+			WorkspaceUUID: bs.GetWorkspaceUUID(),
 		}
 
 		// Get session metadata for name and working dir
@@ -655,6 +658,7 @@ func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			info.Name = meta.Name
 			info.WorkingDir = meta.WorkingDir
+			info.ACPServer = meta.ACPServer
 		}
 
 		if info.IsPrompting {
@@ -1551,6 +1555,8 @@ func (s *Server) handleWorkspaceDetail(w http.ResponseWriter, r *http.Request) {
 	switch subPath {
 	case "effective-runner-config":
 		s.handleEffectiveRunnerConfig(w, r, uuid)
+	case "restart-acp":
+		s.handleRestartWorkspaceACP(w, r, uuid)
 	default:
 		http.NotFound(w, r)
 	}
@@ -1602,6 +1608,50 @@ func (s *Server) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSONOK(w, resp)
+}
+
+// handleRestartWorkspaceACP handles POST /api/workspaces/{uuid}/restart-acp.
+// Restarts the shared ACP process for a workspace so that MCP changes take effect.
+func (s *Server) handleRestartWorkspaceACP(w http.ResponseWriter, r *http.Request, workspaceUUID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	// Verify workspace exists
+	ws := s.sessionManager.GetWorkspaceByUUID(workspaceUUID)
+	if ws == nil {
+		http.Error(w, "Workspace not found", http.StatusNotFound)
+		return
+	}
+
+	// Check if the process manager exists
+	if s.acpProcessManager == nil {
+		http.Error(w, "ACP process manager not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Restart the shared ACP process
+	if err := s.acpProcessManager.RestartProcess(workspaceUUID); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to restart ACP process for workspace",
+				"workspace_uuid", workspaceUUID,
+				"error", err)
+		}
+		http.Error(w, "Failed to restart ACP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if s.logger != nil {
+		s.logger.Info("Restarted ACP process for workspace via API",
+			"workspace_uuid", workspaceUUID,
+			"acp_server", ws.ACPServer)
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"success": true,
+		"message": "ACP process restarted successfully",
+	})
 }
 
 // handleWorkspaceMetadata dispatches GET and PUT requests for workspace metadata.
