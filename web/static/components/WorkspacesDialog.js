@@ -26,6 +26,7 @@ import {
   ServerIcon,
   EditIcon,
   PlusIcon,
+  RefreshIcon,
   RobotIcon,
   GlobeIcon,
 } from "./Icons.js";
@@ -37,7 +38,7 @@ import {
   RunnerRestrictionsEditor,
 } from "./SettingsDialog.js";
 
-export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
+export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -79,6 +80,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
 
   const [mcpRemoveLoading, setMcpRemoveLoading] = useState(false);
   const mcpRemoveScopeRef = useRef("");
+
+  // Ephemeral restart state — resets when dialog closes (component state)
+  const [needsRestart, setNeedsRestart] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
@@ -189,6 +194,20 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       loadData();
     }
   }, [isOpen]);
+
+  // Auto-select the folder matching initialWorkingDir when dialog opens and data is loaded
+  useEffect(() => {
+    if (isOpen && initialWorkingDir && groupedWorkspaces.length > 0) {
+      const matchingGroup = groupedWorkspaces.find((g) =>
+        g.workspaces.some((ws) => ws.working_dir === initialWorkingDir)
+      );
+      if (matchingGroup) {
+        setSelectedFolder(matchingGroup.displayName);
+        setSelectedWorkspaceKey(null);
+        setActiveTab("general");
+      }
+    }
+  }, [isOpen, initialWorkingDir, groupedWorkspaces]);
 
   // When a workspace child is selected, populate workspace-level edit fields
   useEffect(() => {
@@ -349,6 +368,39 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     }
   }, []);
 
+  // Check if the given workspace UUID has any active (running) sessions.
+  const checkActiveSessionsForWorkspace = useCallback(async (workspaceUUID) => {
+    if (!workspaceUUID) return false;
+    try {
+      const res = await secureFetch(apiUrl("/api/sessions/running"));
+      if (!res.ok) return false;
+      const data = await res.json();
+      return (data.sessions || []).some(s => s.workspace_uuid === workspaceUUID);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Restart the ACP process for the selected workspace so MCP changes take effect.
+  const handleRestartAcp = useCallback(async () => {
+    if (!selectedWorkspace?.uuid) return;
+    setRestarting(true);
+    try {
+      const res = await secureFetch(apiUrl(`/api/workspaces/${selectedWorkspace.uuid}/restart-acp`), {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+      setNeedsRestart(false);
+    } catch (err) {
+      setError("Failed to restart ACP: " + err.message);
+    } finally {
+      setRestarting(false);
+    }
+  }, [selectedWorkspace]);
+
   const handleMcpInstall = useCallback(async () => {
     // Client-side JSON validation
     let parsed;
@@ -411,6 +463,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       } else {
         const names = results.map(r => r.name).join(", ");
         setMcpInstallSuccess(`Successfully installed: ${names}`);
+        // Check if active sessions need an ACP restart to pick up the new MCP server
+        if (selectedWorkspace?.uuid) {
+          checkActiveSessionsForWorkspace(selectedWorkspace.uuid).then(hasActive => {
+            if (hasActive) setNeedsRestart(true);
+          });
+        }
         // Reload MCP tools list after successful install
         setTimeout(() => {
           loadMcpTools(acpServer, selectedWorkspace?.working_dir);
@@ -426,7 +484,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     } finally {
       setMcpInstallLoading(false);
     }
-  }, [mcpInstallJson, mcpInstallName, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools]);
+  }, [mcpInstallJson, mcpInstallName, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools, checkActiveSessionsForWorkspace]);
 
   const handleMcpRemove = useCallback(async (serverName, scope) => {
     setMcpRemoveLoading(true);
@@ -446,6 +504,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       const data = await res.json();
       if (!data.success) {
         setMcpToolsError(data.message || "Failed to remove MCP server");
+      } else {
+        // Check if active sessions need an ACP restart to drop the removed MCP server
+        if (selectedWorkspace?.uuid) {
+          const hasActive = await checkActiveSessionsForWorkspace(selectedWorkspace.uuid);
+          if (hasActive) setNeedsRestart(true);
+        }
       }
       // Refresh the MCP tools list
       await loadMcpTools(acpServer, selectedWorkspace?.working_dir);
@@ -454,7 +518,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     } finally {
       setMcpRemoveLoading(false);
     }
-  }, [editAcpServer, selectedWorkspace, mcpTools, loadMcpTools]);
+  }, [editAcpServer, selectedWorkspace, mcpTools, loadMcpTools, checkActiveSessionsForWorkspace]);
 
   const handleMcpRemoveConfirm = useCallback((serverName) => {
     const defaultScope = mcpTools?.mcp_scopes?.[0] || "";
@@ -1646,22 +1710,32 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                         <p class="text-sm text-gray-400">
                           MCP servers configured for this workspace's ACP agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
                         </p>
-                        ${mcpTools?.has_mcp_install && html`
+                        <div class="flex items-center gap-0.5">
                           <button
-                            onClick=${() => {
-                              setMcpInstallOpen(true);
-                              setMcpInstallJson("");
-                              setMcpInstallName("");
-                              setMcpInstallScope(mcpTools?.mcp_scopes?.[0] || "");
-                              setMcpInstallError("");
-                              setMcpInstallSuccess("");
-                            }}
+                            onClick=${() => loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir)}
                             class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
-                            title="Install MCP servers"
+                            title="Refresh MCP server list"
+                            disabled=${mcpToolsLoading}
                           >
-                            <${PlusIcon} className="w-4 h-4" />
+                            <${RefreshIcon} className=${`w-4 h-4 ${mcpToolsLoading ? "animate-spin" : ""}`} />
                           </button>
-                        `}
+                          ${mcpTools?.has_mcp_install && html`
+                            <button
+                              onClick=${() => {
+                                setMcpInstallOpen(true);
+                                setMcpInstallJson("");
+                                setMcpInstallName("");
+                                setMcpInstallScope(mcpTools?.mcp_scopes?.[0] || "");
+                                setMcpInstallError("");
+                                setMcpInstallSuccess("");
+                              }}
+                              class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                              title="Install MCP servers"
+                            >
+                              <${PlusIcon} className="w-4 h-4" />
+                            </button>
+                          `}
+                        </div>
                       </div>
                       ${mcpToolsLoading
                         ? html`<div class="flex items-center justify-center p-8"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
@@ -1730,6 +1804,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             ${error && html`<p class="text-xs text-red-400">${error}</p>`}
           </div>
           <div class="flex gap-2">
+            ${needsRestart && html`
+              <button
+                onClick=${handleRestartAcp}
+                disabled=${restarting}
+                class="px-4 py-2 text-sm bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+                title="Restart ACP to apply MCP changes to active conversations"
+              >
+                ${restarting
+                  ? html`<${SpinnerIcon} className="w-4 h-4" /> Restarting...`
+                  : "Restart ACP"}
+              </button>
+            `}
             <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors">Close</button>
             <button
               onClick=${handleSave}
