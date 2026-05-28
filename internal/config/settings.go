@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/fileutil"
@@ -72,6 +73,11 @@ type Settings struct {
 // session resumes on startup for sessions sharing the same ACP process.
 const DefaultStartupStaggerMs = 300
 
+// DefaultStartupPeriodicDelay is the default delay before the periodic runner
+// starts its first poll on startup. This gives interactive sessions time to
+// resume first via WebSocket connections.
+const DefaultStartupPeriodicDelay = 15 * time.Second
+
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
 	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
@@ -95,6 +101,19 @@ type SessionConfig struct {
 	// notification channel when many sessions resume simultaneously.
 	// Default: 0 (use DefaultStartupStaggerMs = 300 ms). Set to -1 to disable staggering entirely.
 	StartupStaggerMs int `json:"startup_stagger_ms,omitempty"`
+	// StartupPeriodicDelaySeconds is the delay in seconds before the periodic runner
+	// starts its first poll on startup. This gives interactive sessions time to resume
+	// first via WebSocket connections, preventing thundering herd on ACP.
+	// Default: 15 seconds. Set to 0 to disable (not recommended).
+	StartupPeriodicDelaySeconds int `json:"startup_periodic_delay_seconds,omitempty"`
+	// PeriodicSuspendTimeout controls when idle periodic conversations have their ACP
+	// connection suspended to save memory. When a periodic conversation's next prompt
+	// is farther away than this timeout, its ACP session is closed even if the user has
+	// it open in the sidebar. The conversation resumes transparently when focused or
+	// when its periodic prompt is due.
+	// Values: "" (default - 30 minutes), "disabled", "15m", "30m", "1h", "2h"
+	// Exposed in the Settings dialog under Conversations > Suspend Settings.
+	PeriodicSuspendTimeout string `json:"periodic_suspend_timeout,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -119,6 +138,39 @@ func (c *SessionConfig) GetAutoArchiveInactiveAfter() string {
 	return c.AutoArchiveInactiveAfter
 }
 
+// ValidPeriodicSuspendTimeouts contains all valid periodic suspend timeout values.
+var ValidPeriodicSuspendTimeouts = []string{"", "disabled", "15m", "30m", "1h", "2h"}
+
+// GetPeriodicSuspendTimeout returns the periodic suspend timeout string, or "" if not set.
+func (c *SessionConfig) GetPeriodicSuspendTimeout() string {
+	if c == nil {
+		return ""
+	}
+	return c.PeriodicSuspendTimeout
+}
+
+// ParsePeriodicSuspendTimeout converts the periodic suspend timeout string to a time.Duration.
+// Returns the duration and true if the feature is enabled, or 0 and false if disabled.
+// An empty string returns the default of 30 minutes.
+func (c *SessionConfig) ParsePeriodicSuspendTimeout() (time.Duration, bool) {
+	val := c.GetPeriodicSuspendTimeout()
+	switch val {
+	case "disabled":
+		return 0, false
+	case "", "30m":
+		return 30 * time.Minute, true
+	case "15m":
+		return 15 * time.Minute, true
+	case "1h":
+		return time.Hour, true
+	case "2h":
+		return 2 * time.Hour, true
+	default:
+		// Unknown value — use default
+		return 30 * time.Minute, true
+	}
+}
+
 // GetStartupStaggerMs returns the stagger delay in milliseconds between consecutive session
 // resumes on startup for sessions sharing the same ACP process.
 // Returns DefaultStartupStaggerMs (300 ms) if not configured (0).
@@ -131,6 +183,19 @@ func (c *SessionConfig) GetStartupStaggerMs() int {
 		return 0
 	}
 	return c.StartupStaggerMs
+}
+
+// GetStartupPeriodicDelay returns the startup delay for the periodic runner.
+// Returns DefaultStartupPeriodicDelay (15s) if not configured (0).
+// Returns 0 to disable if explicitly set to a negative value.
+func (c *SessionConfig) GetStartupPeriodicDelay() time.Duration {
+	if c == nil || c.StartupPeriodicDelaySeconds == 0 {
+		return DefaultStartupPeriodicDelay
+	}
+	if c.StartupPeriodicDelaySeconds < 0 {
+		return 0
+	}
+	return time.Duration(c.StartupPeriodicDelaySeconds) * time.Second
 }
 
 // ScannerDefenseConfig holds configuration for the scanner defense system.

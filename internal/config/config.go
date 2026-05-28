@@ -1232,11 +1232,13 @@ type rawConfig struct {
 	} `yaml:"permissions"`
 	// Session is the session storage/startup configuration
 	Session *struct {
-		MaxMessagesPerSession    int    `yaml:"max_messages_per_session"`
-		MaxSessionSizeBytes      int64  `yaml:"max_session_size_bytes"`
-		ArchiveRetentionPeriod   string `yaml:"archive_retention_period"`
-		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
-		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
+		MaxMessagesPerSession       int    `yaml:"max_messages_per_session"`
+		MaxSessionSizeBytes         int64  `yaml:"max_session_size_bytes"`
+		ArchiveRetentionPeriod      string `yaml:"archive_retention_period"`
+		AutoArchiveInactiveAfter    string `yaml:"auto_archive_inactive_after"`
+		StartupStaggerMs            int    `yaml:"startup_stagger_ms"`
+		StartupPeriodicDelaySeconds int    `yaml:"startup_periodic_delay_seconds"`
+		PeriodicSuspendTimeout      string `yaml:"periodic_suspend_timeout"`
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1544,11 +1546,13 @@ func Parse(data []byte) (*Config, error) {
 	// Parse session config
 	if raw.Session != nil {
 		cfg.Session = &SessionConfig{
-			MaxMessagesPerSession:    raw.Session.MaxMessagesPerSession,
-			MaxSessionSizeBytes:      raw.Session.MaxSessionSizeBytes,
-			ArchiveRetentionPeriod:   raw.Session.ArchiveRetentionPeriod,
-			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
-			StartupStaggerMs:         raw.Session.StartupStaggerMs,
+			MaxMessagesPerSession:       raw.Session.MaxMessagesPerSession,
+			MaxSessionSizeBytes:         raw.Session.MaxSessionSizeBytes,
+			ArchiveRetentionPeriod:      raw.Session.ArchiveRetentionPeriod,
+			AutoArchiveInactiveAfter:    raw.Session.AutoArchiveInactiveAfter,
+			StartupStaggerMs:            raw.Session.StartupStaggerMs,
+			StartupPeriodicDelaySeconds: raw.Session.StartupPeriodicDelaySeconds,
+			PeriodicSuspendTimeout:      raw.Session.PeriodicSuspendTimeout,
 		}
 	}
 
