@@ -3428,7 +3428,16 @@ retryAfterRestart:
 				}
 			}
 
-			if acpDead && bs.canRestartACP() {
+			if acpDead && autoRetried {
+				// The auto-retry already happened and the process crashed again.
+				// Don't consume another restart slot — let the next user-triggered prompt
+				// handle the restart. This ensures each user message uses at most one
+				// restart slot, so MaxACPRestarts behaves predictably from the user's POV.
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("AI agent restarted. Please resend your message.")
+				})
+			} else if acpDead && bs.canRestartACP() {
+				// First crash on this prompt — restart and automatically retry.
 				restartInfo := bs.getRestartInfo()
 				bs.notifyObservers(func(o SessionObserver) {
 					o.OnError(fmt.Sprintf("The AI agent process stopped unexpectedly. Restarting %s...", restartInfo))
@@ -3443,8 +3452,8 @@ retryAfterRestart:
 					bs.notifyObservers(func(o SessionObserver) {
 						o.OnError(errMsg)
 					})
-				} else if !autoRetried {
-					// Restart succeeded on the first crash — automatically retry the prompt.
+				} else {
+					// Restart succeeded — automatically retry the prompt.
 					autoRetried = true
 					bs.notifyObservers(func(o SessionObserver) {
 						o.OnError("AI agent restarted. Retrying your message automatically...")
@@ -3463,11 +3472,6 @@ retryAfterRestart:
 						bs.onStreamingStateChanged(bs.persistedID, true)
 					}
 					goto retryPrompt
-				} else {
-					// Already retried once — ask the user to resend manually.
-					bs.notifyObservers(func(o SessionObserver) {
-						o.OnError("AI agent restarted. Please resend your message.")
-					})
 				}
 			} else if acpDead {
 				// ACP process died but restart limit exceeded — tell user to manually restart
@@ -3745,6 +3749,7 @@ func (bs *BackgroundSession) applyAfterProcessors(
 	input := processors.AfterProcessorInput{
 		SessionID:     bs.persistedID,
 		SessionDir:    sessionDir,
+		WorkspaceUUID: bs.workspaceUUID,
 		WorkingDir:    bs.workingDir,
 		Origin:        promptOriginFromSenderID(senderID),
 		StopReason:    stopReason,
