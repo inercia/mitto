@@ -19,6 +19,7 @@ if ! command -v auggie &>/dev/null; then
 fi
 
 WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
+SCOPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
 
 # Build base auggie command args with optional workspace folder
 AUGGIE_ARGS=()
@@ -26,8 +27,16 @@ if [ -n "$WORKSPACE_PATH" ]; then
     AUGGIE_ARGS+=("--workspace-root=$WORKSPACE_PATH")
 fi
 
-# Run the mcp remove command
-auggie "${AUGGIE_ARGS[@]}" mcp remove "$NAME" 2>&1
+# Map scope to auggie flag
+SCOPE_ARGS=()
+case "$SCOPE" in
+    project) SCOPE_ARGS+=("--project") ;;
+    local)   SCOPE_ARGS+=("--local") ;;
+    # "user" or empty = default (no flag needed)
+esac
+
+# Run the mcp remove command (suppress auggie text output from stdout)
+auggie "${AUGGIE_ARGS[@]}" mcp remove "${SCOPE_ARGS[@]}" "$NAME" >/dev/null 2>&1
 
 if [ $? -eq 0 ]; then
     echo "{\"success\": true, \"message\": \"Removed MCP server '$NAME'\", \"name\": \"$NAME\"}"

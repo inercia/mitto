@@ -20,8 +20,24 @@ if [ -z "$COMMAND" ] && [ -z "$URL" ]; then
     exit 1
 fi
 
-CONFIG_DIR="${HOME}/.cursor"
-CONFIG_FILE="${HOME}/.cursor/mcp.json"
+SCOPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
+WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
+
+# Determine config file based on scope
+case "$SCOPE" in
+    project)
+        if [ -z "$WORKSPACE_PATH" ]; then
+            echo "{\"success\": false, \"message\": \"path is required for project scope\", \"name\": \"$NAME\"}"
+            exit 1
+        fi
+        CONFIG_DIR="${WORKSPACE_PATH}/.cursor"
+        CONFIG_FILE="${WORKSPACE_PATH}/.cursor/mcp.json"
+        ;;
+    *)
+        CONFIG_DIR="${HOME}/.cursor"
+        CONFIG_FILE="${HOME}/.cursor/mcp.json"
+        ;;
+esac
 
 mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_FILE" ]; then
