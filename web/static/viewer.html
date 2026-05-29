@@ -94,6 +94,12 @@
         flex-shrink: 0;
       }
 
+      .file-modified {
+        font-size: 12px;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+
       .actions {
         display: flex;
         gap: 8px;
@@ -148,7 +154,7 @@
         .toggle-icon { display: block; }
         .actions { gap: 4px; }
         .header { padding: 8px 12px; gap: 8px; }
-        .file-size { display: none; }
+        .file-size, .file-modified { display: none; }
       }
 
       .code-container {
@@ -439,6 +445,7 @@
         </svg>
         <span class="file-path" id="filePath">Loading...</span>
         <span class="file-size" id="fileSize"></span>
+        <span class="file-modified" id="fileModified"></span>
       </div>
       <div class="actions">
         <div class="toggle-group" id="fontSizeToggle">
@@ -758,7 +765,7 @@
             return;
           }
 
-          const response = await fetch(fileUrl);
+          const response = await fetch(fileUrl, { cache: 'no-store' });
           if (!response.ok) {
             throw new Error(
               response.status === 404
@@ -781,6 +788,11 @@
           let rawContent = await response.text();
           const size = new Blob([rawContent]).size;
           document.getElementById("fileSize").textContent = formatSize(size);
+          // Display file modification time
+          if (currentLastModified) {
+            const modDate = new Date(currentLastModified);
+            document.getElementById("fileModified").textContent = "Modified " + modDate.toLocaleString();
+          }
 
           // Set up download button with raw content
           document.getElementById("downloadBtn").onclick = () => {
@@ -831,7 +843,7 @@
                 renderedStale = false;
                 try {
                   const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
-                  const renderResponse = await fetch(renderUrl);
+                  const renderResponse = await fetch(renderUrl, { cache: 'no-store' });
                   if (renderResponse.ok) {
                     let htmlContent = await renderResponse.text();
                     if (htmlContent.trimStart().startsWith("<!DOCTYPE") || htmlContent.trimStart().toLowerCase().startsWith("<html")) {
@@ -968,7 +980,7 @@
               diffEl.innerHTML = '<div class="diff-no-changes">Loading diff...</div>';
               try {
                 const diffUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&diff=true`;
-                const resp = await fetch(diffUrl);
+                const resp = await fetch(diffUrl, { cache: 'no-store' });
                 diffContent = await resp.text();
                 diffLoaded = true;
               } catch (err) {
@@ -1171,6 +1183,11 @@
 
                 const newSize = new Blob([content]).size;
                 document.getElementById("fileSize").textContent = formatSize(newSize);
+                // Update modification time display
+                if (currentLastModified) {
+                  const modDate = new Date(currentLastModified);
+                  document.getElementById("fileModified").textContent = "Modified " + modDate.toLocaleString();
+                }
 
                 // Reset diff cache so next diff view reflects the save
                 diffLoaded = false;
@@ -1229,7 +1246,7 @@
             conflictPollTimer = setInterval(async () => {
               if (editorState !== "editing") return;
               try {
-                const resp = await fetch(fileUrl, { method: "HEAD", credentials: "include" });
+                const resp = await fetch(fileUrl, { method: "HEAD", credentials: "include", cache: 'no-store' });
                 const newETag = resp.headers.get("ETag");
                 if (newETag && snapshot.etag && newETag !== snapshot.etag) {
                   showConflictBanner();
@@ -1258,7 +1275,7 @@
           // Conflict resolution buttons
           document.getElementById("conflictReload").addEventListener("click", async () => {
             try {
-              const resp = await fetch(fileUrl, { credentials: "include" });
+              const resp = await fetch(fileUrl, { credentials: "include", cache: 'no-store' });
               if (resp.ok) {
                 const newContent = await resp.text();
                 currentETag = resp.headers.get("ETag");
@@ -1315,7 +1332,7 @@
           if (isMarkdown) {
             // Fetch server-rendered HTML for markdown
             const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
-            const renderResponse = await fetch(renderUrl);
+            const renderResponse = await fetch(renderUrl, { cache: 'no-store' });
             if (!renderResponse.ok) throw new Error(`HTTP ${renderResponse.status}`);
             let htmlContent = await renderResponse.text();
 
@@ -1545,7 +1562,7 @@
               : `workspace=${encodeURIComponent(wsPath || "")}`;
             const url = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(filePath)}`;
             try {
-              const resp = await fetch(url, { method: "HEAD" });
+              const resp = await fetch(url, { method: "HEAD", cache: 'no-store' });
               return resp.ok;
             } catch { return false; }
           }

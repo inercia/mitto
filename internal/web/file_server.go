@@ -186,7 +186,7 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 		wsUUID := r.URL.Query().Get("ws")
 		// Derive API prefix from the request path (e.g., "/mitto/api/files" → "/mitto")
 		apiPrefix := strings.TrimSuffix(r.URL.Path, "/api/files")
-		fs.serveRenderedMarkdown(w, realPath, relativePath, wsUUID, apiPrefix)
+		fs.serveRenderedMarkdown(w, realPath, relativePath, wsUUID, apiPrefix, info.ModTime())
 		return
 	}
 
@@ -488,7 +488,7 @@ const maxMarkdownRenderSize = 10 * 1024 * 1024
 // When wsUUID is non-empty, relative image src paths are rewritten to use the
 // /api/files endpoint so they resolve correctly regardless of the page URL.
 // apiPrefix is the URL prefix (e.g., "/mitto") prepended to rewritten image URLs.
-func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath, wsUUID, apiPrefix string) {
+func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath, wsUUID, apiPrefix string, modTime time.Time) {
 	// Read markdown content
 	content, err := os.ReadFile(realPath)
 	if err != nil {
@@ -528,6 +528,7 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	w.Header().Set("Last-Modified", modTime.UTC().Format(http.TimeFormat))
 
 	// Wrap in a full HTML document so it renders correctly when viewed directly.
 	// The viewer.html extracts <article> content when it detects a full HTML doc.
