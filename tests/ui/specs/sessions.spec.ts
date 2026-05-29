@@ -8,7 +8,22 @@ import { test, expect } from "../fixtures/test-fixtures";
 
 test.describe("Session Management", () => {
   test.beforeEach(async ({ page, helpers }) => {
+    // navigateAndWait resets the conversation filter tab in localStorage via
+    // addInitScript before the page loads.  However the app's React side also
+    // has an auto-tab-switch effect that switches to the Periodic tab whenever
+    // the active session has periodic_enabled=true (e.g. after the
+    // periodic-prompt-pill.spec.ts suite).  We therefore explicitly click the
+    // Conversations tab after the app is ready so all session-management tests
+    // always start on the correct tab.
     await helpers.navigateAndWait(page);
+    // Click the Conversations tab if it is not already selected.
+    const conversationsTab = page.getByRole("tab", { name: "Conversations" });
+    if (await conversationsTab.isVisible()) {
+      const isSelected = await conversationsTab.getAttribute("aria-selected");
+      if (isSelected !== "true") {
+        await conversationsTab.click();
+      }
+    }
   });
 
   test("should display sessions sidebar", async ({ page, timeouts }) => {
@@ -25,8 +40,17 @@ test.describe("Session Management", () => {
     selectors,
     timeouts,
   }) => {
-    // There should be at least one session item in the sidebar
     const sessionItems = page.locator(selectors.sessionsList);
+
+    // On a clean test run the server has no sessions yet.  Create one by
+    // clicking the New Conversation button so the sidebar has something to
+    // display, then verify it appears.  When sessions already exist from
+    // previous tests the item is immediately visible and the click is skipped.
+    const count = await sessionItems.count();
+    if (count === 0) {
+      await page.locator(selectors.newSessionButton).click();
+    }
+
     await expect(sessionItems.first()).toBeVisible({
       timeout: timeouts.appReady,
     });

@@ -83,7 +83,7 @@ func setupCloudflareTestServer(t *testing.T, includeSimpleAuth bool) *Cloudflare
 		},
 	}
 	webConfig := web.Config{
-		Workspaces:              []config.WorkspaceSettings{{ACPServer: "mock-acp", ACPCommand: mockACPCmd, WorkingDir: workspaceDir}},
+		Workspaces:              []config.WorkspaceSettings{{ACPServer: "mock-acp", WorkingDir: workspaceDir}},
 		ACPCommand:              mockACPCmd,
 		ACPServer:               "mock-acp",
 		DefaultWorkingDir:       workspaceDir,

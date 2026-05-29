@@ -70,7 +70,6 @@ func SetupTestServer(t *testing.T) *TestServer {
 		Workspaces: []config.WorkspaceSettings{
 			{
 				ACPServer:  "mock-acp",
-				ACPCommand: mockACPCmd,
 				WorkingDir: workspaceDir,
 			},
 		},
