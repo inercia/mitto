@@ -846,6 +846,9 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 	applied := 0
 	skipped := 0
 
+	// Collect prompt-mode processors for batched dispatch after the loop.
+	var pendingPrompts []pendingPromptDispatch
+
 	m.logger.Info("after-phase processor pipeline starting",
 		"total_processors", len(m.processors),
 		"is_first_agent_response", isFirstAgentResponse,
@@ -988,18 +991,51 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			"name", proc.Name,
 			"match", proc.When.Match,
 			"output", proc.GetOutput(),
+			"mode", map[bool]string{true: "prompt", false: "command"}[proc.IsPromptMode()],
 		)
 
-		// Execute the processor and collect stdout.
-		var stdout string
-		var execErr error
-
 		if proc.IsPromptMode() {
-			stdout, execErr = executeAfterPrompt(proc, input)
-		} else {
-			// Command mode (text mode is forbidden for agentResponded by the loader).
-			stdout, execErr = executeAfterCommand(ctx, proc, m.processorsDir, input, m.logger)
+			// Prompt-mode: collect for batched fire-and-forget dispatch.
+			// The output: field is ignored for prompt-mode — these are dispatched to
+			// an auxiliary session and are not parsed as stdout.
+			if m.promptFunc == nil {
+				m.logger.Warn("after-phase prompt-mode processor skipped: no PromptFunc configured",
+					"name", proc.Name,
+				)
+				skipped++
+				applied-- // undo the applied++ above
+				continue
+			}
+
+			assembledPrompt := substituteAfterVariables(proc.Prompt, input)
+			procTimeout := proc.GetTimeout().Duration()
+			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
+				name:    proc.Name,
+				prompt:  assembledPrompt,
+				timeout: procTimeout,
+			})
+
+			// Reset cadence counters after successful collection.
+			if proc.When.Cadence != nil && proc.Name != "" {
+				cs := state.Processors[proc.Name]
+				if cs == nil {
+					cs = &ProcessorCadenceState{}
+					state.Processors[proc.Name] = cs
+				}
+				cs.TurnsSinceLastFire = 0
+				cs.TokensSinceLastFire = 0
+				cs.LastFiredAt = now
+			}
+
+			m.logger.Info("after-phase prompt-mode processor collected for dispatch",
+				"name", proc.Name,
+				"prompt_len", len(assembledPrompt),
+			)
+			continue
 		}
+
+		// Command mode (text mode is forbidden for agentResponded by the loader).
+		stdout, execErr := executeAfterCommand(ctx, proc, m.processorsDir, input, m.logger)
 
 		if execErr != nil {
 			m.logger.Warn("after-phase processor execution failed",
@@ -1083,6 +1119,11 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 
 		m.logger.Info("after-phase processor applied",
 			"name", proc.Name, "output_type", outputType)
+	}
+
+	// Dispatch collected prompt-mode processors (fire-and-forget).
+	if len(pendingPrompts) > 0 {
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
 	}
 
 	// --- Update and save persisted state ---

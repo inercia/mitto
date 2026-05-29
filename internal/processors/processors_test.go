@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2267,6 +2268,7 @@ func makeAfterInput(origin, stopReason string) AfterProcessorInput {
 	return AfterProcessorInput{
 		SessionID:     "test-session",
 		SessionDir:    "test-session-dir", // key for MemoryStateStore
+		WorkspaceUUID: "test-workspace",
 		Origin:        origin,
 		StopReason:    stopReason,
 		UserPrompt:    "hello",
@@ -2760,29 +2762,82 @@ func TestParseUserDataOutput(t *testing.T) {
 
 // TestApplyAfter_PromptMode verifies that a prompt-mode processor renders
 // its template with after-phase variables and parses the result as notify output.
-func TestApplyAfter_PromptMode_Notify(t *testing.T) {
+// TestApplyAfter_PromptMode_Dispatched verifies that prompt-mode processors in the
+// agentResponded phase are dispatched via promptFunc (fire-and-forget) rather than
+// treated as command output. The output: field is ignored for prompt-mode processors.
+func TestApplyAfter_PromptMode_Dispatched(t *testing.T) {
+	var dispatched []struct{ workspace, name, prompt string }
+	var mu sync.Mutex
+
 	proc := &Processor{
-		Name:   "prompt-notifier",
+		Name:   "auggie-update-rules",
 		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
-		Prompt: `{"title":"Stop: @mitto:stop_reason","message":"Origin: @mitto:origin"}`,
+		Prompt: `Update rules for stop: @mitto:stop_reason origin: @mitto:origin`,
+		// Output field is intentionally set to OutputNotify to confirm it is ignored for prompt-mode.
 		Output: OutputNotify,
 	}
+
 	m := makeAfterManager([]*Processor{proc})
+	m.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dispatched = append(dispatched, struct{ workspace, name, prompt string }{
+			workspace: workspaceUUID,
+			name:      processorName,
+			prompt:    prompt,
+		})
+		return nil
+	})
+
 	input := makeAfterInput("user", "end_turn")
 	result := m.ApplyAfter(context.Background(), input)
+
+	// Wait briefly for the async goroutine to finish.
+	time.Sleep(50 * time.Millisecond)
 
 	if len(result.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", result.Errors)
 	}
-	if len(result.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(result.Notifications))
+	// Prompt-mode processors must NOT produce notifications — they are dispatched.
+	if len(result.Notifications) != 0 {
+		t.Errorf("expected 0 notifications for prompt-mode processor, got %d", len(result.Notifications))
 	}
-	n := result.Notifications[0]
-	if n.Title != "Stop: end_turn" {
-		t.Errorf("expected 'Stop: end_turn', got %q", n.Title)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 1 {
+		t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
 	}
-	if n.Message != "Origin: user" {
-		t.Errorf("expected 'Origin: user', got %q", n.Message)
+	d := dispatched[0]
+	if d.workspace != "test-workspace" {
+		t.Errorf("expected workspace 'test-workspace', got %q", d.workspace)
+	}
+	if d.name != "auggie-update-rules" {
+		t.Errorf("expected processor name 'auggie-update-rules', got %q", d.name)
+	}
+	wantPrompt := "Update rules for stop: end_turn origin: user"
+	if d.prompt != wantPrompt {
+		t.Errorf("expected prompt %q, got %q", wantPrompt, d.prompt)
+	}
+}
+
+// TestApplyAfter_PromptMode_NoPromptFunc verifies that prompt-mode processors are
+// skipped gracefully (not counted as errors) when no PromptFunc is configured.
+func TestApplyAfter_PromptMode_NoPromptFunc(t *testing.T) {
+	proc := &Processor{
+		Name:   "orphan-prompt",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: `Do something`,
+	}
+	// makeAfterManager does not set a PromptFunc.
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors (skipped gracefully), got %v", result.Errors)
+	}
+	if len(result.Notifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(result.Notifications))
 	}
 }
 

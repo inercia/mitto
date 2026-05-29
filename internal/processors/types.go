@@ -334,13 +334,16 @@ func (d Duration) Duration() time.Duration {
 
 // AfterProcessorInput captures the agent's completed turn for agentResponded processors.
 // Fields are serialized to JSON (camelCase) for the processor's stdin payload.
-// SessionDir is excluded from JSON serialization — it is used internally for state persistence.
+// SessionDir and WorkspaceUUID are excluded from JSON serialization — they are used internally.
 type AfterProcessorInput struct {
 	// SessionID is the current session identifier.
 	SessionID string `json:"sessionId"`
 	// SessionDir is the on-disk directory for this session (used for processor state persistence).
 	// This field is NOT serialized to JSON — it is for internal use only.
 	SessionDir string `json:"-"`
+	// WorkspaceUUID is the workspace identifier used to route prompt-mode processor dispatches.
+	// This field is NOT serialized to JSON — it is for internal use only.
+	WorkspaceUUID string `json:"-"`
 	// WorkingDir is the session's working directory (used for WorkingDirSession processors).
 	WorkingDir string `json:"workingDir,omitempty"`
 	// Origin is the source of the prompt: "user", "queue", or "periodic-runner".
