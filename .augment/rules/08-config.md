@@ -139,11 +139,16 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 
 Note: `/mitto/api/settings` manages global `settings.json`. For per-session feature flags, see `16-web-backend-settings.md`.
 
+## ACP Server Constraints (Auto-Selection)
+
+`ACPServer.Constraints` (`map[string]*ACPServerConstraint`): auto-select config options (e.g., model) when a session starts. Applied in `BackgroundSession.applyConfigConstraints()` after ACP initialization provides available options.
+
+```json
+{ "constraints": { "model": { "matchMode": "contains", "pattern": "Opus 4.6" } } }
+```
+
+`ACPServerConstraint`: `MatchMode` (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`), `Pattern` (case-insensitive). Exposed via `GET /mitto/api/config` response.
+
 ## WorkspaceSettings Override Pattern
 
-`WorkspaceSettings.ACPCommandOverride` (`json:"acp_command_override,omitempty"`): set default from server map, then apply override if non-empty. Follow this pattern for any future `*Override` fields. See `internal/config/merger.go` for `GenericMerger[T]` (reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`).
-
-```go
-newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
-if ws.ACPCommandOverride != "" { newWorkspaces[i].ACPCommand = ws.ACPCommandOverride }
-```
+`WorkspaceSettings.ACPCommandOverride`: set default from server map, then apply override. See `internal/config/merger.go` for `GenericMerger[T]`.

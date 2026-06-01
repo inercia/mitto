@@ -124,6 +124,7 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | `acp.*`                 | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
 | `session.*`             | `session.isPeriodic`, `session.isChild`, `session.id`                       |
 | `workspace.*`           | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
+| `children.*`            | `children.exists`, `children.count`, `children.mcp_count`, `children.promptingCount`, `children.idleCount` |
 | `tools.*`               | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
 | `commandExists(cmd)`    | `commandExists("git")`, `commandExists("docker")` — checks system PATH |
 | `fileExists(path)`    | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
