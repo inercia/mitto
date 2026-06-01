@@ -4150,6 +4150,9 @@ function App() {
   // Input font family setting (web UI, default: "system")
   const [inputFontFamily, setInputFontFamily] = useState("system");
 
+  // Input font size setting (web UI, default: "default")
+  const [inputFontSize, setInputFontSize] = useState("default");
+
   // Send key mode setting (web UI, default: "enter")
   // "enter" = Enter to send, Shift+Enter for new line
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
@@ -4218,6 +4221,10 @@ function App() {
         // Load input font family setting (web UI)
         if (config?.ui?.web?.input_font_family) {
           setInputFontFamily(config.ui.web.input_font_family);
+        }
+        // Load input font size setting (web UI)
+        if (config?.ui?.web?.input_font_size) {
+          setInputFontSize(config.ui.web.input_font_size);
         }
         // Load send key mode setting (web UI, default: "enter")
         if (config?.ui?.web?.send_key_mode) {
@@ -4751,6 +4758,20 @@ function App() {
     // Add the current font class
     root.classList.add(`input-font-${inputFontFamily}`);
   }, [inputFontFamily]);
+
+  // Apply input font size class to document
+  useEffect(() => {
+    const root = document.documentElement;
+    const sizeClasses = [
+      "input-fontsize-small",
+      "input-fontsize-default",
+      "input-fontsize-medium",
+      "input-fontsize-large",
+      "input-fontsize-xl",
+    ];
+    sizeClasses.forEach((cls) => root.classList.remove(cls));
+    root.classList.add(`input-fontsize-${inputFontSize}`);
+  }, [inputFontSize]);
 
   // Threshold for considering user "at bottom"
   // For large scroll ranges (>200px), use a fixed 50px threshold
@@ -6009,6 +6030,10 @@ function App() {
               setInputFontFamily(
                 config?.ui?.web?.input_font_family || "system",
               );
+              // Reload input font size setting
+              setInputFontSize(
+                config?.ui?.web?.input_font_size || "default",
+              );
               // Reload send key mode setting
               setSendKeyMode(config?.ui?.web?.send_key_mode || "enter");
               // Reload conversation cycling mode setting
@@ -6309,7 +6334,7 @@ function App() {
               }
               ${[...displayMessages]
                 .reverse()
-                .map(
+                .flatMap(
                   (msg, i, arr) => {
                     // For error messages, find the last user prompt before this error
                     // and offer a retry button to resend it (including any attached images).
@@ -6326,15 +6351,62 @@ function App() {
                         }
                       }
                     }
-                    return html`
+
+                    // Date separator logic.
+                    // The array is rendered in reverse (column-reverse), so index i=0 is the
+                    // newest message (visual bottom). "Next" in iteration = older message above.
+                    // We show a separator ABOVE a message when its date differs from the
+                    // message that immediately follows it chronologically (i.e. arr[i+1] in
+                    // the reversed array, which is one step older).
+                    const origIdx = arr.length - 1 - i;
+                    let dateSeparator = null;
+                    if (msg.timestamp) {
+                      const msgDate = new Date(msg.timestamp).toDateString();
+                      // i+1 in reversed array = the next-older message
+                      const olderMsg = arr[i + 1];
+                      const olderDate = olderMsg?.timestamp
+                        ? new Date(olderMsg.timestamp).toDateString()
+                        : null;
+                      // Show separator when the date changes (or at the top of the list)
+                      if (!olderMsg || msgDate !== olderDate) {
+                        const now = new Date();
+                        const yesterday = new Date(now);
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        let label;
+                        const d = new Date(msg.timestamp);
+                        if (d.toDateString() === now.toDateString()) {
+                          label = "Today";
+                        } else if (d.toDateString() === yesterday.toDateString()) {
+                          label = "Yesterday";
+                        } else {
+                          label = d.toLocaleDateString([], {
+                            month: "short",
+                            day: "numeric",
+                            year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+                          });
+                        }
+                        dateSeparator = html`
+                          <div
+                            key=${"sep-" + origIdx}
+                            class="date-separator"
+                          >
+                            ${label}
+                          </div>
+                        `;
+                      }
+                    }
+
+                    const msgEl = html`
                       <${Message}
-                        key=${msg.timestamp + "-" + (arr.length - 1 - i)}
+                        key=${msg.timestamp + "-" + origIdx}
                         message=${msg}
                         isLast=${i === 0}
                         isStreaming=${isStreaming}
                         onRetry=${retryHandler}
                       />
                     `;
+                    // In column-reverse, elements added after the message appear visually above it.
+                    return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
                   },
                 )}
               ${

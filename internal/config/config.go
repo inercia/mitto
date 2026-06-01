@@ -358,6 +358,10 @@ type WebUIConfig struct {
 	// "jetbrains-mono", "sf-mono", "cascadia-code"
 	InputFontFamily string `json:"input_font_family,omitempty"`
 
+	// InputFontSize is the font size for the compose/input box.
+	// Options: "default" (14px), "small" (12px), "medium" (16px), "large" (18px), "xl" (20px)
+	InputFontSize string `json:"input_font_size,omitempty"`
+
 	// ConversationCyclingMode controls which conversations are included when cycling
 	// with keyboard shortcuts (Cmd+Ctrl+Up/Down) or mobile swipe gestures.
 	// Options: "all" (default) - all non-archived conversations
@@ -1172,6 +1176,7 @@ type rawConfig struct {
 		} `yaml:"confirmations"`
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
+			InputFontSize           string `yaml:"input_font_size"`
 			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
 			SingleExpandedGroup     bool   `yaml:"single_expanded_group"`
 		} `yaml:"web"`
@@ -1413,6 +1418,7 @@ func Parse(data []byte) (*Config, error) {
 		if raw.UI.Web != nil {
 			cfg.UI.Web = &WebUIConfig{
 				InputFontFamily:         raw.UI.Web.InputFontFamily,
+				InputFontSize:           raw.UI.Web.InputFontSize,
 				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
 				SingleExpandedGroup:     raw.UI.Web.SingleExpandedGroup,
 			}

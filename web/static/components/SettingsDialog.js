@@ -1301,6 +1301,9 @@ export function SettingsDialog({
   // Input font family setting (web UI)
   const [inputFontFamily, setInputFontFamily] = useState("system");
 
+  // Input font size setting (web UI)
+  const [inputFontSize, setInputFontSize] = useState("default");
+
   // Send key mode setting (web UI) - default: "enter"
   // "enter" = Enter to send, Shift+Enter for new line
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
@@ -1666,6 +1669,9 @@ export function SettingsDialog({
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
+      // Load input font size setting (web UI) - default to "default"
+      setInputFontSize(config.ui?.web?.input_font_size || "default");
+
       // Load send key mode setting (web UI) - default to "enter"
       setSendKeyMode(config.ui?.web?.send_key_mode || "enter");
 
@@ -1858,6 +1864,7 @@ export function SettingsDialog({
         // Web-specific UI settings
         web: {
           input_font_family: inputFontFamily,
+          input_font_size: inputFontSize,
           send_key_mode: sendKeyMode,
           conversation_cycling_mode: conversationCyclingMode,
           single_expanded_group: singleExpandedGroup,
@@ -4015,31 +4022,41 @@ export function SettingsDialog({
                                 Input box font
                               </div>
                               <div class="text-xs text-gray-500">
-                                Font family for the message compose area
+                                Font family and size for the message compose area
                               </div>
                             </div>
-                            <select
-                              value=${inputFontFamily}
-                              onChange=${(e) =>
-                                setInputFontFamily(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
-                            >
-                              <option value="system">System Default</option>
-                              <option value="sans-serif">Sans-Serif</option>
-                              <option value="serif">Serif</option>
-                              <option value="monospace">Monospace</option>
-                              <option value="menlo">Menlo</option>
-                              <option value="monaco">Monaco</option>
-                              <option value="consolas">Consolas</option>
-                              <option value="courier-new">Courier New</option>
-                              <option value="jetbrains-mono">
-                                JetBrains Mono
-                              </option>
-                              <option value="sf-mono">SF Mono</option>
-                              <option value="cascadia-code">
-                                Cascadia Code
-                              </option>
-                            </select>
+                            <div class="flex items-center gap-2">
+                              <select
+                                value=${inputFontFamily}
+                                onChange=${(e) =>
+                                  setInputFontFamily(e.target.value)}
+                                class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              >
+                                <option value="system">System Default</option>
+                                <option value="sans-serif">Sans-Serif</option>
+                                <option value="serif">Serif</option>
+                                <option value="monospace">Monospace</option>
+                                <option value="menlo">Menlo</option>
+                                <option value="monaco">Monaco</option>
+                                <option value="consolas">Consolas</option>
+                                <option value="courier-new">Courier New</option>
+                                <option value="jetbrains-mono">JetBrains Mono</option>
+                                <option value="sf-mono">SF Mono</option>
+                                <option value="cascadia-code">Cascadia Code</option>
+                              </select>
+                              <select
+                                value=${inputFontSize}
+                                onChange=${(e) =>
+                                  setInputFontSize(e.target.value)}
+                                class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              >
+                                <option value="small">Small</option>
+                                <option value="default">Default</option>
+                                <option value="medium">Medium</option>
+                                <option value="large">Large</option>
+                                <option value="xl">Extra Large</option>
+                              </select>
+                            </div>
                           </div>
                         </div>
                         <div
