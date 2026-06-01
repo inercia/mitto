@@ -122,6 +122,16 @@ const STARTUP_STAGGER_MS = 300;
 // firing concurrently and accumulating observers on BackgroundSession.
 const STAGGERED_RECONNECT_DEBOUNCE_MS = 5000;
 
+// Grace period (ms) before a background session's per-session WebSocket is
+// disconnected after it stops being the active session. Lazy-connect keeps only
+// the active session connected; releasing a background WebSocket removes its
+// server-side observer so the backend GC can reclaim the idle ACP process.
+// The grace window keeps rapid back-and-forth switching cheap (the connection is
+// reused if the user returns within the window). The disconnect timer resets on
+// every active-session change, so only sessions left untouched for the full
+// window are dropped.
+const BACKGROUND_DISCONNECT_GRACE_MS = 30000;
+
 // Maximum session age for automatic WebSocket reconnection.
 // Sessions whose IDs indicate creation more than this many milliseconds ago
 // will not be automatically reconnected after a WebSocket close.
@@ -451,6 +461,10 @@ export function useWebSocket() {
   // Timestamp (ms) of the last accepted reconnectAllSessionsStaggered call.
   // Zero means the function has never been called.
   const lastStaggeredReconnectRef = useRef(0);
+
+  // Timer for the lazy-connect background-session disconnect sweep. Reset on every
+  // active-session change so only sessions idle for the full grace window are dropped.
+  const backgroundDisconnectTimerRef = useRef(null);
 
   // Keepalive tracking for detecting zombie connections
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
@@ -3426,6 +3440,12 @@ export function useWebSocket() {
       // hourglass icon survives fetchStoredSessions() overwriting storedSessions.
       const mapped = (data || []).map((s) => ({
         ...s,
+        // Mark non-archived sessions as active so the sidebar dot shows green.
+        // Under lazy-connect most sessions lack a per-session WebSocket (only the
+        // active session connects one), so they don't enter activeSessions which
+        // sets isActive. Without this, background sessions fall through to the
+        // amber "Not connected" dot even though they are perfectly available.
+        isActive: !s.archived,
         isWaitingForChildren: s.is_waiting_for_children || false,
       }));
       setStoredSessions(mapped);
@@ -4238,16 +4258,31 @@ export function useWebSocket() {
         // Initial connection: fetch stored sessions and resume last session
         fetchStoredSessions().then((storedSessionsList) => {
           const lastSessionId = getLastActiveSessionId();
-          // Determine the target (active) session to connect first
-          const targetSessionId =
-            lastSessionId ||
-            (storedSessionsList?.length > 0
-              ? storedSessionsList[0].session_id
-              : null);
 
+          // Lazy-connect: only the active session opens a per-session WebSocket
+          // at startup. Background sessions are NOT pre-connected — they connect
+          // on demand when the user switches to them (via switchSession). This
+          // prevents the "startup storm" where every non-archived session resumes
+          // its ACP process simultaneously, spiking CPU and memory. Sidebar status
+          // for background sessions stays live via the global events WebSocket.
           if (lastSessionId) {
-            // Connect to the last session from localStorage
-            switchSession(lastSessionId);
+            // Verify the stored session still exists before switching to it
+            const sessionExists = storedSessionsList && storedSessionsList.some(
+              (s) => s.session_id === lastSessionId
+            );
+            if (sessionExists) {
+              switchSession(lastSessionId);
+            } else {
+              // Session was deleted or no longer available — clear stale reference
+              console.log(`Last active session ${lastSessionId} no longer exists, clearing localStorage`);
+              setLastActiveSessionId(null);
+              // Fall back to the most recent session if any exist
+              if (storedSessionsList && storedSessionsList.length > 0) {
+                const mostRecentSession = storedSessionsList[0];
+                switchSession(mostRecentSession.session_id);
+              }
+              // Otherwise: no sessions — show empty state
+            }
           } else if (storedSessionsList && storedSessionsList.length > 0) {
             // No last session in localStorage, but there are stored sessions
             // Switch to the most recent one (first in the list, sorted by updated_at desc)
@@ -4255,31 +4290,6 @@ export function useWebSocket() {
             switchSession(mostRecentSession.session_id);
           }
           // No stored sessions - show empty state, let user create manually
-
-          // Pre-connect other non-archived sessions with staggered delays.
-          // This prevents thundering herd where all sessions send load_events
-          // simultaneously, overwhelming the server with concurrent large event replays.
-          // The active session connects first (above); background sessions connect
-          // after increasing delays so their load_events requests are spread over time.
-          if (storedSessionsList && storedSessionsList.length > 1) {
-            const otherSessions = storedSessionsList.filter(
-              (s) => s.session_id !== targetSessionId && !s.archived,
-            );
-            otherSessions.forEach((session, index) => {
-              setTimeout(
-                () => {
-                  // Only connect if not already connected (guard against race conditions)
-                  if (!sessionWsRefs.current[session.session_id]) {
-                    console.log(
-                      `[startup] Pre-connecting background session ${session.session_id} (stagger ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
-                    );
-                    connectToSession(session.session_id);
-                  }
-                },
-                (index + 1) * STARTUP_STAGGER_MS,
-              );
-            });
-          }
         });
       }
     };
@@ -5377,6 +5387,12 @@ export function useWebSocket() {
   // force-closed and reconnected with increasing delays so their load_events requests are spread
   // over time rather than hitting the server simultaneously.
   //
+  // Under lazy-connect this operates only on sessions that already have an open
+  // WebSocket — typically just the active session plus any background sessions
+  // still within their disconnect grace window. It never opens connections for
+  // sessions that were not already connected, so it does not re-create a startup
+  // storm on wake/visibility events.
+  //
   // Debounce: multiple macOS activation events (NSWorkspaceDidWakeNotification,
   // NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
   // 4–10 s apart for the same wake/focus event.  Without a debounce each call
@@ -5464,6 +5480,69 @@ export function useWebSocket() {
       staggeredBackgroundTimersRef.current[sessionId] = timerId;
     });
   }, [forceReconnectActiveSession, connectToSession]);
+
+  // Lazy-connect hygiene: when the active session changes, schedule a sweep that
+  // disconnects per-session WebSockets for sessions that are no longer active.
+  // Releasing the WebSocket removes the server-side observer, allowing the backend
+  // GC to reclaim idle ACP processes. The timer resets on every active-session
+  // change, so only sessions left untouched for the full grace window are dropped.
+  // Sessions that are actively streaming, awaiting a user prompt, or waiting on
+  // child conversations are kept connected so in-flight work is not interrupted;
+  // they are swept on a later switch once they go idle. Disconnected sessions
+  // resync from server authority via load_events when the user switches back.
+  useEffect(() => {
+    if (backgroundDisconnectTimerRef.current) {
+      clearTimeout(backgroundDisconnectTimerRef.current);
+      backgroundDisconnectTimerRef.current = null;
+    }
+
+    backgroundDisconnectTimerRef.current = setTimeout(() => {
+      backgroundDisconnectTimerRef.current = null;
+      const currentActive = activeSessionIdRef.current;
+
+      // Sessions doing active work are kept connected (driven by global events).
+      const keepConnected = new Set(
+        (storedSessionsRef.current || [])
+          .filter(
+            (s) =>
+              s.isStreaming ||
+              s.isWaitingForUserInput ||
+              s.isWaitingForChildren,
+          )
+          .map((s) => s.session_id),
+      );
+
+      for (const sessionId of Object.keys(sessionWsRefs.current)) {
+        if (sessionId === currentActive) continue; // never disconnect active
+        if (keepConnected.has(sessionId)) continue; // keep busy sessions live
+
+        // Cancel any pending reconnect timer for this background session so it
+        // does not get revived after we intentionally disconnect it.
+        if (sessionReconnectRefs.current[sessionId]) {
+          clearTimeout(sessionReconnectRefs.current[sessionId]);
+          delete sessionReconnectRefs.current[sessionId];
+        }
+
+        const ws = sessionWsRefs.current[sessionId];
+        if (ws) {
+          console.log(
+            `[lazy] Disconnecting idle background session ${sessionId} (grace elapsed)`,
+          );
+          // Delete the ref BEFORE closing so onclose treats this as intentional.
+          // (The onclose reconnect guard only fires for the active session anyway.)
+          delete sessionWsRefs.current[sessionId];
+          ws.close();
+        }
+      }
+    }, BACKGROUND_DISCONNECT_GRACE_MS);
+
+    return () => {
+      if (backgroundDisconnectTimerRef.current) {
+        clearTimeout(backgroundDisconnectTimerRef.current);
+        backgroundDisconnectTimerRef.current = null;
+      }
+    };
+  }, [activeSessionId]);
 
   // Ref to track which sessions we've already attempted to recover from inconsistent state
   // This prevents infinite loops where recovery triggers state change which triggers recovery
