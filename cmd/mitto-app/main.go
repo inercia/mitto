@@ -766,6 +766,12 @@ func setupKeyboardShortcutMonitor() {
 	C.setupKeyboardShortcutMonitor()
 }
 
+// suppressTextEditingBeeps swizzles NSWindow's noResponderFor: to suppress
+// the macOS system beep for text editing keys (Delete, etc.) in WKWebView.
+func suppressTextEditingBeeps() {
+	C.suppressTextEditingBeeps()
+}
+
 // openExternalURL opens a URL in the default browser.
 // This is exposed to JavaScript via webview.Bind.
 func openExternalURL(url string) {
@@ -1451,6 +1457,8 @@ func run() error {
 		slog.Info("Two-finger swipe gesture enabled for conversation navigation")
 		setupKeyboardShortcutMonitor()
 		slog.Info("Keyboard shortcut monitor enabled for Ctrl+Cmd+Arrow navigation")
+		suppressTextEditingBeeps()
+		slog.Info("Text editing beep suppression enabled for WKWebView")
 	})
 
 	// Register screen sleep/wake observers so we can log events and trigger

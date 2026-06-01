@@ -41,6 +41,11 @@ void setupSwipeGestureRecognizer(void);
 // native menu items or JavaScript handlers process the shortcut.
 void setupKeyboardShortcutMonitor(void);
 
+// suppressTextEditingBeeps swizzles NSWindow's noResponderFor: to suppress the
+// macOS system beep for text editing selectors (deleteBackward:, deleteForward:,
+// etc.) that WKWebView handles internally in its web process.
+void suppressTextEditingBeeps(void);
+
 // disableWindowFullscreen prevents the window from entering fullscreen mode.
 // This removes the fullscreen button from the window's title bar.
 // This must be called after the window is created.

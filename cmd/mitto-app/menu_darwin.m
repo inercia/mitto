@@ -2,6 +2,7 @@
 // This file is compiled separately to avoid duplicate symbol issues with CGO
 
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 
 // Forward declaration of Go callback functions
 extern void goMenuActionCallback(char* action);
@@ -615,6 +616,45 @@ void setupKeyboardShortcutMonitor(void) {
             return event;
         }];
     }
+}
+
+// suppressTextEditingBeeps swizzles NSWindow's noResponderFor: method to
+// suppress the macOS system beep for text editing selectors.
+// WKWebView handles text editing (Delete, Forward Delete, etc.) in its web
+// process, but the key events can also propagate up the native responder chain.
+// When no native responder handles selectors like deleteBackward:, macOS calls
+// NSBeep(). This swizzle silently ignores those selectors instead of beeping.
+void suppressTextEditingBeeps(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class windowClass = [NSWindow class];
+        SEL originalSel = @selector(noResponderFor:);
+        Method originalMethod = class_getInstanceMethod(windowClass, originalSel);
+
+        // Store the original implementation
+        typedef void (*NoResponderForIMP)(id, SEL, SEL);
+        __block NoResponderForIMP originalIMP = (NoResponderForIMP)method_getImplementation(originalMethod);
+
+        // Replace with our implementation that suppresses beeps for text editing
+        IMP newIMP = imp_implementationWithBlock(^(NSWindow *self, SEL eventSelector) {
+            // Suppress beep for text editing selectors that WKWebView handles internally
+            if (eventSelector == @selector(deleteBackward:) ||
+                eventSelector == @selector(deleteForward:) ||
+                eventSelector == @selector(insertNewline:) ||
+                eventSelector == @selector(insertTab:) ||
+                eventSelector == @selector(cancelOperation:) ||
+                eventSelector == @selector(moveUp:) ||
+                eventSelector == @selector(moveDown:) ||
+                eventSelector == @selector(moveLeft:) ||
+                eventSelector == @selector(moveRight:)) {
+                return;
+            }
+            // Call original implementation for all other selectors
+            originalIMP(self, originalSel, eventSelector);
+        });
+
+        method_setImplementation(originalMethod, newIMP);
+    });
 }
 
 // Window delegate to prevent fullscreen and handle zoom button clicks
