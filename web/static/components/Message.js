@@ -36,12 +36,27 @@ function isModelErrorThought(text) {
 }
 
 /**
+ * Format a Unix millisecond timestamp as a locale time string (e.g. "2:30 PM").
+ * Returns null if the timestamp is falsy.
+ */
+function formatMessageTime(timestamp) {
+  if (!timestamp) return null;
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
  * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
  * Displayed right-aligned (like user messages) with an icon and the prompt name.
  */
 function NamedPromptPill({ message }) {
+  const timeStr = formatMessageTime(message.timestamp);
   return html`
-    <div class="message-enter flex justify-end mb-3">
+    <div class="message-enter flex justify-end items-center gap-2 mb-3">
+      ${timeStr &&
+      html`<span class="message-timestamp">${timeStr}</span>`}
       <div
         class="named-prompt-pill flex items-center gap-2 px-4 py-2 rounded-full"
       >
@@ -382,6 +397,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       }
     }, [renderedHtml, useMarkdown]);
 
+    const userTimeStr = formatMessageTime(message.timestamp);
     return html`
       <div class="message-enter flex justify-end mb-3">
         <div
@@ -414,6 +430,8 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
                 class="whitespace-pre-wrap font-sans text-sm m-0"
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
+          ${userTimeStr &&
+          html`<div class="message-timestamp text-right mt-1">${userTimeStr}</div>`}
         </div>
       </div>
     `;
@@ -459,6 +477,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       }
     }, [message.html]);
 
+    const agentTimeStr = !isStreaming ? formatMessageTime(message.timestamp) : null;
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
@@ -471,6 +490,8 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
               : ""}"
             dangerouslySetInnerHTML=${{ __html: message.html || "" }}
           />
+          ${agentTimeStr &&
+          html`<div class="message-timestamp mt-1">${agentTimeStr}</div>`}
         </div>
       </div>
     `;
