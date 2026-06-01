@@ -2166,9 +2166,16 @@ export function SettingsDialog({
         setEditingServer(trimmedNewName);
       }
       setWorkspaces(
-        workspaces.map((ws) =>
-          ws.acp_server === oldName ? { ...ws, acp_server: trimmedNewName } : ws,
-        ),
+        workspaces.map((ws) => {
+          const updated = { ...ws };
+          if (updated.acp_server === oldName) {
+            updated.acp_server = trimmedNewName;
+          }
+          if (updated.auxiliary_acp_server === oldName) {
+            updated.auxiliary_acp_server = trimmedNewName;
+          }
+          return updated;
+        }),
       );
       // Track server rename
       const originalName = Object.entries(serverRenames).find(
@@ -2183,8 +2190,10 @@ export function SettingsDialog({
   };
 
   const removeServer = (serverName) => {
-    // Check if any workspace uses this server
-    const usedBy = workspaces.filter((ws) => ws.acp_server === serverName);
+    // Check if any workspace uses this server (as primary or auxiliary)
+    const usedBy = workspaces.filter(
+      (ws) => ws.acp_server === serverName || ws.auxiliary_acp_server === serverName,
+    );
     if (usedBy.length > 0) {
       // Build a helpful error message listing the workspaces using this server
       const workspacePaths = usedBy.map((ws) => ws.working_dir).slice(0, 3); // Show up to 3
@@ -2492,134 +2501,136 @@ export function SettingsDialog({
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
+                                const isExpanded = editingServer === srv.name && !isRCFile;
                                 return html`
                                   <div
                                     key=${srv.name}
-                                    class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
-                                      ? ""
-                                      : "hover:bg-slate-700/30"} transition-colors group ${isRCFile
+                                    class="bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
                                       ? "opacity-80"
-                                      : ""}"
+                                      : ""} transition-colors group"
                                   >
-                                    ${editingServer === srv.name && !isRCFile
-                                      ? html`
-                                          <${ServerEditForm}
-                                            server=${srv}
-                                            agentTypes=${agentTypes}
-                                            onChange=${(name, cmd, type, autoApprove, env, tags, constraints) =>
-                                              updateServer(
-                                                srv.name,
-                                                name,
-                                                cmd,
-                                                type,
-                                                autoApprove,
-                                                env,
-                                                tags,
-                                                constraints,
-                                              )}
+                                    <!-- Collapsed header row — click to expand/collapse -->
+                                    <div
+                                      class="flex items-center gap-3 p-3 ${!isRCFile ? "cursor-pointer hover:bg-slate-700/30" : ""} transition-colors"
+                                      onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv.name) : null}
+                                    >
+                                      ${!isRCFile && html`
+                                        <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
+                                          className="w-4 h-4 text-gray-400 flex-shrink-0"
+                                        />
+                                      `}
+                                      <div class="flex-1 min-w-0">
+                                        <div
+                                          class="font-medium text-sm flex items-center gap-2"
+                                        >
+                                          ${srv.name}
+                                          ${srv.type &&
+                                          html`
+                                            <span
+                                              class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
+                                              title="Server type for prompt matching"
+                                            >
+                                              ${srv.type}
+                                            </span>
+                                          `}
+                                          ${srv.tags &&
+                                          srv.tags.length > 0 &&
+                                          srv.tags.map(
+                                            (tag) => html`
+                                              <span
+                                                key=${tag}
+                                                class="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                                                title="Tag"
+                                              >
+                                                ${tag}
+                                              </span>
+                                            `,
+                                          )}
+                                          ${isRCFile &&
+                                          html`
+                                            <span
+                                              class="flex items-center gap-1 text-xs text-amber-400"
+                                              title="This server is defined in .mittorc and cannot be modified here"
+                                            >
+                                              <${LockIcon}
+                                                className="w-3 h-3"
+                                              />
+                                            </span>
+                                          `}
+                                          ${srv.prompts?.length > 0 &&
+                                          html`
+                                            <span
+                                              class="flex items-center gap-1 text-xs text-blue-400"
+                                              title="${srv.prompts
+                                                .length} server-specific prompt(s)"
+                                            >
+                                              <${LightningIcon}
+                                                className="w-3.5 h-3.5"
+                                              />
+                                              ${srv.prompts.length}
+                                            </span>
+                                          `}
+                                        </div>
+                                        <div
+                                          class="text-xs text-gray-500 truncate"
+                                          title=${srv.command}
+                                        >
+                                          ${srv.command}
+                                          ${isRCFile &&
+                                          html`<span
+                                            class="ml-2 text-amber-500/70"
+                                            >(from .mittorc)</span
+                                          >`}
+                                        </div>
+                                      </div>
+                                      ${!isRCFile &&
+                                      html`
+                                        <button
+                                          onClick=${(e) => {
+                                            e.stopPropagation();
+                                            duplicateServer(srv.name);
+                                          }}
+                                          class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          title="Duplicate server"
+                                        >
+                                          <${DuplicateIcon}
+                                            className="w-4 h-4"
                                           />
-                                        `
-                                      : html`
-                                          <div class="flex items-center gap-3">
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="font-medium text-sm flex items-center gap-2"
-                                              >
-                                                ${srv.name}
-                                                ${srv.type &&
-                                                html`
-                                                  <span
-                                                    class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                    title="Server type for prompt matching"
-                                                  >
-                                                    ${srv.type}
-                                                  </span>
-                                                `}
-                                                ${srv.tags &&
-                                                srv.tags.length > 0 &&
-                                                srv.tags.map(
-                                                  (tag) => html`
-                                                    <span
-                                                      key=${tag}
-                                                      class="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
-                                                      title="Tag"
-                                                    >
-                                                      ${tag}
-                                                    </span>
-                                                  `,
-                                                )}
-                                                ${isRCFile &&
-                                                html`
-                                                  <span
-                                                    class="flex items-center gap-1 text-xs text-amber-400"
-                                                    title="This server is defined in .mittorc and cannot be modified here"
-                                                  >
-                                                    <${LockIcon}
-                                                      className="w-3 h-3"
-                                                    />
-                                                  </span>
-                                                `}
-                                                ${srv.prompts?.length > 0 &&
-                                                html`
-                                                  <span
-                                                    class="flex items-center gap-1 text-xs text-blue-400"
-                                                    title="${srv.prompts
-                                                      .length} server-specific prompt(s)"
-                                                  >
-                                                    <${LightningIcon}
-                                                      className="w-3.5 h-3.5"
-                                                    />
-                                                    ${srv.prompts.length}
-                                                  </span>
-                                                `}
-                                              </div>
-                                              <div
-                                                class="text-xs text-gray-500 truncate"
-                                                title=${srv.command}
-                                              >
-                                                ${srv.command}
-                                                ${isRCFile &&
-                                                html`<span
-                                                  class="ml-2 text-amber-500/70"
-                                                  >(from .mittorc)</span
-                                                >`}
-                                              </div>
-                                            </div>
-                                            ${!isRCFile &&
-                                            html`
-                                              <button
-                                                onClick=${() =>
-                                                  duplicateServer(srv.name)}
-                                                class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Duplicate server"
-                                              >
-                                                <${DuplicateIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                              <button
-                                                onClick=${() =>
-                                                  setEditingServer(editingServer === srv.name ? null : srv.name)}
-                                                class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Edit server"
-                                              >
-                                                <${EditIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                              <button
-                                                onClick=${() =>
-                                                  removeServer(srv.name)}
-                                                class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Remove server"
-                                              >
-                                                <${TrashIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                            `}
-                                          </div>
-                                        `}
+                                        </button>
+                                        <button
+                                          onClick=${(e) => {
+                                            e.stopPropagation();
+                                            removeServer(srv.name);
+                                          }}
+                                          class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          title="Remove server"
+                                        >
+                                          <${TrashIcon}
+                                            className="w-4 h-4"
+                                          />
+                                        </button>
+                                      `}
+                                    </div>
+                                    <!-- Expanded edit form -->
+                                    ${isExpanded && html`
+                                      <div class="px-3 pb-3 border-t border-slate-600/30">
+                                        <${ServerEditForm}
+                                          server=${srv}
+                                          agentTypes=${agentTypes}
+                                          onChange=${(name, cmd, type, autoApprove, env, tags, constraints) =>
+                                            updateServer(
+                                              srv.name,
+                                              name,
+                                              cmd,
+                                              type,
+                                              autoApprove,
+                                              env,
+                                              tags,
+                                              constraints,
+                                            )}
+                                        />
+                                      </div>
+                                    `}
                                   </div>
                                 `;
                               })}
