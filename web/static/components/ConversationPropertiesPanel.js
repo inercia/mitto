@@ -411,6 +411,57 @@ export function ConversationPropertiesPanel({
     };
   }, [isOpen, sessionId]);
 
+  // Listen for WebSocket periodic_updated events so the periodic section (and the
+  // fresh-context toggle) stays in sync when changed from another panel/client.
+  useEffect(() => {
+    if (!isOpen || !sessionId) return;
+
+    const handlePeriodicUpdated = (event) => {
+      const {
+        sessionId: updatedSessionId,
+        periodicConfigured,
+        periodicEnabled,
+        frequency,
+        nextScheduledAt,
+        freshContext,
+      } = event.detail || {};
+      if (updatedSessionId !== sessionId) return;
+
+      // Periodic config was deleted — clear local state.
+      if (periodicConfigured === false) {
+        setPeriodicConfig(null);
+        return;
+      }
+
+      // Merge into existing config (the panel fetches the full config on open).
+      setPeriodicConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              enabled: periodicEnabled,
+              frequency: frequency || prev.frequency,
+              next_scheduled_at: nextScheduledAt ?? prev.next_scheduled_at,
+              fresh_context:
+                typeof freshContext === "boolean"
+                  ? freshContext
+                  : prev.fresh_context,
+            }
+          : prev,
+      );
+    };
+
+    window.addEventListener(
+      "mitto:periodic_config_updated",
+      handlePeriodicUpdated,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto:periodic_config_updated",
+        handlePeriodicUpdated,
+      );
+    };
+  }, [isOpen, sessionId]);
+
   // Handle title edit start
   const handleStartEditTitle = useCallback(() => {
     setEditedTitle(sessionInfo?.name || "");
@@ -482,6 +533,40 @@ export function ConversationPropertiesPanel({
         setFlagsError("Failed to save setting");
       } finally {
         setSavingFlags((prev) => ({ ...prev, [flagName]: false }));
+      }
+    },
+    [sessionId],
+  );
+
+  // Toggle "fresh context" for a periodic conversation. PATCHes the periodic
+  // config so each scheduled run starts with a clean agent context (no history
+  // injection, new ACP session). Updates local state optimistically from the
+  // server-authoritative response.
+  const handleFreshContextChange = useCallback(
+    async (e) => {
+      const newValue = e.target.checked;
+      if (!sessionId) return;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fresh_context: newValue }),
+          },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setPeriodicConfig((prev) =>
+            prev
+              ? { ...prev, fresh_context: data.fresh_context ?? newValue }
+              : prev,
+          );
+        } else {
+          console.error("Failed to update fresh_context");
+        }
+      } catch (err) {
+        console.error("Failed to update fresh_context:", err);
       }
     },
     [sessionId],
@@ -1006,6 +1091,23 @@ export function ConversationPropertiesPanel({
                 </span>
               </p>
             `}
+            <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
+            <div class="mt-3 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                id="properties-fresh-context-checkbox-${sessionId}"
+                checked=${!!periodicConfig.fresh_context}
+                onInput=${handleFreshContextChange}
+                class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0"
+                data-testid="properties-fresh-context-checkbox"
+              />
+              <label
+                for="properties-fresh-context-checkbox-${sessionId}"
+                class="text-slate-300 cursor-pointer select-none"
+              >
+                Start each run with a fresh context
+              </label>
+            </div>
           </div>
         `}
 

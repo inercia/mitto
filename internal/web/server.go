@@ -1140,6 +1140,8 @@ func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.Pe
 		data["periodic_configured"] = true
 		// periodic_enabled: true means periodic runs are active (locked state)
 		data["periodic_enabled"] = periodic.Enabled
+		// fresh_context: true means each scheduled run starts with a clean agent context
+		data["fresh_context"] = periodic.FreshContext
 		data["frequency"] = map[string]interface{}{
 			"value": periodic.Frequency.Value,
 			"unit":  periodic.Frequency.Unit,

@@ -171,6 +171,7 @@ const (
 	//   "session_id": string,
 	//   "periodic_configured": bool,
 	//   "periodic_enabled": bool,
+	//   "fresh_context": bool,  // if configured; each run starts with a clean agent context
 	//   "frequency": { "value": number, "unit": string, "at"?: string },  // if configured
 	//   "next_scheduled_at": string  // ISO 8601, if enabled and scheduled
 	// }

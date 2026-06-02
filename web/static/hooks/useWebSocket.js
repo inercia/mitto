@@ -4052,6 +4052,7 @@ export function useWebSocket() {
               periodicEnabled: msg.data.periodic_enabled,
               frequency: msg.data.frequency,
               nextScheduledAt: msg.data.next_scheduled_at,
+              freshContext: msg.data.fresh_context,
             },
           }),
         );
