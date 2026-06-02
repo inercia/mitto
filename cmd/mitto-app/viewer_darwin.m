@@ -4,6 +4,12 @@
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <objc/runtime.h>
+
+// Key used to strongly associate MittoViewerWindowDelegate with its NSWindow.
+// NSWindow.delegate is a weak property, so without this the delegate would be
+// deallocated as soon as the dispatch_async block exits, leaving delegate == nil.
+static const void *kViewerDelegateKey = &kViewerDelegateKey;
 
 // Script message handler for viewer windows.
 // Handles messages from JavaScript: "closeViewer" and "openFileURL".
@@ -46,6 +52,8 @@
     if (window) {
         // Remove the delegate reference so the window can be deallocated.
         window.delegate = nil;
+        // Remove the strong association so the delegate can be released by ARC.
+        objc_setAssociatedObject(window, kViewerDelegateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     // The window is retained by NSApplication's window list while open.
     // Once closed and removed from that list, ARC will release it naturally.
@@ -133,6 +141,10 @@ void openViewerWindow(const char* url, const char* title, int width, int height)
                 MittoViewerWindowDelegate *delegate = [[MittoViewerWindowDelegate alloc] init];
                 delegate.scriptHandler = scriptHandler;
                 window.delegate = delegate;
+                // NSWindow.delegate is weak, so we must strongly retain the delegate for as
+                // long as the window is alive. objc_setAssociatedObject ties the delegate's
+                // lifetime to the window; windowWillClose: clears this association on close.
+                objc_setAssociatedObject(window, kViewerDelegateKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
                 // Center the window on screen and bring it to front.
                 [window center];
