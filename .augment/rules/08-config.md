@@ -147,7 +147,7 @@ Note: `/mitto/api/settings` manages global `settings.json`. For per-session feat
 { "constraints": { "model": { "matchMode": "contains", "pattern": "Opus 4.6" } } }
 ```
 
-`ACPServerConstraint`: `MatchMode` (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`), `Pattern` (case-insensitive). Exposed via `GET /mitto/api/config` response.
+`ACPServerConstraint`: `MatchMode` (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`), `Pattern` (case-insensitive). `lookAlike` splits the pattern into words and checks all words appear in the name. Exposed via `GET /mitto/api/config` response.
 
 ## WorkspaceSettings Override Pattern
 

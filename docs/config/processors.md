@@ -1,15 +1,16 @@
 # Processors Configuration
 
-Mitto supports processors that can run at two points in the conversation lifecycle:
+Mitto supports processors that can run at three points in the conversation lifecycle:
 
 - **`on: userPrompt`** — Processors fire *before* the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
-- **`on: agentResponded`** — Processors fire *after* the agent finishes a turn. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response). Data-extraction processors that benefit from seeing the agent's reply (e.g., `identify-user-data`, `memorize-preferences`) run in this phase.
+- **`on: agentResponded`** — Processors fire *after* the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
+- **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the *complete* exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
 
 Within each phase, three execution modes are available:
 
 - **Text-mode** — Inject static text (with optional variable substitution) into the message. No external commands needed. Only valid for `on: userPrompt`.
-- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for both phases.
-- **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately. Valid for both phases.
+- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for all phases.
+- **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately. Valid for all phases.
 
 ## Configuration in the UI
 
@@ -152,10 +153,10 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `use-ui-tools`        | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts | userPrompt / first | text   | Yes |
 | `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
 | `auggie-manage-rules` | Generates initial `.augment/rules/` when none exist | userPrompt / first | prompt | **Yes** (Auggie only) |
-| `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 10 turns or 40k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
+| `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
 | `claude-manage-memory`| Generates initial Claude Code memory files when none exist | userPrompt / first | prompt | **Yes** (Claude Code only) |
-| `claude-update-memory`| Updates Claude Code memory files from conversation insights (every 15 turns or 60k tokens) | agentResponded / all | prompt | **Yes** (Claude Code only) |
-| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 3 turns or 15k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
+| `claude-update-memory`| Updates Claude Code memory files from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Claude Code only) |
+| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 2 turns or 6k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
 | `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | userPrompt / first | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description) |
 
 ### Managing Builtin Processors
@@ -380,20 +381,21 @@ Each YAML file in the processors directory defines one processor. Use **either**
 # Required fields
 name: my-processor   # Human-readable identifier
 when:                # Trigger condition — always a block
-  on: userPrompt     # Phase: "userPrompt" (before send) or "agentResponded" (after response)
+  on: userPrompt     # Phase: "userPrompt" (before send), "agentResponded" (after each turn),
+                     #   or "agentIdle" (after the queue drains / agent goes idle)
   match: first       # Match: "first", "all", or "allExceptFirst"
   rerun:             # Optional: auto re-run — only valid with on:userPrompt + match:first
     afterTime: 30m          # re-run after 30 minutes since last run
     afterSentMsgs: 20       # re-run after 20 user messages since last run
     afterTokens: 50000      # re-run after 50000 tokens consumed since last run
-  # agentResponded-only fields (forbidden for userPrompt):
+  # agentResponded / agentIdle-only fields (forbidden for userPrompt):
   stopReasons:       # which ACP stop reasons trigger this processor (default: ["end_turn"])
     - end_turn       # valid values: end_turn, max_tokens, max_turn_requests, refusal, cancelled
   excludeOrigins:    # skip processor when message origin matches any of these
     - periodic-runner
 
 # --- Text-mode (use ONE of the three modes) ---
-# Only valid for on:userPrompt; forbidden for on:agentResponded
+# Only valid for on:userPrompt; forbidden for on:agentResponded and on:agentIdle
 text: |  # Static text to inject
   Your static content here.
 
@@ -414,7 +416,7 @@ priority: 100                # Execution order, lower = earlier (default: 100)
 # I/O configuration (command-mode only; ignored for text/prompt-mode)
 input: message   # "message", "conversation", or "none" (default: message)
 output: transform # "transform", "prepend", "append", "discard" (default: transform)
-                  # NOTE: transform/prepend/append are forbidden for on:agentResponded
+                  # NOTE: transform/prepend/append are forbidden for on:agentResponded and on:agentIdle
 
 # Execution settings
 timeout: 5s       # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
@@ -557,9 +559,10 @@ correct because `match: first` on session resume already handles the restart cas
 
 ## Cadence Throttling (`cadence`)
 
-`on: agentResponded` processors with `match: all` can fire on every agent response, which
-may be too frequent for expensive background tasks. The `cadence:` block throttles how
-often the processor runs. **All specified thresholds must be met simultaneously (AND).**
+After-phase (`on: agentResponded` and `on: agentIdle`) processors with `match: all` can fire
+on every agent response, which may be too frequent for expensive background tasks. The
+`cadence:` block throttles how often the processor runs. **All specified thresholds must be
+met simultaneously (AND).**
 
 ```yaml
 when:
@@ -578,10 +581,16 @@ when:
 | `afterInterval` | duration | Fire only after this much wall-clock time since the last firing (`"5m"`, `"1h"`, `"30s"`) |
 
 **Constraints:**
-- Only valid with `on: agentResponded`.
+- Only valid with `on: agentResponded` or `on: agentIdle`.
 - Not valid with `match: first` (firing once needs no cadence).
 - At least one field must be specified.
 - All values must be positive.
+
+> **Cadence + `agentIdle`:** When combined with `on: agentIdle`, the cadence counters
+> (turns/tokens) keep accumulating on **every** turn of a queued burst, but the processor
+> only fires on the turn where the agent goes idle (queue drained) **and** the thresholds
+> are met. This yields a single firing per burst, at the natural breakpoint, with the whole
+> burst counted toward cadence.
 
 **Example** — run a preference extractor every 5 turns, but only once 30k tokens have
 accumulated and at most once every 5 minutes:
