@@ -766,6 +766,44 @@ prompt: "Analyze the session."
 			expectCount: 1,
 		},
 		{
+			name: "agentIdle command-mode accepted",
+			yaml: `
+name: ok-idle-cmd
+when:
+  on: agentIdle
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "agentIdle prompt-mode with cadence accepted",
+			yaml: `
+name: ok-idle-prompt
+when:
+  on: agentIdle
+  match: all
+  cadence:
+    everyNTurns: 3
+prompt: "Update memory."
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "agentIdle with text rejected",
+			yaml: `
+name: bad-idle-text
+when:
+  on: agentIdle
+  match: all
+text: "some text"
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
 			name: "userPrompt stopReasons rejected",
 			yaml: `
 name: bad-up-stop
@@ -2893,6 +2931,85 @@ printf '{"title":"cadence","message":"fired"}'`), 0755)
 	r5 := m.ApplyAfter(context.Background(), input)
 	if len(r5.Notifications) != 0 {
 		t.Errorf("turn 5: expected 0 notifications (cadence not yet met), got %d", len(r5.Notifications))
+	}
+}
+
+// TestApplyAfter_AgentIdleGate verifies that an agentIdle processor fires only when
+// the session is idle (SessionIdle=true) and is skipped while the agent is still
+// draining its queue (SessionIdle=false).
+func TestApplyAfter_AgentIdleGate(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"idle","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name:    "idle-proc",
+		When:    WhenConfig{On: PhaseAgentIdle, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// Busy turn: SessionIdle=false → should NOT fire.
+	busy := makeAfterInput("user", "end_turn")
+	busy.SessionIdle = false
+	r1 := m.ApplyAfter(context.Background(), busy)
+	if len(r1.Notifications) != 0 {
+		t.Errorf("busy turn: expected 0 notifications (agent not idle), got %d", len(r1.Notifications))
+	}
+
+	// Idle turn: SessionIdle=true → should fire.
+	idle := makeAfterInput("user", "end_turn")
+	idle.SessionIdle = true
+	r2 := m.ApplyAfter(context.Background(), idle)
+	if len(r2.Notifications) != 1 {
+		t.Errorf("idle turn: expected 1 notification (agent idle), got %d", len(r2.Notifications))
+	}
+}
+
+// TestApplyAfter_AgentIdle_CadenceAccumulatesAcrossBurst verifies that an agentIdle
+// processor's cadence counters keep accumulating on busy turns (so a queued burst counts
+// toward the threshold) but the processor only fires once, at the idle breakpoint.
+func TestApplyAfter_AgentIdle_CadenceAccumulatesAcrossBurst(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"idle","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "idle-cadence",
+		When: WhenConfig{
+			On:          PhaseAgentIdle,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTurns: 2},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	busy := makeAfterInput("user", "end_turn")
+	busy.SessionIdle = false
+	idle := makeAfterInput("user", "end_turn")
+	idle.SessionIdle = true
+
+	// Turn 1 (busy): counter→1; gate 1<2 not met → skip.
+	if r := m.ApplyAfter(context.Background(), busy); len(r.Notifications) != 0 {
+		t.Errorf("turn 1 (busy): expected 0, got %d", len(r.Notifications))
+	}
+	// Turn 2 (busy): counter→2; gate met BUT not idle → skip, counters NOT reset.
+	if r := m.ApplyAfter(context.Background(), busy); len(r.Notifications) != 0 {
+		t.Errorf("turn 2 (busy, gate met): expected 0 (idle gate), got %d", len(r.Notifications))
+	}
+	// Turn 3 (idle): counter→3; gate met AND idle → FIRE, reset to 0.
+	if r := m.ApplyAfter(context.Background(), idle); len(r.Notifications) != 1 {
+		t.Errorf("turn 3 (idle): expected 1 (fires with full burst counted), got %d", len(r.Notifications))
+	}
+	// Turn 4 (idle): counter→1 after reset; gate 1<2 not met → skip.
+	if r := m.ApplyAfter(context.Background(), idle); len(r.Notifications) != 0 {
+		t.Errorf("turn 4 (idle): expected 0 (counter reset after firing), got %d", len(r.Notifications))
 	}
 }
 

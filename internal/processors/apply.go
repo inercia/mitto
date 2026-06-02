@@ -809,9 +809,12 @@ func (m *Manager) AccumulateTokenUsage(totalTokens int) {
 	}
 }
 
-// ApplyAfter runs all agentResponded processors against the completed agent turn.
-// It applies stop-reason, origin, match, and cadence filters in declaration order,
-// executes each processor (command or prompt mode), and accumulates side-effects.
+// ApplyAfter runs all after-phase processors (agentResponded and agentIdle) against
+// the completed agent turn. It applies stop-reason, origin, match, and cadence filters
+// in declaration order, executes each processor (command or prompt mode), and accumulates
+// side-effects. agentIdle processors are additionally gated on input.SessionIdle, so they
+// fire only once the queue has drained — their cadence counters still accumulate across a
+// burst of queued turns.
 //
 // Persistence: the session's AgentResponseCount and per-processor cadence state are
 // loaded from input.SessionDir at the start and saved atomically after all processors
@@ -858,8 +861,9 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 	)
 
 	for _, proc := range m.processors {
-		// Phase filter: only agentResponded processors fire here.
-		if proc.When.On != PhaseAgentResponded {
+		// Phase filter: only after-phase processors fire here (agentResponded and
+		// agentIdle). agentIdle processors are additionally gated on SessionIdle below.
+		if proc.When.On != PhaseAgentResponded && proc.When.On != PhaseAgentIdle {
 			continue
 		}
 
@@ -984,6 +988,18 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				skipped++
 				continue
 			}
+		}
+
+		// agentIdle gate: only fire once the agent has drained its queue and gone idle.
+		// This is checked AFTER the cadence pre-increment above so that a burst of queued
+		// turns still accumulates toward the cadence threshold; the processor then fires
+		// once, at the idle breakpoint, with the full exchange counted. Cadence counters
+		// are intentionally NOT reset here — they persist until the processor actually fires.
+		if proc.When.On == PhaseAgentIdle && !input.SessionIdle {
+			skipped++
+			m.logger.Debug("after-phase processor skipped",
+				"name", proc.Name, "reason", "agentIdle_session_busy")
+			continue
 		}
 
 		applied++

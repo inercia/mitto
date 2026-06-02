@@ -152,10 +152,10 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 
 	// Validate when.on
 	if proc.When.On == "" {
-		return nil, fmt.Errorf("processor 'when.on' is required (must be 'userPrompt' or 'agentResponded')")
+		return nil, fmt.Errorf("processor 'when.on' is required (must be 'userPrompt', 'agentResponded', or 'agentIdle')")
 	}
-	if proc.When.On != PhaseUserPrompt && proc.When.On != PhaseAgentResponded {
-		return nil, fmt.Errorf("processor 'when.on' has invalid value %q; must be 'userPrompt' or 'agentResponded'", proc.When.On)
+	if proc.When.On != PhaseUserPrompt && proc.When.On != PhaseAgentResponded && proc.When.On != PhaseAgentIdle {
+		return nil, fmt.Errorf("processor 'when.on' has invalid value %q; must be 'userPrompt', 'agentResponded', or 'agentIdle'", proc.When.On)
 	}
 
 	// Validate when.match
@@ -173,22 +173,24 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 
 	// Phase-specific validation
 	switch proc.When.On {
-	case PhaseAgentResponded:
-		// Text mode forbidden for agentResponded
+	case PhaseAgentResponded, PhaseAgentIdle:
+		// agentResponded and agentIdle share identical execution rules; only the
+		// firing point differs (agentIdle additionally waits for the queue to drain).
+		// Text mode forbidden for after-phase processors
 		if proc.Text != "" {
-			return nil, fmt.Errorf("processor 'text' is not allowed for 'when.on: agentResponded' (use command or prompt mode)")
+			return nil, fmt.Errorf("processor 'text' is not allowed for 'when.on: %s' (use command or prompt mode)", proc.When.On)
 		}
-		// mutate forbidden for agentResponded
+		// mutate forbidden for after-phase processors
 		if proc.Mutate != "" {
-			return nil, fmt.Errorf("processor 'mutate' is not allowed for 'when.on: agentResponded'")
+			return nil, fmt.Errorf("processor 'mutate' is not allowed for 'when.on: %s'", proc.When.On)
 		}
-		// rerun forbidden for agentResponded
+		// rerun forbidden for after-phase processors
 		if proc.When.Rerun != nil {
-			return nil, fmt.Errorf("processor 'when.rerun' is not allowed for 'when.on: agentResponded'")
+			return nil, fmt.Errorf("processor 'when.rerun' is not allowed for 'when.on: %s'", proc.When.On)
 		}
-		// output transform/prepend/append forbidden for agentResponded
+		// output transform/prepend/append forbidden for after-phase processors
 		if proc.Output == OutputTransform || proc.Output == OutputPrepend || proc.Output == OutputAppend {
-			return nil, fmt.Errorf("processor 'output: %s' is not allowed for 'when.on: agentResponded'; use 'discard', 'notify', 'actionButtons', or 'userData'", proc.Output)
+			return nil, fmt.Errorf("processor 'output: %s' is not allowed for 'when.on: %s'; use 'discard', 'notify', 'actionButtons', or 'userData'", proc.Output, proc.When.On)
 		}
 		// Default stopReasons to ["end_turn"] if not specified.
 		// These match the ACP SDK StopReason constants (snake_case).

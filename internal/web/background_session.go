@@ -358,14 +358,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 
 	// Look up ACP server constraints from config
-	if cfg.MittoConfig != nil {
-		for _, srv := range cfg.MittoConfig.ACPServers {
-			if srv.Name == cfg.ACPServer {
-				bs.acpServerConstraints = srv.Constraints
-				break
-			}
-		}
-	}
+	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
@@ -557,14 +550,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	// Look up ACP server constraints from config
-	if config.MittoConfig != nil {
-		for _, srv := range config.MittoConfig.ACPServers {
-			if srv.Name == config.ACPServer {
-				bs.acpServerConstraints = srv.Constraints
-				break
-			}
-		}
-	}
+	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
@@ -1807,14 +1793,22 @@ var stderrCrashPatterns = []string{
 // startStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
 // If onCrashDetected is non-nil, it is called (at most once) when crash patterns are
 // detected in the stderr output, enabling early process death signaling.
-func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, onCrashDetected func()) {
+// If onFirstActivity is non-nil, it is called (at most once) the first time any bytes
+// are observed on stderr — used by the startup watchdog to detect "live" processes.
+func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, onCrashDetected func(), onFirstActivity func()) {
 	go func() {
 		crashSignaled := false
+		activitySignaled := false
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := stderr.Read(buf)
 			if n > 0 {
 				collector.Write(buf[:n])
+
+				if !activitySignaled && onFirstActivity != nil {
+					activitySignaled = true
+					onFirstActivity()
+				}
 
 				// Fix C: Check for crash patterns in stderr output.
 				// This detects inner CLI subprocess death immediately from SDK
@@ -1836,6 +1830,78 @@ func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, on
 		}
 		collector.Close()
 	}()
+}
+
+// acpStartupWatchdogWarnDelay is the delay before the startup watchdog emits a WARN log
+// when no stderr activity has been observed and the ACP Initialize handshake has not completed.
+// Exposed as a var so tests can override it.
+var acpStartupWatchdogWarnDelay = 10 * time.Second
+
+// acpStartupWatchdogErrorDelay is the delay before the startup watchdog emits an ERROR log
+// when the process is still unresponsive.
+var acpStartupWatchdogErrorDelay = 30 * time.Second
+
+// startACPStartupWatchdog runs a background goroutine that emits a WARN log if no stderr
+// activity is observed within acpStartupWatchdogWarnDelay, and an ERROR log if the process
+// is still unresponsive after acpStartupWatchdogErrorDelay. The returned signalActivity
+// callback should be wired to stderr first-activity AND called when the Initialize
+// handshake completes (success or failure); callers should also defer-cancel ctx so the
+// watchdog is torn down when startup finishes. Returns a no-op if logger is nil.
+func startACPStartupWatchdog(ctx context.Context, logger *slog.Logger, command, acpServer string, pid int) func() {
+	if logger == nil {
+		return func() {}
+	}
+	activityCh := make(chan struct{})
+	var once sync.Once
+	signalActivity := func() { once.Do(func() { close(activityCh) }) }
+
+	go func() {
+		warnTimer := time.NewTimer(acpStartupWatchdogWarnDelay)
+		errTimer := time.NewTimer(acpStartupWatchdogErrorDelay)
+		defer warnTimer.Stop()
+		defer errTimer.Stop()
+
+		baseAttrs := []any{"command", command, "acp_server", acpServer}
+		if pid > 0 {
+			baseAttrs = append(baseAttrs, "pid", pid)
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-activityCh:
+				return
+			case <-warnTimer.C:
+				logger.Warn("ACP process appears unresponsive — no stderr output and no handshake observed in startup window",
+					append(baseAttrs, "elapsed", acpStartupWatchdogWarnDelay.String())...)
+			case <-errTimer.C:
+				logger.Error("ACP process still unresponsive after extended startup window — handshake has not completed",
+					append(baseAttrs, "elapsed", acpStartupWatchdogErrorDelay.String())...)
+			}
+		}
+	}()
+
+	return signalActivity
+}
+
+// buildACPProcessEnv constructs the environment slice for an ACP subprocess.
+// Layers (later entries override earlier ones in os.Environ semantics):
+//  1. os.Environ() — inherited from the Mitto process.
+//  2. serverEnv — server-specific env from settings.json (acp_servers[].env).
+//  3. mittoEnv — MITTO_* vars set by Mitto (highest precedence).
+//
+// This is shared between the direct-exec and restricted-runner branches so that
+// the runner branch sees the same env as the non-runner branch.
+func buildACPProcessEnv(serverEnv map[string]string, mittoEnv map[string]string) []string {
+	processEnv := os.Environ()
+	for k, v := range serverEnv {
+		processEnv = append(processEnv, k+"="+v)
+	}
+	for k, v := range mittoEnv {
+		processEnv = append(processEnv, k+"="+v)
+	}
+	return processEnv
 }
 
 // doStartACPProcess performs a single attempt to start the ACP process.
@@ -1911,6 +1977,12 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		})
 	}
 
+	// Startup watchdog: warn/error if no stderr activity and no Initialize completion
+	// within the configured windows. Cancelled when doStartACPProcess returns.
+	watchdogCtx, watchdogCancel := context.WithCancel(bs.ctx)
+	defer watchdogCancel()
+	var signalStartupActivity func()
+
 	// Use runner if configured, otherwise direct execution
 	if bs.runner != nil {
 		// Use restricted runner with RunWithPipes
@@ -1925,13 +1997,18 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				"runner_type", bs.runner.Type(),
 				"command", acpCommand)
 		}
-		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], nil)
+		// Pass the same env layering used by the direct-exec branch so server-specific
+		// vars (currently just MITTO_*) reach the runner-spawned process.
+		runnerEnv := buildACPProcessEnv(nil, mittoEnv)
+		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			return "", &sessionError{"failed to start with runner: " + err.Error()}
 		}
 
-		// Monitor stderr in background (with crash detection for Fix C)
-		startStderrMonitor(stderr, stderrCollector, onCrashDetected)
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", -1)
+
+		// Monitor stderr in background (with crash detection for Fix C and watchdog wake-up)
+		startStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		// Store wait function for cleanup
 		// We'll call it in Close() method
@@ -1967,19 +2044,23 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
 
-		// Set MITTO_* environment variables for the ACP subprocess
-		processEnv := os.Environ()
-		for k, v := range mittoEnv {
-			processEnv = append(processEnv, k+"="+v)
-		}
-		cmd.Env = processEnv
+		// Set MITTO_* environment variables for the ACP subprocess (no server-specific
+		// env at this layer — BackgroundSession's direct-exec branch only injects MITTO_*).
+		cmd.Env = buildACPProcessEnv(nil, mittoEnv)
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
 		}
 
-		// Monitor stderr in background (same as runner case, with crash detection for Fix C)
-		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
+		pid := -1
+		if cmd.Process != nil {
+			pid = cmd.Process.Pid
+		}
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", pid)
+
+		// Monitor stderr in background (same as runner case, with crash detection for Fix C
+		// and watchdog wake-up on first stderr activity)
+		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		bs.acpCmd = cmd
 
@@ -2755,6 +2836,7 @@ type PromptMeta struct {
 	FileIDs          []string        // IDs of files attached to the prompt
 	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
+	FreshContext     bool            // True to suppress history injection and use a new ACP session for this prompt
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -2901,8 +2983,9 @@ retryAfterRestart:
 	bs.promptCount++
 	bs.TouchActivity()
 
-	// Check if we need to inject conversation history (first prompt of resumed session)
-	shouldInjectHistory := bs.isResumed && !bs.historyInjected
+	// Check if we need to inject conversation history (first prompt of resumed session).
+	// FreshContext suppresses history injection so each periodic run starts clean.
+	shouldInjectHistory := bs.isResumed && !bs.historyInjected && !meta.FreshContext
 	if shouldInjectHistory {
 		bs.historyInjected = true
 	}
@@ -3249,6 +3332,35 @@ retryAfterRestart:
 		// "please resend" message instead of looping forever.
 		autoRetried := false
 
+		// For fresh-context runs, create a new ACP session so the agent has no
+		// in-memory context from prior interactions. Only supported on non-shared
+		// connections; shared-process sessions fall back to history suppression only.
+		freshContextSessionID := ""
+		if meta.FreshContext && bs.acpConn != nil {
+			cwd := bs.workingDir
+			if cwd == "" {
+				cwd = "."
+			}
+			freshCtx, freshCancel := context.WithTimeout(bs.ctx, 10*time.Second)
+			freshSess, freshErr := bs.acpConn.NewSession(freshCtx, acp.NewSessionRequest{
+				Cwd:        cwd,
+				McpServers: []acp.McpServer{}, // Must be empty array, not nil — ACP validates this
+			})
+			freshCancel()
+			if freshErr == nil {
+				freshContextSessionID = string(freshSess.SessionId)
+				if bs.logger != nil {
+					bs.logger.Info("Created fresh ACP session for periodic run",
+						"fresh_session_id", freshContextSessionID,
+						"session_id", bs.persistedID)
+				}
+			} else if bs.logger != nil {
+				bs.logger.Warn("Failed to create fresh ACP session, using existing",
+					"error", freshErr,
+					"session_id", bs.persistedID)
+			}
+		}
+
 		// Declare all variables that are live across the retryPrompt goto target
 		// here, before the label, so that Go's "no jumping over declarations" rule
 		// is satisfied. They are assigned (not declared) inside the loop body.
@@ -3306,12 +3418,19 @@ retryAfterRestart:
 			}()
 		}
 
+		// On retry after ACP crash, freshContextSessionID is from the old (dead)
+		// connection; fall back to bs.acpID which holds the new session.
+		acpSessionIDForPrompt := bs.acpID
+		if freshContextSessionID != "" && !autoRetried {
+			acpSessionIDForPrompt = freshContextSessionID
+		}
+
 		promptStartedAt = time.Now() // captured for after-phase processors
 		if bs.sharedProcess != nil {
-			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(bs.acpID), finalBlocks)
+			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(acpSessionIDForPrompt), finalBlocks)
 		} else {
 			promptResp, err = bs.acpConn.Prompt(promptCtx, acp.PromptRequest{
-				SessionId: acp.SessionId(bs.acpID),
+				SessionId: acp.SessionId(acpSessionIDForPrompt),
 				Prompt:    finalBlocks,
 			})
 		}
@@ -3511,8 +3630,10 @@ retryAfterRestart:
 				o.OnPromptComplete(eventCount)
 			})
 
-			// Process next queued message if queue processing is enabled
-			bs.processNextQueuedMessage()
+			// Process next queued message if queue processing is enabled.
+			// dispatched is true when another queued turn was started (the session is
+			// not yet idle); it gates agentIdle after-phase processors below.
+			dispatched := bs.processNextQueuedMessage()
 
 			// Retry title generation if session still has no title.
 			// This catches failed initial attempts (e.g. context deadline exceeded)
@@ -3543,12 +3664,14 @@ retryAfterRestart:
 				}
 			}
 
-			// Apply after-phase processors (on: agentResponded pipeline).
+			// Apply after-phase processors (agentResponded + agentIdle pipeline).
 			// Runs after follow-up analysis so all event state is fully persisted.
 			// This is synchronous — processors are fast (command execution with timeouts).
+			// sessionIdle is true when no further queued message was dispatched, so
+			// agentIdle processors fire only once the queue has drained.
 			if bs.processorManager != nil {
 				bs.applyAfterProcessors(bs.ctx, message, meta.SenderID,
-					string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp)
+					string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp, !dispatched)
 			}
 		}
 
@@ -3690,9 +3813,11 @@ func promptOriginFromSenderID(senderID string) string {
 	}
 }
 
-// applyAfterProcessors runs the agentResponded processor pipeline after an ACP turn completes.
-// It is called synchronously in the prompt goroutine, after follow-up suggestion analysis,
-// so all events are already flushed and persisted at this point.
+// applyAfterProcessors runs the after-phase processor pipeline (agentResponded + agentIdle)
+// after an ACP turn completes. It is called synchronously in the prompt goroutine, after
+// follow-up suggestion analysis, so all events are already flushed and persisted at this point.
+// sessionIdle reports whether the queue was drained after this turn; it gates agentIdle
+// processors so they fire only once the agent has finished its burst of work.
 //
 // Results are dispatched as follows:
 //   - Notifications → bs.UINotify (fire-and-forget toast)
@@ -3706,6 +3831,7 @@ func (bs *BackgroundSession) applyAfterProcessors(
 	stopReason string,
 	startedAt, endedAt time.Time,
 	promptResp acp.PromptResponse,
+	sessionIdle bool,
 ) {
 	// Build agent messages from the last persisted agent message.
 	var agentMessages []string
@@ -3759,6 +3885,7 @@ func (bs *BackgroundSession) applyAfterProcessors(
 		TokenUsage:    tokenUsage,
 		StartedAt:     startedAt,
 		EndedAt:       endedAt,
+		SessionIdle:   sessionIdle,
 	}
 
 	result := bs.processorManager.ApplyAfter(ctx, input)
@@ -4141,15 +4268,17 @@ func (bs *BackgroundSession) hasImmediateQueuedMessages() bool {
 
 // processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
 // This is called after a prompt completes and applies the configured delay before sending.
-func (bs *BackgroundSession) processNextQueuedMessage() {
+// It returns true if a queued message was popped and dispatched (a new turn is starting,
+// so the session is NOT idle), and false if the queue was empty/disabled (the session is idle).
+func (bs *BackgroundSession) processNextQueuedMessage() bool {
 	// Check if queue processing is enabled
 	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
-		return
+		return false
 	}
 
 	// Get the queue for this session
 	if bs.store == nil {
-		return
+		return false
 	}
 	queue := bs.store.Queue(bs.persistedID)
 
@@ -4157,7 +4286,7 @@ func (bs *BackgroundSession) processNextQueuedMessage() {
 	msg, err := queue.Pop()
 	if err != nil {
 		// Queue is empty or error - nothing to do
-		return
+		return false
 	}
 
 	// Notify observers that we're sending a queued message
@@ -4171,6 +4300,7 @@ func (bs *BackgroundSession) processNextQueuedMessage() {
 	}
 
 	bs.sendQueuedMessage(queue, msg)
+	return true
 }
 
 // TryProcessQueuedMessage checks if the session is idle and enough time has passed since the last
@@ -4850,13 +4980,32 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 		}
 	}
 
+	// Start with the agent's reported current model.
+	// Pre-apply any matching constraint to local state immediately, so the UI shows
+	// the desired model from the very first acp_started message — before the async
+	// RPC in applyConfigConstraints completes. agentModels.CurrentModelId is NOT
+	// updated here; applyConfigConstraints compares against it to know whether the
+	// agent-side change still needs to happen.
+	currentValue := string(models.CurrentModelId)
+	if constraint, ok := bs.acpServerConstraints[ConfigOptionCategoryModel]; ok && constraint != nil && constraint.Pattern != "" {
+		if matched := matchConstraintOption(constraint, options); matched != "" && matched != currentValue {
+			if bs.logger != nil {
+				bs.logger.Debug("ACP server constraint: pre-applying model to local state",
+					"category", ConfigOptionCategoryModel,
+					"agent_model", currentValue,
+					"desired_model", matched)
+			}
+			currentValue = matched
+		}
+	}
+
 	modelOption := SessionConfigOption{
 		ID:           ConfigOptionCategoryModel,
 		Name:         "Model",
 		Description:  "AI model for this session (UNSTABLE)",
 		Category:     ConfigOptionCategoryModel,
 		Type:         ConfigOptionTypeSelect,
-		CurrentValue: string(models.CurrentModelId),
+		CurrentValue: currentValue,
 		Options:      options,
 	}
 
@@ -4873,6 +5022,65 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 
 	// Apply any ACP server constraints for the model category
 	go bs.applyConfigConstraints(ConfigOptionCategoryModel)
+}
+
+// matchConstraintOption finds the best matching option value for a constraint.
+// It iterates through all options and returns the last match, so that the latest version wins
+// when models are ordered by version. Returns empty string if no match.
+func matchConstraintOption(constraint *config.ACPServerConstraint, options []SessionConfigOptionValue) string {
+	patternLower := strings.ToLower(constraint.Pattern)
+	var matchedValue string
+	for _, opt := range options {
+		nameLower := strings.ToLower(opt.Name)
+		switch constraint.MatchMode {
+		case "contains":
+			if strings.Contains(nameLower, patternLower) {
+				matchedValue = opt.Value
+			}
+		case "exact":
+			if nameLower == patternLower {
+				matchedValue = opt.Value
+			}
+		case "startsWith":
+			if strings.HasPrefix(nameLower, patternLower) {
+				matchedValue = opt.Value
+			}
+		case "regex":
+			if matched, _ := regexp.MatchString("(?i)"+constraint.Pattern, opt.Name); matched {
+				matchedValue = opt.Value
+			}
+		case "lookAlike":
+			// Split pattern into words and check all words appear in the name
+			words := strings.Fields(patternLower)
+			if len(words) > 0 {
+				allFound := true
+				for _, word := range words {
+					if !strings.Contains(nameLower, word) {
+						allFound = false
+						break
+					}
+				}
+				if allFound {
+					matchedValue = opt.Value
+				}
+			}
+		}
+	}
+	return matchedValue
+}
+
+// lookupACPServerConstraints returns the auto-selection constraints for the named
+// ACP server in the given config, or nil if cfg is nil or no matching server is found.
+func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
+	if cfg == nil {
+		return nil
+	}
+	for _, srv := range cfg.ACPServers {
+		if srv.Name == serverName {
+			return srv.Constraints
+		}
+	}
+	return nil
 }
 
 // applyConfigConstraints checks ACP server constraints and auto-selects matching config option values.
@@ -4902,33 +5110,7 @@ func (bs *BackgroundSession) applyConfigConstraints(category string) {
 		return
 	}
 
-	// Find the first matching option by name (case-insensitive)
-	patternLower := strings.ToLower(constraint.Pattern)
-	var matchedValue string
-	for _, opt := range targetOption.Options {
-		nameLower := strings.ToLower(opt.Name)
-		switch constraint.MatchMode {
-		case "contains":
-			if strings.Contains(nameLower, patternLower) {
-				matchedValue = opt.Value
-			}
-		case "exact":
-			if nameLower == patternLower {
-				matchedValue = opt.Value
-			}
-		case "startsWith":
-			if strings.HasPrefix(nameLower, patternLower) {
-				matchedValue = opt.Value
-			}
-		case "regex":
-			if matched, _ := regexp.MatchString("(?i)"+constraint.Pattern, opt.Name); matched {
-				matchedValue = opt.Value
-			}
-		}
-		if matchedValue != "" {
-			break
-		}
-	}
+	matchedValue := matchConstraintOption(constraint, targetOption.Options)
 
 	if matchedValue == "" {
 		if bs.logger != nil {
@@ -4941,8 +5123,16 @@ func (bs *BackgroundSession) applyConfigConstraints(category string) {
 		return
 	}
 
-	// Skip if already set to the matching value
-	if targetOption.CurrentValue == matchedValue {
+	// Skip if the agent already has the matching value.
+	// For the model category, compare against agentModels.CurrentModelId (the agent's actual
+	// current model) rather than the local configOption.CurrentValue, which may have been
+	// pre-applied optimistically in setAgentModels before the RPC completed. This ensures
+	// the RPC still fires even when local state was eagerly set to the desired model.
+	alreadySet := targetOption.CurrentValue == matchedValue
+	if category == ConfigOptionCategoryModel && bs.agentModels != nil {
+		alreadySet = string(bs.agentModels.CurrentModelId) == matchedValue
+	}
+	if alreadySet {
 		if bs.logger != nil {
 			bs.logger.Debug("ACP server constraint: already set to matching value",
 				"category", category,

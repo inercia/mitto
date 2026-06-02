@@ -102,15 +102,16 @@ const (
 
 // ShouldApply returns true if the processor should apply given the message context.
 // When it returns false, the SkipReason describes why.
-// Note: PhaseAgentResponded processors are always skipped here — they run in a separate path (Task 3).
+// Note: PhaseAgentResponded and PhaseAgentIdle processors are always skipped here —
+// they run in a separate path via Manager.ApplyAfter.
 func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (bool, SkipReason) {
 	if !h.IsEnabled() {
 		return false, SkipReasonDisabled
 	}
 
-	// agentResponded processors are always skipped in the userPrompt pipeline.
+	// agentResponded / agentIdle processors are always skipped in the userPrompt pipeline.
 	// They are executed exclusively via Manager.ApplyAfter after the agent responds.
-	if h.When.On == PhaseAgentResponded {
+	if h.When.On == PhaseAgentResponded || h.When.On == PhaseAgentIdle {
 		return false, SkipReasonAgentRespondedPhase
 	}
 

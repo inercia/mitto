@@ -73,14 +73,6 @@ func executeAfterCommand(ctx context.Context, proc *Processor, processorsDir str
 	return stdout.String(), nil
 }
 
-// executeAfterPrompt handles prompt-mode processors in the agentResponded phase.
-// The prompt template is rendered with after-phase variable substitution, and the
-// rendered text is treated as the stdout payload (parsed per output: type).
-func executeAfterPrompt(proc *Processor, input AfterProcessorInput) (string, error) {
-	rendered := substituteAfterVariables(proc.Prompt, input)
-	return rendered, nil
-}
-
 // substituteAfterVariables replaces @mitto: placeholders for the agentResponded phase.
 func substituteAfterVariables(template string, input AfterProcessorInput) string {
 	if !strings.Contains(template, "@mitto:") {

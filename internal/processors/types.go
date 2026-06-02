@@ -111,6 +111,12 @@ const (
 	// PhaseAgentResponded fires processors after the agent has finished responding.
 	// Only command-mode and prompt-mode processors are allowed for this phase.
 	PhaseAgentResponded Phase = "agentResponded"
+	// PhaseAgentIdle fires processors after the agent has finished responding AND the
+	// message queue has been drained (the session goes idle). Within a burst of queued
+	// messages it fires once, at the idle breakpoint, so the processor sees the full
+	// exchange instead of a partial mid-burst turn. Same execution rules as
+	// agentResponded (only command-mode and prompt-mode processors are allowed).
+	PhaseAgentIdle Phase = "agentIdle"
 )
 
 // Match defines which messages in the sequence a processor applies to.
@@ -363,6 +369,10 @@ type AfterProcessorInput struct {
 	StartedAt time.Time `json:"startedAt"`
 	// EndedAt is when the agent's response was fully received.
 	EndedAt time.Time `json:"endedAt"`
+	// SessionIdle is true when no further queued message was dispatched after this turn,
+	// i.e. the agent has drained its queue and gone idle. Used to gate agentIdle processors.
+	// This field is NOT serialized to JSON — it is for internal gating only.
+	SessionIdle bool `json:"-"`
 }
 
 // AfterToolCallSnapshot is a lightweight snapshot of one tool call from an agent turn.
