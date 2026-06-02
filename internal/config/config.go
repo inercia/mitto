@@ -15,7 +15,7 @@ import (
 // Used by the constraints system to automatically configure sessions on startup.
 type ACPServerConstraint struct {
 	// MatchMode determines how Pattern is matched against option names.
-	// Valid values: "contains", "exact", "startsWith"
+	// Valid values: "contains", "exact", "startsWith", "regex", "lookAlike"
 	MatchMode string `json:"matchMode"`
 	// Pattern is the text to match against option names (e.g., "Opus 4.6").
 	Pattern string `json:"pattern"`

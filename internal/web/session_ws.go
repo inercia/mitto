@@ -407,6 +407,10 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 				if meta.ArchiveReason != "" {
 					data["archive_reason"] = string(meta.ArchiveReason)
 				}
+			} else if c.server.acpProcessManager != nil && c.server.acpProcessManager.IsGCSuspended(c.sessionID) {
+				// GC-suspended sessions are intentionally paused — include the flag so
+				// the frontend shows the correct UI state instead of "Reconnecting to AI agent..."
+				data["gc_suspended"] = true
 			}
 			if !meta.ArchivedAt.IsZero() {
 				data["archived_at"] = meta.ArchivedAt.Format(time.RFC3339)

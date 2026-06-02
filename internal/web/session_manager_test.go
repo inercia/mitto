@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -421,6 +422,172 @@ func TestSessionManager_ResumeSession_UsesGlobalConfigACPCommand(t *testing.T) {
 			t.Error("ResumeSession should have used ACP command from global config, but got 'empty ACP command' error")
 		}
 		// Other errors (like "failed to start ACP server") are expected since "echo hello" is not a valid ACP server
+	}
+}
+
+func TestSessionManager_ResumeSession_OrphanedServer_RescuesWithFolderWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// A workspace for /tmp using the CURRENT (renamed) ACP server.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "new-server"},
+		},
+	})
+	sm.SetStore(store)
+
+	// Global config only knows about the new server — the old one was removed.
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "new-server", Command: "echo hello"},
+		},
+	})
+
+	// Orphaned session: its stored ACP server name no longer exists in config.
+	meta := session.Metadata{
+		SessionID:  "orphaned-session",
+		ACPServer:  "old-removed-server",
+		WorkingDir: "/tmp",
+		Name:       "Orphaned Session",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Resume should rescue the conversation by adopting the /tmp workspace's
+	// server, so it must NOT fail with an empty-command error.
+	_, err = sm.ResumeSession("orphaned-session", "Orphaned Session", "/tmp")
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have rescued the orphaned conversation with the folder workspace, but got empty-command error: %v", err)
+	}
+}
+
+func TestSessionManager_ResumeSession_OrphanedServer_NoWorkspace_Fails(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// No workspaces and no default ACP command for the folder.
+	sm := NewSessionManager("", "", true, nil)
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "some-other-server", Command: "echo hello"},
+		},
+	})
+
+	// Orphaned session in a folder with no configured workspace/server.
+	meta := session.Metadata{
+		SessionID:  "orphaned-no-rescue",
+		ACPServer:  "old-removed-server",
+		WorkingDir: "/no/such/workspace/dir",
+		Name:       "Orphaned No Rescue",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// With nothing to rescue with, resume must fail (no agent available).
+	_, err = sm.ResumeSession("orphaned-no-rescue", "Orphaned No Rescue", "/no/such/workspace/dir")
+	if err == nil {
+		t.Error("ResumeSession should fail when the stored ACP server is gone and no workspace exists for the folder")
+	}
+}
+
+func TestSessionManager_ApplyACPServerRenames_MigratesMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManager("", "", true, nil)
+	sm.SetStore(store)
+
+	// Two sessions reference the old server name; one references a different one.
+	metas := []session.Metadata{
+		{SessionID: "s1", ACPServer: "Auggie (Opus 4.6)", WorkingDir: "/tmp", Name: "S1"},
+		{SessionID: "s2", ACPServer: "Auggie (Opus 4.6)", WorkingDir: "/tmp", Name: "S2"},
+		{SessionID: "s3", ACPServer: "Other Server", WorkingDir: "/tmp", Name: "S3"},
+	}
+	for _, m := range metas {
+		if err := store.Create(m); err != nil {
+			t.Fatalf("Create(%s) failed: %v", m.SessionID, err)
+		}
+	}
+
+	result, err := sm.ApplyACPServerRenames(map[string]string{
+		"Auggie (Opus 4.6)": "Auggie (Opus)",
+	})
+	if err != nil {
+		t.Fatalf("ApplyACPServerRenames failed: %v", err)
+	}
+	if result == nil || len(result.UpdatedSessionIDs) != 2 {
+		t.Fatalf("expected 2 updated sessions, got %+v", result)
+	}
+
+	// Migrated sessions adopt the new server name.
+	for _, id := range []string{"s1", "s2"} {
+		m, err := store.GetMetadata(id)
+		if err != nil {
+			t.Fatalf("GetMetadata(%s) failed: %v", id, err)
+		}
+		if m.ACPServer != "Auggie (Opus)" {
+			t.Errorf("session %s: expected ACPServer %q, got %q", id, "Auggie (Opus)", m.ACPServer)
+		}
+	}
+
+	// Unrelated session is untouched.
+	m3, err := store.GetMetadata("s3")
+	if err != nil {
+		t.Fatalf("GetMetadata(s3) failed: %v", err)
+	}
+	if m3.ACPServer != "Other Server" {
+		t.Errorf("session s3 should be untouched, got %q", m3.ACPServer)
+	}
+}
+
+func TestSessionManager_ApplyACPServerRenames_NoMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManager("", "", true, nil)
+	sm.SetStore(store)
+
+	if err := store.Create(session.Metadata{
+		SessionID: "s1", ACPServer: "Server A", WorkingDir: "/tmp", Name: "S1",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Renaming a server that no session references is a no-op.
+	result, err := sm.ApplyACPServerRenames(map[string]string{"Unused": "New"})
+	if err != nil {
+		t.Fatalf("ApplyACPServerRenames failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result when nothing matches, got %+v", result)
+	}
+
+	m, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if m.ACPServer != "Server A" {
+		t.Errorf("session s1 should be untouched, got %q", m.ACPServer)
 	}
 }
 

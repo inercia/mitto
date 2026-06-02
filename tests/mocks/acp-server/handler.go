@@ -30,7 +30,7 @@ func (s *MockACPServer) handleMessage(line string) error {
 		return s.handleCancelPrompt(req)
 	case "session/set_mode", "session/setMode", "acp/setSessionMode":
 		return s.handleSetSessionMode(req)
-	case "session/unstableSetSessionModel":
+	case "session/unstableSetSessionModel", "session/set_model":
 		return s.handleSetSessionModel(req)
 	case "shutdown":
 		return s.handleShutdown(req)

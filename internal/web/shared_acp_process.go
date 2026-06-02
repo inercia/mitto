@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -292,6 +291,12 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		})
 	}
 
+	// Startup watchdog: warn/error if no stderr activity and no Initialize completion
+	// within the configured windows. Cancelled when doStartProcess returns.
+	watchdogCtx, watchdogCancel := context.WithCancel(p.ctx)
+	defer watchdogCancel()
+	var signalStartupActivity func()
+
 	if p.config.Runner != nil {
 		if acpCwd != "" && p.logger != nil {
 			p.logger.Warn("cwd is not supported with restricted runners, ignoring",
@@ -308,14 +313,30 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		var runCtx context.Context
 		runCtx, runCancel = context.WithCancel(p.ctx)
 
-		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], nil)
+		// Build env using the same layering as the direct-exec branch below so that
+		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
+		// are propagated to the restricted-runner-spawned process.
+		runnerEnv := buildACPProcessEnv(p.config.Env, mittoEnv)
+		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
 			return "", fmt.Errorf("failed to start with runner: %w", err)
 		}
 		p.cancel = runCancel
 
-		startStderrMonitor(stderr, stderrCollector, onCrashDetected)
+		if p.logger != nil && len(p.config.Env) > 0 {
+			envKeys := make([]string, 0, len(p.config.Env))
+			for k := range p.config.Env {
+				envKeys = append(envKeys, k)
+			}
+			p.logger.Info("Applied server-specific environment variables to runner-spawned process",
+				"env_keys", envKeys,
+				"acp_server", p.config.ACPServer)
+		}
+
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
+
+		startStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -342,18 +363,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			return "", fmt.Errorf("stderr pipe: %w", err)
 		}
 
-		// Set environment variables for the ACP subprocess:
-		// 1. Start with current process environment
-		// 2. Add server-specific env vars (from ACP server definition in settings.json)
-		// 3. Add MITTO_* env vars (these take final precedence)
-		processEnv := os.Environ()
-		for k, v := range p.config.Env {
-			processEnv = append(processEnv, k+"="+v)
-		}
-		for k, v := range mittoEnv {
-			processEnv = append(processEnv, k+"="+v)
-		}
-		cmd.Env = processEnv
+		// Set environment variables for the ACP subprocess. Same layering as the
+		// runner branch (os.Environ + server-specific Env + MITTO_*).
+		cmd.Env = buildACPProcessEnv(p.config.Env, mittoEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))
@@ -379,7 +391,13 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			}
 		}
 
-		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
+		pid := -1
+		if cmd.Process != nil {
+			pid = cmd.Process.Pid
+		}
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
+
+		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		wait = func() error {
 			return cmd.Wait()

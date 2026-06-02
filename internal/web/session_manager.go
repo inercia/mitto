@@ -2005,27 +2005,74 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 							"acp_command", acpCommand)
 					}
 				} else {
-					// No compatible workspace exists for this ACP server. Do NOT keep a
-					// mismatched workspace from the same directory, otherwise shared ACP
-					// process lookup can mix different agents.
+					// No workspace matches the session's stored ACP server. Two cases:
+					//   1. The server still exists in global config but no workspace
+					//      references it — resolve the command directly from config and
+					//      keep the stored agent (but disable shared workspace resolution,
+					//      since no workspace owns it).
+					//   2. The server was renamed or removed (orphaned conversation) —
+					//      rescue it by adopting a workspace configured for the same
+					//      working directory, so the conversation remains resumable
+					//      instead of failing with "empty command".
 					workspaceUUID = ""
-					// Resolve directly from global config for this server.
+
+					var serverExists bool
 					if sm.mittoConfig != nil {
 						if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
 							acpCommand = server.Command
 							acpCwd = server.Cwd
 							acpEnv = server.Env
+							serverExists = true
+						}
+					}
+
+					if serverExists {
+						// Case 1: stored server still configured, just no workspace owns
+						// it. Do NOT keep a mismatched workspace from the same directory,
+						// otherwise shared ACP process lookup can mix different agents.
+						if sm.logger != nil {
+							sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
+								"session_id", sessionID,
+								"working_dir", workingDir,
+								"acp_server", acpServer)
+						}
+					} else {
+						// Case 2: orphaned conversation — the stored ACP server no longer
+						// exists in config. Rescue it by adopting any workspace configured
+						// for the same working directory. We fully adopt the rescue
+						// workspace's identity (server name + command), so shared ACP
+						// process lookup stays consistent and does not mix agents.
+						rescueWs := sm.resolveWorkspaceForACPLocked(workingDir, "")
+						var rescueCmd, rescueCwd string
+						var rescueEnv map[string]string
+						if rescueWs != nil {
+							rescueCmd, rescueCwd, rescueEnv = sm.resolveWorkspaceACPLocked(rescueWs)
+						}
+						if rescueWs != nil && rescueCmd != "" {
+							foundWs = rescueWs
+							workspaceUUID = rescueWs.UUID
+							acpCommand, acpCwd, acpEnv = rescueCmd, rescueCwd, rescueEnv
+							if sm.logger != nil {
+								sm.logger.Warn("Orphaned conversation: stored ACP server not found in config; rescuing with a workspace for the same folder",
+									"session_id", sessionID,
+									"working_dir", workingDir,
+									"missing_acp_server", acpServer,
+									"rescued_acp_server", rescueWs.ACPServer)
+							}
+							acpServer = rescueWs.ACPServer
 						} else {
+							// Nothing to rescue with — no workspace for this folder.
+							// Leave the command empty; resume will fail with a clear error.
 							acpCommand = ""
 							acpCwd = ""
 							acpEnv = nil
+							if sm.logger != nil {
+								sm.logger.Warn("Orphaned conversation: stored ACP server not found and no workspace for folder; cannot resume",
+									"session_id", sessionID,
+									"working_dir", workingDir,
+									"acp_server", acpServer)
+							}
 						}
-					}
-					if sm.logger != nil {
-						sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
-							"session_id", sessionID,
-							"working_dir", workingDir,
-							"acp_server", acpServer)
 					}
 				}
 			}
@@ -2205,6 +2252,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		MittoConfig:         sm.mittoConfig,         // Pass config for default flags
 		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,

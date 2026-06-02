@@ -541,7 +541,16 @@ func NewServer(config Config) (*Server, error) {
 		} else {
 			s.mcpServer = mcpSrv
 			if err := mcpSrv.Start(context.Background()); err != nil {
-				logger.Warn("Failed to start MCP server", "error", err)
+				// A common cause is another Mitto instance already listening on the
+				// configured MCP port (default 5757). Surface that hypothesis in the
+				// log message so users / ops can quickly diagnose port-collision
+				// situations.
+				msg := "Failed to start MCP server"
+				errStr := err.Error()
+				if strings.Contains(errStr, "address already in use") || strings.Contains(errStr, "bind:") {
+					msg = "Failed to start MCP server — port already in use (another Mitto instance may be running). Mitto will continue without MCP; session-scoped tools, prompts, and stdio proxies will be unavailable until this is resolved."
+				}
+				logger.Warn(msg, "error", err, "host", mcpHost, "port", mcpPort)
 			} else {
 				logger.Info("MCP server started", "port", mcpSrv.Port())
 				// Set MCP URL on process manager so auxiliary processor sessions
