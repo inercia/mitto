@@ -16,12 +16,12 @@ name: identify-user-data
 description: "Detects user data values from conversations and sets them via MCP"
 enabled: true
 when:
-  on: agentResponded
+  on: agentIdle
   match: all
   stopReasons: [end_turn]
   cadence:
-    everyNTurns: 3
-    everyNTokens: 15000
+    everyNTurns: 2
+    everyNTokens: 6000
 priority: 190
 timeout: 120s
 on_error: skip

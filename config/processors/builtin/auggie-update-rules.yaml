@@ -2,9 +2,11 @@
 # Builtin processor: updates Augment rules files from ongoing conversation insights.
 #
 # Companion to auggie-manage-rules.yaml (which handles initial generation).
-# This processor fires after every agent response (with cadence: every 10 turns or
-# 40K tokens or 10 minutes) to review recent conversation history and update the
-# .augment/rules/ files with new patterns, conventions, and lessons learned.
+# This processor fires once the agent goes idle (its message queue is drained), throttled
+# by cadence (every 6 turns or 15K tokens or 5 minutes), to review recent conversation
+# history and update the .augment/rules/ files with new patterns, conventions, and lessons
+# learned. Firing on idle ensures the auxiliary agent sees the full exchange rather than a
+# partial mid-burst turn.
 #
 # Only activates when .augment/rules/ already exist (initial generation already done).
 #
@@ -18,13 +20,13 @@ name: auggie-update-rules
 description: "Update .augment/rules/ files based on conversation insights and lessons learned"
 enabled: true
 when:
-  on: agentResponded
+  on: agentIdle
   match: all
   stopReasons: [end_turn]
   cadence:
-    everyNTurns: 10
-    everyNTokens: 40000
-    afterInterval: 10m
+    everyNTurns: 6
+    everyNTokens: 15000
+    afterInterval: 5m
 priority: 200
 timeout: 300s
 on_error: skip

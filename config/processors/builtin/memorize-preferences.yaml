@@ -28,13 +28,13 @@ name: memorize-preferences
 description: "Extracts user preferences from conversations and saves them to AGENTS.md"
 enabled: true
 when:
-  on: agentResponded
+  on: agentIdle
   match: all
   stopReasons: [end_turn]
   cadence:
-    everyNTurns: 5
-    everyNTokens: 30000
-    afterInterval: 5m
+    everyNTurns: 3
+    everyNTokens: 8000
+    afterInterval: 3m
 priority: 200
 timeout: 120s
 on_error: skip
