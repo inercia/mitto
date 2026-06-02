@@ -3355,9 +3355,25 @@ function App() {
     activeUIPrompt,
     sendUIPromptAnswer,
     mcpTools,
+    ensureResumed,
   } = useWebSocket();
 
   const { showToast, dismissToast, toasts } = useToast();
+
+  // Auto-resume GC-suspended sessions when they become the active (focused) session.
+  // Covers two cases:
+  // 1. User switches to a gc-suspended session → resume starts immediately
+  // 2. Session gets gc-suspended while user is already viewing it → resume triggers
+  // After resume, gc_suspended becomes false so this effect won't re-trigger until
+  // the next suspension. The GC won't immediately re-suspend because the session
+  // has active WebSocket clients.
+  // NOTE: This effect must stay after the useWebSocket() destructuring above so that
+  // sessionInfo and ensureResumed are in scope when the dependency array is evaluated.
+  useEffect(() => {
+    if (activeSessionId && sessionInfo?.gc_suspended && !sessionInfo?.archived) {
+      ensureResumed(activeSessionId);
+    }
+  }, [activeSessionId, sessionInfo?.gc_suspended, sessionInfo?.archived, ensureResumed]);
 
   // Sidebar resize handle (horizontal direction)
   const {
@@ -6005,6 +6021,7 @@ function App() {
         forceOpen=${settingsDialog.forceOpen}
         onClose=${() => setSettingsDialog({ isOpen: false, forceOpen: false })}
         WorkspaceBadge=${WorkspaceBadge}
+        showToast=${showToast}
         onSave=${async () => {
           // Refresh workspaces after saving
           refreshWorkspaces();
@@ -6057,6 +6074,7 @@ function App() {
         initialWorkingDir=${workspacesDialog.workingDir || null}
         onClose=${() => setWorkspacesDialog({ isOpen: false })}
         WorkspaceBadge=${WorkspaceBadge}
+        showToast=${showToast}
         onSave=${async () => {
           refreshWorkspaces();
           invalidateConfigCache();
@@ -6557,6 +6575,7 @@ function App() {
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             gcSuspended=${sessionInfo?.gc_suspended || false}
+            onResume=${() => ensureResumed(activeSessionId)}
             activeUIPrompt=${activeUIPrompt}
             onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText)}

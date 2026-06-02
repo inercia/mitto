@@ -38,7 +38,7 @@ import {
   RunnerRestrictionsEditor,
 } from "./SettingsDialog.js";
 
-export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir }) {
+export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -675,6 +675,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
       setWorkspaces(updated);
       setNewFolderKey(null);
       onSave?.();
+      showToast?.({
+        style: "success",
+        title: "Workspaces saved",
+        duration: 2000,
+      });
     } catch (err) {
       setError(err.message);
     } finally {

@@ -70,6 +70,8 @@ function localToUtcTime(localTime) {
  * @param {Function} props.onFrequencyChange - Callback when frequency is updated
  * @param {string} props.nextScheduledAt - ISO timestamp of next scheduled run
  * @param {boolean} props.isStreaming - Whether the agent is currently responding (disables immediate delivery)
+ * @param {boolean} props.freshContext - Whether each run starts with a fresh agent context
+ * @param {Function} props.onFreshContextChange - Callback when freshContext is toggled
  */
 export function PeriodicFrequencyPanel({
   isOpen,
@@ -79,6 +81,8 @@ export function PeriodicFrequencyPanel({
   onFrequencyChange,
   nextScheduledAt,
   isStreaming = false,
+  freshContext = false,
+  onFreshContextChange,
 }) {
   // Local state for editing
   const [localValue, setLocalValue] = useState(frequency.value || 1);
@@ -295,6 +299,35 @@ export function PeriodicFrequencyPanel({
     setErrorMessage(null);
   }, []);
 
+  // Handle fresh context toggle
+  const handleFreshContextChange = useCallback(
+    async (e) => {
+      const newValue = e.target.checked;
+      if (!sessionId) return;
+      try {
+        const response = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fresh_context: newValue }),
+          },
+        );
+        if (response.ok) {
+          const data = await response.json();
+          if (onFreshContextChange) {
+            onFreshContextChange(data.fresh_context ?? newValue);
+          }
+        } else {
+          console.error("Failed to update fresh_context");
+        }
+      } catch (err) {
+        console.error("Failed to update fresh_context:", err);
+      }
+    },
+    [sessionId, onFreshContextChange],
+  );
+
   // Panel classes - part of normal document flow (not absolute positioned)
   // This ensures it pushes the conversation area up instead of overlaying it
   // Uses lighter background for better readability and contrast
@@ -304,8 +337,8 @@ export function PeriodicFrequencyPanel({
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
   }`;
 
-  // Fixed single-row height when open
-  const panelStyle = isOpen ? "height: 44px;" : "height: 0px;";
+  // Auto height when open (two rows: frequency + fresh context)
+  const panelStyle = isOpen ? "" : "height: 0px;";
 
   // Format next scheduled time for display (uses local state for immediate feedback)
   const nextTimeDisplay = localNextScheduledAt
@@ -358,7 +391,7 @@ export function PeriodicFrequencyPanel({
       style="${panelStyle}"
       data-testid="periodic-frequency-panel"
     >
-      <div class="h-full px-4 flex items-center gap-3 text-sm">
+      <div class="px-4 py-2 flex items-center gap-3 text-sm">
         <!-- Periodic icon - clickable when locked to trigger immediate delivery -->
         <!-- Disabled when agent is streaming (isStreaming) or already triggering -->
         ${disabled
@@ -494,6 +527,27 @@ export function PeriodicFrequencyPanel({
           </svg>
         `}
       </div>
+
+      <!-- Fresh context option (only shown when not locked / editing is allowed) -->
+      ${!disabled &&
+      html`
+        <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-slate-200 dark:border-slate-600 pt-2">
+          <input
+            type="checkbox"
+            id="fresh-context-checkbox-${sessionId}"
+            checked=${freshContext}
+            onInput=${handleFreshContextChange}
+            class="w-4 h-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0"
+            data-testid="fresh-context-checkbox"
+          />
+          <label
+            for="fresh-context-checkbox-${sessionId}"
+            class="text-slate-600 dark:text-gray-300 cursor-pointer select-none"
+          >
+            Start each run with a fresh context
+          </label>
+        </div>
+      `}
     </div>
   `;
 }

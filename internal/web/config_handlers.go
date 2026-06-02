@@ -57,6 +57,11 @@ type ConfigSaveRequest struct {
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 	Permissions   *configPkg.PermissionsConfig   `json:"permissions,omitempty"`
+	// ServerRenames maps old ACP server names to their new names. The UI sends
+	// this when a server is renamed in place so the backend can migrate the
+	// stored ACPServer of existing conversations (otherwise they would be
+	// orphaned and fail to resume with "empty command").
+	ServerRenames map[string]string `json:"server_renames,omitempty"`
 }
 
 // sensitiveEnvKeyPatterns contains lowercase substrings that flag an env var key as sensitive.
@@ -674,11 +679,26 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	// ACP command/cwd/env are resolved from global config at runtime and are never
 	// stored on the workspace. Just copy the workspace as-is from the request.
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
-	for i, ws := range req.Workspaces {
-		newWorkspaces[i] = ws
-	}
+	copy(newWorkspaces, req.Workspaces)
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
+
+	// Migrate conversations that reference renamed ACP servers. This runs after
+	// the updated ACP servers and workspaces are applied above, so resumed
+	// sessions resolve the new server. Without this, in-place renames would
+	// orphan existing conversations (resume fails with "empty command").
+	if len(req.ServerRenames) > 0 {
+		if result, err := s.sessionManager.ApplyACPServerRenames(req.ServerRenames); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Failed to apply ACP server renames to conversations",
+					"error", err)
+			}
+		} else if result != nil && s.logger != nil {
+			s.logger.Info("Applied ACP server renames to conversations",
+				"updated", len(result.UpdatedSessionIDs),
+				"restarted", len(result.RestartedSessionIDs))
+		}
+	}
 
 	// Update external port setting on the server (before applying auth changes)
 	// If the new setting is 0 (random) and we already have a running external listener,

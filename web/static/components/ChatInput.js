@@ -68,6 +68,35 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
 }
 
 /**
+ * PromptCollapseToggle - Chevron button to show/hide the chat input area
+ * while an MCP UI prompt panel is active.
+ */
+function PromptCollapseToggle({ collapsed, onToggle }) {
+  return html`
+    <button
+      type="button"
+      onClick=${onToggle}
+      class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
+      title=${collapsed ? "Show prompt area" : "Hide prompt area"}
+    >
+      <svg
+        class="w-4 h-4 transition-transform ${collapsed ? "" : "rotate-180"}"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M19 9l-7 7-7-7"
+        />
+      </svg>
+    </button>
+  `;
+}
+
+/**
  * Calculate contrasting text color (black or white) for a given background color.
  * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
  * @returns {string} - Either "#000000" or "#FFFFFF" for best contrast
@@ -228,6 +257,7 @@ export function ChatInput({
   agentSupportsImages = false,
   acpReady = true,
   gcSuspended = false,
+  onResume,
   activeUIPrompt = null,
   onUIPromptAnswer,
   workingDir = "",
@@ -254,6 +284,8 @@ export function ChatInput({
   const [shiftHeld, setShiftHeld] = useState(false);
   const promptFilterInputRef = useRef(null);
   const selectedPromptItemRef = useRef(null);
+  // Tracks whether resume was already triggered to avoid firing onResume multiple times
+  const resumeTriggeredRef = useRef(false);
 
   // State for prompt sort mode (alphabetical or color)
   const [promptSortMode, setPromptSortMode] = useState(() =>
@@ -475,6 +507,7 @@ export function ChatInput({
     unit: "hours",
   });
   const [periodicNextScheduledAt, setPeriodicNextScheduledAt] = useState(null);
+  const [periodicFreshContext, setPeriodicFreshContext] = useState(false);
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -568,8 +601,9 @@ export function ChatInput({
           } else {
             setPeriodicNextScheduledAt(null);
           }
-          // Update prompt name from config
+          // Update prompt name and fresh context from config
           setPeriodicPromptName(config.prompt_name || "");
+          setPeriodicFreshContext(config.fresh_context === true);
           // Set lock state based on the enabled field
           const isLocked = config.enabled === true;
           setIsPeriodicLocked(isLocked);
@@ -629,11 +663,12 @@ export function ChatInput({
         if (nextScheduledAt) {
           setPeriodicNextScheduledAt(nextScheduledAt);
         }
-        // Fetch the full config to get the prompt name
+        // Fetch the full config to get the prompt name and fresh_context
         authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
           .then((response) => response.json())
           .then((config) => {
             setPeriodicPromptName(config.prompt_name || "");
+            setPeriodicFreshContext(config.fresh_context === true);
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
@@ -751,6 +786,23 @@ export function ChatInput({
     };
   }, []);
 
+  // Reset the resume-triggered guard whenever gcSuspended becomes false
+  // (i.e., session resumes), so future suspensions can trigger again.
+  useEffect(() => {
+    if (!gcSuspended) {
+      resumeTriggeredRef.current = false;
+    }
+  }, [gcSuspended]);
+
+  // Trigger resume when user interacts with a gc_suspended session.
+  // Uses a ref guard so onResume is only called once per suspension period.
+  const handleResumeOnInteraction = useCallback(() => {
+    if (gcSuspended && !acpReady && onResume && !resumeTriggeredRef.current) {
+      resumeTriggeredRef.current = true;
+      onResume();
+    }
+  }, [gcSuspended, acpReady, onResume]);
+
   // Handle textarea focus - show toolbar and close prompts menu
   const handleTextareaFocus = useCallback(() => {
     if (toolbarHideTimeoutRef.current) {
@@ -759,7 +811,9 @@ export function ChatInput({
     }
     setIsTextareaFocused(true);
     setShowDropup(false);
-  }, []);
+    // Trigger resume if session is gc_suspended
+    handleResumeOnInteraction();
+  }, [handleResumeOnInteraction]);
 
   // Handle textarea blur - hide toolbar with delay to allow button clicks
   const handleTextareaBlur = useCallback((e) => {
@@ -1231,6 +1285,7 @@ export function ChatInput({
     if (isReadOnly)
       return "This is a read-only session. Create a new session to chat.";
     if (isSending) return "Sending message...";
+    if (gcSuspended && !acpReady) return "Click or type to resume session...";
     if (!acpReady) return "Waiting for AI agent to connect...";
     if (isQueueFull)
       return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
@@ -1817,34 +1872,6 @@ export function ChatInput({
         onChange=${handleFileInputChange}
       />
 
-      <!-- Periodic Frequency Panel (shown when periodic is enabled) -->
-      <!-- Part of normal document flow - pushes conversation area up -->
-      <!-- Editable when unlocked, read-only when locked -->
-      <div class="max-w-4xl mx-auto">
-        <${PeriodicFrequencyPanel}
-          isOpen=${periodicEnabled}
-          disabled=${isPeriodicLocked}
-          sessionId=${sessionId}
-          frequency=${periodicFrequency}
-          onFrequencyChange=${handlePeriodicFrequencyChange}
-          nextScheduledAt=${periodicNextScheduledAt}
-          isStreaming=${isStreaming}
-        />
-      </div>
-
-      <!-- Periodic Prompt Selector (Row 2, shown when periodic is enabled) -->
-      <div class="max-w-4xl mx-auto">
-        <${PeriodicPromptSelector}
-          isOpen=${periodicEnabled}
-          prompts=${predefinedPrompts}
-          selectedPromptName=${periodicPromptName}
-          disabled=${false}
-          onSelect=${handlePeriodicPromptSelect}
-          isPromptAreaVisible=${!isPromptCollapsed}
-          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
-        />
-      </div>
-
       <!-- UI Prompt from MCP tool (unified menu or permission) -->
       ${hasActiveUIPrompt &&
       html`
@@ -1959,30 +1986,10 @@ ${activeUIPrompt.text || ""}</textarea
                           / 16,384
                         </span>
                         <div class="flex gap-2 items-center">
-                          <button
-                            type="button"
-                            onClick=${() => setIsPromptCollapsed((v) => !v)}
-                            class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
-                            title=${isPromptCollapsed
-                              ? "Show prompt area"
-                              : "Hide prompt area"}
-                          >
-                            <svg
-                              class="w-4 h-4 transition-transform ${isPromptCollapsed
-                                ? ""
-                                : "rotate-180"}"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M19 9l-7 7-7-7"
-                              />
-                            </svg>
-                          </button>
+                          <${PromptCollapseToggle}
+                            collapsed=${isPromptCollapsed}
+                            onToggle=${() => setIsPromptCollapsed((v) => !v)}
+                          />
                           <button
                             type="button"
                             onClick=${() =>
@@ -2052,30 +2059,10 @@ ${activeUIPrompt.text || ""}</textarea
                           class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 flex-shrink-0"
                         >
                           <div class="flex gap-2 items-center">
-                            <button
-                              type="button"
-                              onClick=${() => setIsPromptCollapsed((v) => !v)}
-                              class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
-                              title=${isPromptCollapsed
-                                ? "Show prompt area"
-                                : "Hide prompt area"}
-                            >
-                              <svg
-                                class="w-4 h-4 transition-transform ${isPromptCollapsed
-                                  ? ""
-                                  : "rotate-180"}"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  stroke-linecap="round"
-                                  stroke-linejoin="round"
-                                  stroke-width="2"
-                                  d="M19 9l-7 7-7-7"
-                                />
-                              </svg>
-                            </button>
+                            <${PromptCollapseToggle}
+                              collapsed=${isPromptCollapsed}
+                              onToggle=${() => setIsPromptCollapsed((v) => !v)}
+                            />
                             <button
                               type="button"
                               onClick=${() =>
@@ -2212,11 +2199,52 @@ ${activeUIPrompt.text || ""}</textarea
                             </div>
                           `}
                         </div>
+
+                        <!-- Toggle button to show/hide chat input -->
+                        <div
+                          class="flex items-center justify-end px-4 pt-2 pb-3 flex-shrink-0"
+                        >
+                          <${PromptCollapseToggle}
+                            collapsed=${isPromptCollapsed}
+                            onToggle=${() => setIsPromptCollapsed((v) => !v)}
+                          />
+                        </div>
                       </div>
                     `
           }
         </div>
       `}
+
+      <!-- Periodic Frequency Panel (shown when periodic is enabled) -->
+      <!-- Part of normal document flow - pushes conversation area up -->
+      <!-- Editable when unlocked, read-only when locked -->
+      <div class="max-w-4xl mx-auto">
+        <${PeriodicFrequencyPanel}
+          isOpen=${periodicEnabled}
+          disabled=${isPeriodicLocked}
+          sessionId=${sessionId}
+          frequency=${periodicFrequency}
+          onFrequencyChange=${handlePeriodicFrequencyChange}
+          nextScheduledAt=${periodicNextScheduledAt}
+          isStreaming=${isStreaming}
+          freshContext=${periodicFreshContext}
+          onFreshContextChange=${setPeriodicFreshContext}
+        />
+      </div>
+
+      <!-- Periodic Prompt Selector (Row 2, shown when periodic is enabled) -->
+      <div class="max-w-4xl mx-auto">
+        <${PeriodicPromptSelector}
+          isOpen=${periodicEnabled}
+          prompts=${predefinedPrompts}
+          selectedPromptName=${periodicPromptName}
+          disabled=${false}
+          onSelect=${handlePeriodicPromptSelect}
+          isPromptAreaVisible=${!isPromptCollapsed}
+          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
+        />
+      </div>
+
       ${isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-2">
@@ -2442,6 +2470,7 @@ ${activeUIPrompt.text || ""}</textarea
                 onKeyDown=${handleKeyDown}
                 onPaste=${handlePaste}
                 onFocus=${handleTextareaFocus}
+                onClick=${handleResumeOnInteraction}
                 onBlur=${handleTextareaBlur}
                 placeholder=${getPlaceholder()}
                 rows="3"

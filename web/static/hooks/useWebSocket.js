@@ -1241,6 +1241,8 @@ export function useWebSocket() {
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
+                // GC-suspended state from server (for fresh loads/reconnections)
+                gc_suspended: msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
                 // Processor stats
                 processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
                 processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,

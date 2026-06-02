@@ -1,5 +1,5 @@
 // Mitto Web Interface - Settings Dialog Component
-const { useState, useEffect, useMemo, html } = window.preact;
+const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
 import {
@@ -886,6 +886,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
             <option value="exact">exact</option>
             <option value="startsWith">starts with</option>
             <option value="regex">regex</option>
+            <option value="lookAlike">look alike</option>
           </select>
           <input
             type="text"
@@ -1189,12 +1190,12 @@ export function SettingsDialog({
   onSave,
   forceOpen = false,
   WorkspaceBadge,
+  showToast,
 }) {
   const [activeTab, setActiveTab] = useState("servers");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [warning, setWarning] = useState("");
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
@@ -1202,6 +1203,14 @@ export function SettingsDialog({
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
+  // Stable key counter for ACP servers — survives renames without losing focus
+  const stableKeyRef = useRef(0);
+  const assignStableKey = (srv) => {
+    if (srv._key == null) {
+      srv._key = ++stableKeyRef.current;
+    }
+    return srv;
+  };
   // Sorted ACP servers for display (alphabetical by name)
   const sortedAcpServers = useMemo(
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
@@ -1435,7 +1444,6 @@ export function SettingsDialog({
       // Clear any previous messages when dialog opens
       setError("");
       setWarning("");
-      setSuccess("");
       loadConfig();
       loadSupportedRunners();
     }
@@ -1510,6 +1518,7 @@ export function SettingsDialog({
 
       // Load ACP servers first (needed for workspace validation)
       const servers = config.acp_servers || [];
+      servers.forEach(assignStableKey);
       setAcpServers(servers);
 
       // Reset server renames when config is loaded
@@ -1718,7 +1727,6 @@ export function SettingsDialog({
   const handleSave = async () => {
     setError("");
     setWarning("");
-    setSuccess("");
 
     // Validation
     if (workspaces.length === 0) {
@@ -2023,17 +2031,13 @@ export function SettingsDialog({
         }
       }
 
-      // Fetch updated external status to get the actual running port
-      let actualExternalPort = null;
-      let externalAccessActive = false;
+      // Fetch updated external status to refresh the displayed port/state
       try {
         const statusRes = await fetch(apiUrl("/api/external-status"), {
           credentials: "same-origin",
         });
         if (statusRes.ok) {
           const status = await statusRes.json();
-          externalAccessActive = status.enabled;
-          actualExternalPort = status.port;
           setExternalEnabled(status.enabled);
           setCurrentExternalPort(status.port || null);
         }
@@ -2041,23 +2045,22 @@ export function SettingsDialog({
         console.error("Failed to fetch external status:", e);
       }
 
-      // Build success message based on what was applied
-      let successMsg = "Configuration saved successfully";
-      if (externalAccessActive && actualExternalPort) {
-        successMsg = `Configuration saved. External access on port ${actualExternalPort}`;
-      } else if (result.applied) {
-        const details = [];
+      // Notify success via the app-wide auto-dismissing toast
+      const appliedDetails = [];
+      if (result.applied) {
         if (result.applied.external_access_enabled) {
-          details.push("external access enabled");
+          appliedDetails.push("external access enabled");
         }
         if (result.applied.auth_enabled) {
-          details.push("authentication active");
-        }
-        if (details.length > 0) {
-          successMsg += ` (${details.join(", ")})`;
+          appliedDetails.push("authentication active");
         }
       }
-      setSuccess(successMsg);
+      showToast?.({
+        style: "success",
+        title: "Configuration saved",
+        message: appliedDetails.join(", "),
+        duration: 2000,
+      });
 
       // Clear server renames after successful save
       setServerRenames({});
@@ -2073,17 +2076,8 @@ export function SettingsDialog({
   };
 
   const handleClose = () => {
-    // Always require at least one ACP server
-    if (acpServers.length === 0) {
-      setError("At least one ACP server is required");
-      setActiveTab("servers");
-      return;
-    }
-    // Always require at least one workspace
-    if (workspaces.length === 0) {
-      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
-      return;
-    }
+    // Closing the dialog is always allowed; configuration validation
+    // (at least one ACP server, at least one workspace) is enforced on Save.
     onClose?.();
   };
 
@@ -2126,6 +2120,7 @@ export function SettingsDialog({
       newServer.tags = parsedNewTags;
     }
 
+    assignStableKey(newServer);
     setAcpServers([...acpServers, newServer]);
     setNewServerName("");
     setNewServerCommand("");
@@ -2141,6 +2136,7 @@ export function SettingsDialog({
       acpServers.map((s) => {
         if (s.name !== oldName) return s;
         const updated = {
+          _key: s._key, // Preserve stable key across renames
           name: (newName || "").trim() || oldName, // Fall back to old name if empty
           command: (newCommand || "").trim() || s.command, // Fall back to old command if empty
           prompts: s.prompts, // Preserve existing prompts (read-only from files)
@@ -2158,13 +2154,9 @@ export function SettingsDialog({
       }),
     );
 
-    // Update workspaces and editingServer tracking for renames
+    // Update workspace references for renames (editingServer uses _key, no update needed)
     const trimmedNewName = (newName || "").trim();
     if (trimmedNewName && trimmedNewName !== oldName) {
-      // Keep the edit form open on the renamed server
-      if (editingServer === oldName) {
-        setEditingServer(trimmedNewName);
-      }
       setWorkspaces(
         workspaces.map((ws) => {
           const updated = { ...ws };
@@ -2266,6 +2258,7 @@ export function SettingsDialog({
       duplicatedServer.auto_approve = server.auto_approve;
     }
 
+    assignStableKey(duplicatedServer);
     setAcpServers([...acpServers, duplicatedServer]);
     setError("");
   };
@@ -2501,10 +2494,10 @@ export function SettingsDialog({
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
-                                const isExpanded = editingServer === srv.name && !isRCFile;
+                                const isExpanded = editingServer === srv._key && !isRCFile;
                                 return html`
                                   <div
-                                    key=${srv.name}
+                                    key=${srv._key}
                                     class="bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
                                       ? "opacity-80"
                                       : ""} transition-colors group"
@@ -2512,7 +2505,7 @@ export function SettingsDialog({
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
                                       class="flex items-center gap-3 p-3 ${!isRCFile ? "cursor-pointer hover:bg-slate-700/30" : ""} transition-colors"
-                                      onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv.name) : null}
+                                      onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
                                     >
                                       ${!isRCFile && html`
                                         <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
@@ -4394,14 +4387,6 @@ export function SettingsDialog({
               ${warning}
             </div>
           `}
-          ${success &&
-          html`
-            <div
-              class="mb-3 p-3 bg-green-500/20 border border-green-500/50 rounded-lg text-green-400 text-sm"
-            >
-              ${success}
-            </div>
-          `}
           <div class="flex justify-end gap-3">
             ${canClose &&
             html`
@@ -4439,6 +4424,7 @@ export function SettingsDialog({
           const existingNames = new Set(acpServers.map((s) => s.name.toLowerCase()));
           const toAdd = newAgents.filter((a) => !existingNames.has(a.name.toLowerCase()));
           if (toAdd.length > 0) {
+            toAdd.forEach(assignStableKey);
             setAcpServers([...acpServers, ...toAdd]);
           }
           setShowDiscoverAgents(false);

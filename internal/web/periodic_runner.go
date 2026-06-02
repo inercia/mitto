@@ -683,6 +683,7 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 		PromptID:         "",                  // No client to confirm delivery to
 		PromptName:       periodic.PromptName, // Pass prompt name so UI can render a badge instead of full text
 		IsPeriodicForced: forced,
+		FreshContext:     periodic.FreshContext,
 		OnComplete: func(err error) {
 			if err != nil {
 				if r.logger != nil {

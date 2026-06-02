@@ -11,6 +11,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
 
 func TestHandleConfig_MethodNotAllowed(t *testing.T) {
@@ -216,6 +217,71 @@ func TestHandleSaveConfig_ValidRequest(t *testing.T) {
 	// With proper temp dir setup, this should now succeed
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestHandleSaveConfig_ServerRenames_MigratesConversation(t *testing.T) {
+	// Use temp dir to avoid writing to real settings file.
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	// Store with an existing (non-running) conversation referencing the old name.
+	store, err := session.NewStore(filepath.Join(tmpDir, "sessions"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(session.Metadata{
+		SessionID:  "conv-1",
+		ACPServer:  "old-server",
+		WorkingDir: "/workspace1",
+		Name:       "Conversation 1",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("test-cmd", "old-server", false, nil)
+	sm.SetStore(store)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/workspace1", ACPServer: "old-server"},
+	})
+
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				ACPServers: []config.ACPServer{
+					{Name: "old-server", Command: "test-cmd"},
+				},
+			},
+		},
+		sessionManager: sm,
+	}
+
+	// Save renames "old-server" -> "new-server" (in place).
+	body := strings.NewReader(`{
+		"workspaces": [{"working_dir": "/workspace1", "acp_server": "new-server"}],
+		"acp_servers": [{"name": "new-server", "command": "test-cmd"}],
+		"server_renames": {"old-server": "new-server"}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSaveConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// The conversation's stored ACP server must have been migrated to the new name.
+	meta, err := store.GetMetadata("conv-1")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta.ACPServer != "new-server" {
+		t.Errorf("conversation ACPServer = %q, want %q (server_renames not applied)", meta.ACPServer, "new-server")
 	}
 }
 

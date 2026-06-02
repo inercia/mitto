@@ -357,6 +357,7 @@ type ConversationUpdateInput struct {
 	PeriodicFrequencyUnit  *string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
 	PeriodicFrequencyAt    *string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
 	PeriodicEnabled        *bool   `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
+	PeriodicFreshContext   *bool   `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.
@@ -378,6 +379,7 @@ type ConversationUpdateOutput struct {
 	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`
 	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`
 	PeriodicEnabled        bool   `json:"periodic_enabled"`
+	PeriodicFreshContext   bool   `json:"periodic_fresh_context,omitempty"`
 	PeriodicNextRun        string `json:"periodic_next_run,omitempty"` // RFC3339 format
 	Error                  string `json:"error,omitempty"`
 }

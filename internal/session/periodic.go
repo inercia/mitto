@@ -107,6 +107,9 @@ type PeriodicPrompt struct {
 	Frequency Frequency `json:"frequency"`
 	// Enabled indicates whether the periodic prompt is active.
 	Enabled bool `json:"enabled"`
+	// FreshContext indicates whether each scheduled run should start with a clean
+	// agent context (no history injection, new ACP session). Default is false.
+	FreshContext bool `json:"fresh_context,omitempty"`
 	// CreatedAt is when the periodic prompt was created.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt is when the periodic prompt was last modified.
@@ -194,7 +197,7 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool) error {
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -214,6 +217,9 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if enabled != nil {
 		existing.Enabled = *enabled
+	}
+	if freshContext != nil {
+		existing.FreshContext = *freshContext
 	}
 
 	if err := existing.Validate(); err != nil {
