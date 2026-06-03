@@ -13,6 +13,8 @@ prompts:
   - name: "Fix Bug"
     prompt: "Please fix this bug"
     backgroundColor: "#E8F5E9"
+    group: "Workflow"
+    menus: conversation
   - name: "Add Tests"
     prompt: "Write tests for this code"
 `
@@ -41,12 +43,24 @@ prompts:
 		t.Errorf("first prompt backgroundColor = %q, want %q", rc.Prompts[0].BackgroundColor, "#E8F5E9")
 	}
 
+	if rc.Prompts[0].Group != "Workflow" {
+		t.Errorf("first prompt group = %q, want %q", rc.Prompts[0].Group, "Workflow")
+	}
+
+	if rc.Prompts[0].Menus != "conversation" {
+		t.Errorf("first prompt menus = %q, want %q", rc.Prompts[0].Menus, "conversation")
+	}
+
 	if rc.Prompts[1].Name != "Add Tests" {
 		t.Errorf("second prompt name = %q, want %q", rc.Prompts[1].Name, "Add Tests")
 	}
 
 	if rc.Prompts[1].BackgroundColor != "" {
 		t.Errorf("second prompt backgroundColor = %q, want empty", rc.Prompts[1].BackgroundColor)
+	}
+
+	if rc.Prompts[1].Menus != "" {
+		t.Errorf("second prompt menus = %q, want empty", rc.Prompts[1].Menus)
 	}
 }
 

@@ -3381,10 +3381,11 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 
 		userData := &session.UserData{Attributes: finalAttrs}
 
-		// Validate against workspace schema
+		// Validate against workspace schema. Relative filename paths are resolved
+		// against the conversation's working directory.
 		if sm != nil {
 			schema := sm.GetUserDataSchema(meta.WorkingDir)
-			if err := userData.Validate(schema); err != nil {
+			if err := userData.Validate(schema, meta.WorkingDir); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("user_data validation error: %v", err),

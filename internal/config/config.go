@@ -94,6 +94,11 @@ type WebPrompt struct {
 	// Prompts with the same group will be displayed together under a group header.
 	// If empty, the prompt will appear in an "Other" section.
 	Group string `json:"group,omitempty"`
+	// Menus is a comma-separated list of UI menus this prompt should appear in
+	// (beyond the default ChatInput "Insert predefined prompt" dropup). For
+	// example, "conversation" makes the prompt available in the per-conversation
+	// context menu. Multiple values may be combined, e.g. "conversation,group".
+	Menus string `json:"menus,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
@@ -1108,6 +1113,7 @@ type rawACPServerConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1124,6 +1130,7 @@ type rawConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1244,6 +1251,7 @@ type rawConfig struct {
 		StartupStaggerMs            int    `yaml:"startup_stagger_ms"`
 		StartupPeriodicDelaySeconds int    `yaml:"startup_periodic_delay_seconds"`
 		PeriodicSuspendTimeout      string `yaml:"periodic_suspend_timeout"`
+		MemoryRecycleThreshold      string `yaml:"memory_recycle_threshold"`
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1323,6 +1331,7 @@ func Parse(data []byte) (*Config, error) {
 					BackgroundColor: p.BackgroundColor,
 					Description:     p.Description,
 					Group:           p.Group,
+					Menus:           p.Menus,
 					EnabledWhen:     p.EnabledWhen,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1348,6 +1357,7 @@ func Parse(data []byte) (*Config, error) {
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
+			Menus:           p.Menus,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 		}
@@ -1559,6 +1569,7 @@ func Parse(data []byte) (*Config, error) {
 			StartupStaggerMs:            raw.Session.StartupStaggerMs,
 			StartupPeriodicDelaySeconds: raw.Session.StartupPeriodicDelaySeconds,
 			PeriodicSuspendTimeout:      raw.Session.PeriodicSuspendTimeout,
+			MemoryRecycleThreshold:      raw.Session.MemoryRecycleThreshold,
 		}
 	}
 
