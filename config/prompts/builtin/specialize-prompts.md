@@ -3,6 +3,7 @@ name: "Specialize prompts"
 description: "Analyze and specialize workspace prompts for this project"
 group: "Agents & Mitto"
 backgroundColor: "#B3E5FC"
+enabledWhen: '!session.isPeriodicConversation'
 ---
 
 Specialize the available prompts for this workspace by analyzing the project and tailoring

@@ -469,6 +469,7 @@ Information about the current conversation/session.
 | `session.isAutoChild` | bool   | `true` if created automatically by parent                |
 | `session.parentId`    | string | Parent session ID (empty if not a child)                 |
 | `session.isPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
+| `session.isPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
 
 #### Parent Context (`parent.*`)
 

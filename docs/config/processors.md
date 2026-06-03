@@ -318,7 +318,7 @@ prompt: |
 - **No `mutate` or `output` fields** — prompt-mode processors don't modify the outgoing message
 - **Always asynchronous** — the pipeline never blocks waiting for the auxiliary agent
 - **Requires a workspace** — the auxiliary session is scoped to the workspace
-- **Requires an auxiliary ACP server** — configured in the workspace settings
+- **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional *Auxiliary Model Selection* (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
 - **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
 
 ### Examples
@@ -1029,7 +1029,7 @@ Processors that timeout or exit with non-zero status are treated as errors.
 | Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)    |
 | Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)|
 | Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking     |
-| Dependencies  | None                         | External script or binary              | Workspace with auxiliary ACP server          |
+| Dependencies  | None                         | External script or binary              | Workspace (auxiliary session on its ACP server; optional model selection) |
 
 All modes share the same triggering (`when`), priority, conditional enablement
 (`enabledWhen`), re-run, and error handling features. The `mutate`, `input`, and

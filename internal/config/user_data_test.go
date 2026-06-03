@@ -11,6 +11,7 @@ func TestUserDataAttributeType_IsValid(t *testing.T) {
 	}{
 		{UserDataTypeString, true},
 		{UserDataTypeURL, true},
+		{UserDataTypeFilename, true},
 		{"unknown", false},
 		{"", false},
 	}
@@ -32,6 +33,7 @@ func TestUserDataAttributeType_DefaultType(t *testing.T) {
 		{"", UserDataTypeString},
 		{UserDataTypeString, UserDataTypeString},
 		{UserDataTypeURL, UserDataTypeURL},
+		{UserDataTypeFilename, UserDataTypeFilename},
 	}
 
 	for _, tt := range tests {

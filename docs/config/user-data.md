@@ -13,7 +13,7 @@ User data schema is defined in the **Workspaces → Metadata** tab, under **User
 From this tab you can:
 
 - **Add fields** with the **+ Add Field** button
-- Set each field's **name**, **type** (string or URL), and **description**
+- Set each field's **name**, **type** (string, URL, or filename), and **description**
 - Remove fields you no longer need
 
 Once a schema is defined, users can set values on individual conversations via the conversation properties panel.
@@ -56,10 +56,13 @@ metadata:
 
 ### Supported Types
 
-| Type     | Description          | Validation                      |
-| -------- | -------------------- | ------------------------------- |
-| `string` | Plain text (default) | Any value accepted              |
-| `url`    | A URL                | Must be a valid URL with scheme |
+| Type       | Description                    | Validation                                                      |
+| ---------- | ------------------------------ | --------------------------------------------------------------- |
+| `string`   | Plain text (default)           | Any value accepted                                              |
+| `url`      | A URL                          | Must be a valid URL with scheme                                 |
+| `filename` | A workspace-relative file path | Any value accepted (clickable, opens in the internal viewer)    |
+
+`filename` values are rendered as clickable links in the UI. Clicking opens the file in Mitto's internal viewer.
 
 ## Examples
 

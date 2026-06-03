@@ -52,6 +52,7 @@ The GC suspends idle periodic sessions whose next prompt is far away, saving ACP
 
 - **Config**: `PeriodicSuspendThreshold` (default 30m) in `acp_process_gc.go`. Settings UI: `periodic_suspend_timeout` (`"disabled"`, `"15m"`, `"30m"`, `"1h"`, `"2h"`).
 - **Eligibility**: Periodic session + next prompt > threshold from now. Applies even if user has it open (resumes instantly).
+- **Grace window**: `PeriodicSuspendGracePeriod` (default 10m) — a session is NOT suspended while its most recent turn completion (`SessionInfo.LastResponseCompleteAt`) or activity (`LastActivityAt`) is within this window. Prevents reclaiming a conversation that just ended a turn and may continue. Use `LastResponseCompleteAt` (turn END) as the signal — `LastActivityAt` is set at prompt START and is stale after long tasks. GC always skips actively-prompting sessions first (`IsPrompting`), so this only matters once the turn ends.
 - **Tracking**: `ACPProcessManager.gcSuspendedSessions` map. `SetGCSuspended()` / `IsGCSuspended()` / `ClearGCSuspended()`.
 - **Resume**: `ensure_resumed` WebSocket message (sent on user focus) → `handleEnsureResumed()` in `session_ws.go`. Also clears GC-suspended flag on any explicit resume (periodic runner, prompt send).
 - **UI**: Suspended sessions show a friendly "Session suspended" balloon (not error), yellow dot in sidebar tooltip.

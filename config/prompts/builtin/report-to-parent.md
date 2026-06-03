@@ -3,7 +3,7 @@ name: "Report to parent"
 description: "Send a status report to the parent conversation"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
-enabledWhen: 'session.isChild && parent.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'session.isChild && parent.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---
 
 Report the current status and findings to the parent conversation that spawned this one.

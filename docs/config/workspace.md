@@ -31,7 +31,7 @@ The right panel provides these tabs:
 
 | Tab | Screenshot | What it configures |
 |-----|------------|--------------------|
-| **General** | ![](screenshots/04-workspace-general.png) | ACP server, auxiliary server, runner, auto-approve |
+| **General** | ![](screenshots/04-workspace-general.png) | ACP server, auxiliary model selection, runner, auto-approve |
 | **Metadata** | ![](screenshots/04-workspace-metadata.png) | Display name, description, URL, user data schema |
 | **Prompts** | ![](screenshots/04-workspace-prompts.png) | Quick-action prompts (enable/disable, add, edit) |
 | **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace) |
@@ -72,6 +72,18 @@ The file is automatically loaded when you open a workspace in Mitto and reloaded
 | `metadata`        | Display name, description, URL, user data schema         | [User Data](user-data.md) |
 
 > **Note**: Sections like `acp`, `web`, and `ui` are ignored in workspace files — these can only be configured globally.
+
+### Workspace-Level Fields (workspaces.json)
+
+The following fields are stored in `workspaces.json` and edited through the UI. The most commonly changed ones:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `acp_server` | string | Name of the ACP server for this workspace |
+| `auxiliary_model_selection` | object | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
+| `restricted_runner` | string | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker` |
+| `auto_approve` | boolean | Auto-approve all agent tool-call permission requests |
+| `acp_command_override` | string | Custom command line for the ACP server (overrides the server's default command) |
 
 ### Complete `.mittorc` Example
 

@@ -13,12 +13,14 @@ const (
 	UserDataTypeString UserDataAttributeType = "string"
 	// UserDataTypeURL is a URL attribute (validated as a valid URL).
 	UserDataTypeURL UserDataAttributeType = "url"
+	// UserDataTypeFilename is a workspace-relative file path, clickable to open in the internal viewer.
+	UserDataTypeFilename UserDataAttributeType = "filename"
 )
 
 // IsValid returns true if the attribute type is a known valid type.
 func (t UserDataAttributeType) IsValid() bool {
 	switch t {
-	case UserDataTypeString, UserDataTypeURL:
+	case UserDataTypeString, UserDataTypeURL, UserDataTypeFilename:
 		return true
 	default:
 		return false
@@ -95,8 +97,8 @@ func validateAttributeValue(value string, attrType UserDataAttributeType) error 
 		if u.Scheme == "" {
 			return fmt.Errorf("invalid URL: missing scheme (e.g., https://)")
 		}
-	case UserDataTypeString:
-		// String type accepts any value
+	case UserDataTypeString, UserDataTypeFilename:
+		// String/filename types accept any value
 	default:
 		// Unknown types are treated as string
 	}

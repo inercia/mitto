@@ -3,6 +3,7 @@ name: "What's next?"
 description: "Analyze progress and suggest next steps"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
+enabledWhen: '!session.isPeriodicConversation'
 ---
 
 Review current state: read relevant files, check git status and recent changes.

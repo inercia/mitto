@@ -3,6 +3,7 @@ name: "Generate AGENTS.md"
 description: "Analyze project and generate an AGENTS.md file for AI coding agents"
 group: "Agents & Mitto"
 backgroundColor: "#B3E5FC"
+enabledWhen: '!session.isPeriodicConversation'
 ---
 
 Analyze this project and generate an `AGENTS.md` file that gives AI coding agents

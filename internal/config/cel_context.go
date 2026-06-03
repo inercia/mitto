@@ -63,6 +63,11 @@ type SessionContext struct {
 	ParentID string
 	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
 	IsPeriodic bool
+	// IsPeriodicConversation indicates whether the conversation is configured as a
+	// periodic conversation (it has a periodic prompt configuration). Unlike
+	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
+	// was triggered by the scheduler. Populated in the prompt-menu evaluation context.
+	IsPeriodicConversation bool
 }
 
 // ParentContext holds parent session context for CEL evaluation.

@@ -58,6 +58,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("session.isAutoChild", cel.BoolType),
 		cel.Variable("session.parentId", cel.StringType),
 		cel.Variable("session.isPeriodic", cel.BoolType),
+		cel.Variable("session.isPeriodicConversation", cel.BoolType),
 
 		// Parent variables
 		cel.Variable("parent.exists", cel.BoolType),
@@ -311,12 +312,13 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"workspace.hasMittoRC":             ctx.Workspace.HasMittoRC,
 		"workspace.hasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
-		"session.id":          ctx.Session.ID,
-		"session.name":        ctx.Session.Name,
-		"session.isChild":     ctx.Session.IsChild,
-		"session.isAutoChild": ctx.Session.IsAutoChild,
-		"session.parentId":    ctx.Session.ParentID,
-		"session.isPeriodic":  ctx.Session.IsPeriodic,
+		"session.id":                     ctx.Session.ID,
+		"session.name":                   ctx.Session.Name,
+		"session.isChild":                ctx.Session.IsChild,
+		"session.isAutoChild":            ctx.Session.IsAutoChild,
+		"session.parentId":               ctx.Session.ParentID,
+		"session.isPeriodic":             ctx.Session.IsPeriodic,
+		"session.isPeriodicConversation": ctx.Session.IsPeriodicConversation,
 
 		"parent.exists":    ctx.Parent.Exists,
 		"parent.name":      ctx.Parent.Name,

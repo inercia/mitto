@@ -3,7 +3,7 @@ name: "Continue in existing conversation"
 description: "Send work to an existing conversation in any workspace"
 group: "Work flow"
 backgroundColor: "#B3E5FC"
-enabledWhen: 'permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---
 
 Continue current work by sending instructions to an existing conversation.

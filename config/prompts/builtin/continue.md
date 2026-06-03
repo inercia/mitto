@@ -3,6 +3,7 @@ name: "Continue"
 description: "Continue with the current task from where we left off"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
+enabledWhen: '!session.isPeriodicConversation'
 ---
 
 Before taking any action, review the current state of the work by reading relevant files,
