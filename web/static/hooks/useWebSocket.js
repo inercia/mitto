@@ -328,7 +328,8 @@ export function useWebSocket() {
   // Track background UI prompt timeouts for native OS notifications
   // Fired when a blocking prompt in a background session times out with no active viewer.
   // { sessionId, sessionName, question, timestamp }
-  const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] = useState(null);
+  const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] =
+    useState(null);
 
   // Queue length for the active session
   const [queueLength, setQueueLength] = useState(0);
@@ -1229,8 +1230,10 @@ export function useWebSocket() {
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Use server-sent archived flag, falling back to existing session info
                 archived: msg.data.archived ?? session.info?.archived ?? false,
-                archive_reason: msg.data.archive_reason ?? session.info?.archive_reason ?? "",
-                archived_at: msg.data.archived_at ?? session.info?.archived_at ?? null,
+                archive_reason:
+                  msg.data.archive_reason ?? session.info?.archive_reason ?? "",
+                archived_at:
+                  msg.data.archived_at ?? session.info?.archived_at ?? null,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
                 // Periodic enabled state from server
@@ -1242,19 +1245,34 @@ export function useWebSocket() {
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
                 // GC-suspended state from server (for fresh loads/reconnections)
-                gc_suspended: msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
+                gc_suspended:
+                  msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
                 // Processor stats
-                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
-                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                processor_count:
+                  msg.data.processor_count ??
+                  session.info?.processor_count ??
+                  0,
+                processor_activations:
+                  msg.data.processor_activations ??
+                  session.info?.processor_activations ??
+                  0,
+                processor_last_activation:
+                  msg.data.processor_last_activation ??
+                  session.info?.processor_last_activation ??
+                  null,
+                processor_last_names:
+                  msg.data.processor_last_names ??
+                  session.info?.processor_last_names ??
+                  null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
                 // Context window usage (size/used from ACP)
-                context_usage: msg.data.context_usage ?? session.info?.context_usage ?? null,
+                context_usage:
+                  msg.data.context_usage ?? session.info?.context_usage ?? null,
                 // Config options (model, mode, etc.) - per-session
                 // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
-                config_options: msg.data.config_options ?? session.info?.config_options ?? [],
+                config_options:
+                  msg.data.config_options ?? session.info?.config_options ?? [],
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -1767,14 +1785,27 @@ export function useWebSocket() {
               // Update processor stats from prompt_complete
               info: {
                 ...session.info,
-                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
-                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                processor_count:
+                  msg.data.processor_count ??
+                  session.info?.processor_count ??
+                  0,
+                processor_activations:
+                  msg.data.processor_activations ??
+                  session.info?.processor_activations ??
+                  0,
+                processor_last_activation:
+                  msg.data.processor_last_activation ??
+                  session.info?.processor_last_activation ??
+                  null,
+                processor_last_names:
+                  msg.data.processor_last_names ??
+                  session.info?.processor_last_names ??
+                  null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
                 // Context window usage (updated with each prompt)
-                context_usage: msg.data.context_usage ?? session.info?.context_usage ?? null,
+                context_usage:
+                  msg.data.context_usage ?? session.info?.context_usage ?? null,
               },
             },
           };
@@ -1856,7 +1887,12 @@ export function useWebSocket() {
           ]);
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false, activeUIPrompt: null },
+            [sessionId]: {
+              ...session,
+              messages,
+              isStreaming: false,
+              activeUIPrompt: null,
+            },
           };
         });
         break;
@@ -1900,15 +1936,26 @@ export function useWebSocket() {
             const newInfo = {
               ...session.info,
               processor_count: msg.data.processor_count,
-              processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-              processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-              processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+              processor_activations:
+                msg.data.processor_activations ??
+                session.info?.processor_activations ??
+                0,
+              processor_last_activation:
+                msg.data.processor_last_activation ??
+                session.info?.processor_last_activation ??
+                null,
+              processor_last_names:
+                msg.data.processor_last_names ??
+                session.info?.processor_last_names ??
+                null,
             };
             // Only update if something changed to avoid unnecessary re-renders
             if (
               newInfo.processor_count === session.info?.processor_count &&
-              newInfo.processor_activations === session.info?.processor_activations &&
-              newInfo.processor_last_activation === session.info?.processor_last_activation
+              newInfo.processor_activations ===
+                session.info?.processor_activations &&
+              newInfo.processor_last_activation ===
+                session.info?.processor_last_activation
             ) {
               return prev;
             }
@@ -1969,9 +2016,18 @@ export function useWebSocket() {
                 info: {
                   ...session.info,
                   processor_count: msg.data.processor_count,
-                  processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                  processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                  processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                  processor_activations:
+                    msg.data.processor_activations ??
+                    session.info?.processor_activations ??
+                    0,
+                  processor_last_activation:
+                    msg.data.processor_last_activation ??
+                    session.info?.processor_last_activation ??
+                    null,
+                  processor_last_names:
+                    msg.data.processor_last_names ??
+                    session.info?.processor_last_names ??
+                    null,
                 },
               },
             };
@@ -2034,7 +2090,10 @@ export function useWebSocket() {
             // Skip if we recently completed a stale recovery — React state and
             // auto-load prepend need time to settle before we re-evaluate.
             const lastRecovery = staleRecoveryCooldownRef.current[sessionId];
-            if (lastRecovery && Date.now() - lastRecovery < STALE_RECOVERY_COOLDOWN_MS) {
+            if (
+              lastRecovery &&
+              Date.now() - lastRecovery < STALE_RECOVERY_COOLDOWN_MS
+            ) {
               console.debug(
                 `[keepalive] Session ${sessionId} stale state detected but within recovery cooldown (${Math.round((Date.now() - lastRecovery) / 1000)}s ago) — skipping`,
               );
@@ -2140,7 +2199,12 @@ export function useWebSocket() {
           ]);
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false, activeUIPrompt: null },
+            [sessionId]: {
+              ...session,
+              messages,
+              isStreaming: false,
+              activeUIPrompt: null,
+            },
           };
         });
         break;
@@ -2375,19 +2439,24 @@ export function useWebSocket() {
 
         // Context-load fallback for the localStorage-watermark fast-path:
         // When the app restarts we send after_seq=<stored_seq> instead of limit:50.
-        // If nothing happened while the app was closed (0 new events) the session
-        // would appear empty even though it has history.  Detect this and fall back
-        // to the normal initial load so the user sees recent messages.
+        // The after_seq delta only returns events NEWER than the watermark, so when
+        // the client has no in-memory messages the recent history is missing. This
+        // happens both when the delta is empty (nothing changed while away) AND when
+        // it returns only a partial page (e.g. a periodic run produced a few events
+        // since the watermark): the user would otherwise see just those few events
+        // plus a "Load earlier messages…" button until a hard reload. Detect either
+        // case (no prior messages + delta smaller than a full page) and fall back to
+        // the normal initial load so the user sees the recent history immediately.
         if (
           needsContextLoadRef.current[sessionId] &&
           !isPrepend &&
-          newMessages.length === 0 &&
+          newMessages.length < INITIAL_EVENTS_LIMIT &&
           (currentSession?.messages?.length || 0) === 0 &&
           totalCount > 0
         ) {
           delete needsContextLoadRef.current[sessionId];
           console.log(
-            `[localStorage-watermark] Session ${sessionId} has ${totalCount} events on server but none new — loading context`,
+            `[localStorage-watermark] Session ${sessionId} has ${totalCount} events on server but only ${newMessages.length} new since watermark — loading recent context`,
           );
           const currentWs = sessionWsRefs.current[sessionId];
           if (currentWs && currentWs.readyState === WebSocket.OPEN) {
@@ -2762,12 +2831,25 @@ export function useWebSocket() {
                   session.info?.available_commands ??
                   [],
                 // Update processor stats (may have changed since connected message)
-                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
-                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                processor_count:
+                  msg.data.processor_count ??
+                  session.info?.processor_count ??
+                  0,
+                processor_activations:
+                  msg.data.processor_activations ??
+                  session.info?.processor_activations ??
+                  0,
+                processor_last_activation:
+                  msg.data.processor_last_activation ??
+                  session.info?.processor_last_activation ??
+                  null,
+                processor_last_names:
+                  msg.data.processor_last_names ??
+                  session.info?.processor_last_names ??
+                  null,
                 // Update config options if provided
-                config_options: msg.data.config_options || session.info?.config_options || [],
+                config_options:
+                  msg.data.config_options || session.info?.config_options || [],
               },
             },
           };
@@ -2803,7 +2885,8 @@ export function useWebSocket() {
             messageText = "Session archived. Unarchive to continue.";
           } else if (isGCSuspended) {
             messageRole = "system";
-            messageText = "Session suspended to save resources. It will resume when you need it.";
+            messageText =
+              "Session suspended to save resources. It will resume when you need it.";
           } else {
             messageRole = "error";
             messageText = `Session stopped: ${reason}. Unarchive to continue.`;
@@ -3318,9 +3401,8 @@ export function useWebSocket() {
           // and should always be allowed to reconnect regardless of age.
           const isPeriodic =
             sessionsRef.current[sessionId]?.info?.periodic_enabled ||
-            storedSessionsRef.current?.find(
-              (s) => s.session_id === sessionId,
-            )?.periodic_enabled;
+            storedSessionsRef.current?.find((s) => s.session_id === sessionId)
+              ?.periodic_enabled;
 
           const sessionAgeMs = getSessionAgeMs(sessionId);
           const isTooOld =
@@ -3826,7 +3908,12 @@ export function useWebSocket() {
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
-              ? { ...s, archived: msg.data.archived, archive_pending: false, archive_reason: msg.data.archive_reason || "" }
+              ? {
+                  ...s,
+                  archived: msg.data.archived,
+                  archive_pending: false,
+                  archive_reason: msg.data.archive_reason || "",
+                }
               : s,
           ),
         );
@@ -3849,12 +3936,16 @@ export function useWebSocket() {
         });
         // If the active session was just archived, switch to another session in the same tab.
         // storedSessionsRef.current still has the pre-archive state here, so we can filter by tab.
-        if (msg.data.archived && msg.data.session_id === activeSessionIdRef.current) {
+        if (
+          msg.data.archived &&
+          msg.data.session_id === activeSessionIdRef.current
+        ) {
           const currentTab = getFilterTab();
           const remaining = (storedSessionsRef.current || []).filter((s) => {
             if (s.session_id === msg.data.session_id) return false; // exclude the one being archived
             if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-            if (currentTab === FILTER_TAB.PERIODIC) return !s.archived && s.periodic_enabled;
+            if (currentTab === FILTER_TAB.PERIODIC)
+              return !s.archived && s.periodic_enabled;
             return !s.archived && !s.periodic_enabled; // conversations tab
           });
           if (remaining.length > 0) {
@@ -3983,7 +4074,11 @@ export function useWebSocket() {
       case "background_ui_prompt_timeout": {
         // A blocking UI prompt timed out in a session the user was not actively viewing.
         // Show a native OS notification (sticky) so the user knows the session needed input.
-        const { session_id: timedOutSessionId, session_name: timedOutSessionName, question: timedOutQuestion } = msg.data;
+        const {
+          session_id: timedOutSessionId,
+          session_name: timedOutSessionName,
+          question: timedOutQuestion,
+        } = msg.data;
         console.log(
           `[global] Background UI prompt timed out: ${timedOutSessionId} (${timedOutSessionName})`,
         );
@@ -4088,7 +4183,8 @@ export function useWebSocket() {
             );
             const tabFiltered = remainingStored.filter((s) => {
               if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-              if (currentTab === FILTER_TAB.PERIODIC) return !s.archived && s.periodic_enabled;
+              if (currentTab === FILTER_TAB.PERIODIC)
+                return !s.archived && s.periodic_enabled;
               return !s.archived && !s.periodic_enabled; // conversations tab
             });
             if (tabFiltered.length > 0) {
@@ -4232,7 +4328,6 @@ export function useWebSocket() {
           }),
         );
         break;
-
     }
   }, []);
 
@@ -4270,14 +4365,16 @@ export function useWebSocket() {
           // for background sessions stays live via the global events WebSocket.
           if (lastSessionId) {
             // Verify the stored session still exists before switching to it
-            const sessionExists = storedSessionsList && storedSessionsList.some(
-              (s) => s.session_id === lastSessionId
-            );
+            const sessionExists =
+              storedSessionsList &&
+              storedSessionsList.some((s) => s.session_id === lastSessionId);
             if (sessionExists) {
               switchSession(lastSessionId);
             } else {
               // Session was deleted or no longer available — clear stale reference
-              console.log(`Last active session ${lastSessionId} no longer exists, clearing localStorage`);
+              console.log(
+                `Last active session ${lastSessionId} no longer exists, clearing localStorage`,
+              );
               setLastActiveSessionId(null);
               // Fall back to the most recent session if any exist
               if (storedSessionsList && storedSessionsList.length > 0) {
@@ -4372,7 +4469,9 @@ export function useWebSocket() {
       // This prevents hammering POST /api/sessions when the ACP process is overloaded.
       const now = Date.now();
       if (_sessionCreationNextAllowedMs > now) {
-        const waitSecs = Math.ceil((_sessionCreationNextAllowedMs - now) / 1000);
+        const waitSecs = Math.ceil(
+          (_sessionCreationNextAllowedMs - now) / 1000,
+        );
         console.warn(
           `[createNewSession] Backoff active — ${waitSecs}s remaining (failure #${_sessionCreationFailureCount})`,
         );
@@ -4399,7 +4498,9 @@ export function useWebSocket() {
         if (!response.ok) {
           // Record failure and schedule next allowed attempt
           _sessionCreationFailureCount++;
-          const delay = calculateSessionCreationDelay(_sessionCreationFailureCount - 1);
+          const delay = calculateSessionCreationDelay(
+            _sessionCreationFailureCount - 1,
+          );
           _sessionCreationNextAllowedMs = Date.now() + delay;
           console.warn(
             `[createNewSession] Failure #${_sessionCreationFailureCount} — backoff ${delay}ms`,
@@ -4468,7 +4569,9 @@ export function useWebSocket() {
       } catch (err) {
         // Network/fetch error — also apply backoff
         _sessionCreationFailureCount++;
-        const delay = calculateSessionCreationDelay(_sessionCreationFailureCount - 1);
+        const delay = calculateSessionCreationDelay(
+          _sessionCreationFailureCount - 1,
+        );
         _sessionCreationNextAllowedMs = Date.now() + delay;
         console.error(
           `[createNewSession] Network error (failure #${_sessionCreationFailureCount}, backoff ${delay}ms):`,
@@ -5242,7 +5345,8 @@ export function useWebSocket() {
           const currentTab = getFilterTab();
           const tabFiltered = remainingSessions.filter((s) => {
             if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-            if (currentTab === FILTER_TAB.PERIODIC) return !s.archived && s.periodic_enabled;
+            if (currentTab === FILTER_TAB.PERIODIC)
+              return !s.archived && s.periodic_enabled;
             return !s.archived && !s.periodic_enabled; // conversations tab
           });
 
