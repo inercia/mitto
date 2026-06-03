@@ -412,6 +412,7 @@ Returns:
 - If the workspace has no schema, any user data update is rejected
 - If a field name is not in the schema, the update is rejected
 - If a value doesn't match the field type (e.g., invalid URL for `url` type), the update is rejected
+- For `filename`-typed fields, the value must resolve (absolute, or relative to the conversation's working directory) to an existing, readable file that is not a directory; otherwise the update is rejected. An empty value is allowed (clears the field).
 
 **Merge behavior (default):** When `user_data_merge` is `true` (or omitted), existing attributes are preserved and only the specified attributes are added or updated. When `false`, the full attribute set is replaced.
 

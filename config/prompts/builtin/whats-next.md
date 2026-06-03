@@ -2,6 +2,7 @@
 name: "What's next?"
 description: "Analyze progress and suggest next steps"
 group: "Work flow"
+menus: conversation
 backgroundColor: "#FFF9C4"
 enabledWhen: '!session.isPeriodicConversation'
 ---

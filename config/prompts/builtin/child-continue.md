@@ -2,6 +2,7 @@
 name: "Continue work in existing child"
 description: "Continue work in an existing child conversation"
 group: "Work flow"
+menus: conversation
 backgroundColor: "#FFF9C4"
 enabledWhen: 'children.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---

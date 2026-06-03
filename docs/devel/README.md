@@ -26,7 +26,7 @@ This directory contains technical documentation for developers working on Mitto.
 
 ### Infrastructure
 
-- **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, and process GC
+- **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, multi-tier process GC (periodic suspend, memory-bloat recycling), and the prompt inactivity watchdog
 
 - **[Restricted Runner Integration](restricted-runners.md)** — Runner system architecture, sandbox types, configuration hierarchy, and ACP subprocess integration
 
@@ -48,6 +48,9 @@ This directory contains technical documentation for developers working on Mitto.
 | Configuration       | [Architecture](architecture.md)                                   | `internal/config`                            |
 | ACP architecture    | [ACP Architecture](acp.md)                                        | Shared process, multiplexing, concurrency    |
 | ACP client          | [ACP Architecture](acp.md)                                        | `internal/acp`                               |
+| Process GC tiers    | [ACP Architecture](acp.md)                                        | Multi-Tier GC, periodic suspend, memory recycle |
+| Memory recycling    | [ACP Architecture](acp.md)                                        | Tier 4 — Memory-Bloat Recycling, Configuration |
+| Inactivity watchdog | [ACP Architecture](acp.md)                                        | Prompt Inactivity Watchdog                   |
 | Feature flags       | [Architecture](architecture.md)                                   | Advanced Settings                            |
 | Event types         | [Session Management](session-management.md)                       | Event Types                                  |
 | Session settings    | [Session Management](session-management.md)                       | Advanced Settings                            |

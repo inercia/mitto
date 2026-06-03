@@ -259,6 +259,7 @@ Provide specific suggestions with code examples where applicable.
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
+| `menus`           | No       | string   | Comma-separated list of extra menus the prompt appears in. `conversation` surfaces it in the per-conversation context menu. See [below](#menus-conversation-context-menu). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
@@ -328,6 +329,62 @@ Please analyze the code with the following criteria:
 - Assess code clarity
 - Suggest refactoring opportunities
 ```
+
+## Menus: Conversation Context Menu
+
+By default, prompts appear only in the **ChatInput dropup** (the "Insert predefined
+prompt" menu above the chat input). The `menus` attribute is a **comma-separated
+list** of additional menus a prompt should appear in. Adding `conversation` to a
+prompt's `menus` front-matter additionally surfaces it in the **per-conversation
+context menu** — the menu shown when you right-click a conversation in the sidebar
+list.
+
+```markdown
+---
+name: "Summarize Progress"
+description: "Ask the agent to summarize what has been done so far"
+group: "Workflow"
+menus: conversation
+---
+
+Summarize everything we've accomplished in this conversation so far.
+```
+
+Because `menus` is a list, multiple menus can be combined in a single value as more
+menus become available, e.g. `menus: "conversation, group"`. Whitespace around each
+entry is ignored.
+
+In the conversation context menu, these prompts appear **after** the standard
+**Archive**, **Properties**, and **Delete** entries. They are organized into
+submenus by their `group` attribute, so the example above renders as:
+
+```
+Archive
+Properties
+Delete
+Workflow ›
+    Summarize Progress
+```
+
+Prompts without a `group` are collected under an **"Other"** submenu.
+
+### Behavior
+
+- **Only prompts whose `menus` list includes `conversation`** appear in the context
+  menu. Prompts without it are excluded (they still appear in the ChatInput dropup).
+- Clicking a prompt **enqueues its text** to that conversation via the message
+  queue. The agent processes it as soon as the conversation is idle, so this works
+  for **any** conversation — not just the currently active one.
+- `enabledWhen` and `enabled` are honored, but — unlike the dropup, which is
+  evaluated for the **active** conversation — the context menu evaluates each
+  prompt's `enabledWhen` against the **conversation you right-clicked**. The menu
+  is populated on demand for that specific conversation, so context-dependent
+  prompts (e.g. `enabledWhen: "session.isChild"` for "Report to parent", or
+  `enabledWhen: "children.exists"` for "Continue work in existing child") appear
+  only on the conversations where they apply.
+- `@mitto:` [variable substitution](#variable-substitution-in-prompts) is applied
+  to the enqueued text in the target conversation's context before it reaches the
+  agent.
 
 ## Variable Substitution in Prompts
 

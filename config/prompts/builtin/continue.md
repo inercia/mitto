@@ -2,6 +2,7 @@
 name: "Continue"
 description: "Continue with the current task from where we left off"
 group: "Work flow"
+menus: conversation
 backgroundColor: "#FFF9C4"
 enabledWhen: '!session.isPeriodicConversation'
 ---

@@ -878,6 +878,22 @@ func (p *SharedACPProcess) ActiveRPCs() int32 {
 	return p.activeRPCs.Load()
 }
 
+// RSSBytes returns the resident set size in bytes summed over this process's
+// tree (the ACP agent process plus all of its descendants). Used by the GC's
+// memory-recycle tier to decide whether an idle process has grown bloated
+// enough to be reclaimed.
+func (p *SharedACPProcess) RSSBytes() (uint64, error) {
+	p.mu.RLock()
+	if p.cmd == nil || p.cmd.Process == nil {
+		p.mu.RUnlock()
+		return 0, fmt.Errorf("shared ACP process is not running")
+	}
+	pid := p.cmd.Process.Pid
+	p.mu.RUnlock()
+
+	return processTreeRSS(pid)
+}
+
 // Cancel cancels the current operation for a specific session.
 func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID acp.SessionId) error {
 	p.mu.RLock()
