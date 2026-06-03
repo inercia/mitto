@@ -998,6 +998,123 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
 // Context Menu Component
 // =============================================================================
 
+// Renders a single context menu entry. Entries with a non-empty `submenu`
+// array expand a flyout submenu on hover (positioned to the right, flipping
+// left or shifting up when it would overflow the viewport).
+function ContextMenuItem({ item, onClose }) {
+  const hasSubmenu = !!(item.submenu && item.submenu.length > 0);
+  const [submenuOpen, setSubmenuOpen] = useState(false);
+  const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
+  const itemRef = useRef(null);
+  const closeTimerRef = useRef(null);
+
+  const openSubmenu = () => {
+    if (!hasSubmenu) return;
+    clearTimeout(closeTimerRef.current);
+    if (itemRef.current) {
+      const rect = itemRef.current.getBoundingClientRect();
+      const submenuWidth = 180;
+      const submenuHeight = item.submenu.length * 38 + 8;
+      // Prefer opening to the right; flip to the left if it would overflow
+      let left = rect.right - 4;
+      if (left + submenuWidth > window.innerWidth) {
+        left = rect.left - submenuWidth + 4;
+      }
+      // Shift up if it would overflow the bottom of the viewport
+      let top = rect.top;
+      if (top + submenuHeight > window.innerHeight) {
+        top = Math.max(8, window.innerHeight - submenuHeight - 8);
+      }
+      setSubmenuPos({ left, top });
+    }
+    setSubmenuOpen(true);
+  };
+
+  const scheduleClose = () => {
+    clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => setSubmenuOpen(false), 150);
+  };
+
+  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
+
+  if (hasSubmenu) {
+    return html`
+      <div
+        ref=${itemRef}
+        class="relative"
+        onMouseEnter=${openSubmenu}
+        onMouseLeave=${scheduleClose}
+      >
+        <button
+          onClick=${(e) => {
+            e.stopPropagation();
+            openSubmenu();
+          }}
+          class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 text-gray-200 hover:bg-slate-700"
+        >
+          ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
+          <span class="flex-1">${item.label}</span>
+          <${ChevronRightIcon} className="w-4 h-4 text-gray-400" />
+        </button>
+        ${submenuOpen &&
+        html`
+          <div
+            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
+            style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
+            onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
+            onMouseLeave=${scheduleClose}
+          >
+            ${item.submenu.map(
+              (sub) => html`
+                <button
+                  key=${sub.label}
+                  onClick=${(e) => {
+                    e.stopPropagation();
+                    if (!sub.disabled) {
+                      sub.onClick();
+                      onClose();
+                    }
+                  }}
+                  disabled=${sub.disabled}
+                  class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${sub.disabled
+                    ? "text-gray-500 cursor-not-allowed"
+                    : sub.danger
+                      ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
+                      : "text-gray-200 hover:bg-slate-700"}"
+                >
+                  ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
+                  ${sub.label}
+                </button>
+              `,
+            )}
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  return html`
+    <button
+      onClick=${(e) => {
+        e.stopPropagation();
+        if (!item.disabled) {
+          item.onClick();
+          onClose();
+        }
+      }}
+      disabled=${item.disabled}
+      class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
+        ? "text-gray-500 cursor-not-allowed"
+        : item.danger
+          ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
+          : "text-gray-200 hover:bg-slate-700"}"
+    >
+      ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
+      ${item.label}
+    </button>
+  `;
+}
+
 function ContextMenu({ x, y, items, onClose }) {
   const menuRef = useRef(null);
 
@@ -1056,25 +1173,11 @@ function ContextMenu({ x, y, items, onClose }) {
     >
       ${items.map(
         (item) => html`
-          <button
+          <${ContextMenuItem}
             key=${item.label}
-            onClick=${(e) => {
-              e.stopPropagation();
-              if (!item.disabled) {
-                item.onClick();
-                onClose();
-              }
-            }}
-            disabled=${item.disabled}
-            class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
-              ? "text-gray-500 cursor-not-allowed"
-              : item.danger
-                ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-                : "text-gray-200 hover:bg-slate-700"}"
-          >
-            ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
-            ${item.label}
-          </button>
+            item=${item}
+            onClose=${onClose}
+          />
         `,
       )}
     </div>
@@ -1165,6 +1268,8 @@ function SessionItem({
   isLightTheme = false,
   filterTab = FILTER_TAB.CONVERSATIONS,
   groupingMode = "none", // Current grouping mode (to hide spawned indicator in hierarchical mode)
+  onFetchConversationPrompts, // Async (session, workingDir) => menus:conversation prompts evaluated for THIS conversation
+  onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -1178,6 +1283,10 @@ function SessionItem({
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
+  // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
+  // when the context menu opens (enabledWhen depends on this conversation's own
+  // context, not the active session). Cached between opens; refreshed each open.
+  const [menuPrompts, setMenuPrompts] = useState([]);
 
   // Check if session is archived
   const isArchived = session.archived || false;
@@ -1352,6 +1461,14 @@ function SessionItem({
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY });
+    // Evaluate menus:conversation prompts against THIS conversation's context so
+    // the submenu reflects the right-clicked conversation (e.g. "Report to
+    // parent" only for children), not the active session.
+    if (onFetchConversationPrompts) {
+      onFetchConversationPrompts(session, workingDir).then((prompts) => {
+        setMenuPrompts(prompts || []);
+      });
+    }
   };
 
   const closeContextMenu = () => {
@@ -1374,6 +1491,33 @@ function SessionItem({
   const isActiveSession =
     !isArchived && (session.isActive || session.status === "active");
   const isStreaming = !isArchived && (session.isStreaming || false);
+
+  // Build group submenus from prompts flagged with menus:conversation.
+  // Prompts are grouped by their `group` attribute; ungrouped prompts fall
+  // under "Other". Each group becomes a submenu listing its prompts.
+  const promptGroupItems = [];
+  if (
+    onSendPromptToConversation &&
+    menuPrompts &&
+    menuPrompts.length > 0
+  ) {
+    const groups = new Map();
+    for (const p of menuPrompts) {
+      if (!p || !p.name) continue;
+      const groupName = (p.group && p.group.trim()) || "Other";
+      if (!groups.has(groupName)) groups.set(groupName, []);
+      groups.get(groupName).push(p);
+    }
+    for (const [groupName, prompts] of groups) {
+      promptGroupItems.push({
+        label: groupName,
+        submenu: prompts.map((p) => ({
+          label: p.name,
+          onClick: () => onSendPromptToConversation(session, p),
+        })),
+      });
+    }
+  }
 
   const contextMenuItems = [
     // Hide archive option for child (spawned) sessions
@@ -1404,6 +1548,8 @@ function SessionItem({
       onClick: () => handleDelete(),
       danger: true,
     },
+    // Prompt group submenus (menus:conversation prompts)
+    ...promptGroupItems,
   ];
 
   // Calculate visual feedback intensity based on swipe progress
@@ -1680,6 +1826,8 @@ function SessionList({
   onFolderOpen,
   onTerminalClick,
   queueLength = 0,
+  onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
+  onSendPromptToConversation,
 }) {
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
@@ -2504,6 +2652,8 @@ function SessionList({
         isLightTheme=${isLight}
         filterTab=${filterTab}
         groupingMode=${groupingMode}
+        onFetchConversationPrompts=${onFetchConversationPrompts}
+        onSendPromptToConversation=${onSendPromptToConversation}
         isSpawned=${isSpawned}
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}
@@ -3088,6 +3238,24 @@ function SessionList({
           x=${groupContextMenu.x}
           y=${groupContextMenu.y}
           items=${[
+            ...((filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) && groupContextMenu.workingDir
+              ? (() => {
+                  // List workspaces/agents matching this folder, mirroring the "+" button.
+                  const matching = workspaces.filter(
+                    (ws) => ws.working_dir === groupContextMenu.workingDir,
+                  );
+                  if (matching.length === 0) return [];
+                  return [{
+                    label: "New",
+                    icon: html`<${PlusIcon} className="w-4 h-4" />`,
+                    submenu: matching.map((ws) => ({
+                      label: ws.acp_server || ws.name || getBasename(ws.working_dir),
+                      icon: html`<${RobotIcon} className="w-4 h-4" />`,
+                      onClick: () => onNewSession && onNewSession(ws, null, filterTab),
+                    })),
+                  }];
+                })()
+              : []),
             ...(badgeClickEnabled && groupContextMenu.workingDir ? [{
               label: "Open Folder",
               icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
@@ -3482,6 +3650,49 @@ function App() {
   // all prompts fully merged (global + server-specific + workspace) and filtered.
   // The frontend just uses them directly — no client-side merge needed.
   const predefinedPrompts = workspacePrompts;
+
+  // Fetch the prompts whose `menus` list includes `conversation` for a SPECIFIC
+  // conversation, evaluating each prompt's `enabledWhen` against that
+  // conversation's own context (child status, children, permissions, tools).
+  //
+  // The context menu must reflect the conversation being right-clicked, not the
+  // active session, so we cannot reuse the active-session `workspacePrompts`
+  // list. Instead we query /api/workspace-prompts with the target session_id so
+  // the backend evaluates `enabledWhen` for that conversation, then keep only the
+  // prompts that opt into the conversation menu via `menus`.
+  const fetchConversationPromptsForSession = useCallback(
+    async (session, workingDir) => {
+      const sessionId = session?.session_id;
+      const dir = workingDir || session?.working_dir;
+      if (!sessionId || !dir) return [];
+      try {
+        const res = await authFetch(
+          apiUrl(
+            `/api/workspace-prompts?dir=${encodeURIComponent(dir)}&session_id=${encodeURIComponent(sessionId)}`,
+          ),
+        );
+        if (!res.ok) return [];
+        const data = await res.json();
+        const all = data?.prompts || [];
+        return all.filter(
+          (p) =>
+            p &&
+            typeof p.menus === "string" &&
+            p.menus
+              .split(",")
+              .map((m) => m.trim())
+              .includes("conversation"),
+        );
+      } catch (err) {
+        console.error(
+          "Failed to fetch conversation prompts for session:",
+          err,
+        );
+        return [];
+      }
+    },
+    [],
+  );
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
@@ -5950,6 +6161,49 @@ function App() {
     }
   };
 
+  // Send a context-menu prompt to a specific conversation by enqueueing its full
+  // text. The queue delivers it to the agent when the conversation is idle, so
+  // this works for any conversation (not just the active one).
+  const handleSendPromptToConversation = useCallback(
+    async (session, prompt) => {
+      const sessionId = session?.session_id;
+      const text = prompt?.prompt;
+      if (!sessionId || !text) return;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/queue`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: text }),
+          },
+        );
+        if (res.ok || res.status === 201) {
+          showToast({
+            style: "success",
+            title: `Sent "${prompt.name}" to conversation`,
+            duration: 3000,
+          });
+        } else {
+          const data = await res.json().catch(() => ({}));
+          showToast({
+            style: "warning",
+            title: data.message || "Failed to send prompt",
+            duration: 4000,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to send prompt to conversation:", err);
+        showToast({
+          style: "error",
+          title: "Failed to send prompt",
+          duration: 4000,
+        });
+      }
+    },
+    [showToast],
+  );
+
 
   return html`
     <div class="h-screen-safe flex">
@@ -6121,6 +6375,8 @@ function App() {
           onFolderOpen=${handleFolderOpen}
           onTerminalClick=${handleTerminalClick}
           queueLength=${queueLength}
+          onFetchConversationPrompts=${fetchConversationPromptsForSession}
+          onSendPromptToConversation=${handleSendPromptToConversation}
         />
         <!-- Resize handle on right edge -->
         <div
@@ -6163,6 +6419,8 @@ function App() {
               onFolderOpen=${handleFolderOpen}
               onTerminalClick=${handleTerminalClick}
               queueLength=${queueLength}
+              onFetchConversationPrompts=${fetchConversationPromptsForSession}
+              onSendPromptToConversation=${handleSendPromptToConversation}
             />
           </div>
           <div

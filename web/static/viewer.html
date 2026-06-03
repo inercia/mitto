@@ -726,10 +726,12 @@
 
         try {
           const apiPrefix = getAPIPrefix();
-          // Use UUID if available, otherwise fall back to legacy workspace path
+          // Use UUID if available, otherwise fall back to legacy workspace path.
+          // ws_path carries the working dir when only it is supplied (e.g. links
+          // built from the conversation's working_dir), so fall back to it too.
           const wsParam = workspaceUUID
             ? `ws=${encodeURIComponent(workspaceUUID)}`
-            : `workspace=${encodeURIComponent(legacyWorkspace)}`;
+            : `workspace=${encodeURIComponent(legacyWorkspace || wsPath || "")}`;
           const fileUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}`;
 
           // Detect file type from extension
@@ -1568,9 +1570,16 @@
           }
 
           // Build a viewer URL for a workspace file path.
+          // Preserve whichever workspace identifier we were loaded with: the UUID
+          // if present, otherwise the legacy workspace path. Always carry ws_path
+          // so navigation within legacy-path files keeps resolving correctly.
           function buildViewerUrl(filePath, fragment) {
-            const wsParam = workspaceUUID ? encodeURIComponent(workspaceUUID) : "";
-            let url = `${window.location.pathname}?ws=${wsParam}&path=${encodeURIComponent(filePath)}`;
+            let url;
+            if (workspaceUUID) {
+              url = `${window.location.pathname}?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(filePath)}`;
+            } else {
+              url = `${window.location.pathname}?workspace=${encodeURIComponent(legacyWorkspace || wsPath || "")}&path=${encodeURIComponent(filePath)}`;
+            }
             if (wsPath) {
               url += `&ws_path=${encodeURIComponent(wsPath)}`;
             }

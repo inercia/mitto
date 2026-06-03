@@ -675,14 +675,27 @@ export function SessionPanel({
   // Changes tab content
   // ---------------------------------------------------------------------------
   function renderChangesContent() {
-    // Helper to build viewer URL with diff mode
+    // Helper to build viewer URL with diff mode.
+    // Resolve against the conversation's own working dir, not the globally-selected
+    // workspace — the panel can inspect conversations from other workspaces. We
+    // prefer working_dir (via the legacy `workspace=` param) over workspace_uuid
+    // because CLI-spawned sessions inherit the default workspace UUID, which
+    // resolves to the server's directory rather than the conversation's. The
+    // viewer/backend prefer `ws=` when present, so we intentionally omit it when
+    // a working dir is available.
     const buildDiffViewerUrl = (filePath, status) => {
       const apiPrefix = window.mittoApiPrefix || "";
-      const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
       const wsPath = sessionInfo?.working_dir || window.mittoCurrentWorkspace || "";
+      const workspaceUUID = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
       const relativePath = filePath.replace(/^\.\//, "");
-      if (!workspaceUUID) return null;
-      let url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+      let url;
+      if (wsPath) {
+        url = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relativePath)}`;
+      } else if (workspaceUUID) {
+        url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+      } else {
+        return null;
+      }
       if (status !== "?") url += "&view=diff";
       if (wsPath) url += `&ws_path=${encodeURIComponent(wsPath)}`;
       return url;
@@ -1007,13 +1020,20 @@ export function SessionPanel({
                               ${field.type === "filename" && value
                                 ? (() => {
                                     const apiPrefix = window.mittoApiPrefix || "";
-                                    const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
+                                    // Resolve against the conversation's own working dir, not the
+                                    // globally-selected workspace. Prefer working_dir (legacy
+                                    // `workspace=` param) over workspace_uuid: CLI-spawned
+                                    // sessions inherit the default workspace UUID, which resolves
+                                    // to the server's directory. The viewer prefers `ws=` when
+                                    // present, so omit it when a working dir is available.
                                     const wsPath = sessionInfo?.working_dir || window.mittoCurrentWorkspace || "";
+                                    const workspaceUUID = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
                                     const relativePath = value.replace(/^\.\//, "");
                                     let viewerUrl = null;
-                                    if (workspaceUUID) {
+                                    if (wsPath) {
+                                      viewerUrl = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relativePath)}&ws_path=${encodeURIComponent(wsPath)}`;
+                                    } else if (workspaceUUID) {
                                       viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
-                                      if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
                                     }
                                     return html`
                                       <a
