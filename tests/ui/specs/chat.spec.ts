@@ -611,29 +611,24 @@ test.describe("Scroll to Bottom Button", () => {
       if (btn) btn.click();
     });
 
-    // Wait for scroll animation to complete
-    await page.waitForTimeout(1000);
-
-    // Verify scroll position is at bottom
-    // scrollTop near scrollHeight-clientHeight = at visual bottom (newest messages)
-    // Use the same container selection as scrollInfo: find the overflow-y-auto that has message-enter children
-    const isAtBottom = await page.evaluate(() => {
-      const containers = document.querySelectorAll(".overflow-y-auto");
-      for (const c of containers) {
-        if (c.querySelector(".message-enter")) {
-          const container = c as HTMLElement;
-          const maxScroll = container.scrollHeight - container.clientHeight;
-          const threshold = 100;
-          return container.scrollTop >= maxScroll - threshold;
-        }
-      }
-      // Fallback: use first container
-      const container = document.querySelector(".overflow-y-auto");
-      if (!container) return false;
-      const maxScroll = container.scrollHeight - container.clientHeight;
-      const threshold = 100;
-      return (container as HTMLElement).scrollTop >= maxScroll - threshold;
-    });
-    expect(isAtBottom).toBe(true);
+    // Wait for the smooth-scroll animation to complete.
+    // scroll-smooth duration is variable under load, so poll until at bottom
+    // rather than using a fixed timeout that can expire mid-animation.
+    await expect.poll(
+      async () => {
+        return await page.evaluate(() => {
+          const containers = document.querySelectorAll(".overflow-y-auto");
+          for (const c of containers) {
+            if (c.querySelector(".message-enter")) {
+              const el = c as HTMLElement;
+              const maxScroll = el.scrollHeight - el.clientHeight;
+              return el.scrollTop >= maxScroll - 100;
+            }
+          }
+          return false;
+        });
+      },
+      { timeout: 10_000, intervals: [200, 300, 500, 500, 1000] },
+    ).toBe(true);
   });
 });

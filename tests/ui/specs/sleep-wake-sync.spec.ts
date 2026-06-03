@@ -229,5 +229,109 @@ test.describe("Sleep-Wake Sync", () => {
       page.locator(selectors.userMessage).filter({ hasText: msg2 }),
     ).toBeVisible({ timeout: timeouts.agentResponse });
   });
+
+  /**
+   * Gap 3: Idle session restart shows only the newest few messages (partial delta).
+   *
+   * This is the harder sibling of Gap 2. Instead of the watermark being beyond
+   * the server's max (0 new events), it sits at a real intermediate seq, so the
+   * after_seq request returns a *partial* page (the newest turn only) while the
+   * earlier history is missing from memory.
+   *
+   * Scenario:
+   *   Send msg1 -> watermark stored at W1 (msg1's last seq).
+   *   Send msg2 -> server max advances past W1.
+   *   App restarts with watermark pinned at W1 -> load_events(after_seq=W1)
+   *   returns only msg2's events (non-empty, < 50). msg1 is absent from memory.
+   *
+   * Before the fix the context-load fallback only fired on an *empty* delta
+   * (newMessages.length === 0), so this partial delta left the conversation
+   * showing just msg2 plus a "Load earlier messages..." button until a hard
+   * reload. The fix broadens the fallback to fire whenever the delta is smaller
+   * than a full page (newMessages.length < INITIAL_EVENTS_LIMIT) and the client
+   * has no in-memory messages, restoring the full recent history immediately.
+   */
+  test("should load full history when watermark-based load returns a partial page (idle session)", async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    // 1. Create a fresh session and send the first message.
+    const sessionId = await helpers.createFreshSession(page);
+    const msg1 = helpers.uniqueMessage("partial-test-1");
+    const msg2 = helpers.uniqueMessage("partial-test-2");
+    await helpers.sendMessageAndWait(page, msg1);
+
+    // 2. Capture the watermark after msg1 completes — a real intermediate seq (W1).
+    //    The later after_seq=W1 request returns only msg2's events.
+    const readWatermark = () =>
+      page.evaluate(({ sid }) => {
+        const v = localStorage.getItem(`mitto_last_seen_seq_${sid}`);
+        return v ? parseInt(v, 10) : 0;
+      }, { sid: sessionId });
+    await expect
+      .poll(readWatermark, { timeout: 10_000, intervals: [300, 500, 500, 1000] })
+      .toBeGreaterThan(0);
+    const w1 = await readWatermark();
+
+    // 3. Send the second message so the server's max seq advances past W1.
+    await helpers.sendMessageAndWait(page, msg2);
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: msg1 }),
+    ).toBeVisible();
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: msg2 }),
+    ).toBeVisible();
+
+    // 4. Pin the localStorage watermark back to W1 (intermediate seq) so the reload
+    //    sends load_events(after_seq=W1) and the server returns a partial delta
+    //    (msg2 only). Clear the fallback debug flags to start clean.
+    await page.evaluate(({ sid, seq }) => {
+      localStorage.setItem(`mitto_last_seen_seq_${sid}`, String(seq));
+      if ((window as any).__debug) {
+        (window as any).__debug.fallbackContextLoadFired = undefined;
+        (window as any).__debug.lastLoadEventsAfterSeq = undefined;
+        (window as any).__debug.lastInitialLoadEventsAfterSeq = undefined;
+      }
+    }, { sid: sessionId, seq: w1 });
+
+    // 5. Reload the page (simulates app restart with an intermediate watermark).
+    await page.reload();
+    await helpers.waitForWebSocketReady(page);
+
+    // 6. The initial watermark-restore load must use after_seq=W1 (a partial,
+    //    intermediate value — proving this is the partial-delta case, not the
+    //    empty-delta server-side fallback which uses a far-future seq).
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            () => (window as any).__debug?.lastInitialLoadEventsAfterSeq ?? -1,
+          ),
+        { timeout: 10_000, intervals: [300, 500, 500, 1000] },
+      )
+      .toBe(w1);
+
+    // 7. The partial delta returned msg2 only → the broadened context-load fallback
+    //    must fire to restore the full recent history (including msg1).
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            () => (window as any).__debug?.fallbackContextLoadFired ?? false,
+          ),
+        { timeout: 15_000, intervals: [300, 500, 500, 1000] },
+      )
+      .toBe(true);
+
+    // 8. Hard requirement: both messages visible after the fallback restores history.
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: msg1 }),
+    ).toBeVisible({ timeout: timeouts.agentResponse });
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: msg2 }),
+    ).toBeVisible({ timeout: timeouts.agentResponse });
+  });
 });
 
