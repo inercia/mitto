@@ -101,6 +101,12 @@ type BackgroundSession struct {
 	promptStartTime      time.Time // When the current prompt started (for logging)
 	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
 
+	// lastAgentActivityAt records the time (Unix nanos) of the most recent streamed
+	// update received from the agent during a prompt. It is reset when a prompt starts
+	// and updated on every ACP SessionUpdate. The prompt inactivity watchdog reads it
+	// to detect a live-but-unresponsive agent (one that stops streaming without crashing).
+	lastAgentActivityAt atomic.Int64
+
 	// Configuration
 	autoApprove bool
 	logger      *slog.Logger
@@ -168,6 +174,7 @@ type BackgroundSession struct {
 	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
 	acpCommand           string                                 // Command used to start ACP process (for restart)
 	acpCwd               string                                 // Working directory for ACP process (for restart)
+	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	restartCount         int                                    // Total number of restarts across the session lifetime
 	restartTimes         []time.Time                            // Timestamps of recent restarts (for rate limiting)
@@ -237,7 +244,8 @@ type activeUIPrompt struct {
 type BackgroundSessionConfig struct {
 	PersistedID      string
 	ACPCommand       string
-	ACPCwd           string // Working directory for the ACP process (not the session working dir)
+	ACPCwd           string            // Working directory for the ACP process (not the session working dir)
+	Env              map[string]string // Server-specific env vars from settings.json (acp_servers[].env)
 	ACPServer        string
 	ACPSessionID     string // ACP-assigned session ID for resumption (optional)
 	WorkingDir       string
@@ -349,6 +357,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onTitleGenerated:        cfg.OnTitleGenerated,
 		acpCommand:              cfg.ACPCommand,          // Store for restart
 		acpCwd:                  cfg.ACPCwd,              // Store for restart
+		serverEnv:               cfg.Env,                 // Store for restart
 		globalMcpServer:         cfg.GlobalMCPServer,     // Global MCP server for session registration
 		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
@@ -541,6 +550,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onTitleGenerated:        config.OnTitleGenerated,
 		acpCommand:              config.ACPCommand,          // Store for restart
 		acpCwd:                  config.ACPCwd,              // Store for restart
+		serverEnv:               config.Env,                 // Store for restart
 		globalMcpServer:         config.GlobalMCPServer,     // Global MCP server for session registration
 		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
@@ -1885,6 +1895,116 @@ func startACPStartupWatchdog(ctx context.Context, logger *slog.Logger, command, 
 	return signalActivity
 }
 
+// promptInactivityWatchdogWarnDelay is the idle duration (no streamed agent activity)
+// after which the prompt inactivity watchdog emits a WARN log. Non-destructive.
+// Exposed as a var so tests can override it.
+var promptInactivityWatchdogWarnDelay = 2 * time.Minute
+
+// promptInactivityWatchdogTimeout is the idle duration (no streamed agent activity)
+// after which the prompt inactivity watchdog cancels the in-flight prompt so the
+// session can recover from a live-but-unresponsive agent (one that stops streaming
+// without crashing — e.g. wedged during MCP init or GC-thrashing).
+//
+// Default 0: automatic cancellation is DISABLED — the watchdog is WARN-only out of
+// the box. This avoids ever cancelling a legitimate long-running tool call that
+// produces no intermediate streamed output (the residual false-positive of an
+// automatic cancel). Set to a positive duration to opt in to automatic cancellation.
+// Exposed as a var so tests can override it.
+var promptInactivityWatchdogTimeout time.Duration = 0
+
+// signalAgentActivity records the current time as the most recent streamed agent
+// activity. It is called on every ACP SessionUpdate so the prompt inactivity watchdog
+// can distinguish a working agent from a wedged one.
+func (bs *BackgroundSession) signalAgentActivity() {
+	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+}
+
+// startPromptInactivityWatchdog launches a background goroutine that watches for a
+// live-but-unresponsive agent during a prompt. Unlike the process-death and
+// connection-EOF monitors, this catches the case where the agent stays alive with an
+// open connection but stops streaming any updates (the "stuck, still responding"
+// state the user sees in the UI).
+//
+// The watchdog resets its idle baseline to now, then on each tick:
+//   - returns when ctx is done (the prompt completed or was cancelled elsewhere);
+//   - pauses (resets the baseline) while a UI prompt is active, since permission
+//     dialogs and MCP tool questions legitimately block the agent on user input;
+//   - emits a WARN log once the idle time crosses promptInactivityWatchdogWarnDelay;
+//   - sets fired and calls cancel() once the idle time crosses
+//     promptInactivityWatchdogTimeout, unblocking the prompt RPC so is_prompting clears.
+//
+// The goroutine is torn down via ctx.Done(); callers cancel the prompt context after
+// Prompt() returns. It is a no-op when both delays are non-positive.
+func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, cancel context.CancelFunc, fired *atomic.Bool) {
+	warnDelay := promptInactivityWatchdogWarnDelay
+	timeout := promptInactivityWatchdogTimeout
+	if warnDelay <= 0 && timeout <= 0 {
+		return
+	}
+
+	// Establish the idle baseline at prompt start.
+	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+
+	// Tick frequently enough to detect the threshold with reasonable granularity
+	// (a quarter of the smaller delay), with a small floor to bound overhead. In
+	// production the delays are tens of seconds, so the floor never applies; it only
+	// guards against pathologically small configured values.
+	interval := timeout
+	if interval <= 0 || (warnDelay > 0 && warnDelay < interval) {
+		interval = warnDelay
+	}
+	interval /= 4
+	if interval < 25*time.Millisecond {
+		interval = 25 * time.Millisecond
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		warned := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Pause while the agent is legitimately blocked on a UI prompt
+				// (permission dialog or MCP tool question). Reset the baseline so the
+				// idle clock starts fresh once the user responds.
+				if bs.GetActiveUIPrompt() != nil {
+					bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+					warned = false
+					continue
+				}
+
+				idle := time.Since(time.Unix(0, bs.lastAgentActivityAt.Load()))
+
+				if timeout > 0 && idle >= timeout {
+					if bs.logger != nil {
+						bs.logger.Error("Agent unresponsive during prompt — no streamed activity within inactivity window, cancelling prompt",
+							"session_id", bs.persistedID,
+							"idle", idle.Round(time.Second).String(),
+							"timeout", timeout.String())
+					}
+					fired.Store(true)
+					cancel()
+					return
+				}
+
+				if warnDelay > 0 && !warned && idle >= warnDelay {
+					warned = true
+					if bs.logger != nil {
+						bs.logger.Warn("Agent slow during prompt — no streamed activity observed",
+							"session_id", bs.persistedID,
+							"idle", idle.Round(time.Second).String(),
+							"warn_delay", warnDelay.String())
+					}
+				}
+			}
+		}
+	}()
+}
+
 // buildACPProcessEnv constructs the environment slice for an ACP subprocess.
 // Layers (later entries override earlier ones in os.Environ semantics):
 //  1. os.Environ() — inherited from the Mitto process.
@@ -1998,8 +2118,8 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				"command", acpCommand)
 		}
 		// Pass the same env layering used by the direct-exec branch so server-specific
-		// vars (currently just MITTO_*) reach the runner-spawned process.
-		runnerEnv := buildACPProcessEnv(nil, mittoEnv)
+		// vars reach the runner-spawned process.
+		runnerEnv := buildACPProcessEnv(bs.serverEnv, mittoEnv)
 		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			return "", &sessionError{"failed to start with runner: " + err.Error()}
@@ -2044,9 +2164,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
 
-		// Set MITTO_* environment variables for the ACP subprocess (no server-specific
-		// env at this layer — BackgroundSession's direct-exec branch only injects MITTO_*).
-		cmd.Env = buildACPProcessEnv(nil, mittoEnv)
+		// Set environment variables for the ACP subprocess: server-specific env from
+		// settings.json layered with MITTO_* vars (same layering as the runner branch).
+		cmd.Env = buildACPProcessEnv(bs.serverEnv, mittoEnv)
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
@@ -2422,6 +2542,7 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 		OnCurrentModeChanged: bs.onCurrentModeChanged,
 		OnMittoToolCall:      bs.onMittoToolCall,
 		OnContextUsageUpdate: bs.onContextUsageUpdate,
+		OnActivity:           bs.signalAgentActivity,
 	}
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{
@@ -3373,9 +3494,16 @@ retryAfterRestart:
 			promptEndedAt   time.Time
 			processDoneCh   <-chan struct{}
 			connDoneCh      <-chan struct{}
+			// inactivityWatchdogFired is set by the prompt inactivity watchdog when it
+			// cancels the prompt because the agent stopped streaming (live-but-unresponsive).
+			// The error-handling path below reads it to surface a recoverable message and
+			// skip the crash-restart logic (the process is alive, not dead).
+			inactivityWatchdogFired atomic.Bool
 		)
 
 	retryPrompt:
+		// Reset the inactivity flag for this attempt (a goto retryPrompt reuses it).
+		inactivityWatchdogFired.Store(false)
 		// Create a prompt context that gets cancelled when the ACP process dies.
 		// This ensures we fail fast instead of waiting for the ACP server's internal
 		// 60-second control request timeout when the CLI subprocess has crashed.
@@ -3417,6 +3545,12 @@ retryAfterRestart:
 				}
 			}()
 		}
+
+		// Monitor for a live-but-unresponsive agent: if the agent stops streaming any
+		// updates for the configured window (and is not blocked on a UI prompt), cancel
+		// the prompt so is_prompting clears and the user can resend. This catches the
+		// "stuck, still responding" state that the process-death/connection monitors miss.
+		bs.startPromptInactivityWatchdog(promptCtx, promptCancel, &inactivityWatchdogFired)
 
 		// On retry after ACP crash, freshContextSessionID is from the old (dead)
 		// connection; fall back to bs.acpID which holds the new session.
@@ -3547,7 +3681,20 @@ retryAfterRestart:
 				}
 			}
 
-			if acpDead && autoRetried {
+			if inactivityWatchdogFired.Load() {
+				// The agent stayed alive and connected but stopped streaming updates.
+				// The watchdog already cancelled the prompt and is_prompting was cleared
+				// above. Surface a recoverable message and do NOT auto-restart (the
+				// process is healthy, not crashed) or auto-advance the queue (the next
+				// queued message would likely wedge the same way).
+				if bs.logger != nil {
+					bs.logger.Warn("prompt_cancelled_by_inactivity_watchdog",
+						"session_id", bs.persistedID)
+				}
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("The AI agent stopped responding (no activity for a while), so the conversation was reset. Please resend your message. If this keeps happening, switch to another conversation and back to restart the agent.")
+				})
+			} else if acpDead && autoRetried {
 				// The auto-retry already happened and the process crashed again.
 				// Don't consume another restart slot — let the next user-triggered prompt
 				// handle the restart. This ensures each user message uses at most one

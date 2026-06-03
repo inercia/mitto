@@ -195,6 +195,13 @@ type Server struct {
 	hookPort               int                        // Port used for hook commands
 	onHookProcessChanged   func(*hooks.Process)       // Callback to update shutdown manager when hooks restart
 	onHealthMonitorChanged func(*hooks.HealthMonitor) // Callback to update shutdown manager when health monitor changes
+
+	// recentStartFails deduplicates BroadcastACPStartFailed calls for the same session.
+	// When multiple goroutines coalesce on a single resume failure they all receive the
+	// error and each tries to broadcast; only the first broadcast per session per window
+	// is emitted, followers are suppressed.
+	recentStartFailsMu sync.Mutex
+	recentStartFails   map[string]time.Time
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -312,6 +319,13 @@ func NewServer(config Config) (*Server, error) {
 				// Explicitly disabled — set to 0 so StartGC doesn't apply default.
 				// We need to bypass StartGC's "apply default for <= 0" logic.
 				gcConfig.PeriodicSuspendThreshold = -1
+			}
+		}
+		// Apply memory recycle threshold from settings if configured (opt-in).
+		// 0/disabled needs no action since the GCConfig default is 0 = disabled.
+		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+			if bytes, enabled := config.MittoConfig.Session.ParseMemoryRecycleThreshold(); enabled {
+				gcConfig.MemoryRecycleThreshold = bytes
 			}
 		}
 		acpProcessMgr.StartGC(gcConfig, func() map[string][]SessionInfo {
@@ -512,6 +526,7 @@ func NewServer(config Config) (*Server, error) {
 		acpProcessManager:    acpProcessMgr,
 		auxiliaryManager:     auxiliaryManager,
 		negativeSessionCache: NewNegativeSessionCache(),
+		recentStartFails:     make(map[string]time.Time),
 	}
 
 	// Set events manager in session manager for broadcasting
@@ -1208,13 +1223,43 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 	}
 }
 
+// acpStartFailWindow is the minimum interval between duplicate BroadcastACPStartFailed
+// calls for the same session. Concurrent goroutines that coalesce on the same resume
+// failure all receive the shared error and each tries to broadcast; only the first
+// broadcast per session within this window is emitted.
+const acpStartFailWindow = 5 * time.Second
+
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
 // If err is an *ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
+// Duplicate calls for the same session within acpStartFailWindow are suppressed so that
+// coalesced resume waiters do not each emit an error toast.
 func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err error, command string) {
 	if s.eventsManager == nil {
 		return
 	}
+
+	// Suppress duplicate broadcasts emitted by coalesced follower goroutines.
+	now := time.Now()
+	s.recentStartFailsMu.Lock()
+	if s.recentStartFails == nil {
+		s.recentStartFails = make(map[string]time.Time)
+	}
+	if last, ok := s.recentStartFails[sessionID]; ok && now.Sub(last) < acpStartFailWindow {
+		s.recentStartFailsMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("Suppressed duplicate ACP start-failed broadcast", "session_id", sessionID)
+		}
+		return
+	}
+	// Evict stale entries to keep the map bounded, then record this broadcast.
+	for id, t := range s.recentStartFails {
+		if now.Sub(t) >= acpStartFailWindow {
+			delete(s.recentStartFails, id)
+		}
+	}
+	s.recentStartFails[sessionID] = now
+	s.recentStartFailsMu.Unlock()
 
 	data := map[string]interface{}{
 		"session_id":   sessionID,

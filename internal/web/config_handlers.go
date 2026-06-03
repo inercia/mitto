@@ -673,6 +673,11 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 			} else {
 				s.acpProcessManager.UpdatePeriodicSuspendThreshold(0)
 			}
+			if bytes, enabled := settings.Session.ParseMemoryRecycleThreshold(); enabled {
+				s.acpProcessManager.UpdateMemoryRecycleThreshold(bytes)
+			} else {
+				s.acpProcessManager.UpdateMemoryRecycleThreshold(0)
+			}
 		}
 	}
 

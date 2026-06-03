@@ -114,6 +114,12 @@ type SessionConfig struct {
 	// Values: "" (default - 30 minutes), "disabled", "15m", "30m", "1h", "2h"
 	// Exposed in the Settings dialog under Conversations > Suspend Settings.
 	PeriodicSuspendTimeout string `json:"periodic_suspend_timeout,omitempty"`
+	// MemoryRecycleThreshold controls when an idle shared ACP agent process is
+	// recycled (stopped) to reclaim memory once its RSS (summed over the process
+	// tree) exceeds this size. Recycling only affects fully-idle processes;
+	// conversations resume transparently when focused. Values: "" (default,
+	// disabled), "disabled", "3g", "4g", "6g", "8g".
+	MemoryRecycleThreshold string `json:"memory_recycle_threshold,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -168,6 +174,37 @@ func (c *SessionConfig) ParsePeriodicSuspendTimeout() (time.Duration, bool) {
 	default:
 		// Unknown value — use default
 		return 30 * time.Minute, true
+	}
+}
+
+// ValidMemoryRecycleThresholds contains all valid memory recycle threshold values.
+var ValidMemoryRecycleThresholds = []string{"", "disabled", "3g", "4g", "6g", "8g"}
+
+// GetMemoryRecycleThreshold returns the memory recycle threshold string, or "" if not set.
+func (c *SessionConfig) GetMemoryRecycleThreshold() string {
+	if c == nil {
+		return ""
+	}
+	return c.MemoryRecycleThreshold
+}
+
+// ParseMemoryRecycleThreshold returns the threshold in bytes and true when enabled,
+// or (0, false) when disabled. Empty string = disabled (opt-in feature).
+func (c *SessionConfig) ParseMemoryRecycleThreshold() (uint64, bool) {
+	switch c.GetMemoryRecycleThreshold() {
+	case "", "disabled":
+		return 0, false
+	case "3g":
+		return uint64(3) * 1024 * 1024 * 1024, true
+	case "4g":
+		return uint64(4) * 1024 * 1024 * 1024, true
+	case "6g":
+		return uint64(6) * 1024 * 1024 * 1024, true
+	case "8g":
+		return uint64(8) * 1024 * 1024 * 1024, true
+	default:
+		// Unknown → disabled (safe)
+		return 0, false
 	}
 }
 

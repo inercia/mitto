@@ -417,3 +417,36 @@ acp:
 		t.Error("expected to find rc-server in merged config")
 	}
 }
+
+func TestParseMemoryRecycleThreshold(t *testing.T) {
+	const gib = uint64(1024) * 1024 * 1024
+
+	tests := []struct {
+		value       string
+		wantBytes   uint64
+		wantEnabled bool
+	}{
+		{"", 0, false},
+		{"disabled", 0, false},
+		{"3g", 3 * gib, true},
+		{"4g", 4 * gib, true},
+		{"6g", 6 * gib, true},
+		{"8g", 8 * gib, true},
+		{"bogus", 0, false}, // unknown → disabled (safe)
+	}
+
+	for _, tc := range tests {
+		c := &SessionConfig{MemoryRecycleThreshold: tc.value}
+		gotBytes, gotEnabled := c.ParseMemoryRecycleThreshold()
+		if gotBytes != tc.wantBytes || gotEnabled != tc.wantEnabled {
+			t.Errorf("ParseMemoryRecycleThreshold(%q) = (%d, %t), want (%d, %t)",
+				tc.value, gotBytes, gotEnabled, tc.wantBytes, tc.wantEnabled)
+		}
+	}
+
+	// Nil receiver must be safe and report disabled.
+	var nilCfg *SessionConfig
+	if gotBytes, gotEnabled := nilCfg.ParseMemoryRecycleThreshold(); gotBytes != 0 || gotEnabled {
+		t.Errorf("nil ParseMemoryRecycleThreshold() = (%d, %t), want (0, false)", gotBytes, gotEnabled)
+	}
+}

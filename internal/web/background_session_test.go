@@ -4321,6 +4321,205 @@ func TestStartACPStartupWatchdog_NilLoggerNoop(t *testing.T) {
 	signal() // Idempotent
 }
 
+// TestStartPromptInactivityWatchdog_FiresWhenIdle verifies the watchdog cancels the
+// prompt and sets the fired flag when no streamed activity is observed within the
+// configured timeout, emitting both a WARN and an ERROR log along the way.
+func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 60 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-idle"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fired atomic.Bool
+
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	deadline := time.After(2 * time.Second)
+	for !fired.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("watchdog did not fire within deadline")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if ctx.Err() == nil {
+		t.Error("expected prompt context to be cancelled after watchdog fired")
+	}
+	if len(rec.entriesAt(slog.LevelWarn)) == 0 {
+		t.Error("expected a WARN log before the timeout")
+	}
+	if len(rec.entriesAt(slog.LevelError)) == 0 {
+		t.Error("expected an ERROR log when the watchdog fired")
+	}
+}
+
+// TestStartPromptInactivityWatchdog_SilentWhenActive verifies the watchdog stays quiet
+// and does not fire while streamed activity continues to arrive.
+func TestStartPromptInactivityWatchdog_SilentWhenActive(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 40 * time.Millisecond
+	promptInactivityWatchdogTimeout = 80 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-active"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Bool
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	// Signal activity faster than the warn window for well beyond the timeout.
+	stop := time.After(250 * time.Millisecond)
+loop:
+	for {
+		select {
+		case <-stop:
+			break loop
+		case <-time.After(10 * time.Millisecond):
+			bs.signalAgentActivity()
+		}
+	}
+
+	if fired.Load() {
+		t.Error("watchdog fired despite continuous activity")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while activity continues")
+	}
+	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
+		t.Errorf("expected 0 ERROR entries while active, got %d", got)
+	}
+	cancel()
+}
+
+// TestStartPromptInactivityWatchdog_PausesDuringUIPrompt verifies the watchdog does not
+// fire while a UI prompt (permission dialog or MCP tool question) is pending, since the
+// agent is legitimately blocked waiting on user input.
+func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-uiprompt"}
+	// Simulate a pending UI prompt (e.g. a permission dialog awaiting the user).
+	bs.activePrompt = &activeUIPrompt{request: UIPromptRequest{RequestID: "p1"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Bool
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	time.Sleep(250 * time.Millisecond)
+
+	if fired.Load() {
+		t.Error("watchdog fired while a UI prompt was active (it should pause)")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while a UI prompt is active")
+	}
+	cancel()
+}
+
+// TestStartPromptInactivityWatchdog_DisabledWhenZero verifies the watchdog is a no-op
+// when both the warn delay and timeout are non-positive.
+func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 0
+	promptInactivityWatchdogTimeout = 0
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-disabled"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fired atomic.Bool
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if fired.Load() {
+		t.Error("watchdog fired while disabled")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while disabled")
+	}
+	if got := len(rec.entriesAt(slog.LevelError)) + len(rec.entriesAt(slog.LevelWarn)); got != 0 {
+		t.Errorf("expected no WARN/ERROR entries while disabled, got %d", got)
+	}
+}
+
+// TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero locks in the production
+// default behavior: with a positive warn delay but timeout == 0, the watchdog emits a
+// WARN log when the agent goes idle but NEVER cancels the prompt (fired stays false and
+// the context is not cancelled). This guards the WARN-only default from regressing back
+// to an automatic cancel that could kill a legitimate long-running, silent tool call.
+func TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 0 // production default: cancellation disabled
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-warn-only"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fired atomic.Bool
+
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	// Wait well past the warn delay so the idle WARN must have fired.
+	deadline := time.After(2 * time.Second)
+	for len(rec.entriesAt(slog.LevelWarn)) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected a WARN log when idle past the warn delay")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Give the watchdog ample additional time to (incorrectly) cancel if it were going to.
+	time.Sleep(150 * time.Millisecond)
+
+	if fired.Load() {
+		t.Error("watchdog cancelled the prompt despite timeout == 0 (should be WARN-only)")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled when timeout == 0")
+	}
+	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
+		t.Errorf("expected 0 ERROR entries in WARN-only mode, got %d", got)
+	}
+}
+
 // capturingLogHandler is a minimal slog.Handler that records emitted records for tests.
 type capturingLogHandler struct {
 	mu      sync.Mutex

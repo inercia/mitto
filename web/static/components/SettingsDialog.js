@@ -1033,6 +1033,9 @@ export function SettingsDialog({
   // Periodic suspend timeout setting (default "" = 30 minutes)
   const [periodicSuspendTimeout, setPeriodicSuspendTimeout] = useState("");
 
+  // Memory recycle threshold setting (default "" = disabled, opt-in)
+  const [memoryRecycleThreshold, setMemoryRecycleThreshold] = useState("");
+
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
 
@@ -1399,6 +1402,11 @@ export function SettingsDialog({
         config.session?.periodic_suspend_timeout || "",
       );
 
+      // Load memory recycle threshold (default "" = disabled)
+      setMemoryRecycleThreshold(
+        config.session?.memory_recycle_threshold || "",
+      );
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -1668,6 +1676,7 @@ export function SettingsDialog({
         max_messages_per_session:
           maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
         periodic_suspend_timeout: periodicSuspendTimeout,
+        memory_recycle_threshold: memoryRecycleThreshold,
       };
 
       // ACP servers are saved with source field so backend can filter out RC file servers
@@ -3165,6 +3174,43 @@ export function SettingsDialog({
                               <option value="1h">After 1 hour</option>
                               <option value="2h">After 2 hours</option>
                               <option value="disabled">Disabled</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Memory Recycling -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Memory Recycling
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Recycle bloated idle conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Recycle an idle agent process when its memory
+                                usage grows beyond this size, reclaiming memory
+                                from bloated conversations. Only fully-idle
+                                conversations are affected and they resume
+                                transparently when focused.
+                              </div>
+                            </div>
+                            <select
+                              value=${memoryRecycleThreshold}
+                              onInput=${(e) =>
+                                setMemoryRecycleThreshold(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="">Disabled</option>
+                              <option value="3g">Above 3 GB</option>
+                              <option value="4g">Above 4 GB</option>
+                              <option value="6g">Above 6 GB</option>
+                              <option value="8g">Above 8 GB</option>
                             </select>
                           </div>
                         </div>
