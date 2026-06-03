@@ -38,6 +38,8 @@ import {
   RunnerRestrictionsEditor,
 } from "./SettingsDialog.js";
 
+import { ModelSelection } from "./ModelSelection.js";
+
 export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -58,7 +60,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   const [editCode, setEditCode] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
-  const [editAuxAcpServer, setEditAuxAcpServer] = useState("");
+  const [editAuxModelMode, setEditAuxModelMode] = useState("");
+  const [editAuxModelPattern, setEditAuxModelPattern] = useState("");
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
@@ -227,7 +230,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   useEffect(() => {
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
-    setEditAuxAcpServer(selectedWorkspace.auxiliary_acp_server || "");
+    setEditAuxModelMode(selectedWorkspace.auxiliary_model_selection?.matchMode || "");
+    setEditAuxModelPattern(selectedWorkspace.auxiliary_model_selection?.pattern || "");
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
@@ -566,10 +570,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
+    // Build auxiliary_model_selection object only when both mode and pattern are set
+    const auxModelSelection = (editAuxModelMode && editAuxModelPattern)
+      ? { matchMode: editAuxModelMode, pattern: editAuxModelPattern }
+      : undefined;
     return {
       ...ws,
       acp_server: editAcpServer,
-      auxiliary_acp_server: editAuxAcpServer || undefined,
+      auxiliary_model_selection: auxModelSelection,
       restricted_runner: editRunner,
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
       auto_approve: editAutoApprove || undefined,
@@ -1667,16 +1675,15 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                         <p class="text-xs text-gray-500 mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
                       </div>
                       <div>
-                        <label class="block text-sm text-gray-400 mb-1">Auxiliary ACP Server (optional)</label>
-                        <select
-                          value=${editAuxAcpServer}
-                          onChange=${(e) => setEditAuxAcpServer(e.target.value)}
-                          class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          style="height: 38px; box-sizing: border-box"
-                        >
-                          <option value="">None</option>
-                          ${sortedAcpServers.map((s) => html`<option key=${s.name} value=${s.name}>${s.name}</option>`)}
-                        </select>
+                        <label class="block text-sm text-gray-400 mb-1">Auxiliary Model Selection (optional)</label>
+                        <p class="text-xs text-gray-500 mb-2">
+                          Switch auxiliary sessions (titles, suggestions) to a specific model
+                        </p>
+                        <${ModelSelection}
+                          matchMode=${editAuxModelMode}
+                          pattern=${editAuxModelPattern}
+                          onChange=${(mode, pat) => { setEditAuxModelMode(mode); setEditAuxModelPattern(pat); }}
+                        />
                       </div>
                       <label class="flex items-center gap-3 cursor-pointer">
                         <input

@@ -44,6 +44,7 @@ import {
   SearchIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
+import { ModelSelection } from "./ModelSelection.js";
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
@@ -509,254 +510,6 @@ export function RunnerRestrictionsEditor({
 }
 
 /**
- * Helper component for editing a workspace inline (accordion-style)
- */
-function WorkspaceEditForm({
-  workspace,
-  acpServers,
-  allWorkspaces,
-  supportedRunners,
-  getWorkspaceVisualInfo,
-  getBasename,
-  onSave,
-  onCancel,
-}) {
-  const [name, setName] = useState(workspace.name || "");
-  const [code, setCode] = useState(workspace.code || "");
-  const [color, setColor] = useState(
-    workspace.color ||
-      getWorkspaceVisualInfo(workspace.working_dir).color.backgroundHex ||
-      "#808080",
-  );
-  const [acpServer, setAcpServer] = useState(workspace.acp_server);
-  const [auxiliaryAcpServer, setAuxiliaryAcpServer] = useState(
-    workspace.auxiliary_acp_server || "",
-  );
-  const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
-  const [autoApprove, setAutoApprove] = useState(
-    workspace.auto_approve === true,
-  );
-  const [autoChildren, setAutoChildren] = useState(
-    workspace.auto_children || [],
-  );
-  // Per-workspace runner restriction overrides (null = no overrides)
-  const [runnerConfig, setRunnerConfig] = useState(
-    workspace.restricted_runner_config || null,
-  );
-  // Effective config from global+agent levels (for showing inherited values)
-  const [effectiveConfig, setEffectiveConfig] = useState(null);
-
-  // Fetch effective runner config when workspace UUID changes or on mount
-  useEffect(() => {
-    if (!workspace.uuid) return;
-    secureFetch(apiUrl(`/api/workspaces/${workspace.uuid}/effective-runner-config`))
-      .then((r) => r.json())
-      .then((data) => setEffectiveConfig(data))
-      .catch(() => {}); // Ignore errors — effective config is optional for display
-  }, [workspace.uuid]);
-
-  // When runner type switches to "exec", clear runner config
-  const handleRunnerChange = (newRunner) => {
-    setRunner(newRunner);
-    if (newRunner === "exec") {
-      setRunnerConfig(null);
-    } else if (!runnerConfig) {
-      // Pre-populate write folders with $MITTO_WORKING_DIR when first enabling restrictions
-      setRunnerConfig({
-        restrictions: { allow_write_folders: ["$MITTO_WORKING_DIR"] },
-      });
-    }
-  };
-
-  // Sort ACP servers alphabetically by name for display
-  const sortedServers = useMemo(
-    () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
-    [acpServers],
-  );
-
-  const handleSave = () => {
-    // Ensure code is uppercase and max 3 characters
-    const sanitizedCode = (code || "").toUpperCase().slice(0, 3);
-    onSave({
-      name: name || undefined,
-      code: sanitizedCode || undefined,
-      color: color || undefined,
-      acp_server: acpServer,
-      auxiliary_acp_server: auxiliaryAcpServer,
-      restricted_runner: runner,
-      // Only include runner config for non-exec runners
-      restricted_runner_config: runner !== "exec" ? runnerConfig : undefined,
-      auto_approve: autoApprove || undefined, // undefined to omit if false
-      auto_children: autoChildren.length > 0 ? autoChildren : undefined,
-    });
-  };
-
-  return html`
-    <div class="space-y-3 mt-3 pt-3 border-t border-slate-600/50">
-      <!-- Friendly Name -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1">Display Name</label>
-        <input
-          type="text"
-          value=${name}
-          onInput=${(e) => setName(e.target.value)}
-          placeholder=${getBasename(workspace.working_dir)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <p class="text-xs text-gray-500 mt-1">
-          Optional friendly name shown in the UI
-        </p>
-      </div>
-
-      <!-- ACP Server Selection -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1">ACP Server</label>
-        <select
-          value=${acpServer}
-          onChange=${(e) => setAcpServer(e.target.value)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          ${sortedServers.map(
-            (srv) => html`
-              <option key=${srv.name} value=${srv.name}>${srv.name}</option>
-            `,
-          )}
-        </select>
-      </div>
-
-      <!-- Auxiliary ACP Server Selection -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1"
-          >Auxiliary ACP Server</label
-        >
-        <select
-          value=${auxiliaryAcpServer}
-          onChange=${(e) => setAuxiliaryAcpServer(e.target.value)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Default (shared with main)</option>
-          <option value="none">None (disabled)</option>
-          ${sortedServers.map(
-            (srv) => html`
-              <option key=${"aux-" + srv.name} value=${srv.name}>
-                ${srv.name}
-              </option>
-            `,
-          )}
-        </select>
-        <p class="text-xs text-gray-500 mt-1">
-          Dedicated server for background tasks (titles, suggestions)
-        </p>
-      </div>
-
-      <!-- Sandbox Type -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1">Sandbox Type</label>
-        <select
-          value=${runner}
-          onChange=${(e) => handleRunnerChange(e.target.value)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          ${supportedRunners
-            .filter((r) => r.supported)
-            .map(
-              (r) => html`
-                <option key=${r.type} value=${r.type}>${r.label}</option>
-              `,
-            )}
-        </select>
-        <p class="text-xs text-gray-500 mt-1">
-          Controls how the agent is sandboxed
-        </p>
-
-        ${runner !== "exec" &&
-        html`
-          <${RunnerRestrictionsEditor}
-            runnerType=${runner}
-            config=${runnerConfig}
-            effectiveConfig=${effectiveConfig}
-            onChange=${setRunnerConfig}
-          />
-        `}
-      </div>
-
-      <!-- Auto-approve Permissions -->
-      <label
-        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
-      >
-        <input
-          type="checkbox"
-          checked=${autoApprove}
-          onChange=${(e) => setAutoApprove(e.target.checked)}
-          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-        />
-        <div class="flex-1">
-          <div class="font-medium text-sm">Auto-approve Permissions</div>
-          <div class="text-xs text-gray-500">
-            Automatically approve all permission requests from the agent for
-            sessions in this workspace
-          </div>
-        </div>
-      </label>
-
-      <!-- Badge Customization -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1"
-          >Badge Customization</label
-        >
-        <div class="flex items-center gap-3">
-          <input
-            type="text"
-            value=${code}
-            onInput=${(e) => setCode(e.target.value.toUpperCase().slice(0, 3))}
-            placeholder=${getWorkspaceVisualInfo(workspace.working_dir)
-              .abbreviation}
-            maxlength="3"
-            class="w-20 px-3 py-2 bg-slate-700 rounded-lg text-sm text-center uppercase focus:outline-none focus:ring-2 focus:ring-blue-500"
-            title="Three-letter code"
-          />
-          <input
-            type="color"
-            value=${color}
-            onChange=${(e) => setColor(e.target.value)}
-            class="w-10 h-10 rounded cursor-pointer border border-slate-600"
-            title="Badge color"
-          />
-          <span class="text-xs text-gray-500">Code and color for badge</span>
-        </div>
-      </div>
-
-      <!-- Auto-Children Section -->
-      <div class="pt-3 border-t border-slate-600/30">
-        <${AutoChildrenEditor}
-          children=${autoChildren}
-          workspaces=${allWorkspaces}
-          currentWorkspaceUUID=${workspace.uuid}
-          onChange=${setAutoChildren}
-          getBasename=${getBasename}
-        />
-      </div>
-
-      <!-- Actions -->
-      <div class="flex justify-end gap-2 pt-2">
-        <button
-          onClick=${onCancel}
-          class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick=${handleSave}
-          class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
-        >
-          Save
-        </button>
-      </div>
-    </div>
-  `;
-}
-
-/**
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
@@ -874,29 +627,15 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         <p class="text-xs text-gray-500 mb-2">
           Switch to a model based on some selection criteria
         </p>
-        <div class="flex gap-2 items-center">
-          <select
-            value=${constraintModelMode}
-            onInput=${(e) => { setConstraintModelMode(e.target.value); emitChange({ constraintModelMode: e.target.value }); }}
-            class="px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            style="flex: 0 0 auto; min-width: 140px; max-width: 160px;"
-          >
-            <option value="">-- None --</option>
-            <option value="contains">contains</option>
-            <option value="exact">exact</option>
-            <option value="startsWith">starts with</option>
-            <option value="regex">regex</option>
-            <option value="lookAlike">look alike</option>
-          </select>
-          <input
-            type="text"
-            value=${constraintModelPattern}
-            onInput=${(e) => { setConstraintModelPattern(e.target.value); emitChange({ constraintModelPattern: e.target.value }); }}
-            placeholder="e.g., Opus 4.6"
-            disabled=${!constraintModelMode}
-            class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!constraintModelMode ? "opacity-50 cursor-not-allowed" : ""}"
-          />
-        </div>
+        <${ModelSelection}
+          matchMode=${constraintModelMode}
+          pattern=${constraintModelPattern}
+          onChange=${(mode, pat) => {
+            setConstraintModelMode(mode);
+            setConstraintModelPattern(pat);
+            emitChange({ constraintModelMode: mode, constraintModelPattern: pat });
+          }}
+        />
       </div>
       <div>
         <label class="block text-sm text-gray-400 mb-1"
@@ -2163,9 +1902,6 @@ export function SettingsDialog({
           if (updated.acp_server === oldName) {
             updated.acp_server = trimmedNewName;
           }
-          if (updated.auxiliary_acp_server === oldName) {
-            updated.auxiliary_acp_server = trimmedNewName;
-          }
           return updated;
         }),
       );
@@ -2182,9 +1918,9 @@ export function SettingsDialog({
   };
 
   const removeServer = (serverName) => {
-    // Check if any workspace uses this server (as primary or auxiliary)
+    // Check if any workspace uses this server as its primary ACP server
     const usedBy = workspaces.filter(
-      (ws) => ws.acp_server === serverName || ws.auxiliary_acp_server === serverName,
+      (ws) => ws.acp_server === serverName,
     );
     if (usedBy.length > 0) {
       // Build a helpful error message listing the workspaces using this server

@@ -1004,15 +1004,45 @@ export function SessionPanel({
                           `
                         : html`
                             <div class="flex items-center gap-2 group">
-                              <span
-                                class="flex-1 text-sm truncate ${value ? "text-slate-300" : "text-slate-600 italic"} ${field.type === "url" && value ? "cursor-pointer hover:text-blue-400" : ""}"
-                                onClick=${() => {
-                                  if (field.type === "url" && value) window.open(value, "_blank", "noopener,noreferrer");
-                                }}
-                                title=${value || "(not set)"}
-                              >
-                                ${value || "(not set)"}
-                              </span>
+                              ${field.type === "filename" && value
+                                ? (() => {
+                                    const apiPrefix = window.mittoApiPrefix || "";
+                                    const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
+                                    const wsPath = sessionInfo?.working_dir || window.mittoCurrentWorkspace || "";
+                                    const relativePath = value.replace(/^\.\//, "");
+                                    let viewerUrl = null;
+                                    if (workspaceUUID) {
+                                      viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+                                      if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+                                    }
+                                    return html`
+                                      <a
+                                        href=${viewerUrl || "#"}
+                                        class="file-link flex-1 text-sm text-blue-400 hover:underline truncate"
+                                        title=${value}
+                                        onClick=${(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          if (!viewerUrl) return;
+                                          if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+                                            const fullUrl = new URL(viewerUrl, window.location.origin).href;
+                                            window.mittoOpenViewer(fullUrl);
+                                          } else {
+                                            window.open(viewerUrl, "_blank", "noopener,noreferrer");
+                                          }
+                                        }}
+                                      >${value}</a>
+                                    `;
+                                  })()
+                                : html`
+                                    <span
+                                      class="flex-1 text-sm truncate ${value ? "text-slate-300" : "text-slate-600 italic"} ${field.type === "url" && value ? "cursor-pointer hover:text-blue-400" : ""}"
+                                      onClick=${() => {
+                                        if (field.type === "url" && value) window.open(value, "_blank", "noopener,noreferrer");
+                                      }}
+                                      title=${value || "(not set)"}
+                                    >${value || "(not set)"}</span>
+                                  `}
                               <button
                                 class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
                                 onClick=${() => handleStartEditAttribute({ name: field.name, value })}
