@@ -1067,6 +1067,99 @@ func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
 	}
 }
 
+// TestGCTier1_PeriodicSuspend_SkipsWithinGrace verifies that a periodic session
+// that recently finished a turn is NOT suspended while it is within the generous
+// PeriodicSuspendGracePeriod. This protects a conversation that just ended a turn
+// (and may be about to continue) from being reclaimed too aggressively. The grace
+// is keyed on LastResponseCompleteAt (turn END), not LastActivityAt (prompt START).
+func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-grace",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-2 * time.Hour), // long ago — not "recently resumed"
+				// Prompt started long ago (stale), but the turn ended just 2m ago.
+				LastActivityAt:         time.Now().Add(-90 * time.Minute),
+				LastResponseCompleteAt: time.Now().Add(-2 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.gcConfig.PeriodicSuspendGracePeriod = 10 * time.Minute
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-grace"] {
+		t.Error("periodic session that finished a turn within the grace window should NOT be suspended")
+	}
+	if m.IsGCSuspended("periodic-grace") {
+		t.Error("periodic session within grace window should NOT be marked GC-suspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_SuspendsAfterGrace verifies that once a periodic
+// session has been idle longer than PeriodicSuspendGracePeriod (no recent turn
+// completion or activity), it is suspended as normal.
+func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:              "periodic-past-grace",
+				WorkspaceUUID:          "ws-1",
+				HasObservers:           true,
+				NextPeriodicAt:         &far,
+				ResumedAt:              time.Now().Add(-2 * time.Hour),
+				LastActivityAt:         time.Now().Add(-90 * time.Minute),
+				LastResponseCompleteAt: time.Now().Add(-30 * time.Minute), // well beyond grace
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.gcConfig.PeriodicSuspendGracePeriod = 10 * time.Minute
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["periodic-past-grace"] {
+		t.Error("periodic session idle beyond the grace window should be suspended")
+	}
+	if !m.IsGCSuspended("periodic-past-grace") {
+		t.Error("periodic session suspended after grace should be marked GC-suspended")
+	}
+}
+
 // TestGCTier1_PeriodicSuspend_WithConnectedClients verifies that a periodic session
 // eligible for suspension is closed even when it has connected WebSocket clients
 // (pre-connected background sessions that haven't sent load_events yet).

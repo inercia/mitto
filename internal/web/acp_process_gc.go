@@ -37,6 +37,17 @@ type GCConfig struct {
 	// This saves significant memory by stopping MCP server processes for idle periodic
 	// conversations. Set to 0 to disable periodic suspension (default: 30m).
 	PeriodicSuspendThreshold time.Duration
+	// PeriodicSuspendGracePeriod is a generous post-activity buffer that protects a
+	// periodic session from being suspended too soon after it finishes a turn. A
+	// periodic session is NOT suspended while its most recent activity — the agent
+	// completing a response (LastResponseCompleteAt) or a prompt/observer change
+	// (LastActivityAt) — is within this window. This prevents aggressively reclaiming
+	// a conversation that just ended a turn and may be about to continue (a queued
+	// follow-up, a nudge, or the user inspecting results). It is deliberately distinct
+	// from LastActivityAt-only checks because LastActivityAt is set at prompt START and
+	// is therefore stale after a long-running task. Set to a negative value to disable
+	// the grace window (default: 10m).
+	PeriodicSuspendGracePeriod time.Duration
 }
 
 type SessionInfo struct {
@@ -61,7 +72,13 @@ type SessionInfo struct {
 	LastObserverRemovedAt time.Time
 	// LastActivityAt is when the session last had meaningful activity (keepalive,
 	// prompt, or observer change). Used by GC idle timeout check.
+	// Note: this is set at prompt START, so it is stale by the end of a long task.
 	LastActivityAt time.Time
+	// LastResponseCompleteAt is when the agent last finished a turn (completed a
+	// response). Unlike LastActivityAt (set at prompt start), this marks the END of
+	// work, making it the correct signal for the periodic-suspend grace window.
+	// Zero if the agent has not completed a response since the session was resumed.
+	LastResponseCompleteAt time.Time
 }
 
 // SessionQueryFunc returns running sessions grouped by workspace UUID.
@@ -74,14 +91,15 @@ type SessionCloseFunc func(sessionID string)
 // defaultGCConfig returns a GCConfig with sensible defaults.
 func defaultGCConfig() GCConfig {
 	return GCConfig{
-		Interval:                 30 * time.Second,
-		GracePeriod:              60 * time.Second,
-		ObserverGracePeriod:      60 * time.Second,
-		IdleTimeout:              5 * time.Minute,
-		ChildIdleTimeout:         5 * time.Minute,
-		MaxClosuresPerCycle:      3,
-		AuxIdleTimeout:           10 * time.Minute,
-		PeriodicSuspendThreshold: 30 * time.Minute,
+		Interval:                   30 * time.Second,
+		GracePeriod:                60 * time.Second,
+		ObserverGracePeriod:        60 * time.Second,
+		IdleTimeout:                5 * time.Minute,
+		ChildIdleTimeout:           5 * time.Minute,
+		MaxClosuresPerCycle:        3,
+		AuxIdleTimeout:             10 * time.Minute,
+		PeriodicSuspendThreshold:   30 * time.Minute,
+		PeriodicSuspendGracePeriod: 10 * time.Minute,
 	}
 }
 
@@ -120,6 +138,13 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 		config.PeriodicSuspendThreshold = defaultGCConfig().PeriodicSuspendThreshold
 	} else if config.PeriodicSuspendThreshold < 0 {
 		config.PeriodicSuspendThreshold = 0
+	}
+	// PeriodicSuspendGracePeriod: 0 means "not set" → use generous default.
+	// Negative means "explicitly disabled" → set to 0 so RunGCOnce skips the grace check.
+	if config.PeriodicSuspendGracePeriod == 0 {
+		config.PeriodicSuspendGracePeriod = defaultGCConfig().PeriodicSuspendGracePeriod
+	} else if config.PeriodicSuspendGracePeriod < 0 {
+		config.PeriodicSuspendGracePeriod = 0
 	}
 	// Note: MaxClosuresPerCycle == 0 means unlimited — no default applied.
 
@@ -206,7 +231,9 @@ func (m *ACPProcessManager) gcLoop() {
 // even when they have active WebSocket observers. The session is NOT archived —
 // it stays visible and resumes transparently via ensure_resumed (user focus)
 // or PeriodicRunner (when the prompt is due). This saves memory by stopping
-// MCP server processes for idle periodic conversations.
+// MCP server processes for idle periodic conversations. A generous
+// PeriodicSuspendGracePeriod (default 10m) protects sessions that recently
+// finished a turn from being suspended too aggressively.
 //
 // Tier 2 stops shared ACP processes that have had no active sessions for longer
 // than the configured grace period.
@@ -265,6 +292,29 @@ gcTier1:
 				suspendThreshold := now.Add(m.gcConfig.PeriodicSuspendThreshold)
 				if s.NextPeriodicAt.After(suspendThreshold) {
 					periodicSuspendEligible = true
+				}
+			}
+
+			// Generous post-activity grace: never suspend a periodic session that
+			// recently finished a turn. The agent may be about to continue (a queued
+			// follow-up, a nudge, or the user inspecting results). We use the most
+			// recent of LastResponseCompleteAt (turn END) and LastActivityAt (prompt
+			// START / observer change); the former is the reliable signal here because
+			// LastActivityAt is stale by the end of a long-running task.
+			if periodicSuspendEligible && m.gcConfig.PeriodicSuspendGracePeriod > 0 {
+				recentActivity := s.LastActivityAt
+				if s.LastResponseCompleteAt.After(recentActivity) {
+					recentActivity = s.LastResponseCompleteAt
+				}
+				if !recentActivity.IsZero() && now.Sub(recentActivity) < m.gcConfig.PeriodicSuspendGracePeriod {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping periodic suspend (recently active, within grace)",
+							"session_id", s.SessionID,
+							"workspace_uuid", workspaceUUID,
+							"active_ago", now.Sub(recentActivity),
+							"grace", m.gcConfig.PeriodicSuspendGracePeriod)
+					}
+					continue
 				}
 			}
 
@@ -449,7 +499,6 @@ gcTier1:
 					"grace_period", m.gcConfig.GracePeriod))
 		}
 		m.StopProcess(workspaceUUID)
-		m.StopAuxProcess(workspaceUUID)
 
 		m.gcMu.Lock()
 	}
