@@ -30,7 +30,9 @@ type UserData struct {
 // Validate validates all attributes in user data against the schema.
 // If schema is nil or empty, no attributes are allowed.
 // Empty user data (no attributes) is always valid.
-func (d *UserData) Validate(schema *config.UserDataSchema) error {
+// workingDir is the conversation's working directory, used to resolve relative
+// paths for filename-typed attributes.
+func (d *UserData) Validate(schema *config.UserDataSchema, workingDir string) error {
 	if d == nil || len(d.Attributes) == 0 {
 		return nil
 	}
@@ -39,7 +41,7 @@ func (d *UserData) Validate(schema *config.UserDataSchema) error {
 		if attr.Name == "" {
 			return fmt.Errorf("attribute name cannot be empty")
 		}
-		if err := schema.ValidateAttribute(attr.Name, attr.Value); err != nil {
+		if err := schema.ValidateAttribute(attr.Name, attr.Value, workingDir); err != nil {
 			return err
 		}
 	}
