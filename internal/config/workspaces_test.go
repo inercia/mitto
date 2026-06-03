@@ -9,59 +9,16 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 )
 
-// ---- WorkspaceSettings helper method tests ----
+// ---- WorkspaceSettings AuxiliaryModelSelection tests ----
 
-func TestWorkspaceSettings_HasDedicatedAuxiliary(t *testing.T) {
-	tests := []struct {
-		name     string
-		server   string
-		wantTrue bool
-	}{
-		{"empty string", "", false},
-		{"none lowercase", "none", false},
-		{"none uppercase", "NONE", false},
-		{"none mixed", "None", false},
-		{"real server name", "Auggie (Sonnet 4.6)", true},
-		{"another server", "claude", true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			w := &WorkspaceSettings{AuxiliaryACPServer: tc.server}
-			if got := w.HasDedicatedAuxiliary(); got != tc.wantTrue {
-				t.Errorf("HasDedicatedAuxiliary() = %v, want %v (server=%q)", got, tc.wantTrue, tc.server)
-			}
-		})
-	}
-}
-
-func TestWorkspaceSettings_IsAuxiliaryDisabled(t *testing.T) {
-	tests := []struct {
-		name     string
-		server   string
-		wantTrue bool
-	}{
-		{"empty string", "", false},
-		{"none lowercase", "none", true},
-		{"none uppercase", "NONE", true},
-		{"none mixed", "None", true},
-		{"real server name", "Auggie (Sonnet 4.6)", false},
-		{"another server", "claude", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			w := &WorkspaceSettings{AuxiliaryACPServer: tc.server}
-			if got := w.IsAuxiliaryDisabled(); got != tc.wantTrue {
-				t.Errorf("IsAuxiliaryDisabled() = %v, want %v (server=%q)", got, tc.wantTrue, tc.server)
-			}
-		})
-	}
-}
-
-func TestWorkspaceSettings_AuxiliaryACPServer_JSONRoundTrip(t *testing.T) {
+func TestWorkspaceSettings_AuxiliaryModelSelection_JSONRoundTrip(t *testing.T) {
 	w := WorkspaceSettings{
-		ACPServer:          "auggie",
-		WorkingDir:         "/proj",
-		AuxiliaryACPServer: "Auggie (Sonnet 4.6)",
+		ACPServer:  "auggie",
+		WorkingDir: "/proj",
+		AuxiliaryModelSelection: &ACPServerConstraint{
+			MatchMode: "contains",
+			Pattern:   "Haiku",
+		},
 	}
 	data, err := json.Marshal(w)
 	if err != nil {
@@ -71,16 +28,19 @@ func TestWorkspaceSettings_AuxiliaryACPServer_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if got.AuxiliaryACPServer != w.AuxiliaryACPServer {
-		t.Errorf("AuxiliaryACPServer = %q, want %q", got.AuxiliaryACPServer, w.AuxiliaryACPServer)
+	if got.AuxiliaryModelSelection == nil {
+		t.Fatal("AuxiliaryModelSelection should not be nil after round-trip")
 	}
-	if !got.HasDedicatedAuxiliary() {
-		t.Error("HasDedicatedAuxiliary() should be true after round-trip")
+	if got.AuxiliaryModelSelection.MatchMode != "contains" {
+		t.Errorf("MatchMode = %q, want %q", got.AuxiliaryModelSelection.MatchMode, "contains")
+	}
+	if got.AuxiliaryModelSelection.Pattern != "Haiku" {
+		t.Errorf("Pattern = %q, want %q", got.AuxiliaryModelSelection.Pattern, "Haiku")
 	}
 }
 
-func TestWorkspaceSettings_AuxiliaryACPServer_JSONOmitempty(t *testing.T) {
-	// When AuxiliaryACPServer is empty, it should be omitted from JSON
+func TestWorkspaceSettings_AuxiliaryModelSelection_JSONOmitempty(t *testing.T) {
+	// When AuxiliaryModelSelection is nil, it should be omitted from JSON
 	w := WorkspaceSettings{
 		ACPServer:  "auggie",
 		WorkingDir: "/proj",
@@ -93,8 +53,12 @@ func TestWorkspaceSettings_AuxiliaryACPServer_JSONOmitempty(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
+	if _, ok := raw["auxiliary_model_selection"]; ok {
+		t.Error("auxiliary_model_selection should be omitted from JSON when nil")
+	}
+	// Also confirm old field is gone
 	if _, ok := raw["auxiliary_acp_server"]; ok {
-		t.Error("auxiliary_acp_server should be omitted from JSON when empty")
+		t.Error("auxiliary_acp_server should not appear in serialized workspace JSON")
 	}
 }
 

@@ -90,24 +90,12 @@ type WorkspaceSettings struct {
 	// conversation is created in this workspace. Only applies to conversations
 	// without a parent (to prevent infinite recursion). Maximum 5 children.
 	AutoChildren []AutoChild `json:"auto_children,omitempty" yaml:"auto_children,omitempty"`
-	// AuxiliaryACPServer is the name of the ACP server to use for auxiliary tasks
+	// AuxiliaryModelSelection defines model selection criteria for auxiliary sessions
 	// (title generation, follow-up analysis, MCP checks, etc.) in this workspace.
-	// When set, a dedicated ACP process is spawned for auxiliary work, decoupled
-	// from the main workspace process.
-	// Special values:
-	//   "" (empty) = use main workspace process (current behavior)
-	//   "none"     = disable auxiliary features for this workspace
-	AuxiliaryACPServer string `json:"auxiliary_acp_server,omitempty" yaml:"auxiliary_acp_server,omitempty"`
-}
-
-// HasDedicatedAuxiliary returns true if this workspace has a dedicated auxiliary ACP server configured.
-func (w *WorkspaceSettings) HasDedicatedAuxiliary() bool {
-	return w.AuxiliaryACPServer != "" && !strings.EqualFold(w.AuxiliaryACPServer, "none")
-}
-
-// IsAuxiliaryDisabled returns true if auxiliary features are explicitly disabled.
-func (w *WorkspaceSettings) IsAuxiliaryDisabled() bool {
-	return strings.EqualFold(w.AuxiliaryACPServer, "none")
+	// When set, auxiliary sessions are created on the same ACP process as the main
+	// workspace, then the model is switched to the best match from available models.
+	// When nil or Pattern is empty, the ACP server's default model is used.
+	AuxiliaryModelSelection *ACPServerConstraint `json:"auxiliary_model_selection,omitempty" yaml:"auxiliary_model_selection,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.

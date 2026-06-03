@@ -773,12 +773,11 @@ func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 // WorkspaceAddRequest represents a request to add a new workspace
 type WorkspaceAddRequest struct {
-	ACPServer          string `json:"acp_server"`
-	WorkingDir         string `json:"working_dir"`
-	Name               string `json:"name,omitempty"`
-	Color              string `json:"color,omitempty"`
-	Code               string `json:"code,omitempty"`
-	AuxiliaryACPServer string `json:"auxiliary_acp_server,omitempty"`
+	ACPServer  string `json:"acp_server"`
+	WorkingDir string `json:"working_dir"`
+	Name       string `json:"name,omitempty"`
+	Color      string `json:"color,omitempty"`
+	Code       string `json:"code,omitempty"`
 }
 
 // handleAddWorkspace adds a new workspace
@@ -823,25 +822,14 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate auxiliary ACP server if provided
-	if req.AuxiliaryACPServer != "" && !strings.EqualFold(req.AuxiliaryACPServer, "none") {
-		if s.config.MittoConfig != nil {
-			if _, err := s.config.MittoConfig.GetServer(req.AuxiliaryACPServer); err != nil {
-				http.Error(w, fmt.Sprintf("Unknown auxiliary ACP server: %s", req.AuxiliaryACPServer), http.StatusBadRequest)
-				return
-			}
-		}
-	}
-
 	// Add the workspace. ACP command/cwd/env are resolved from global config at runtime —
 	// they are never stored on the workspace struct.
 	newWorkspace := config.WorkspaceSettings{
-		ACPServer:          req.ACPServer,
-		WorkingDir:         req.WorkingDir,
-		Name:               req.Name,
-		Color:              req.Color,
-		Code:               req.Code,
-		AuxiliaryACPServer: req.AuxiliaryACPServer,
+		ACPServer:  req.ACPServer,
+		WorkingDir: req.WorkingDir,
+		Name:       req.Name,
+		Color:      req.Color,
+		Code:       req.Code,
 	}
 	s.sessionManager.AddWorkspace(newWorkspace)
 
@@ -1369,6 +1357,13 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Session.IsChild = meta.ParentSessionID != ""
 	ctx.Session.IsAutoChild = meta.ChildOrigin == session.ChildOriginAuto
 	ctx.Session.ParentID = meta.ParentSessionID
+
+	// Periodic conversation type: true when a periodic configuration exists for this
+	// conversation (matches the PeriodicEnabled UI mode). Distinct from
+	// session.isPeriodic, which marks a scheduler-triggered run.
+	if periodic, err := store.Periodic(sessionID).Get(); err == nil && periodic != nil {
+		ctx.Session.IsPeriodicConversation = true
+	}
 
 	// Parent context (if this is a child)
 	if meta.ParentSessionID != "" {

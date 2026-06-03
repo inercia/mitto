@@ -1016,28 +1016,6 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolverFunc) {
 	sm.promptResolver = resolver
 }
 
-// resolveACPCommand resolves an ACP server name to its shell command.
-// Returns empty string if the server name cannot be resolved.
-func (sm *SessionManager) resolveACPCommand(serverName string) string {
-	sm.mu.RLock()
-	cfg := sm.mittoConfig
-	sm.mu.RUnlock()
-
-	if cfg == nil {
-		return serverName // fallback: use name as command
-	}
-	srv, err := cfg.GetServer(serverName)
-	if err != nil {
-		if sm.logger != nil {
-			sm.logger.Warn("Failed to resolve ACP server command",
-				"server_name", serverName,
-				"error", err)
-		}
-		return ""
-	}
-	return srv.Command
-}
-
 // resolveWorkspaceACPLocked resolves the effective ACP command, cwd, and env for a workspace.
 // Resolution priority:
 //  1. ACPCommandOverride (per-workspace user override) — for command only
@@ -1098,36 +1076,6 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 	p := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
-	}
-
-	// If workspace has a dedicated auxiliary ACP server, ensure its process exists.
-	if ws.HasDedicatedAuxiliary() && sm.acpProcessManager != nil {
-		auxCommand := sm.resolveACPCommand(ws.AuxiliaryACPServer)
-		if auxCommand != "" {
-			auxRunner, auxRunnerErr := sm.createRunner(ws.WorkingDir, ws.AuxiliaryACPServer, ws)
-			if auxRunnerErr != nil {
-				if sm.logger != nil {
-					sm.logger.Warn("Failed to create runner for dedicated auxiliary, proceeding without restriction",
-						"workspace_uuid", workspaceUUID,
-						"aux_acp_server", ws.AuxiliaryACPServer,
-						"error", auxRunnerErr)
-				}
-				auxRunner = nil
-			}
-			if _, auxErr := sm.acpProcessManager.GetOrCreateAuxProcess(ws, auxCommand, auxRunner); auxErr != nil {
-				if sm.logger != nil {
-					sm.logger.Error("Failed to create dedicated auxiliary process",
-						"workspace_uuid", workspaceUUID,
-						"aux_acp_server", ws.AuxiliaryACPServer,
-						"error", auxErr)
-				}
-				// Non-fatal: auxiliary will fall back to main process
-			} else if sm.logger != nil {
-				sm.logger.Info("Dedicated auxiliary process ready",
-					"workspace_uuid", workspaceUUID,
-					"aux_acp_server", ws.AuxiliaryACPServer)
-			}
-		}
 	}
 
 	return nil
@@ -2869,17 +2817,18 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 		}
 
 		result[uuid] = append(result[uuid], SessionInfo{
-			SessionID:             bs.GetSessionID(),
-			WorkspaceUUID:         uuid,
-			IsPrompting:           bs.IsPrompting(),
-			HasObservers:          bs.HasObservers(),
-			HasConnectedClients:   bs.HasConnectedClients(),
-			IsChild:               bs.HasParent(),
-			QueueLength:           queueLen,
-			NextPeriodicAt:        nextPeriodic,
-			ResumedAt:             bs.StartedAt(),
-			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
-			LastActivityAt:        bs.LastActivityAt(),
+			SessionID:              bs.GetSessionID(),
+			WorkspaceUUID:          uuid,
+			IsPrompting:            bs.IsPrompting(),
+			HasObservers:           bs.HasObservers(),
+			HasConnectedClients:    bs.HasConnectedClients(),
+			IsChild:                bs.HasParent(),
+			QueueLength:            queueLen,
+			NextPeriodicAt:         nextPeriodic,
+			ResumedAt:              bs.StartedAt(),
+			LastObserverRemovedAt:  bs.LastObserverRemovedAt(),
+			LastActivityAt:         bs.LastActivityAt(),
+			LastResponseCompleteAt: bs.GetLastResponseCompleteTime(),
 		})
 	}
 	return result

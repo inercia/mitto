@@ -4967,18 +4967,7 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 	}
 
 	// Convert models to config option values
-	options := make([]SessionConfigOptionValue, len(models.AvailableModels))
-	for i, m := range models.AvailableModels {
-		desc := ""
-		if m.Description != nil {
-			desc = *m.Description
-		}
-		options[i] = SessionConfigOptionValue{
-			Value:       string(m.ModelId),
-			Name:        m.Name,
-			Description: desc,
-		}
-	}
+	options := modelsToConfigOptions(models)
 
 	// Start with the agent's reported current model.
 	// Pre-apply any matching constraint to local state immediately, so the UI shows
@@ -5022,51 +5011,6 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 
 	// Apply any ACP server constraints for the model category
 	go bs.applyConfigConstraints(ConfigOptionCategoryModel)
-}
-
-// matchConstraintOption finds the best matching option value for a constraint.
-// It iterates through all options and returns the last match, so that the latest version wins
-// when models are ordered by version. Returns empty string if no match.
-func matchConstraintOption(constraint *config.ACPServerConstraint, options []SessionConfigOptionValue) string {
-	patternLower := strings.ToLower(constraint.Pattern)
-	var matchedValue string
-	for _, opt := range options {
-		nameLower := strings.ToLower(opt.Name)
-		switch constraint.MatchMode {
-		case "contains":
-			if strings.Contains(nameLower, patternLower) {
-				matchedValue = opt.Value
-			}
-		case "exact":
-			if nameLower == patternLower {
-				matchedValue = opt.Value
-			}
-		case "startsWith":
-			if strings.HasPrefix(nameLower, patternLower) {
-				matchedValue = opt.Value
-			}
-		case "regex":
-			if matched, _ := regexp.MatchString("(?i)"+constraint.Pattern, opt.Name); matched {
-				matchedValue = opt.Value
-			}
-		case "lookAlike":
-			// Split pattern into words and check all words appear in the name
-			words := strings.Fields(patternLower)
-			if len(words) > 0 {
-				allFound := true
-				for _, word := range words {
-					if !strings.Contains(nameLower, word) {
-						allFound = false
-						break
-					}
-				}
-				if allFound {
-					matchedValue = opt.Value
-				}
-			}
-		}
-	}
-	return matchedValue
 }
 
 // lookupACPServerConstraints returns the auto-selection constraints for the named

@@ -40,8 +40,6 @@ type SharedACPProcessConfig struct {
 	// WorkspaceUUID is the unique identifier for the workspace this process belongs to.
 	// Used for PID file tracking to detect orphaned processes on startup.
 	WorkspaceUUID string
-	// IsAuxiliary indicates this is a dedicated auxiliary process (uses different PID file suffix).
-	IsAuxiliary bool
 	// ACPCommand is the shell command to start the ACP server process.
 	ACPCommand string
 	// ACPCwd is the working directory for the ACP server process itself.
@@ -383,7 +381,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		// Track process PID for orphan detection on restart
 		if p.config.WorkspaceUUID != "" {
-			if pidErr := writeACPPIDFile(p.config.WorkspaceUUID, cmd.Process.Pid, p.config.IsAuxiliary); pidErr != nil {
+			if pidErr := writeACPPIDFile(p.config.WorkspaceUUID, cmd.Process.Pid, false); pidErr != nil {
 				if p.logger != nil {
 					p.logger.Warn("Failed to write ACP PID file", "error", pidErr,
 						"workspace_uuid", p.config.WorkspaceUUID)
@@ -998,7 +996,7 @@ func (p *SharedACPProcess) killProcess() {
 
 	// Remove PID tracking file
 	if p.config.WorkspaceUUID != "" {
-		_ = removeACPPIDFile(p.config.WorkspaceUUID, p.config.IsAuxiliary)
+		_ = removeACPPIDFile(p.config.WorkspaceUUID, false)
 	}
 
 	if p.wait != nil {
