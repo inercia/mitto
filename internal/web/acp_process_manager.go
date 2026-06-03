@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +61,11 @@ type ACPProcessManager struct {
 	sessionQuery    SessionQueryFunc
 	sessionClose    SessionCloseFunc
 	gcMu            sync.Mutex // protects lastSessionSeen and gc lifecycle fields
+
+	// rssSampler samples the RSS (in bytes) of a shared process tree for the GC's
+	// memory-recycle tier. It defaults to (*SharedACPProcess).RSSBytes; tests
+	// override it to exercise the tier without launching a real subprocess.
+	rssSampler func(p *SharedACPProcess) (uint64, error)
 
 	// gcSuspendedSessions tracks session IDs that were intentionally suspended
 	// by the GC's periodic-suspend heuristic. When a periodic session's next run
@@ -127,6 +133,19 @@ type auxiliarySessionState struct {
 // sharedProcessConfigMatchesWorkspace returns true if the running process config
 // matches the resolved ACP parameters for the workspace.
 // acpCommand, acpCwd, and acpEnv are the runtime-resolved values (not stored on workspace).
+//
+// Comparison notes (intentional, to avoid spurious recreation):
+//   - ACPCwd is compared as the RAW (unexpanded) value on both sides. The stored
+//     p.config.ACPCwd and the freshly-resolved acpCwd both originate from the same
+//     resolution path (config server.Cwd, see resolveWorkspaceACPLocked) and are
+//     expanded ($MITTO_*) only later, at process start. Comparing raw-vs-raw is
+//     therefore correct; we must NOT expand here (expanding only one side would
+//     create a false mismatch).
+//   - Env is compared by content via mapsEqual, which treats a nil map and an empty
+//     map as equal. This is the only benign-equivalence normalization applied: a
+//     config reload may rebuild the Env map (new reference) without changing its
+//     contents, and a process started with no env (nil) must match a re-resolved
+//     empty map. Any genuine env key/value change still triggers recreation.
 func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, acpServer, acpCommand, acpCwd string, acpEnv map[string]string) bool {
 	if p == nil {
 		return false
@@ -153,6 +172,32 @@ func mapsEqual(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// diffEnvKeys compares two env maps and returns the sorted KEY NAMES that were
+// added (present in b but not a), removed (present in a but not b), or changed
+// (present in both with different values).
+//
+// SECURITY: only key names are ever returned — never values — because env values
+// may hold secrets (API keys, tokens). Callers log these keys to make a config
+// recreation diagnosable without leaking secrets.
+func diffEnvKeys(a, b map[string]string) (added, removed, changed []string) {
+	for k, bv := range b {
+		if av, ok := a[k]; !ok {
+			added = append(added, k)
+		} else if av != bv {
+			changed = append(changed, k)
+		}
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			removed = append(removed, k)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(changed)
+	return added, removed, changed
 }
 
 // NewACPProcessManager creates a new process manager.
@@ -213,12 +258,37 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		default:
 			if !sharedProcessConfigMatchesWorkspace(p, workspace.ACPServer, acpCommand, acpCwd, acpEnv) {
 				if m.logger != nil {
+					// Log EXACTLY which field(s) differ so spurious recreations are
+					// diagnosable. Env is logged as key names only (never values),
+					// see diffEnvKeys.
+					addedKeys, removedKeys, changedKeys := diffEnvKeys(p.config.Env, acpEnv)
+					envChanged := len(addedKeys) > 0 || len(removedKeys) > 0 || len(changedKeys) > 0
+					changedFields := make([]string, 0, 4)
+					if p.config.ACPServer != workspace.ACPServer {
+						changedFields = append(changedFields, "server")
+					}
+					if p.config.ACPCommand != acpCommand {
+						changedFields = append(changedFields, "command")
+					}
+					if p.config.ACPCwd != acpCwd {
+						changedFields = append(changedFields, "cwd")
+					}
+					if envChanged {
+						changedFields = append(changedFields, "env")
+					}
 					m.logger.Warn("Shared ACP process config changed, recreating",
 						"workspace_uuid", workspace.UUID,
 						"existing_acp_server", p.config.ACPServer,
 						"new_acp_server", workspace.ACPServer,
 						"existing_acp_command", p.config.ACPCommand,
-						"new_acp_command", acpCommand)
+						"new_acp_command", acpCommand,
+						"existing_acp_cwd", p.config.ACPCwd,
+						"new_acp_cwd", acpCwd,
+						"env_changed", envChanged,
+						"env_keys_added", addedKeys,
+						"env_keys_removed", removedKeys,
+						"env_keys_changed", changedKeys,
+						"changed_fields", changedFields)
 				}
 				p.Close()
 				delete(m.processes, workspace.UUID)

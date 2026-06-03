@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
@@ -359,5 +360,165 @@ func TestSharedProcessConfigMatchesWorkspace_CommandDiffers(t *testing.T) {
 	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp --model opus4.6", "",
 		map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"}) {
 		t.Error("should NOT match when command differs")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_ServerDiffers(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+		},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, "ClaudeCode", "auggie --acp", "/cwd", nil) {
+		t.Error("should NOT match when server differs")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_CwdDiffers(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd/one",
+		},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "/cwd/two", nil) {
+		t.Error("should NOT match when cwd differs")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_NilVsEmptyEnvMatches(t *testing.T) {
+	// A process started with no env (nil) must match a re-resolved empty map,
+	// and vice versa — this is a benign equivalence that must NOT trigger recreation.
+	pNil := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+			Env:        nil,
+		},
+	}
+	if !sharedProcessConfigMatchesWorkspace(pNil, "Auggie", "auggie --acp", "/cwd", map[string]string{}) {
+		t.Error("nil stored env vs resolved empty map should match")
+	}
+
+	pEmpty := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+			Env:        map[string]string{},
+		},
+	}
+	if !sharedProcessConfigMatchesWorkspace(pEmpty, "Auggie", "auggie --acp", "/cwd", nil) {
+		t.Error("empty stored env vs resolved nil map should match")
+	}
+}
+
+// ---- diffEnvKeys tests ----
+
+func TestDiffEnvKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		a           map[string]string
+		b           map[string]string
+		wantAdded   []string
+		wantRemoved []string
+		wantChanged []string
+	}{
+		{
+			name:        "both nil",
+			a:           nil,
+			b:           nil,
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "nil vs empty",
+			a:           nil,
+			b:           map[string]string{},
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "identical",
+			a:           map[string]string{"A": "1", "B": "2"},
+			b:           map[string]string{"A": "1", "B": "2"},
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "added keys sorted",
+			a:           map[string]string{"A": "1"},
+			b:           map[string]string{"A": "1", "Z": "9", "M": "5"},
+			wantAdded:   []string{"M", "Z"},
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "removed keys sorted",
+			a:           map[string]string{"A": "1", "Z": "9", "M": "5"},
+			b:           map[string]string{"A": "1"},
+			wantAdded:   nil,
+			wantRemoved: []string{"M", "Z"},
+			wantChanged: nil,
+		},
+		{
+			name:        "changed keys sorted",
+			a:           map[string]string{"B": "1", "A": "1"},
+			b:           map[string]string{"B": "2", "A": "9"},
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: []string{"A", "B"},
+		},
+		{
+			name:        "mixed add remove change",
+			a:           map[string]string{"KEEP": "x", "GONE": "y", "MOD": "1"},
+			b:           map[string]string{"KEEP": "x", "MOD": "2", "NEW": "z"},
+			wantAdded:   []string{"NEW"},
+			wantRemoved: []string{"GONE"},
+			wantChanged: []string{"MOD"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			added, removed, changed := diffEnvKeys(tc.a, tc.b)
+			if !reflect.DeepEqual(added, tc.wantAdded) {
+				t.Errorf("added = %v, want %v", added, tc.wantAdded)
+			}
+			if !reflect.DeepEqual(removed, tc.wantRemoved) {
+				t.Errorf("removed = %v, want %v", removed, tc.wantRemoved)
+			}
+			if !reflect.DeepEqual(changed, tc.wantChanged) {
+				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
+			}
+		})
+	}
+}
+
+// TestDiffEnvKeys_NeverLeaksValues asserts that the returned slices contain only
+// key names and never the (potentially secret) values.
+func TestDiffEnvKeys_NeverLeaksValues(t *testing.T) {
+	a := map[string]string{"API_TOKEN": "old-secret", "STAY": "v"}
+	b := map[string]string{"API_TOKEN": "new-secret", "STAY": "v", "PASSWORD": "hunter2"}
+
+	added, removed, changed := diffEnvKeys(a, b)
+
+	all := append(append(append([]string{}, added...), removed...), changed...)
+	for _, k := range all {
+		if k == "old-secret" || k == "new-secret" || k == "hunter2" {
+			t.Fatalf("diffEnvKeys leaked a value: %q", k)
+		}
+	}
+	if !reflect.DeepEqual(added, []string{"PASSWORD"}) {
+		t.Errorf("added = %v, want [PASSWORD]", added)
+	}
+	if !reflect.DeepEqual(changed, []string{"API_TOKEN"}) {
+		t.Errorf("changed = %v, want [API_TOKEN]", changed)
 	}
 }

@@ -1241,3 +1241,201 @@ func TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero(t *testing.T) {
 		t.Error("periodic session should NOT be suspended when PeriodicSuspendThreshold is disabled")
 	}
 }
+
+// gcTier4Threshold is a convenient RSS threshold (1 GB) for Tier 4 tests.
+const gcTier4Threshold uint64 = 1 << 30
+
+// TestGCTier4_RecyclesBloatedIdleProcess verifies that an idle but memory-bloated
+// shared process is recycled: its sessions are GC-suspended and closed, and the
+// process is stopped. Sessions have observers so Tier 1 skips them, isolating the
+// Tier 4 behavior.
+func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
+	workspaceUUID := "ws-bloat"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			{SessionID: "s2", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Error("bloated idle process should have been recycled (stopped)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range []string{"s1", "s2"} {
+		if !closed[id] {
+			t.Errorf("expected session %s to be closed during recycle", id)
+		}
+		if !m.IsGCSuspended(id) {
+			t.Errorf("expected session %s to be marked GC-suspended before close", id)
+		}
+	}
+}
+
+// TestGCTier4_SkipsPromptingSession verifies that a process is not recycled while
+// any of its sessions is actively prompting.
+func TestGCTier4_SkipsPromptingSession(t *testing.T) {
+	workspaceUUID := "ws-prompting"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true, IsPrompting: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled while a session is prompting")
+	}
+}
+
+// TestGCTier4_SkipsActiveRPCs verifies that a process is not recycled while it has
+// in-flight RPCs.
+func TestGCTier4_SkipsActiveRPCs(t *testing.T) {
+	workspaceUUID := "ws-rpcs"
+	proc := newTestSharedProcess()
+	proc.activeRPCs.Add(1)
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled while RPCs are in-flight")
+	}
+}
+
+// TestGCTier4_SkipsNonEmptyQueue verifies that a process is not recycled while any
+// of its sessions has a non-empty queue.
+func TestGCTier4_SkipsNonEmptyQueue(t *testing.T) {
+	workspaceUUID := "ws-queue"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true, QueueLength: 1},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled while a session has a non-empty queue")
+	}
+}
+
+// TestGCTier4_DisabledWhenThresholdZero verifies that the memory-recycle tier is
+// skipped entirely when MemoryRecycleThreshold is 0, and the RSS sampler is never
+// invoked.
+func TestGCTier4_DisabledWhenThresholdZero(t *testing.T) {
+	workspaceUUID := "ws-disabled"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	// Threshold left at 0 (disabled).
+	sampled := false
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+		sampled = true
+		return gcTier4Threshold + 1, nil
+	}
+
+	m.RunGCOnce()
+
+	if sampled {
+		t.Error("RSS sampler must not be called when MemoryRecycleThreshold is 0")
+	}
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled when memory recycling is disabled")
+	}
+}

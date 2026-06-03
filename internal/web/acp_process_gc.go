@@ -48,6 +48,13 @@ type GCConfig struct {
 	// is therefore stale after a long-running task. Set to a negative value to disable
 	// the grace window (default: 10m).
 	PeriodicSuspendGracePeriod time.Duration
+	// MemoryRecycleThreshold is the RSS threshold in bytes (summed over the agent
+	// process tree) above which an IDLE shared ACP process is recycled (stopped) to
+	// reclaim memory. Recycling only happens when the process has no prompting
+	// session, no in-flight RPCs, empty queues, and no periodic prompt due soon —
+	// affected conversations resume transparently on next focus. 0 means disabled
+	// (opt-in; no default is applied).
+	MemoryRecycleThreshold uint64
 }
 
 type SessionInfo struct {
@@ -180,6 +187,18 @@ func (m *ACPProcessManager) UpdatePeriodicSuspendThreshold(d time.Duration) {
 	}
 }
 
+// UpdateMemoryRecycleThreshold updates the memory recycle threshold on the
+// running GC. This is safe to call while the GC is running. A threshold of 0
+// disables the memory-recycle tier.
+func (m *ACPProcessManager) UpdateMemoryRecycleThreshold(bytes uint64) {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	m.gcConfig.MemoryRecycleThreshold = bytes
+	if m.logger != nil {
+		m.logger.Info("GC: updated memory recycle threshold", "threshold_bytes", bytes)
+	}
+}
+
 // StopGC stops the GC goroutine and waits for it to finish. It is a no-op if
 // the GC is not running.
 func (m *ACPProcessManager) StopGC() {
@@ -237,6 +256,12 @@ func (m *ACPProcessManager) gcLoop() {
 //
 // Tier 2 stops shared ACP processes that have had no active sessions for longer
 // than the configured grace period.
+//
+// Tier 4 recycles memory-bloated idle processes: when a shared process's RSS
+// (summed over its process tree) exceeds MemoryRecycleThreshold and the process
+// is fully idle (no in-flight RPCs, no prompting session, empty queues, no
+// periodic prompt due soon), its sessions are GC-suspended and closed and the
+// process is stopped to reclaim memory. Disabled when MemoryRecycleThreshold is 0.
 //
 // Tier 3 cleans up auxiliary sessions that have been idle longer than AuxIdleTimeout.
 // Cleaned-up sessions are lazily re-created on next use via getOrCreateAuxiliarySession.
@@ -503,6 +528,125 @@ gcTier1:
 		m.gcMu.Lock()
 	}
 	m.gcMu.Unlock()
+
+	// ----------------------------------------------------------------
+	// Tier 4: recycle memory-bloated idle processes
+	// Re-query sessions so newly closed sessions (Tier 1) are excluded.
+	// ----------------------------------------------------------------
+	if m.gcConfig.MemoryRecycleThreshold > 0 {
+		sampler := m.rssSampler
+		if sampler == nil {
+			sampler = func(p *SharedACPProcess) (uint64, error) { return p.RSSBytes() }
+		}
+
+		sessionsByWorkspace = m.sessionQuery()
+
+		m.mu.RLock()
+		recycleUUIDs := make([]string, 0, len(m.processes))
+		for uuid := range m.processes {
+			recycleUUIDs = append(recycleUUIDs, uuid)
+		}
+		m.mu.RUnlock()
+
+		for _, workspaceUUID := range recycleUUIDs {
+			p := m.GetProcess(workspaceUUID)
+			if p == nil {
+				continue
+			}
+
+			// Hard safety gates: only recycle a fully-idle process.
+			if rpcs := p.ActiveRPCs(); rpcs > 0 {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping memory recycle (busy)",
+						"workspace_uuid", workspaceUUID,
+						"reason", "in-flight RPCs",
+						"active_rpcs", rpcs)
+				}
+				continue
+			}
+			sessions := sessionsByWorkspace[workspaceUUID]
+			busy := false
+			for _, s := range sessions {
+				if s.IsPrompting {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping memory recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "session prompting",
+							"session_id", s.SessionID)
+					}
+					busy = true
+					break
+				}
+				if s.QueueLength > 0 {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping memory recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "non-empty queue",
+							"session_id", s.SessionID,
+							"queue_length", s.QueueLength)
+					}
+					busy = true
+					break
+				}
+				if s.NextPeriodicAt != nil && s.NextPeriodicAt.Before(now.Add(2*m.gcConfig.Interval)) {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping memory recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "periodic prompt due soon",
+							"session_id", s.SessionID,
+							"next_periodic_at", s.NextPeriodicAt)
+					}
+					busy = true
+					break
+				}
+			}
+			if busy {
+				continue
+			}
+
+			// Sample memory: only recycle when over the configured threshold.
+			rss, err := sampler(p)
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping memory recycle (RSS sample failed)",
+						"workspace_uuid", workspaceUUID,
+						"error", err)
+				}
+				continue
+			}
+			if rss <= m.gcConfig.MemoryRecycleThreshold {
+				if m.logger != nil {
+					m.logger.Debug("GC: memory recycle below threshold",
+						"workspace_uuid", workspaceUUID,
+						"rss_bytes", rss,
+						"threshold_bytes", m.gcConfig.MemoryRecycleThreshold)
+				}
+				continue
+			}
+
+			// Over threshold and idle — recycle.
+			if m.logger != nil {
+				m.logger.Info("GC: recycling memory-bloated idle shared ACP process",
+					"workspace_uuid", workspaceUUID,
+					"rss_bytes", rss,
+					"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
+					"session_count", len(sessions))
+			}
+			// Mark each session GC-suspended BEFORE closing so the WebSocket
+			// auto-resume handler skips resume and avoids a thrash loop — same
+			// ordering as Tier 1's periodic-suspend path.
+			for _, s := range sessions {
+				m.MarkGCSuspended(s.SessionID)
+				m.sessionClose(s.SessionID)
+			}
+			// Stop the now-sessionless process to reclaim memory.
+			m.StopProcess(workspaceUUID)
+			// Keep sessionless bookkeeping consistent.
+			m.gcMu.Lock()
+			delete(m.lastSessionSeen, workspaceUUID)
+			m.gcMu.Unlock()
+		}
+	}
 
 	// ----------------------------------------------------------------
 	// Tier 3: clean up idle auxiliary sessions
