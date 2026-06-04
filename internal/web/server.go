@@ -724,6 +724,12 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
+	mux.HandleFunc(apiPrefix+"/api/beads/list", s.handleBeadsList)
+	mux.HandleFunc(apiPrefix+"/api/beads/show", s.handleBeadsShow)
+	mux.HandleFunc(apiPrefix+"/api/beads/create", s.handleBeadsCreate)
+	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.handleBeadsCleanup)
+	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.handleBeadsDelete)
+	mux.HandleFunc(apiPrefix+"/api/beads/status", s.handleBeadsStatus)
 	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
 
 	// File save endpoints - restricted to localhost only (used by native macOS app)
