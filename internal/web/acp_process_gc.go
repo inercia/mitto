@@ -635,6 +635,7 @@ gcTier1:
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
 			// ordering as Tier 1's periodic-suspend path.
+			recycledCount := len(sessions)
 			for _, s := range sessions {
 				m.MarkGCSuspended(s.SessionID)
 				m.sessionClose(s.SessionID)
@@ -645,6 +646,11 @@ gcTier1:
 			m.gcMu.Lock()
 			delete(m.lastSessionSeen, workspaceUUID)
 			m.gcMu.Unlock()
+			// Notify clients so they can surface a toast. Affected conversations
+			// resume transparently on next focus.
+			if m.onMemoryRecycled != nil {
+				m.onMemoryRecycled(workspaceUUID, rss, m.gcConfig.MemoryRecycleThreshold, recycledCount)
+			}
 		}
 	}
 

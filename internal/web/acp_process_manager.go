@@ -67,6 +67,11 @@ type ACPProcessManager struct {
 	// override it to exercise the tier without launching a real subprocess.
 	rssSampler func(p *SharedACPProcess) (uint64, error)
 
+	// onMemoryRecycled, if set, is called by the GC's Tier 4 memory-recycle path
+	// when a memory-bloated idle shared ACP process is recycled. Used to broadcast
+	// a toast notification to connected clients. Set after construction (see NewServer).
+	onMemoryRecycled func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)
+
 	// gcSuspendedSessions tracks session IDs that were intentionally suspended
 	// by the GC's periodic-suspend heuristic. When a periodic session's next run
 	// is far away, the GC closes it and adds it here. The WebSocket auto-resume
