@@ -1278,6 +1278,20 @@ func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
 	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
 
+	var recycledCalls int
+	var gotUUID string
+	var gotRSS, gotThreshold uint64
+	var gotCount int
+	m.onMemoryRecycled = func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
+		mu.Lock()
+		defer mu.Unlock()
+		recycledCalls++
+		gotUUID = workspaceUUID
+		gotRSS = rssBytes
+		gotThreshold = threshold
+		gotCount = sessionCount
+	}
+
 	m.RunGCOnce()
 
 	m.mu.RLock()
@@ -1296,6 +1310,25 @@ func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
 		if !m.IsGCSuspended(id) {
 			t.Errorf("expected session %s to be marked GC-suspended before close", id)
 		}
+	}
+
+	// The recycle notification callback must fire exactly once with the
+	// recycled workspace, the sampled RSS, the configured threshold, and the
+	// number of recycled sessions.
+	if recycledCalls != 1 {
+		t.Errorf("expected onMemoryRecycled to be called once, got %d", recycledCalls)
+	}
+	if gotUUID != workspaceUUID {
+		t.Errorf("expected recycled workspace %q, got %q", workspaceUUID, gotUUID)
+	}
+	if gotRSS != gcTier4Threshold+1 {
+		t.Errorf("expected recycled rss %d, got %d", gcTier4Threshold+1, gotRSS)
+	}
+	if gotThreshold != gcTier4Threshold {
+		t.Errorf("expected recycled threshold %d, got %d", gcTier4Threshold, gotThreshold)
+	}
+	if gotCount != 2 {
+		t.Errorf("expected recycled session count 2, got %d", gotCount)
 	}
 }
 
