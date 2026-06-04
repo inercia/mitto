@@ -1,0 +1,81 @@
+---
+name: "Beads: status ONE in-progress"
+menus: prompts, beads
+description: "Pick one in-progress bead and fact-check its implementation status"
+backgroundColor: "#F0F4C3"
+group: "Beads"
+enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+---
+
+# Beads: Status Check — One In-Progress Bead
+
+Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+## Step 1 — Fetch in-progress beads
+
+Run:
+
+```bash
+bd list --status in_progress --json
+```
+
+If **no beads** are in progress: inform the user and stop.
+
+## Step 2 — Let the user choose one bead
+
+Present the in-progress beads using `mitto_ui_options_mitto(self_id: "@mitto:session_id")`, showing each as `bd-id — Title` in the dropdown. Ask: "Which in-progress bead would you like to check status for?"
+
+## Step 3 — Fetch full bead details
+
+For the selected bead, run:
+
+```bash
+bd show <bead-id> --long --json     # description, acceptance, design, assignee, metadata
+bd dep tree <bead-id>               # blockers and dependents
+```
+
+Also run locally to gather implementation evidence:
+
+```bash
+# Find commits that reference this bead ID
+git log --oneline --all | grep -i "<bead-id>"
+
+# Check branches containing the bead ID
+git branch -a | grep -i "<bead-id>"
+```
+
+## Step 4 — Fact-check implementation status
+
+Analyse all gathered evidence and produce a **Status Report** for the bead:
+
+### Bead: `<bead-id>` — `<Title>`
+
+**Goal** (one sentence restating what this bead is supposed to deliver)
+
+#### Acceptance Criteria — Status
+
+For each acceptance criterion listed in the bead (or inferred from the description if not explicitly listed):
+
+| # | Criterion | Status | Evidence |
+|---|-----------|--------|----------|
+| 1 | `<criterion text>` | ✅ Done / ⚠️ Partial / ❌ Not done / ❓ Unknown | `<commit, branch, or code reference>` |
+
+#### Related Development Work
+
+| Type | Reference | Status |
+|------|-----------|--------|
+| Branch | `<branch name>` | Active / Stale |
+| Commit | `<sha> — message` | — |
+
+#### Overall Assessment
+
+- **Completion estimate**: `<percentage or qualitative: Not started / Early / Midway / Nearly done / Done>`
+- **What appears to be done**: bullet list of concrete evidence of completed work
+- **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
+- **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`, a failing test, an unanswered question in notes)
+
+> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Beads: start work" prompt to continue implementation.

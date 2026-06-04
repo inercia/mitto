@@ -1,0 +1,146 @@
+---
+name: "Beads: new issue"
+menus: prompts
+description: "Create a beads issue — from the current conversation context or from scratch"
+backgroundColor: "#C8E6C9"
+group: "Beads"
+enabledWhen: 'commandExists("bd")'
+---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+# Beads: Create a New Issue
+
+Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+## Step 0 — Bootstrap beads if needed
+
+Check whether beads is already initialised in this project:
+
+```bash
+ls -d .beads 2>/dev/null
+```
+
+- If `.beads` **already exists**: skip to Step 1.
+- If `.beads` **does not exist**: this may be the first time beads is used here. Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "Beads is not initialised in this project yet. Initialise it now so we can create the first issue?" with options "Yes — initialise beads" and "No — cancel".
+  - If the user declines, stop.
+  - If the user agrees, initialise beads non-interactively (it auto-detects a sensible default issue prefix from the directory name):
+
+    ```bash
+    bd init --non-interactive
+    ```
+
+    If the user wants a specific issue ID prefix, pass it explicitly (e.g. `bd init --non-interactive --prefix proj`). After init succeeds, continue to Step 1.
+
+## Step 1 — Determine issue source
+
+First, check the conversation history for meaningful prior work context (investigation, debugging, feature discussion, research findings, etc.).
+
+- If the conversation contains **prior work context**: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "What should the new issue be about?" with the following options:
+  - "Based on what we've been working on" (with a short description of the detected topic, e.g., "Based on what we've been working on — the auth timeout bug in the login flow")
+  - "Something entirely new — I'll describe it"
+
+- If the conversation contains **no meaningful prior context** (fresh session, only greetings, etc.): skip this question and proceed directly as if the user chose "something new".
+
+## Step 2 — Analyse conversation context (if applicable)
+
+If the user chose to base the issue on the current conversation, review the full history to extract:
+
+- **Problem statement**: What bug, task, or feature is being discussed?
+- **Root cause analysis**: Any findings from investigation or debugging
+- **Reproduction steps**: If a bug, how to reproduce it
+- **Proposed solution**: Any solution discussed or partially implemented
+- **Affected components**: Files, services, or systems involved
+- **Priority signals**: Severity, user impact, frequency
+
+If the user chose "something new", proceed to Step 3 with empty defaults — the user will fill in the details via the form and description editor.
+
+## Step 3 — Learn the project's conventions
+
+Run the following to learn the existing labels, types, and conventions so your defaults match the project:
+
+```bash
+bd list --limit 20 --json   # recent issues: common labels, types, priorities
+bd types                    # valid issue types in this project
+```
+
+## Step 4 — Collect issue fields via form
+
+Use `mitto_ui_form_mitto(self_id: "@mitto:session_id")` to present a form, pre-filled with intelligent defaults derived from Steps 2 and 3:
+
+```html
+<label>Title</label>
+<input type="text" name="title" value="<generated_title>" />
+
+<label>Type</label>
+<select name="type">
+  <option value="task" selected>task</option>
+  <option value="bug">bug</option>
+  <option value="feature">feature</option>
+  <option value="chore">chore</option>
+  <option value="epic">epic</option>
+  <option value="decision">decision</option>
+</select>
+
+<label>Priority (0=highest .. 4=lowest)</label>
+<select name="priority">
+  <option value="0">P0 — highest</option>
+  <option value="1">P1</option>
+  <option value="2" selected>P2</option>
+  <option value="3">P3</option>
+  <option value="4">P4 — lowest</option>
+</select>
+
+<label>Labels (comma-separated)</label>
+<input type="text" name="labels" value="<default_labels>" />
+
+<label>Assignee (optional)</label>
+<input type="text" name="assignee" value="" />
+```
+
+Set the `title` to "New Beads Issue" and use the `selected` attribute on the type that best matches the conversation context (e.g., select "bug" if debugging was discussed).
+
+## Step 5 — Compose and review the description
+
+Based on the conversation context, compose a well-structured description in Markdown including:
+
+- **Summary / Background**: What the issue is about
+- **Details / Findings**: Key information from the conversation (root cause, investigation results, relevant code references)
+- **Steps to Reproduce** (if applicable): Numbered reproduction steps
+- **Expected vs Actual Behaviour** (if applicable)
+- **Proposed Solution** (if discussed): What approach was identified
+- **Acceptance Criteria**: Concrete, testable conditions for "done"
+
+Present the description using `mitto_ui_textbox_mitto(self_id: "@mitto:session_id")` with:
+- `title`: "Issue Description — Review & Edit"
+- `text`: the composed description
+- `result`: "full"
+
+This allows the user to review and freely edit the description before submission.
+
+## Step 6 — Create the bead
+
+After the user confirms (submits both the form and the description), create the bead. Write the (possibly edited) description to a temporary file and pass it via `--body-file` to preserve Markdown formatting and avoid shell-quoting issues:
+
+```bash
+bd create "<title>" \
+  --type <type> \
+  --priority <priority> \
+  --labels "<comma,separated,labels>" \
+  --body-file /tmp/bead-description.md
+```
+
+Add `--assignee "<assignee>"` only if the user provided one. Capture the new bead ID from the output.
+
+If creation fails, report the error to the user and suggest corrections (e.g., invalid type or label).
+
+## Step 7 — Offer follow-up actions
+
+After creation, use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "Bead `<id>` is ready. Would you like to:"
+  - "Claim it and start working now" — run `bd update <id> --claim`, then suggest using the "Beads: start work" prompt
+  - "Link it to another bead (dependency)" — ask for the target bead ID and run `bd dep add <id> <blocker-id>` (or `bd link <id> <other-id> --type related`)
+  - "Done — no further action"
+
+Finish by showing the new bead with `bd show <id>` and remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.
