@@ -28,6 +28,9 @@ const (
 	// WorkspacesFileName is the name of the workspaces file.
 	WorkspacesFileName = "workspaces.json"
 
+	// FoldersFileName is the name of the folders file.
+	FoldersFileName = "folders.json"
+
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
 
@@ -272,6 +275,15 @@ func WorkspacesPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, WorkspacesFileName), nil
+}
+
+// FoldersPath returns the path to the folders.json file.
+func FoldersPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, FoldersFileName), nil
 }
 
 // SessionsDir returns the full path to the sessions directory.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -216,16 +217,30 @@ func LoadWorkspaces() ([]WorkspaceSettings, error) {
 		}
 	}
 
-	// If any UUIDs were generated, save the file back
-	if needsSave {
-		if err := SaveWorkspaces(file.Workspaces); err != nil {
-			// Log but don't fail - the workspaces are still valid
-			// The UUIDs will be re-generated next time if save failed
-			_ = err // ignore save error, UUIDs will be re-generated
+	// Load folder-level settings and merge them into the in-memory workspaces.
+	// The in-memory representation stays fully populated so that no other code
+	// needs to know about folders.json.
+	folders, ferr := LoadFolders()
+	if ferr != nil {
+		return nil, fmt.Errorf("failed to read folders file: %w", ferr)
+	}
+
+	populated := make([]WorkspaceSettings, len(file.Workspaces))
+	copy(populated, file.Workspaces)
+	applyFolderDefaults(populated, folders)
+
+	// Determine the desired on-disk (deduplicated) state. We save back when
+	// UUIDs were generated, or when the on-disk files are not already in the
+	// deduplicated form (one-time migration; idempotent thereafter).
+	cleaned, newFolders := dedupFolders(populated)
+	if needsSave || !reflect.DeepEqual(file.Workspaces, cleaned) || !foldersEqual(folders, newFolders) {
+		if err := saveWorkspacesAndFolders(cleaned, newFolders); err != nil {
+			// Log but don't fail - the in-memory workspaces are still valid.
+			_ = err
 		}
 	}
 
-	return file.Workspaces, nil
+	return populated, nil
 }
 
 // LoadWorkspacesFromFile loads workspaces from an explicit JSON or YAML file.
@@ -265,17 +280,27 @@ func LoadWorkspacesFromFile(path string) ([]WorkspaceSettings, error) {
 	return file.Workspaces, nil
 }
 
-// SaveWorkspaces saves workspaces to the Mitto data directory.
+// SaveWorkspaces saves workspaces to the Mitto data directory. Folder-level
+// fields (name, color, code, auto_children) that are identical across all
+// workspaces sharing a working directory are deduplicated into folders.json;
+// the remaining per-workspace data is written to workspaces.json.
 func SaveWorkspaces(workspaces []WorkspaceSettings) error {
+	cleaned, folders := dedupFolders(workspaces)
+	return saveWorkspacesAndFolders(cleaned, folders)
+}
+
+// saveWorkspacesAndFolders writes the already-deduplicated workspaces and the
+// folders map to disk. folders.json is written FIRST so that hoisted
+// folder-level values can never be lost if a crash occurs between the two
+// writes (workspaces.json no longer contains them once cleaned).
+func saveWorkspacesAndFolders(cleaned []WorkspaceSettings, folders map[string]FolderSettings) error {
+	if err := SaveFolders(folders); err != nil {
+		return err
+	}
+
 	workspacesPath, err := appdir.WorkspacesPath()
 	if err != nil {
 		return err
 	}
-
-	file := WorkspacesFile{
-		Workspaces: workspaces,
-	}
-
-	// Use atomic write for safety
-	return fileutil.WriteJSONAtomic(workspacesPath, file, 0644)
+	return fileutil.WriteJSONAtomic(workspacesPath, WorkspacesFile{Workspaces: cleaned}, 0644)
 }
