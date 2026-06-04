@@ -440,6 +440,14 @@ conversations **resume transparently** on next focus via `LoadSession` history r
 making the recycle invisible to the user. The recycle is logged at `Info` with
 `rss_bytes` and `threshold_bytes`; every skip reason is logged at `Debug`.
 
+After a recycle, the GC invokes the `onMemoryRecycled` callback (wired in `server.go`),
+which resolves a friendly workspace name and calls `Server.BroadcastMemoryRecycled`. That
+broadcasts a `memory_recycled` event on the `/api/events` channel to all connected clients;
+the frontend (`useWebSocket.js` → `mitto:memory_recycled` → `app.js`) surfaces an **info
+toast** noting the workspace, the RSS vs. threshold (in MB), and the number of conversations
+that will resume automatically. The payload carries `workspace_uuid`, `workspace_name`,
+`working_dir`, `rss_bytes`, `threshold_bytes`, and `session_count`.
+
 This reuses the exact idle-safety and anti-thrash machinery already proven in Tier 1's
 periodic-suspend path. The threshold is configurable per the
 [Configuration](#configuration) section below.
