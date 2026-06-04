@@ -1,0 +1,41 @@
+##########################################################################################
+# Builtin processor: reminds the agent that this project uses beads (bd) for issue tracking.
+#
+# When the `bd` command is available on the system PATH, this processor appends a
+# reminder instructing the agent to track tasks, work items, and persistent knowledge
+# in beads instead of ad-hoc markdown TODO lists.
+#
+# Activation conditions:
+#   - The `bd` command exists on PATH (commandExists CEL gate)
+#
+# Throttling:
+#   - Fires on the first message, then re-runs periodically to keep the reminder fresh
+#     without spamming every single message.
+#
+# Uses text-mode (no external command).
+##########################################################################################
+name: beads-track-tasks
+description: "Reminds the agent to track tasks and knowledge in beads (bd)"
+enabled: true
+enabledWhen: 'commandExists("bd")'
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 30m
+    afterSentMsgs: 20
+    afterTokens: 80000
+mutate: append
+priority: 93
+
+text: |
+  ---
+  [Beads Issue Tracker Reminder]
+  This project uses `bd` (beads) for issue and task tracking. Use it for ALL task
+  tracking — do NOT use markdown TODO lists or ad-hoc task files.
+
+  - Run `bd ready` to find available work, `bd show <id>` to view an issue.
+  - Use `bd update <id> --claim` to claim work and `bd close <id>` when done.
+  - File new issues with `bd` for any follow-up work you discover.
+  - Use `bd remember` for persistent knowledge — do NOT create MEMORY.md files.
+  - Run `bd prime` if you need the full workflow and command reference.

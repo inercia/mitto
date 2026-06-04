@@ -1,0 +1,45 @@
+##########################################################################################
+# Builtin processor: reminds the agent to review pending beads tasks when a beads
+# database is present in the workspace.
+#
+# When the `bd` command is available AND the workspace contains a `.beads` directory
+# (i.e. beads has been initialized for this project), this processor appends a reminder
+# nudging the agent to check the list of ready tasks and consider picking up open work.
+#
+# Activation conditions:
+#   1. The `bd` command exists on PATH (commandExists CEL gate)
+#   2. The workspace contains a `.beads` directory (dirExists CEL gate)
+#
+# Throttling:
+#   - Fires on the first message, then re-runs periodically so the agent is reminded
+#     about outstanding work without spamming every message.
+#
+# Uses text-mode (no external command). The agent itself runs `bd ready` to see the
+# current list of available tasks.
+##########################################################################################
+name: beads-ready-tasks
+description: "Reminds the agent to review available tasks in the beads database"
+enabled: true
+enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 30m
+    afterSentMsgs: 20
+    afterTokens: 80000
+mutate: append
+priority: 94
+
+text: |
+  ---
+  [Beads Ready Tasks Reminder]
+  This workspace has a beads database (`.beads/`) with tracked issues. Before
+  starting new work, run `bd ready` to see tasks that have no active blockers and
+  are ready to be picked up.
+
+  - If a ready task matches what the user is asking for, claim it with
+    `bd update <id> --claim` and close it with `bd close <id>` when finished.
+  - If your current work relates to an existing open issue, link or update it
+    rather than duplicating it.
+  - Surface relevant ready tasks to the user when they might want to tackle them.
