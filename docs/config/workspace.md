@@ -123,9 +123,15 @@ conversations:
           ---
 ```
 
+### Folder-Level Fields (folders.json)
+
+When a folder has more than one ACP server entry, four folder-level fields are shared by all of them: the display `name`, badge `code`, badge `color`, and `auto_children`. To avoid repeating these on every entry, they are stored once per folder in a separate `folders.json` file in the Mitto data directory (`$MITTO_DIR`).
+
+This is fully transparent — the UI and API always see complete workspace records. Mitto merges `folders.json` into each workspace on load and deduplicates it back out on save. Migration from older `workspaces.json` files that duplicated these fields happens automatically the first time the file is loaded. Workspace metadata (`description`, `url`, `group`, `user_data_schema`) is **not** stored here; it stays in the committable `.mittorc` so it remains version-controllable. See [docs/devel/workspaces.md](../devel/workspaces.md#folder-level-deduplication-foldersjson) for details.
+
 ## Auto-Created Children
 
-Workspaces can automatically spawn child conversations when a new top-level conversation is created. This is configured through the **Children** tab in the UI or via the `auto_children` field in workspaces.json.
+Workspaces can automatically spawn child conversations when a new top-level conversation is created. This is configured through the **Children** tab in the UI or via the `auto_children` field (stored per folder in `folders.json`).
 
 See **[Auto-Create Children Conversations](auto-children.md)** for details and the "smart model + fast helpers" pattern.
 

@@ -47,7 +47,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `ToastContainer`             | `ToastContainer.js`               | Renders toast stack, color-coded by severity         |
 | `PeriodicPromptSelector`     | `PeriodicPromptSelector.js`       | Dropdown to select a workspace prompt by name for periodic execution |
 | `PeriodicFrequencyPanel`     | `PeriodicFrequencyPanel.js`       | Frequency controls; `disabled=true` shows "run now" icon but controls (input/select/time) stay editable |
-| `ContextMenu`                | `app.js`                          | Right-click menus with viewport-aware positioning    |
+| `ContextMenu`                | `ContextMenu.js`                  | Shared right-click menu with viewport-aware positioning + hover-flyout submenus (used by SessionItem/SessionList and BeadsView) |
 | `SessionItem`                | `app.js`                          | Session list item with swipe, context menu, status   |
 
 ## ChatInput

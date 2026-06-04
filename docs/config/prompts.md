@@ -259,7 +259,7 @@ Provide specific suggestions with code examples where applicable.
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
-| `menus`           | No       | string   | Comma-separated list of extra menus the prompt appears in. `conversation` surfaces it in the per-conversation context menu. See [below](#menus-conversation-context-menu). |
+| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), and/or `beads` (per-issue context menu in the Beads list). Defaults to `prompts` if omitted. See [below](#menus). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
@@ -330,29 +330,36 @@ Please analyze the code with the following criteria:
 - Suggest refactoring opportunities
 ```
 
-## Menus: Conversation Context Menu
+## Menus
 
-By default, prompts appear only in the **ChatInput dropup** (the "Insert predefined
-prompt" menu above the chat input). The `menus` attribute is a **comma-separated
-list** of additional menus a prompt should appear in. Adding `conversation` to a
-prompt's `menus` front-matter additionally surfaces it in the **per-conversation
-context menu** — the menu shown when you right-click a conversation in the sidebar
-list.
+The `menus` attribute is a **comma-separated list** that controls which UI menus a
+prompt appears in. The available menu values are:
+
+| Menu           | Where it appears                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| `prompts`      | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
+| `conversation` | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
+| `beads`        | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
+
+If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
+dropup only). To make a prompt appear in both menus, list both values:
 
 ```markdown
 ---
 name: "Summarize Progress"
 description: "Ask the agent to summarize what has been done so far"
 group: "Workflow"
-menus: conversation
+menus: prompts, conversation
 ---
 
 Summarize everything we've accomplished in this conversation so far.
 ```
 
-Because `menus` is a list, multiple menus can be combined in a single value as more
-menus become available, e.g. `menus: "conversation, group"`. Whitespace around each
-entry is ignored.
+Whitespace around each entry is ignored. Because `menus` is an explicit list, a
+prompt with `menus: conversation` (without `prompts`) appears **only** in the
+conversation context menu and is **excluded** from the ChatInput dropup.
+
+### Conversation Context Menu
 
 In the conversation context menu, these prompts appear **after** the standard
 **Archive**, **Properties**, and **Delete** entries. They are organized into
@@ -371,7 +378,8 @@ Prompts without a `group` are collected under an **"Other"** submenu.
 ### Behavior
 
 - **Only prompts whose `menus` list includes `conversation`** appear in the context
-  menu. Prompts without it are excluded (they still appear in the ChatInput dropup).
+  menu. Prompts without it are excluded (they appear in the ChatInput dropup instead,
+  provided their `menus` includes `prompts` or omits the attribute).
 - Clicking a prompt **enqueues its text** to that conversation via the message
   queue. The agent processes it as soon as the conversation is idle, so this works
   for **any** conversation — not just the currently active one.
@@ -385,6 +393,24 @@ Prompts without a `group` are collected under an **"Other"** submenu.
 - `@mitto:` [variable substitution](#variable-substitution-in-prompts) is applied
   to the enqueued text in the target conversation's context before it reaches the
   agent.
+
+### Beads Context Menu
+
+Prompts whose `menus` list includes `beads` appear in the **per-issue context
+menu** of the Beads list view — the menu shown when you right-click an issue.
+Alongside common bead actions (e.g. **Delete**), the menu includes a **Prompts**
+submenu listing every `menus: beads` prompt.
+
+```markdown
+---
+name: "Beads: decompose"
+group: "Beads"
+menus: prompts, beads
+---
+```
+
+> **Note:** This menu currently renders the available actions and prompts but does
+> not yet wire them to behavior — selecting an entry is a no-op for now.
 
 ## Variable Substitution in Prompts
 

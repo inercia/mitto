@@ -111,6 +111,8 @@ processors:
 | `delegate-playwright` | text    | _(varies)_                                                      | Delegate Playwright tests          |
 | `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
 | `use-ui-tools`        | text    | `tools.hasPattern("mitto_ui_*")`                                | Remind agent to use Mitto UI tools |
+| `beads-track-tasks`   | text    | `commandExists("bd")`                                           | Remind agent to track tasks in beads |
+| `beads-ready-tasks`   | text    | `commandExists("bd") && dirExists(".beads")`                    | Remind agent to review ready beads tasks |
 | `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")` | Generate initial `.augment/rules/` files |
 | `auggie-update-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")`  | Update rules from conversation insights (agentIdle, cadence: every 6 turns/15k tokens/5m) |
 | `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")` | Generate initial memory files |

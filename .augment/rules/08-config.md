@@ -17,6 +17,10 @@ keywords:
   - .mitto/mittorc
   - WorkspaceRC
   - SaveWorkspaceRC
+  - folders.json
+  - folder deduplication
+  - LoadFolders
+  - SaveFolders
 ---
 
 # Configuration System
@@ -126,6 +130,15 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 | CLI with `--dir`    | CLI flags         | NOT saved        |
 | CLI without `--dir` | `workspaces.json` | Saved on changes |
 | macOS app           | `workspaces.json` | Saved on changes |
+
+### Folder-Level Deduplication (folders.json)
+
+Four folder-level fields (`name`, `color`, `code`, `auto_children`) are deduplicated out of `workspaces.json` into `$MITTO_DIR/folders.json` (keyed by `working_dir`) so they are not repeated on every workspace entry sharing a folder. This is **transparent**: `LoadWorkspaces()` returns fully-populated `[]WorkspaceSettings`, so no other code (SessionManager, REST, frontend) is affected.
+
+- **Load** (`LoadWorkspaces`): merges `folders.json` via `applyFolderDefaults` (a workspace's own non-empty value wins over the folder default). Auto-migrates legacy duplicated files; idempotent thereafter.
+- **Save** (`SaveWorkspaces`): `dedupFolders` hoists a field only when identical across *all* workspaces in the folder group; writes `folders.json` **first**, then cleaned `workspaces.json` (crash-safe ordering). Orphan folders pruned; empty map deletes the file.
+- Code lives in `internal/config/folders.go`; path via `appdir.FoldersPath()` / `appdir.FoldersFileName`.
+- **Metadata stays in `.mittorc`**: `description`/`url`/`group`/`user_data_schema` are version-controllable and are NOT moved to `folders.json`.
 
 ## Global Settings REST API
 

@@ -165,3 +165,51 @@ Workspaces are NOT persisted when:
   ]
 }
 ```
+
+## Folder-Level Deduplication (folders.json)
+
+A single folder can have multiple workspace entries (e.g. the same project paired
+with Auggie and with Claude Code). Four fields are folder-level rather than
+server-level and would otherwise be duplicated on every entry that shares a
+`working_dir`:
+
+- `name` — friendly display name for the folder
+- `color` — custom badge color
+- `code` — three-letter badge code
+- `auto_children` — child conversations to auto-create
+
+These are deduplicated into a separate `folders.json` (in `$MITTO_DIR`), keyed by
+working directory. The split is **transparent**: the in-memory
+`[]WorkspaceSettings` returned by `LoadWorkspaces()` is always fully populated, so
+no other code (`SessionManager`, REST API, frontend) needs to know `folders.json`
+exists.
+
+| Phase | Function | Behavior |
+| ----- | -------- | -------- |
+| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads `folders.json`, and merges folder values into each workspace via `applyFolderDefaults`. A workspace's own non-empty value always wins over the folder default (preserving divergent legacy values). |
+| Save  | `SaveWorkspaces()` | Calls `dedupFolders` to hoist any field that is identical across **all** workspaces sharing a `working_dir`, then writes `folders.json` **first**, then the cleaned `workspaces.json`. |
+
+`folders.json` is written before `workspaces.json` so hoisted values can never be
+lost if a crash occurs between the two writes. Migration is automatic and
+idempotent: the first `LoadWorkspaces()` of a legacy (duplicated) file rewrites
+both files into deduplicated form; subsequent loads detect no change and skip the
+rewrite. Orphan entries (a folder with no remaining workspaces) are pruned on
+save, and an empty folders map deletes `folders.json` entirely.
+
+> **Note:** Workspace **metadata** (`description`, `url`, `group`,
+> `user_data_schema`) is intentionally NOT stored here — it stays in each
+> project's committable `.mittorc` so it remains shareable via version control.
+
+**folders.json:**
+
+```json
+{
+  "folders": {
+    "/path/to/project": {
+      "name": "My Project",
+      "code": "MYP",
+      "color": "#ff5500"
+    }
+  }
+}
+```
