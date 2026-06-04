@@ -1,5 +1,6 @@
 ---
 name: "Generate AGENTS.md"
+menus: prompts
 description: "Analyze project and generate an AGENTS.md file for AI coding agents"
 group: "Agents & Mitto"
 backgroundColor: "#B3E5FC"

@@ -2,7 +2,7 @@
 name: "Continue in new child"
 description: "Continue current work in a new conversation, maybe with a different model"
 group: "Work flow"
-menus: conversation
+menus: prompts, conversation
 backgroundColor: "#FFF9C4"
 enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---

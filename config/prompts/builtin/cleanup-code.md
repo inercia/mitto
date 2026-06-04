@@ -1,5 +1,6 @@
 ---
 name: "Cleanup Code"
+menus: prompts
 description: "Remove dead code, unused imports, and outdated documentation"
 group: "Code Quality"
 backgroundColor: "#C8E6C9"

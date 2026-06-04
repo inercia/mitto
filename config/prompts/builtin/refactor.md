@@ -1,5 +1,6 @@
 ---
 name: "Refactor"
+menus: prompts
 description: "Propose refactoring improvements for better code quality"
 group: "Code Quality"
 backgroundColor: "#C8E6C9"

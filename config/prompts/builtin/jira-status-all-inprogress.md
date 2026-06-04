@@ -1,5 +1,6 @@
 ---
 name: "JIRA: status ALL in-progress"
+menus: prompts
 description: "Fact-check implementation status for all in-progress sprint tickets relevant to this repo"
 backgroundColor: "#FFE0B2"
 group: "JIRA"

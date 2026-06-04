@@ -1,5 +1,6 @@
 ---
 name: "JIRA: decompose"
+menus: prompts
 description: "Break a JIRA ticket into sub-tickets and create them automatically"
 backgroundColor: "#E1BEE7"
 group: "JIRA"

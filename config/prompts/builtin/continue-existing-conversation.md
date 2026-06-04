@@ -2,7 +2,7 @@
 name: "Continue in existing conversation"
 description: "Send work to an existing conversation in any workspace"
 group: "Work flow"
-menus: conversation
+menus: prompts, conversation
 backgroundColor: "#B3E5FC"
 enabledWhen: 'permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---

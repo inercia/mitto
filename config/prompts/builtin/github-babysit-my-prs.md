@@ -1,5 +1,6 @@
 ---
 name: "GitHub: babysit my PRs"
+menus: prompts
 description: "Periodically check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments"
 group: "CI"
 backgroundColor: "#BBDEFB"

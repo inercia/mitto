@@ -1,5 +1,6 @@
 ---
 name: "Run tests"
+menus: prompts
 description: "Run the test suite and report results"
 group: "Testing"
 backgroundColor: "#FFE0B2"

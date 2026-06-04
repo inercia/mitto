@@ -1,5 +1,6 @@
 ---
 name: "Fix errors"
+menus: prompts
 description: "Analyze and fix the errors shown"
 group: "Development"
 backgroundColor: "#FFE0B2"

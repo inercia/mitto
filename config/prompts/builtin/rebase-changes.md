@@ -1,5 +1,6 @@
 ---
 name: "Rebase changes"
+menus: prompts
 description: "Rebase changes on top of main"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"

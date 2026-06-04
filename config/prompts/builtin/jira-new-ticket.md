@@ -1,5 +1,6 @@
 ---
 name: "JIRA: new ticket"
+menus: prompts
 description: "Create a JIRA ticket — from the current conversation context or from scratch"
 backgroundColor: "#C8E6C9"
 group: "JIRA"

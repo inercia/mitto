@@ -1,5 +1,6 @@
 ---
 name: "Optimize"
+menus: prompts
 description: "Identify and propose performance improvements"
 group: "Code Quality"
 backgroundColor: "#C8E6C9"

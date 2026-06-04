@@ -1,5 +1,6 @@
 ---
 name: "Implement spec"
+menus: prompts
 description: "Create a detailed implementation plan from a specification"
 group: "Development"
 backgroundColor: "#FFECB3"

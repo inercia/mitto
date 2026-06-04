@@ -1,5 +1,6 @@
 ---
 name: "Document Code"
+menus: prompts
 description: "Add inline documentation and comments to the code we just wrote"
 group: "Documentation"
 backgroundColor: "#B39DDB"

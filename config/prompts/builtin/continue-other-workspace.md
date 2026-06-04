@@ -2,7 +2,7 @@
 name: "Continue in another workspace"
 description: "Hand off current work to a new conversation in a different workspace"
 group: "Work flow"
-menus: conversation
+menus: prompts, conversation
 backgroundColor: "#E1BEE7"
 enabledWhen: 'permissions.canStartConversation && permissions.canInteractOtherWorkspaces && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---

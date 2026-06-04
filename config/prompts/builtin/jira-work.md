@@ -1,5 +1,6 @@
 ---
 name: "JIRA: start work"
+menus: prompts
 description: "Pick a JIRA ticket from the active sprint and spawn parallel Mitto conversations to implement it"
 backgroundColor: "#BBDEFB"
 group: "JIRA"
