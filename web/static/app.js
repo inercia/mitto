@@ -105,7 +105,6 @@ import {
   SettingsIcon,
   PlusIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
   MenuIcon,
   TrashIcon,
   EditIcon,
@@ -136,7 +135,10 @@ import {
   SidePanelIcon,
   TerminalIcon,
   FolderOpenIcon,
+  BeadsIcon,
 } from "./components/Icons.js";
+import { ContextMenu } from "./components/ContextMenu.js";
+import { BeadsView } from "./components/BeadsView.js";
 
 // Import constants
 import {
@@ -332,6 +334,22 @@ function isOverHorizontallyScrollable() {
  */
 function isModalDialogOpen() {
   return !!document.querySelector('.fixed.inset-0.z-50');
+}
+
+/**
+ * Returns the list of UI menus a prompt opts into. The `menus` front-matter is a
+ * comma-separated list (e.g. "prompts, conversation"). A missing or empty value
+ * defaults to the "prompts" dropup only, so prompts that explicitly target other
+ * menus (e.g. "conversation") are excluded from the dropup unless they also list
+ * "prompts".
+ */
+function promptMenus(prompt) {
+  const raw = typeof prompt?.menus === "string" ? prompt.menus.trim() : "";
+  if (raw === "") return ["prompts"];
+  return raw
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
 }
 
 // =============================================================================
@@ -997,192 +1015,10 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
 // =============================================================================
 // Context Menu Component
 // =============================================================================
-
-// Renders a single context menu entry. Entries with a non-empty `submenu`
-// array expand a flyout submenu on hover (positioned to the right, flipping
-// left or shifting up when it would overflow the viewport).
-function ContextMenuItem({ item, onClose }) {
-  const hasSubmenu = !!(item.submenu && item.submenu.length > 0);
-  const [submenuOpen, setSubmenuOpen] = useState(false);
-  const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
-  const itemRef = useRef(null);
-  const closeTimerRef = useRef(null);
-
-  const openSubmenu = () => {
-    if (!hasSubmenu) return;
-    clearTimeout(closeTimerRef.current);
-    if (itemRef.current) {
-      const rect = itemRef.current.getBoundingClientRect();
-      const submenuWidth = 180;
-      const submenuHeight = item.submenu.length * 38 + 8;
-      // Prefer opening to the right; flip to the left if it would overflow
-      let left = rect.right - 4;
-      if (left + submenuWidth > window.innerWidth) {
-        left = rect.left - submenuWidth + 4;
-      }
-      // Shift up if it would overflow the bottom of the viewport
-      let top = rect.top;
-      if (top + submenuHeight > window.innerHeight) {
-        top = Math.max(8, window.innerHeight - submenuHeight - 8);
-      }
-      setSubmenuPos({ left, top });
-    }
-    setSubmenuOpen(true);
-  };
-
-  const scheduleClose = () => {
-    clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = setTimeout(() => setSubmenuOpen(false), 150);
-  };
-
-  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
-
-  if (hasSubmenu) {
-    return html`
-      <div
-        ref=${itemRef}
-        class="relative"
-        onMouseEnter=${openSubmenu}
-        onMouseLeave=${scheduleClose}
-      >
-        <button
-          onClick=${(e) => {
-            e.stopPropagation();
-            openSubmenu();
-          }}
-          class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 text-gray-200 hover:bg-slate-700"
-        >
-          ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
-          <span class="flex-1">${item.label}</span>
-          <${ChevronRightIcon} className="w-4 h-4 text-gray-400" />
-        </button>
-        ${submenuOpen &&
-        html`
-          <div
-            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
-            style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
-            onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
-            onMouseLeave=${scheduleClose}
-          >
-            ${item.submenu.map(
-              (sub) => html`
-                <button
-                  key=${sub.label}
-                  onClick=${(e) => {
-                    e.stopPropagation();
-                    if (!sub.disabled) {
-                      sub.onClick();
-                      onClose();
-                    }
-                  }}
-                  disabled=${sub.disabled}
-                  class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${sub.disabled
-                    ? "text-gray-500 cursor-not-allowed"
-                    : sub.danger
-                      ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-                      : "text-gray-200 hover:bg-slate-700"}"
-                >
-                  ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
-                  ${sub.label}
-                </button>
-              `,
-            )}
-          </div>
-        `}
-      </div>
-    `;
-  }
-
-  return html`
-    <button
-      onClick=${(e) => {
-        e.stopPropagation();
-        if (!item.disabled) {
-          item.onClick();
-          onClose();
-        }
-      }}
-      disabled=${item.disabled}
-      class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
-        ? "text-gray-500 cursor-not-allowed"
-        : item.danger
-          ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-          : "text-gray-200 hover:bg-slate-700"}"
-    >
-      ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
-      ${item.label}
-    </button>
-  `;
-}
-
-function ContextMenu({ x, y, items, onClose }) {
-  const menuRef = useRef(null);
-
-  // Close menu when clicking outside - delay to avoid catching the click that opened the menu
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        onClose();
-      }
-    };
-    const handleEscape = (e) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    // Delay to avoid catching the opening right-click
-    const timeoutId = setTimeout(() => {
-      document.addEventListener("mousedown", handleClickOutside);
-    }, 10);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      clearTimeout(timeoutId);
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [onClose]);
-
-  // Calculate adjusted position synchronously using useMemo
-  // This avoids the useState + useEffect anti-pattern that causes the menu
-  // to not appear on first render (see 28-anti-patterns-ui.md)
-  const position = useMemo(() => {
-    // On first render, menuRef.current is null - use raw position
-    if (!menuRef.current) {
-      return { x, y };
-    }
-    // Menu exists - calculate adjusted position to stay within viewport
-    const rect = menuRef.current.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    let newX = x;
-    let newY = y;
-    if (x + rect.width > viewportWidth) {
-      newX = viewportWidth - rect.width - 8;
-    }
-    if (y + rect.height > viewportHeight) {
-      newY = viewportHeight - rect.height - 8;
-    }
-    return { x: newX, y: newY };
-  }, [x, y, menuRef.current]);
-
-  return html`
-    <div
-      ref=${menuRef}
-      class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
-      style="left: ${position.x}px; top: ${position.y}px;"
-    >
-      ${items.map(
-        (item) => html`
-          <${ContextMenuItem}
-            key=${item.label}
-            item=${item}
-            onClose=${onClose}
-          />
-        `,
-      )}
-    </div>
-  `;
-}
+//
+// `ContextMenu` (and its internal `ContextMenuItem`) now live in the shared
+// `components/ContextMenu.js` module so the Beads issue list can reuse them.
+// It is imported at the top of this file.
 
 // =============================================================================
 // Session Item Component
@@ -1825,6 +1661,7 @@ function SessionList({
   terminalActionEnabled = false,
   onFolderOpen,
   onTerminalClick,
+  onBeadsOpen,
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
@@ -2806,27 +2643,15 @@ function SessionList({
                 ></span>
               `}
               ${groupingMode === "workspace" &&
-              typeof window.mittoPickFolder === "function" &&
               group.workingDir &&
               html`
-                ${badgeClickEnabled && html`
-                  <button
-                    onClick=${(e) => { e.stopPropagation(); onFolderOpen && onFolderOpen(group.workingDir); }}
-                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                    title="Open folder: ${group.workingDir}"
-                  >
-                    <${FolderOpenIcon} className="w-3.5 h-3.5" />
-                  </button>
-                `}
-                ${terminalActionEnabled && html`
-                  <button
-                    onClick=${(e) => { e.stopPropagation(); onTerminalClick && onTerminalClick(group.workingDir); }}
-                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                    title="Open terminal: ${group.workingDir}"
-                  >
-                    <${TerminalIcon} className="w-3.5 h-3.5" />
-                  </button>
-                `}
+                <button
+                  onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(group.workingDir); }}
+                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  title="Beads issues: ${group.workingDir}"
+                >
+                  <${BeadsIcon} className="w-3.5 h-3.5" />
+                </button>
               `}
               ${groupingMode === "workspace" &&
               (filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
@@ -3007,27 +2832,15 @@ function SessionList({
                   title="Agent responding in this folder"
                 ></span>
               `}
-              ${typeof window.mittoPickFolder === "function" &&
-              folder.workingDir &&
+              ${folder.workingDir &&
               html`
-                ${badgeClickEnabled && html`
-                  <button
-                    onClick=${(e) => { e.stopPropagation(); onFolderOpen && onFolderOpen(folder.workingDir); }}
-                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                    title="Open folder: ${folder.workingDir}"
-                  >
-                    <${FolderOpenIcon} className="w-3.5 h-3.5" />
-                  </button>
-                `}
-                ${terminalActionEnabled && html`
-                  <button
-                    onClick=${(e) => { e.stopPropagation(); onTerminalClick && onTerminalClick(folder.workingDir); }}
-                    class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                    title="Open terminal: ${folder.workingDir}"
-                  >
-                    <${TerminalIcon} className="w-3.5 h-3.5" />
-                  </button>
-                `}
+                <button
+                  onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(folder.workingDir); }}
+                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  title="Beads issues: ${folder.workingDir}"
+                >
+                  <${BeadsIcon} className="w-3.5 h-3.5" />
+                </button>
               `}
               ${(filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
@@ -3256,6 +3069,11 @@ function SessionList({
                   }];
                 })()
               : []),
+            ...(groupContextMenu.workingDir ? [{
+              label: "Beads",
+              icon: html`<${BeadsIcon} className="w-4 h-4" />`,
+              onClick: () => onBeadsOpen && onBeadsOpen(groupContextMenu.workingDir),
+            }] : []),
             ...(badgeClickEnabled && groupContextMenu.workingDir ? [{
               label: "Open Folder",
               icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
@@ -3560,6 +3378,16 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
+  // mainView controls what is shown in the right-side area: "conversation" or "beads"
+  const [mainView, setMainView] = useState("conversation");
+  // Ref mirror of mainView so native swipe-gesture handlers (registered in an effect
+  // whose dependency set does not include mainView) always read the current view
+  // without a stale closure.
+  const mainViewRef = useRef(mainView);
+  useEffect(() => {
+    mainViewRef.current = mainView;
+  }, [mainView]);
+  const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
   const [sidePanelTab, setSidePanelTab] = useState("properties");
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
@@ -3649,7 +3477,12 @@ function App() {
   // Predefined prompts: the backend's /api/workspace-prompts endpoint now returns
   // all prompts fully merged (global + server-specific + workspace) and filtered.
   // The frontend just uses them directly — no client-side merge needed.
-  const predefinedPrompts = workspacePrompts;
+  // Only prompts whose `menus` list includes "prompts" (or that omit `menus`
+  // entirely, defaulting to the dropup) appear in the ChatInput "^" dropup.
+  // Prompts that target only other menus (e.g. "conversation") are excluded.
+  const predefinedPrompts = workspacePrompts.filter((p) =>
+    promptMenus(p).includes("prompts"),
+  );
 
   // Fetch the prompts whose `menus` list includes `conversation` for a SPECIFIC
   // conversation, evaluating each prompt's `enabledWhen` against that
@@ -3674,15 +3507,7 @@ function App() {
         if (!res.ok) return [];
         const data = await res.json();
         const all = data?.prompts || [];
-        return all.filter(
-          (p) =>
-            p &&
-            typeof p.menus === "string" &&
-            p.menus
-              .split(",")
-              .map((m) => m.trim())
-              .includes("conversation"),
-        );
+        return all.filter((p) => p && promptMenus(p).includes("conversation"));
       } catch (err) {
         console.error(
           "Failed to fetch conversation prompts for session:",
@@ -3692,6 +3517,88 @@ function App() {
       }
     },
     [],
+  );
+
+  // Fetch the prompts whose `menus` list includes `beads` for a workspace
+  // directory. Used by the per-issue context menu in the Beads list view. There
+  // is no specific conversation here, so `enabledWhen` is evaluated without a
+  // session_id; we only keep the prompts that opt into the beads menu via
+  // `menus`.
+  const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir) => {
+    if (!workingDir) return [];
+    try {
+      const res = await authFetch(
+        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      const all = data?.prompts || [];
+      return all.filter((p) => p && promptMenus(p).includes("beads"));
+    } catch (err) {
+      console.error("Failed to fetch beads prompts for workspace:", err);
+      return [];
+    }
+  }, []);
+
+  // Run a beads prompt against a specific issue: create a new conversation in
+  // the beads workspace, seed it with the issue context plus the prompt text,
+  // then switch to it. Mirrors handleSendPromptToConversation's queue delivery
+  // (the queue runs the message once the new conversation is idle).
+  const handleRunBeadsPrompt = useCallback(
+    async (prompt, issue) => {
+      const text = prompt?.prompt;
+      if (!text || !issue || !beadsWorkingDir) return;
+
+      const ws = workspaces.find((w) => w.working_dir === beadsWorkingDir);
+      const result = await newSession({
+        workingDir: beadsWorkingDir,
+        acpServer: ws?.acp_server,
+      });
+      if (!result?.sessionId) {
+        showToast({
+          style: "error",
+          title: result?.error || "Failed to create conversation",
+          duration: 4000,
+        });
+        return;
+      }
+
+      // Prepend the bead context so the agent works on this specific issue
+      // rather than discovering one via `bd ready`.
+      const ctxLines = [
+        "Work on this Beads issue:",
+        "",
+        `- ID: ${issue.id}`,
+        `- Title: ${issue.title || ""}`,
+        `- Type: ${issue.issue_type || "task"}`,
+        `- Status: ${issue.status || "open"}`,
+      ];
+      if (issue.parent) ctxLines.push(`- Parent: ${issue.parent}`);
+      if (issue.description) {
+        ctxLines.push("", "Description:", issue.description);
+      }
+      const seeded = `${ctxLines.join("\n")}\n\n---\n\n${text}`;
+
+      try {
+        await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: seeded }),
+        });
+      } catch (err) {
+        console.error("Failed to seed beads conversation:", err);
+      }
+
+      // newSession already activates the new conversation; switch the main view
+      // back from the beads panel so the new conversation is shown.
+      setMainView("conversation");
+      showToast({
+        style: "success",
+        title: `Started "${prompt.name}" for ${issue.id}`,
+        duration: 3000,
+      });
+    },
+    [beadsWorkingDir, workspaces, newSession, showToast],
   );
 
   // Initialize CSRF protection and UI preferences on mount
@@ -5399,6 +5306,8 @@ function App() {
       if (isOverHorizontallyScrollable()) return;
       // Don't navigate if a modal dialog is open.
       if (isModalDialogOpen()) return;
+      // Don't navigate when the beads view is open — swipes should not switch conversations.
+      if (mainViewRef.current === "beads") return;
       navigateToNextSession();
     };
 
@@ -5408,6 +5317,8 @@ function App() {
       if (isOverHorizontallyScrollable()) return;
       // Don't navigate if a modal dialog is open.
       if (isModalDialogOpen()) return;
+      // Don't navigate when the beads view is open — swipes should not switch conversations.
+      if (mainViewRef.current === "beads") return;
       navigateToPreviousSession();
     };
 
@@ -6003,7 +5914,14 @@ function App() {
     switchSession(sessionId);
     setShowSidebar(false);
     setShowSidePanel(false);
+    setMainView("conversation");
   };
+
+  // Handle Beads button — switch main view to the beads panel for the given workspace
+  const handleBeadsOpen = useCallback((workingDir) => {
+    setBeadsWorkingDir(workingDir);
+    setMainView("beads");
+  }, []);
 
   // Handle badge click action - calls API to execute configured command
   const handleBadgeClick = useCallback(
@@ -6401,6 +6319,7 @@ function App() {
           terminalActionEnabled=${terminalActionEnabled}
           onFolderOpen=${handleFolderOpen}
           onTerminalClick=${handleTerminalClick}
+          onBeadsOpen=${handleBeadsOpen}
           queueLength=${queueLength}
           onFetchConversationPrompts=${fetchConversationPromptsForSession}
           onSendPromptToConversation=${handleSendPromptToConversation}
@@ -6445,6 +6364,7 @@ function App() {
               terminalActionEnabled=${terminalActionEnabled}
               onFolderOpen=${handleFolderOpen}
               onTerminalClick=${handleTerminalClick}
+              onBeadsOpen=${handleBeadsOpen}
               queueLength=${queueLength}
               onFetchConversationPrompts=${fetchConversationPromptsForSession}
               onSendPromptToConversation=${handleSendPromptToConversation}
@@ -6457,7 +6377,20 @@ function App() {
         </div>
       `}
 
-      <!-- Main chat area (swipe left/right to switch sessions on mobile) -->
+      <!-- Main content area: beads view or conversation -->
+      ${mainView === "beads" && beadsWorkingDir
+        ? html`
+          <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
+            <${BeadsView}
+              workingDir=${beadsWorkingDir}
+              onClose=${() => setMainView("conversation")}
+              showToast=${showToast}
+              onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+              onRunBeadsPrompt=${handleRunBeadsPrompt}
+            />
+          </div>
+        `
+        : html`
       <div
         ref=${mainContentRef}
         class="flex-1 flex flex-col min-w-0 overflow-hidden"
@@ -6873,6 +6806,7 @@ function App() {
           />
         </div>
       </div>
+      `}
 
       <!-- Unified Session Panel (fixed overlay on right) -->
       <${SessionPanel}

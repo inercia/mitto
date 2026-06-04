@@ -220,6 +220,24 @@ export function TrashIcon({ className = "w-5 h-5" }) {
 }
 
 /**
+ * Broom icon (used for "clean up" actions)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function BroomIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="M19.36 2.72l1.42 1.42-5.72 5.71c1.07 1.54 1.22 3.39.32 4.59L9.06 8.12c1.2-.9 3.05-.75 4.59.32l5.71-5.72M5.93 17.57c-2.01-2.01-3.24-4.41-3.58-6.65l4.88-2.09 7.44 7.44-2.09 4.88c-2.24-.34-4.64-1.57-6.65-3.58z"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Edit/pencil icon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
@@ -1133,6 +1151,25 @@ export function FolderOpenIcon({ className = "w-5 h-5" }) {
       class=${className}
     >
       <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6.228c0-1.168.895-2.128 2.033-2.216a48.394 48.394 0 0 1 5.274-.166c1.045.044 2.062.262 2.987.678l.724.33c.925.416 1.943.634 2.987.678a48.54 48.54 0 0 1 5.274.166 2.252 2.252 0 0 1 2.033 2.216v3.548" />
+    </svg>
+  `;
+}
+
+/**
+ * Beads issue tracker icon (rounded bead/bullet list shape)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function BeadsIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
     </svg>
   `;
 }
