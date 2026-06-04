@@ -2790,6 +2790,18 @@ export function useWebSocket() {
         }
         break;
 
+      case "memory_recycled":
+        // Server notifies that the GC's memory-recycle tier restarted a
+        // memory-bloated idle agent process to reclaim memory.
+        console.log("Memory recycled:", msg.data);
+        if (msg.data) {
+          // Dispatch event for toast notification
+          window.dispatchEvent(
+            new CustomEvent("mitto:memory_recycled", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "acp_start_failed":
         // Server notifies that the ACP server failed to start
         console.error("ACP start failed:", msg.data);

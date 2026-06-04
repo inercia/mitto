@@ -3836,6 +3836,33 @@ function App() {
     };
   }, [showToast]);
 
+  // Listen for memory-recycle events (GC Tier 4 restarted a bloated idle agent)
+  useEffect(() => {
+    const handleMemoryRecycled = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const toMB = (b) => Math.round((Number(b) || 0) / (1024 * 1024));
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      const used = toMB(data.rss_bytes);
+      const limit = toMB(data.threshold_bytes);
+      const count = data.session_count || 0;
+      const convs = count === 1 ? "conversation" : "conversations";
+      showToast({
+        style: "info",
+        title: `Memory reclaimed: ${name}`,
+        message: `Idle agent using ${used} MB (limit ${limit} MB) was restarted to free memory. ${count} ${convs} will resume automatically when reopened.`,
+        duration: 10000,
+      });
+    };
+    window.addEventListener("mitto:memory_recycled", handleMemoryRecycled);
+    return () => {
+      window.removeEventListener("mitto:memory_recycled", handleMemoryRecycled);
+    };
+  }, [showToast]);
+
   // Listen for ACP start failed events
   useEffect(() => {
     const handleAcpStartFailed = (event) => {
