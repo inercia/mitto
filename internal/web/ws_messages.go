@@ -273,6 +273,13 @@ const (
 	// Data: { "session_id": string, "requested_type": string, "fallback_type": string, "reason": string }
 	WSMsgTypeRunnerFallback = "runner_fallback"
 
+	// WSMsgTypeMemoryRecycled notifies that the GC's memory-recycle tier (Tier 4) stopped
+	// a memory-bloated idle shared ACP process to reclaim memory. Affected conversations
+	// resume transparently on next focus. Broadcast on /api/events to all connected clients.
+	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string,
+	//         "rss_bytes": uint64, "threshold_bytes": uint64, "session_count": int }
+	WSMsgTypeMemoryRecycled = "memory_recycled"
+
 	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
 	// Sent when messages are added, removed, or the queue is cleared.
 	// Data: { "queue_length": int, "action": string, "message_id": string }

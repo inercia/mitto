@@ -532,6 +532,19 @@ func NewServer(config Config) (*Server, error) {
 	// Set events manager in session manager for broadcasting
 	sessionMgr.SetEventsManager(eventsManager)
 
+	// Surface a toast when the GC's memory-recycle tier (Tier 4) restarts a
+	// memory-bloated idle agent process. Resolve a friendly workspace name here
+	// (the GC only knows the workspace UUID).
+	acpProcessMgr.onMemoryRecycled = func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
+	}
+
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
 	// Check if MCP server is enabled (default: true)
@@ -706,6 +719,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.handleScanAgents)
 	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.handleConfirmAgents)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
+	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.handleRunnerDefaults)
 	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
@@ -1339,6 +1353,29 @@ func (s *Server) BroadcastHookRestarted(attempt int) {
 	if s.logger != nil {
 		s.logger.Info("Broadcast hook restarted",
 			"attempt", attempt,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastMemoryRecycled notifies all connected clients that the GC's memory-recycle
+// tier (Tier 4) stopped a memory-bloated idle agent process to reclaim memory. This
+// lets the frontend show a toast. Affected conversations resume transparently on next focus.
+func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir string, rssBytes, threshold uint64, sessionCount int) {
+	s.eventsManager.Broadcast(WSMsgTypeMemoryRecycled, map[string]interface{}{
+		"workspace_uuid":  workspaceUUID,
+		"workspace_name":  workspaceName,
+		"working_dir":     workingDir,
+		"rss_bytes":       rssBytes,
+		"threshold_bytes": threshold,
+		"session_count":   sessionCount,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast memory recycled",
+			"workspace_uuid", workspaceUUID,
+			"rss_bytes", rssBytes,
+			"threshold_bytes", threshold,
+			"session_count", sessionCount,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

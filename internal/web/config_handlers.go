@@ -933,6 +933,16 @@ func (s *Server) handleSupportedRunners(w http.ResponseWriter, r *http.Request) 
 	writeJSONOK(w, runners)
 }
 
+// handleRunnerDefaults handles GET /api/runner-defaults.
+// Returns default runner configuration values. Currently a stub returning an empty object.
+func (s *Server) handleRunnerDefaults(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSONOK(w, map[string]interface{}{})
+}
+
 // handleAdvancedFlags handles GET /api/advanced-flags.
 // Returns the list of available advanced setting flags that can be configured per-session,
 // along with the configured default values from the config file.
