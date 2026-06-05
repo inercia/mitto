@@ -1209,11 +1209,24 @@ func run() error {
 		autoApprove = cfg.Permissions.IsAutoApprove()
 	}
 
+	// Resolve static files directory for development/hot-reloading.
+	// Priority: MITTO_STATIC_DIR environment variable > config (web.static_dir).
+	// When set, static assets are served from this directory instead of the
+	// embedded assets, so editing files in web/static/ is reflected on refresh.
+	staticDir := os.Getenv("MITTO_STATIC_DIR")
+	if staticDir == "" && cfg != nil && cfg.Web.StaticDir != "" {
+		staticDir = cfg.Web.StaticDir
+	}
+	if staticDir != "" {
+		slog.Info("Serving static files from filesystem (development mode)", "dir", staticDir)
+	}
+
 	webConfig := web.Config{
 		Workspaces:       workspaces,
 		AutoApprove:      autoApprove,
 		Debug:            false,
 		MittoConfig:      cfg,
+		StaticDir:        staticDir,
 		FromCLI:          false, // macOS app always uses file-based persistence
 		OnWorkspaceSave:  onWorkspaceSave,
 		ConfigReadOnly:   configReadOnly,
