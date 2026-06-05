@@ -40,7 +40,54 @@ import {
 
 import { ModelSelection } from "./ModelSelection.js";
 
-export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir, showToast }) {
+// Recommended beads config keys per upstream task system. Shown as context-sensitive
+// help under the upstream selector in the Beads tab.
+const BEADS_UPSTREAM_HELP = {
+  github: {
+    label: "GitHub",
+    rows: [
+      { key: "github.token", desc: "Personal access token" },
+      { key: "github.owner", desc: "Repository owner" },
+      { key: "github.repo", desc: "Repository name" },
+      { key: "github.repository", desc: 'Combined "owner/repo" format' },
+      { key: "github.url", desc: "Custom API URL (GitHub Enterprise)" },
+    ],
+  },
+  jira: {
+    label: "Jira",
+    rows: [
+      { key: "jira.url", desc: 'Base URL, e.g. "https://company.atlassian.net"' },
+      { key: "jira.project", desc: 'Project key, e.g. "PROJ"' },
+      { key: "jira.projects", desc: 'Multiple projects, comma-separated, e.g. "PROJ1,PROJ2"' },
+      { key: "jira.api_token", desc: "API token" },
+      { key: "jira.username", desc: "Account email (Jira Cloud)" },
+      { key: "jira.push_prefix", desc: 'Only push matching issues, e.g. "hippo" or "proj1,proj2"' },
+    ],
+  },
+  gitlab: {
+    label: "GitLab",
+    rows: [
+      { key: "gitlab.url", desc: "GitLab instance URL" },
+      { key: "gitlab.token", desc: "Personal access token" },
+      { key: "gitlab.project_id", desc: "Project ID or path" },
+      { key: "gitlab.group_id", desc: "Group ID for group-level sync" },
+      { key: "gitlab.default_project_id", desc: "Project for creating issues in group mode" },
+    ],
+  },
+  linear: {
+    label: "Linear",
+    rows: [
+      { key: "linear.api_key", desc: "API key (for individual developers)" },
+      { key: "linear.team_id", desc: "Team ID (UUID)" },
+      { key: "linear.team_ids", desc: "Multiple team IDs, comma-separated UUIDs" },
+      { key: "linear.project_id", desc: "Optional: sync only this project" },
+      { key: "linear.id_mode", desc: 'ID generation: "hash" (default)' },
+      { key: "linear.hash_length", desc: "Hash length 3-8 (default: 6)" },
+    ],
+  },
+};
+
+export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir, initialTab, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -52,6 +99,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
 
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState(null);
   const [activeTab, setActiveTab] = useState("general");
+  // Pending initial tab to apply after auto-selecting a folder via initialWorkingDir.
+  // The folder-population effect (keyed on selectedFolder) otherwise forces "general",
+  // so we hand the desired tab off here and consume it there.
+  const pendingInitialTabRef = useRef(null);
 
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
@@ -118,6 +169,20 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   // Folder processors state (for the Processors tab)
   const [folderProcessors, setFolderProcessors] = useState([]);
   const [processorsLoading, setProcessorsLoading] = useState(false);
+
+  // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
+  // beadsConfig holds the raw {key: value} map last loaded from the server.
+  // beadsConfigEntries is the editable list of {key, value} rows for namespaced keys.
+  const [beadsConfig, setBeadsConfig] = useState(null);
+  const [beadsConfigLoading, setBeadsConfigLoading] = useState(false);
+  const [beadsConfigError, setBeadsConfigError] = useState("");
+  const [beadsConfigSaving, setBeadsConfigSaving] = useState(false);
+  const [newBeadsKey, setNewBeadsKey] = useState("");
+  const [newBeadsValue, setNewBeadsValue] = useState("");
+  // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"),
+  // persisted in folders.json via /api/beads/upstream.
+  const [beadsUpstream, setBeadsUpstream] = useState("none");
+  const [beadsUpstreamSaving, setBeadsUpstreamSaving] = useState(false);
 
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -206,12 +271,16 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
         g.workspaces.some((ws) => ws.working_dir === initialWorkingDir)
       );
       if (matchingGroup) {
+        // Hand the desired tab to the folder-population effect (keyed on selectedFolder),
+        // which would otherwise force "general". Also set it directly for the case where
+        // selectedFolder is unchanged (reopening on the same folder) and that effect won't run.
+        pendingInitialTabRef.current = initialTab || null;
         setSelectedFolder(matchingGroup.displayName);
         setSelectedWorkspaceKey(null);
-        setActiveTab("general");
+        setActiveTab(initialTab || "general");
       }
     }
-  }, [isOpen, initialWorkingDir, groupedWorkspaces]);
+  }, [isOpen, initialWorkingDir, initialTab, groupedWorkspaces]);
 
   // Scroll selected folder into view in the tree
   useEffect(() => {
@@ -262,7 +331,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
         "#808080",
     );
     setEditAutoChildren(firstWs.auto_children || []);
-    setActiveTab("general");
+    // Apply a pending initial tab (from initialWorkingDir auto-select), else default to general.
+    const pendingTab = pendingInitialTabRef.current;
+    pendingInitialTabRef.current = null;
+    setActiveTab(pendingTab || "general");
 
     // Load workspace metadata from .mittorc
     setFolderMetadata(null);
@@ -305,6 +377,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
       loadMcpTools(editAcpServer || selectedWorkspace.acp_server, selectedWorkspace.working_dir);
     }
   }, [activeTab, selectedWorkspaceKey, editAcpServer]);
+
+  // Lazily load beads config + upstream when the Beads folder tab is opened.
+  useEffect(() => {
+    if (activeTab !== "beads" || !selectedFolder) return;
+    const workingDir = getSelectedFolderDir();
+    if (workingDir) {
+      reloadBeadsConfig(workingDir);
+      reloadBeadsUpstream(workingDir);
+    }
+  }, [activeTab, selectedFolder]);
+
+  // Reset beads config state when switching folders.
+  useEffect(() => {
+    setBeadsConfig(null);
+    setBeadsConfigError("");
+    setNewBeadsKey("");
+    setNewBeadsValue("");
+    setBeadsUpstream("none");
+  }, [selectedFolder]);
 
   const loadData = async () => {
     setLoading(true);
@@ -861,6 +952,109 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
     return folderGroup?.workspaces[0]?.working_dir || null;
   };
 
+  // Load (reload) beads config for the selected folder via GET /api/beads/config.
+  const reloadBeadsConfig = async (workingDir) => {
+    setBeadsConfigLoading(true);
+    setBeadsConfigError("");
+    try {
+      const res = await secureFetch(apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}`));
+      const data = await res.json();
+      if (data && data.error) {
+        // bd missing or not initialized in this folder.
+        setBeadsConfig(null);
+        setBeadsConfigError(data.error);
+      } else {
+        setBeadsConfig(data || {});
+      }
+    } catch (err) {
+      setBeadsConfig(null);
+      setBeadsConfigError(err.message || "Failed to load beads config");
+    } finally {
+      setBeadsConfigLoading(false);
+    }
+  };
+
+  // Set a single beads config key via PUT /api/beads/config, then reload.
+  const setBeadsConfigKey = async (key, value) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir || !key) return;
+    setBeadsConfigSaving(true);
+    setBeadsConfigError("");
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/config"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, key, value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to set config");
+      if (data && data.error) throw new Error(data.stderr || data.error);
+      await reloadBeadsConfig(workingDir);
+    } catch (err) {
+      setBeadsConfigError(err.message || "Failed to set config");
+    } finally {
+      setBeadsConfigSaving(false);
+    }
+  };
+
+  // Delete a single beads config key via DELETE /api/beads/config, then reload.
+  const unsetBeadsConfigKey = async (key) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir || !key) return;
+    setBeadsConfigSaving(true);
+    setBeadsConfigError("");
+    try {
+      const res = await secureFetch(
+        apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}&key=${encodeURIComponent(key)}`),
+        { method: "DELETE" },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to delete config");
+      if (data && data.error) throw new Error(data.stderr || data.error);
+      await reloadBeadsConfig(workingDir);
+    } catch (err) {
+      setBeadsConfigError(err.message || "Failed to delete config");
+    } finally {
+      setBeadsConfigSaving(false);
+    }
+  };
+
+  // Load the folder's upstream task system via GET /api/beads/upstream.
+  const reloadBeadsUpstream = async (workingDir) => {
+    try {
+      const res = await secureFetch(apiUrl(`/api/beads/upstream?working_dir=${encodeURIComponent(workingDir)}`));
+      const data = await res.json().catch(() => ({}));
+      setBeadsUpstream((data && data.upstream) || "none");
+    } catch (_err) {
+      setBeadsUpstream("none");
+    }
+  };
+
+  // Persist the folder's upstream task system via PUT /api/beads/upstream.
+  const saveBeadsUpstream = async (upstream) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    const prev = beadsUpstream;
+    setBeadsUpstream(upstream); // optimistic
+    setBeadsUpstreamSaving(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/upstream"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, upstream }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to set upstream");
+      if (data && data.error) throw new Error(data.error);
+      setBeadsUpstream((data && data.upstream) || upstream);
+    } catch (err) {
+      setBeadsUpstream(prev); // revert on failure
+      setBeadsConfigError(err.message || "Failed to set upstream");
+    } finally {
+      setBeadsUpstreamSaving(false);
+    }
+  };
+
   // Load (reload) prompts for the selected folder
   const reloadFolderPrompts = async (workingDir) => {
     const res = await secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&include_global=true`));
@@ -977,6 +1171,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   const folderTabs = [
     { id: "general", label: "General" },
     { id: "metadata", label: "Metadata" },
+    { id: "beads", label: "Beads" },
     { id: "prompts", label: "Prompts" },
     { id: "processors", label: "Processors" },
     { id: "children", label: "Children" },
@@ -1345,6 +1540,160 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                               </div>
                             `}
                           </div>
+                        </div>
+                      `}
+
+                      <!-- Folder Beads tab -->
+                      ${activeTab === "beads" && html`
+                        <div class="space-y-4">
+                          <!-- Upstream task system selector (persisted in folders.json) -->
+                          <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Upstream tasks management</label>
+                            <p class="text-xs text-gray-500 mb-2">
+                              Select the external task system beads syncs with. When set, Pull/Push/Sync
+                              actions appear in the Beads view for this folder.
+                            </p>
+                            <select
+                              value=${beadsUpstream}
+                              onInput=${(e) => saveBeadsUpstream(e.target.value)}
+                              disabled=${beadsUpstreamSaving}
+                              class="w-full bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                            >
+                              <option value="none">None</option>
+                              <option value="jira">Jira</option>
+                              <option value="github">GitHub</option>
+                              <option value="gitlab">GitLab</option>
+                              <option value="linear">Linear</option>
+                            </select>
+                          </div>
+
+                          ${beadsUpstream !== "none" && BEADS_UPSTREAM_HELP[beadsUpstream] && html`
+                            <div class="p-3 bg-mitto-input-box border border-mitto-border rounded-lg">
+                              <p class="text-xs text-gray-400 mb-2">
+                                Recommended ${BEADS_UPSTREAM_HELP[beadsUpstream].label} keys${" "}
+                                (click a key to fill the add-key field below):
+                              </p>
+                              <div class="space-y-1">
+                                ${BEADS_UPSTREAM_HELP[beadsUpstream].rows.map((row) => html`
+                                  <div key=${row.key} class="flex items-baseline gap-2 text-xs">
+                                    <button
+                                      type="button"
+                                      onClick=${() => setNewBeadsKey(row.key)}
+                                      class="font-mono text-blue-400 hover:text-blue-300 hover:underline whitespace-nowrap"
+                                      title="Use this key in the add-key field below"
+                                    >${row.key}</button>
+                                    <span class="text-gray-500">— ${row.desc}</span>
+                                  </div>
+                                `)}
+                              </div>
+                            </div>
+                          `}
+
+                          <div class="pt-2 border-t border-mitto-border"></div>
+
+                          <p class="text-xs text-gray-500">
+                            Integration settings stored in this folder's beads database via${" "}
+                            <span class="font-mono text-gray-400">bd config</span>. Use namespaced keys such as${" "}
+                            <span class="font-mono text-gray-400">jira.url</span>,${" "}
+                            <span class="font-mono text-gray-400">github.repo</span>, or${" "}
+                            <span class="font-mono text-gray-400">${"custom.<key>"}</span>.
+                          </p>
+
+                          ${beadsConfigError && html`
+                            <div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-300">
+                              ${beadsConfigError}
+                            </div>
+                          `}
+
+                          ${beadsConfigLoading
+                            ? html`<div class="flex items-center gap-2 text-sm text-gray-400"><${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…</div>`
+                            : (beadsConfig && html`
+                              ${(() => {
+                                const editable = Object.entries(beadsConfig).filter(([k]) => k.includes("."));
+                                const system = Object.entries(beadsConfig).filter(([k]) => !k.includes("."));
+                                return html`
+                                  <div class="space-y-2">
+                                    ${editable.length === 0
+                                      ? html`<p class="text-xs text-gray-500 italic">No integration keys set yet.</p>`
+                                      : editable.map(([k, v]) => html`
+                                        <div key=${k} class="flex gap-2 items-center">
+                                          <input
+                                            type="text"
+                                            value=${k}
+                                            readOnly
+                                            class="bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-400 font-mono cursor-default"
+                                            style="width: 38%; height: 38px; box-sizing: border-box"
+                                          />
+                                          <input
+                                            key=${k + ":" + v}
+                                            type="text"
+                                            defaultValue=${v}
+                                            disabled=${beadsConfigSaving}
+                                            onBlur=${(e) => { if (e.target.value !== v) setBeadsConfigKey(k, e.target.value); }}
+                                            class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                            style="height: 38px; box-sizing: border-box"
+                                          />
+                                          <button
+                                            onClick=${() => unsetBeadsConfigKey(k)}
+                                            disabled=${beadsConfigSaving}
+                                            class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50"
+                                            title="Delete this key"
+                                            style="height: 38px; box-sizing: border-box"
+                                          ><${TrashIcon} className="w-4 h-4" /></button>
+                                        </div>
+                                      `)}
+                                  </div>
+
+                                  <!-- Add a new key -->
+                                  <div class="flex gap-2 items-center pt-2">
+                                    <input
+                                      type="text"
+                                      value=${newBeadsKey}
+                                      onInput=${(e) => setNewBeadsKey(e.target.value)}
+                                      placeholder="jira.url"
+                                      class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                      style="width: 38%; height: 38px; box-sizing: border-box"
+                                    />
+                                    <input
+                                      type="text"
+                                      value=${newBeadsValue}
+                                      onInput=${(e) => setNewBeadsValue(e.target.value)}
+                                      placeholder="value"
+                                      class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                      style="height: 38px; box-sizing: border-box"
+                                    />
+                                    <button
+                                      onClick=${async () => {
+                                        const key = newBeadsKey.trim();
+                                        if (!key) return;
+                                        await setBeadsConfigKey(key, newBeadsValue);
+                                        setNewBeadsKey("");
+                                        setNewBeadsValue("");
+                                      }}
+                                      disabled=${beadsConfigSaving || !newBeadsKey.trim()}
+                                      class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
+                                      title="Add key"
+                                      style="height: 38px; box-sizing: border-box"
+                                    ><${PlusIcon} className="w-4 h-4" /></button>
+                                  </div>
+
+                                  ${system.length > 0 && html`
+                                    <div class="mt-6 pt-4 border-t border-mitto-border">
+                                      <h3 class="text-sm font-medium text-gray-300 mb-1">System</h3>
+                                      <p class="text-xs text-gray-500 mb-2">Operational beads settings (read-only here; edit via the bd CLI).</p>
+                                      <div class="space-y-1">
+                                        ${system.map(([k, v]) => html`
+                                          <div key=${k} class="flex gap-2 text-xs font-mono text-gray-500">
+                                            <span class="truncate" style="width: 38%">${k}</span>
+                                            <span class="flex-1 truncate">${String(v)}</span>
+                                          </div>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  `}
+                                `;
+                              })()}
+                            `)}
                         </div>
                       `}
 

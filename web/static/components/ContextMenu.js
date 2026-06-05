@@ -22,7 +22,9 @@ function ContextMenuItem({ item, onClose }) {
     if (itemRef.current) {
       const rect = itemRef.current.getBoundingClientRect();
       const submenuWidth = 180;
-      const submenuHeight = item.submenu.length * 38 + 8;
+      // Cap the estimate so long submenus (e.g. the full issue list) pin to the
+      // top of the viewport and scroll instead of overflowing off-screen.
+      const submenuHeight = Math.min(item.submenu.length * 38 + 8, window.innerHeight * 0.6);
       // Prefer opening to the right; flip to the left if it would overflow
       let left = rect.right - 4;
       if (left + submenuWidth > window.innerWidth) {
@@ -67,7 +69,7 @@ function ContextMenuItem({ item, onClose }) {
         ${submenuOpen &&
         html`
           <div
-            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
+            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px] max-h-[60vh] overflow-y-auto"
             style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
             onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
             onMouseLeave=${scheduleClose}

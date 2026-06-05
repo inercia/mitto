@@ -196,10 +196,12 @@ export function SessionPanel({
   sessionId,
   sessionInfo,
   onRename,
+  onSetBeadsIssue,
   isStreaming = false,
   configOptions = [],
   onSetConfigOption,
   mcpTools = [],
+  showToast,
 }) {
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
@@ -260,6 +262,10 @@ export function SessionPanel({
     return modelOpt?.current_value || null;
   }, [configOptions]);
 
+  // --- Beads issue state ---
+  const [editedBeadsIssue, setEditedBeadsIssue] = useState("");
+  const [isSavingBeadsIssue, setIsSavingBeadsIssue] = useState(false);
+
   // --- Changes tab state ---
   const [changesData, setChangesData] = useState(null);
   const [isLoadingChanges, setIsLoadingChanges] = useState(false);
@@ -287,6 +293,11 @@ export function SessionPanel({
     setEditingAttribute(null);
     setUserDataError(null);
   }, [sessionId, isOpen]);
+
+  // --- Effects: keep editedBeadsIssue in sync with sessionInfo ---
+  useEffect(() => {
+    setEditedBeadsIssue(sessionInfo?.beads_issue ?? "");
+  }, [sessionInfo?.beads_issue]);
 
   // --- Effects: fetch properties data when open ---
   useEffect(() => {
@@ -450,6 +461,39 @@ export function SessionPanel({
     },
     [handleSaveTitle],
   );
+
+  // --- Handlers: beads issue ---
+  const handleSaveBeadsIssue = useCallback(async () => {
+    if (!sessionId || isSavingBeadsIssue || !onSetBeadsIssue) return;
+    setIsSavingBeadsIssue(true);
+    try {
+      await onSetBeadsIssue(sessionId, editedBeadsIssue.trim());
+      const cleared = editedBeadsIssue.trim() === "";
+      showToast && showToast({
+        style: "success",
+        title: cleared ? "Beads issue unlinked" : "Beads issue linked",
+      });
+    } catch (err) {
+      console.error("Failed to save beads issue:", err);
+      showToast && showToast({ style: "error", title: "Failed to update beads issue" });
+    } finally {
+      setIsSavingBeadsIssue(false);
+    }
+  }, [sessionId, editedBeadsIssue, onSetBeadsIssue, isSavingBeadsIssue, showToast]);
+
+  const handleClearBeadsIssue = useCallback(async () => {
+    if (!sessionId || isSavingBeadsIssue || !onSetBeadsIssue) return;
+    setIsSavingBeadsIssue(true);
+    try {
+      await onSetBeadsIssue(sessionId, "");
+      showToast && showToast({ style: "success", title: "Beads issue unlinked" });
+    } catch (err) {
+      console.error("Failed to clear beads issue:", err);
+      showToast && showToast({ style: "error", title: "Failed to clear beads issue" });
+    } finally {
+      setIsSavingBeadsIssue(false);
+    }
+  }, [sessionId, onSetBeadsIssue, isSavingBeadsIssue, showToast]);
 
   // --- Handlers: feature flags ---
   const handleFlagChange = useCallback(
@@ -962,6 +1006,36 @@ export function SessionPanel({
               : html`<span class="truncate" title=${sessionInfo?.working_dir || ""}>${sessionInfo?.working_dir || "Unknown"}</span>`}
           </div>
         </div>
+
+        <!-- Beads Issue Section -->
+        ${onSetBeadsIssue && html`
+          <div>
+            <label class="block text-sm font-medium text-slate-400 mb-2">Linked beads issue</label>
+            <div class="flex items-center gap-2">
+              <input
+                type="text"
+                class="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+                value=${editedBeadsIssue}
+                onInput=${(e) => setEditedBeadsIssue(e.target.value)}
+                placeholder="e.g. mitto-123"
+                disabled=${isSavingBeadsIssue || isStreaming}
+              />
+              <button
+                class="px-3 py-2 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick=${handleSaveBeadsIssue}
+                disabled=${isSavingBeadsIssue || isStreaming}
+              >Save</button>
+              ${sessionInfo?.beads_issue && html`
+                <button
+                  class="px-3 py-2 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick=${handleClearBeadsIssue}
+                  disabled=${isSavingBeadsIssue || isStreaming}
+                  title="Clear linked issue"
+                >Clear</button>
+              `}
+            </div>
+          </div>
+        `}
 
         <!-- Periodic Prompts Section -->
         ${periodicConfig?.enabled && html`

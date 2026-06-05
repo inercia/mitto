@@ -1325,6 +1325,51 @@ a.mailto-link:hover {
   background: #94a3b8;
 }
 
+/* Beads table scroll container — force a visible, styled scrollbar so the
+   horizontal scroll is discoverable. macOS (WKWebView / Safari) uses overlay
+   scrollbars that stay hidden until scrolling, leaving no obvious way to reach
+   clipped right-hand columns with a mouse. */
+.beads-table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+  /* Re-enable horizontal scrolling. The global ".overflow-y-auto { overflow-x:
+     hidden }" rule above (which suppresses horizontal scroll in the conversation
+     area on mobile) otherwise wins over Tailwind's .overflow-x-auto by source
+     order. This rule is defined later, so it restores horizontal scrolling for
+     the Beads table. */
+  overflow-x: auto;
+}
+
+.beads-table-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.beads-table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.beads-table-scroll::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+.beads-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.light .beads-table-scroll {
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.light .beads-table-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.light .beads-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
 /* =============================================================================
    Agent Plan Panel - Light Theme
    ============================================================================= */

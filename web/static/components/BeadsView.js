@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef } = window.preac
 
 import { apiUrl, authFetch, secureFetch } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon } from "./Icons.js";
+import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 
@@ -27,6 +27,25 @@ async function readBeadsResponse(res) {
   }
   return { error: (text && text.trim()) || `Request failed (HTTP ${res.status})` };
 }
+
+// Display labels for the folder's configured upstream task system.
+const UPSTREAM_LABELS = { jira: "Jira", github: "GitHub", gitlab: "GitLab", linear: "Linear" };
+
+// Dependency edge kinds accepted by "bd dep add -t" (mirrors the backend
+// allow-list in beads_api.go). "blocks" is the default/most common kind, so it
+// is listed first.
+const DEP_TYPES = [
+  "blocks",
+  "related",
+  "parent-child",
+  "discovered-from",
+  "until",
+  "caused-by",
+  "validates",
+  "relates-to",
+  "supersedes",
+  "tracks",
+];
 
 const PRIORITY_LABELS = { 0: "Critical", 1: "High", 2: "Medium", 3: "Low" };
 const PRIORITY_COLORS = {
@@ -104,7 +123,7 @@ function labelValue(label, value) {
  *
  * It matches the SessionPanel slide animation and look/feel.
  */
-function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, statusBusy }) {
+function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, statusBusy }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -126,6 +145,40 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const [prompts, setPrompts] = useState([]);
   const [promptsLoading, setPromptsLoading] = useState(false);
   const promptsRef = useRef(null);
+  const panelRef = useRef(null);
+
+  // View-mode inline description editing. Clicking the rendered description
+  // switches it to a textarea; blur saves via /api/beads/update when the text
+  // changed. `descDraft` holds the in-progress text; `savingDesc` gates the
+  // in-flight request.
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState("");
+  const [savingDesc, setSavingDesc] = useState(false);
+  // Min height (px) applied to the edit textarea so it does not shrink relative
+  // to the rendered description it replaces. Measured from descViewRef on entry.
+  const [descMinHeight, setDescMinHeight] = useState(0);
+  const descRef = useRef(null);
+  const descViewRef = useRef(null);
+
+  // View-mode inline title editing. Clicking the rendered title in the header
+  // switches it to a text input; blur saves via /api/beads/update when the text
+  // changed. `titleDraft` holds the in-progress text; `savingTitle` gates the
+  // in-flight request. `titleCancelRef` lets Escape blur without saving.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [savingTitle, setSavingTitle] = useState(false);
+  const titleRef = useRef(null);
+  const titleCancelRef = useRef(false);
+
+  // View-mode dependencies. The list rows only carry a dependency_count, so the
+  // full edges (id + title + status + dependency_type) are fetched from
+  // /api/beads/show when an issue is opened. `depsBusy` gates add/remove
+  // requests; `newDepType`/`newDepId` back the "add dependency" row.
+  const [deps, setDeps] = useState([]);
+  const [depsLoading, setDepsLoading] = useState(false);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [newDepType, setNewDepType] = useState("blocks");
+  const [newDepId, setNewDepId] = useState("");
 
   // Reset the form whenever create mode is (re)entered.
   useEffect(() => {
@@ -149,6 +202,27 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showPrompts]);
+
+  // Close the whole panel when clicking outside of it. Clicks on an issue row
+  // are ignored (rows manage their own open/toggle), as are clicks inside a
+  // floating menu or dialog layered above (z-50), so those flows still work.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onDocPointer = (e) => {
+      if (e.button !== 0) return;
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      if (e.target.closest &&
+          (e.target.closest("[data-has-context-menu]") || e.target.closest(".z-50"))) {
+        return;
+      }
+      onClose();
+    };
+    const tid = setTimeout(() => document.addEventListener("mousedown", onDocPointer), 10);
+    return () => {
+      clearTimeout(tid);
+      document.removeEventListener("mousedown", onDocPointer);
+    };
+  }, [isOpen, onClose]);
 
   const togglePrompts = useCallback(() => {
     setShowPrompts((open) => {
@@ -220,6 +294,237 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     [creating, allIssues, data && data.id],
   );
 
+  // Leave description-edit mode whenever the viewed issue changes so a new issue
+  // never opens showing the previous one's draft.
+  useEffect(() => {
+    setEditingDesc(false);
+    setSavingDesc(false);
+    setEditingTitle(false);
+    setSavingTitle(false);
+  }, [data && data.id]);
+
+  // Focus the textarea (cursor at end) when entering edit mode.
+  useEffect(() => {
+    if (editingDesc && descRef.current) {
+      const el = descRef.current;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, [editingDesc]);
+
+  // Focus the title input (cursor at end) when entering edit mode.
+  useEffect(() => {
+    if (editingTitle && titleRef.current) {
+      const el = titleRef.current;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, [editingTitle]);
+
+  // Enter inline edit mode, seeding the draft from the current description.
+  // Capture the rendered area's height first so the textarea opens at least as
+  // tall as the content it replaces (it can still grow via min-height/rows).
+  const startEditDesc = useCallback(() => {
+    if (savingDesc) return;
+    if (descViewRef.current) setDescMinHeight(descViewRef.current.offsetHeight);
+    setDescDraft((data && data.description) || "");
+    setEditingDesc(true);
+  }, [data && data.description, savingDesc]);
+
+  // Persist the edited description on blur. Saves only when the text changed;
+  // otherwise just leaves edit mode. Uses /api/beads/update and refreshes the
+  // list via onUpdated so the panel re-renders with the saved value.
+  const handleDescBlur = useCallback(async () => {
+    const original = (data && data.description) || "";
+    const next = descDraft;
+    if (next === original) {
+      setEditingDesc(false);
+      return;
+    }
+    setSavingDesc(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: data.id, description: next }),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to update description" });
+      } else {
+        showToast && showToast({ style: "success", title: "Description updated" });
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to update description" });
+    } finally {
+      setSavingDesc(false);
+      setEditingDesc(false);
+    }
+  }, [data && data.id, data && data.description, descDraft, workingDir, showToast, onUpdated]);
+
+  // Enter inline title-edit mode, seeding the draft from the current title.
+  const startEditTitle = useCallback(() => {
+    if (savingTitle) return;
+    titleCancelRef.current = false;
+    setTitleDraft((data && data.title) || "");
+    setEditingTitle(true);
+  }, [data && data.title, savingTitle]);
+
+  // Persist the edited title on blur. Saves only when the (non-empty) text
+  // changed; otherwise just leaves edit mode. Escape sets titleCancelRef so the
+  // blur it triggers discards the draft. Uses /api/beads/update and refreshes
+  // the list via onUpdated so the panel re-renders with the saved value.
+  const handleTitleBlur = useCallback(async () => {
+    if (titleCancelRef.current) {
+      titleCancelRef.current = false;
+      setEditingTitle(false);
+      return;
+    }
+    const original = (data && data.title) || "";
+    const next = titleDraft.trim();
+    if (next === "" || next === original) {
+      setEditingTitle(false);
+      return;
+    }
+    setSavingTitle(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: data.id, title: next }),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to update title" });
+      } else {
+        showToast && showToast({ style: "success", title: "Title updated" });
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to update title" });
+    } finally {
+      setSavingTitle(false);
+      setEditingTitle(false);
+    }
+  }, [data && data.id, data && data.title, titleDraft, workingDir, showToast, onUpdated]);
+
+  // Enter saves (via blur); Escape discards the draft (via blur).
+  const handleTitleKeyDown = useCallback((e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.target.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      titleCancelRef.current = true;
+      e.target.blur();
+    }
+  }, []);
+
+  // Load the issue's full dependency edges. The list row only carries a count,
+  // so the actual edges come from /api/beads/show (its `dependencies` array).
+  const fetchDeps = useCallback(async () => {
+    if (!workingDir || !data || !data.id) return;
+    setDepsLoading(true);
+    try {
+      const res = await authFetch(
+        apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(data.id),
+      );
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        setDeps([]);
+      } else {
+        const issueObj = Array.isArray(respData) ? respData[0] : respData;
+        setDeps((issueObj && issueObj.dependencies) || []);
+      }
+    } catch (_err) {
+      setDeps([]);
+    } finally {
+      setDepsLoading(false);
+    }
+  }, [workingDir, data && data.id]);
+
+  // Fetch dependencies whenever a (non-create) issue is opened or switched.
+  useEffect(() => {
+    setDeps([]);
+    setNewDepId("");
+    setNewDepType("blocks");
+    if (isOpen && !creating && data && data.id) {
+      fetchDeps();
+    }
+  }, [isOpen, creating, data && data.id]);
+
+  // Add or remove a dependency edge via /api/beads/dep, then refresh both the
+  // dependency list and the parent issue list (so counts stay current).
+  const mutateDep = useCallback(async (action, dependsOn, depType) => {
+    if (!data || !data.id || !dependsOn) return;
+    setDepsBusy(true);
+    try {
+      const body = { working_dir: workingDir, id: data.id, depends_on: dependsOn, action };
+      if (action === "add") body.type = depType || "blocks";
+      const res = await secureFetch(apiUrl("/api/beads/dep"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || `Failed to ${action} dependency` });
+        return false;
+      }
+      showToast && showToast({ style: "success", title: action === "add" ? `Added dependency on ${dependsOn}` : `Removed dependency on ${dependsOn}` });
+      await fetchDeps();
+      onUpdated && onUpdated();
+      return true;
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} dependency` });
+      return false;
+    } finally {
+      setDepsBusy(false);
+    }
+  }, [data && data.id, workingDir, showToast, fetchDeps, onUpdated]);
+
+  const handleAddDep = useCallback(async () => {
+    const target = newDepId.trim();
+    if (!target || depsBusy) return;
+    const ok = await mutateDep("add", target, newDepType);
+    if (ok) setNewDepId("");
+  }, [newDepId, newDepType, depsBusy, mutateDep]);
+
+  // Change the kind of an existing edge. bd has no in-place type update, so this
+  // removes the edge and re-adds it with the new type. A single combined toast
+  // and refresh is issued at the end.
+  const changeDepType = useCallback(async (dependsOn, nextType) => {
+    if (!data || !data.id || !dependsOn || depsBusy) return;
+    setDepsBusy(true);
+    try {
+      const post = (body) => secureFetch(apiUrl("/api/beads/dep"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      let res = await post({ working_dir: workingDir, id: data.id, depends_on: dependsOn, action: "remove" });
+      let respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to change dependency type" });
+        return;
+      }
+      res = await post({ working_dir: workingDir, id: data.id, depends_on: dependsOn, type: nextType, action: "add" });
+      respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to change dependency type" });
+      } else {
+        showToast && showToast({ style: "success", title: `Changed ${dependsOn} to ${nextType}` });
+      }
+      await fetchDeps();
+      onUpdated && onUpdated();
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to change dependency type" });
+    } finally {
+      setDepsBusy(false);
+    }
+  }, [data && data.id, workingDir, depsBusy, showToast, fetchDeps, onUpdated]);
+
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
@@ -227,14 +532,33 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const labelClass = "block text-xs font-medium text-mitto-text-secondary mb-1";
 
   return html`
-    <div class="w-80 flex-shrink-0 bg-mitto-sidebar border-l border-mitto-border h-full flex flex-col properties-panel ${isClosing ? "closing" : ""}">
+    <div ref=${panelRef} class="w-80 flex-shrink-0 bg-mitto-sidebar border-l border-mitto-border h-full flex flex-col properties-panel ${isClosing ? "closing" : ""}">
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
             ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>`
             : html`
               <div class="font-mono text-xs text-mitto-text-secondary">${data.id}</div>
-              <h2 class="font-semibold text-base text-mitto-text break-words">${data.title}</h2>
+              ${editingTitle
+                ? html`
+                  <input
+                    ref=${titleRef}
+                    type="text"
+                    class="${inputClass} font-semibold text-base"
+                    value=${titleDraft}
+                    onInput=${e => setTitleDraft(e.target.value)}
+                    onBlur=${handleTitleBlur}
+                    onKeyDown=${handleTitleKeyDown}
+                    disabled=${savingTitle}
+                  />
+                `
+                : html`
+                  <h2
+                    class="font-semibold text-base text-mitto-text break-words cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
+                    onClick=${startEditTitle}
+                    title="Click to edit"
+                  >${data.title}</h2>
+                `}
             `}
         </div>
         <button
@@ -316,17 +640,39 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
               ${data.parent && labelValue("Parent", html`<span class="font-mono">${data.parent}</span>`)}
             </div>
 
-            ${data.description && html`
-              <div>
-                <div class="text-xs text-mitto-text-secondary mb-1">Description</div>
-                <div class="border border-mitto-border rounded p-3 bg-mitto-input-box">
-                  ${md
-                    ? html`<div class="text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                    : html`<pre class="whitespace-pre-wrap text-sm text-mitto-text">${data.description}</pre>`
-                  }
-                </div>
-              </div>
-            `}
+            <div>
+              <div class="text-xs text-mitto-text-secondary mb-1">Description</div>
+              ${editingDesc
+                ? html`
+                  <textarea
+                    ref=${descRef}
+                    class="${inputClass} resize-y"
+                    rows="6"
+                    style=${descMinHeight ? `min-height:${descMinHeight}px` : null}
+                    placeholder="Add a description…"
+                    value=${descDraft}
+                    onInput=${e => setDescDraft(e.target.value)}
+                    onBlur=${handleDescBlur}
+                    disabled=${savingDesc}
+                  ></textarea>
+                `
+                : html`
+                  <div
+                    ref=${descViewRef}
+                    class="border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative"
+                    onClick=${startEditDesc}
+                    title="Click to edit"
+                  >
+                    ${savingDesc && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
+                    ${data.description
+                      ? (md
+                          ? html`<div class="text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
+                          : html`<pre class="whitespace-pre-wrap text-sm text-mitto-text">${data.description}</pre>`)
+                      : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
+                    }
+                  </div>
+                `}
+            </div>
 
             ${subtasks.length > 0 && html`
               <div>
@@ -342,6 +688,84 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                 </ul>
               </div>
             `}
+
+            <div>
+              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Dependencies</div>
+
+              <datalist id="beads-dep-options">
+                ${(allIssues || [])
+                  .filter(i => i.id !== data.id && !deps.some(d => d.id === i.id))
+                  .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
+              </datalist>
+
+              ${depsLoading
+                ? html`
+                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
+                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                  </div>
+                `
+                : html`
+                  <div class="space-y-1">
+                    ${deps.length === 0 && html`
+                      <div class="text-xs text-mitto-text-secondary italic">No dependencies.</div>
+                    `}
+                    ${deps.map(d => html`
+                      <div key=${d.id} class="flex items-center gap-1.5">
+                        <select
+                          class="bg-mitto-input-box border border-mitto-border rounded px-1.5 py-1 text-xs text-mitto-text"
+                          value=${d.dependency_type || "blocks"}
+                          disabled=${depsBusy}
+                          onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
+                        >
+                          ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                        </select>
+                        <span class="font-mono text-xs text-mitto-text flex-1 min-w-0 truncate" title=${d.title || d.id}>${d.id}</span>
+                        <button
+                          type="button"
+                          onClick=${() => mutateDep("remove", d.id)}
+                          disabled=${depsBusy}
+                          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                          title="Remove dependency"
+                        >
+                          <${CloseIcon} className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    `)}
+
+                    <div class="flex items-center gap-1.5 pt-1">
+                      <select
+                        class="bg-mitto-input-box border border-mitto-border rounded px-1.5 py-1 text-xs text-mitto-text"
+                        value=${newDepType}
+                        disabled=${depsBusy}
+                        onInput=${e => setNewDepType(e.target.value)}
+                      >
+                        ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                      </select>
+                      <input
+                        type="text"
+                        list="beads-dep-options"
+                        placeholder="issue id…"
+                        value=${newDepId}
+                        disabled=${depsBusy}
+                        onInput=${e => setNewDepId(e.target.value)}
+                        onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
+                        class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text flex-1 min-w-0 placeholder-mitto-text-secondary"
+                      />
+                      <button
+                        type="button"
+                        onClick=${handleAddDep}
+                        disabled=${depsBusy || !newDepId.trim()}
+                        class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                        title="Add dependency"
+                      >
+                        ${depsBusy
+                          ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                          : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                      </button>
+                    </div>
+                  </div>
+                `}
+            </div>
           `}
       </div>
 
@@ -437,11 +861,13 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
  * @param {string} workingDir - Absolute path of the workspace directory.
  * @param {function} showToast - Toast notification helper from parent.
  * @param {function} onFetchBeadsPrompts - Async (workingDir) => prompts whose
- *        `menus` list includes `beads`; populates the per-issue context menu.
+ *        `menus` list includes `beadsIssues`; populates the per-issue context menu.
  * @param {function} onRunBeadsPrompt - (prompt, issue) => starts a new
  *        conversation seeded with the prompt text and the issue's context.
+ * @param {function} onShowSidebar - Opens the conversations sidebar (mobile);
+ *        used by the header hamburger button to return to the conversation list.
  */
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onShowSidebar, onOpenConfig }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -453,7 +879,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [search, setSearch] = useState("");
 
   // Per-issue right-click context menu. `contextMenu` holds the click position
-  // and the issue it targets; `menuPrompts` are the `menus: beads` prompts shown
+  // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
   // in the "Prompts" submenu. Actions are not wired to behavior yet.
   const [contextMenu, setContextMenu] = useState(null);
   const [menuPrompts, setMenuPrompts] = useState([]);
@@ -467,6 +893,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deletingIssue, setDeletingIssue] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
+
+  // Folder upstream task system ("none"|"jira"|"github"|"gitlab"|"linear") and the
+  // in-flight sync action ("pull"|"push"|"sync"|null), used to drive the
+  // upstream sync buttons in the footer.
+  const [upstream, setUpstream] = useState("none");
+  const [syncAction, setSyncAction] = useState(null);
 
   const workspaceLabel = workingDir ? getBasename(workingDir) : "Workspace";
 
@@ -494,6 +926,51 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     fetchList();
   }, [fetchList]);
 
+  // Fetch the folder's configured upstream so the sync buttons can be shown.
+  useEffect(() => {
+    if (!workingDir) {
+      setUpstream("none");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(apiUrl("/api/beads/upstream") + "?working_dir=" + encodeURIComponent(workingDir));
+        const data = await readBeadsResponse(res);
+        if (!cancelled) setUpstream((data && data.upstream) || "none");
+      } catch (_err) {
+        if (!cancelled) setUpstream("none");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workingDir]);
+
+  // Trigger an upstream sync action (pull/push/sync) via POST /api/beads/sync.
+  // The backend reads the integration from folders.json; we only send the action.
+  const handleSync = useCallback(async (action) => {
+    if (!workingDir || syncAction) return;
+    setSyncAction(action);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, action }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        showToast && showToast({ style: "error", title: data.error || `Failed to ${action}`, message: data.stderr });
+      } else {
+        const verb = action === "pull" ? "Pulled" : action === "push" ? "Pushed" : "Synced";
+        showToast && showToast({ style: "success", title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}` });
+        fetchList();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || `Failed to ${action}` });
+    } finally {
+      setSyncAction(null);
+    }
+  }, [workingDir, syncAction, upstream, showToast, fetchList]);
+
   // The list rows already carry all rich fields (description, parent, dates,
   // assignee, owner), so the detail panel is populated directly from the row —
   // no extra /show request needed. Clicking the open row again toggles it shut.
@@ -514,7 +991,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setIsCreating(false);
   }, []);
 
-  // Open the per-issue context menu at the cursor and load the `menus: beads`
+  // Open the per-issue context menu at the cursor and load the `menus: beadsIssues`
   // prompts for this workspace so the "Prompts" submenu reflects them.
   const handleRowContextMenu = useCallback(
     (e, issue) => {
@@ -640,6 +1117,36 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }
   }, [workingDir, showToast, fetchList]);
 
+  // Create a "blocks" dependency edge from the context menu. `direction` picks
+  // the argument order (the edge kind is always "blocks"):
+  //   "depends-on" → issue depends on other      (bd dep add <issue> <other>)
+  //   "blocks"     → issue blocks other          (bd dep add <other> <issue>)
+  // since "A depends on B" is the same edge as "B is blocked by A".
+  const handleAddDependencyEdge = useCallback(async (issue, other, direction) => {
+    if (!issue || !other) return;
+    const id = direction === "blocks" ? other.id : issue.id;
+    const dependsOn = direction === "blocks" ? issue.id : other.id;
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/dep"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id, depends_on: dependsOn, type: "blocks", action: "add" }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        showToast && showToast({ style: "error", title: data.error || "Failed to add dependency", message: data.stderr });
+      } else {
+        showToast && showToast({
+          style: "success",
+          title: direction === "blocks" ? `${issue.id} now blocks ${other.id}` : `${issue.id} now depends on ${other.id}`,
+        });
+        fetchList();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to add dependency" });
+    }
+  }, [workingDir, showToast, fetchList]);
+
   // Run a beads prompt for a specific issue: delegates to the parent, which
   // creates a new conversation seeded with the prompt text and issue context.
   const handleRunPrompt = useCallback((prompt, issue) => {
@@ -647,9 +1154,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     onRunBeadsPrompt && onRunBeadsPrompt(prompt, issue);
   }, [onRunBeadsPrompt, closeContextMenu]);
 
-  // Build the per-issue context menu: a Delete action plus a "Prompts" submenu
-  // listing every `menus: beads` prompt, both wired to the same handlers used
-  // by the detail panel footer.
+  // Build the per-issue context menu: a Close/Reopen toggle and a Delete action,
+  // plus a "Prompts" submenu listing every `menus: beadsIssues` prompt — all
+  // wired to the same handlers used by the detail panel footer.
   const promptSubmenuItems = (menuPrompts || [])
     .filter((p) => p && p.name)
     .map((p) => ({
@@ -657,7 +1164,25 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       onClick: () => handleRunPrompt(p, contextMenu && contextMenu.issue),
     }));
 
+  const ctxIssue = contextMenu && contextMenu.issue;
+  const ctxIsClosed = ctxIssue && ctxIssue.status === "closed";
+
+  // "Depends On" / "Blocks" submenus list every other issue. Picking one creates
+  // a "blocks" edge in the chosen direction via handleAddDependencyEdge.
+  const otherIssues = (issues || []).filter((i) => ctxIssue && i.id !== ctxIssue.id);
+  const issueSubmenu = (direction) =>
+    otherIssues.map((i) => ({
+      label: `${i.id} · ${i.title}`,
+      onClick: () => handleAddDependencyEdge(ctxIssue, i, direction),
+    }));
+
   const contextMenuItems = [
+    {
+      label: ctxIsClosed ? "Reopen" : "Close",
+      icon: ctxIsClosed ? html`<${RefreshIcon} />` : html`<${CheckIcon} />`,
+      onClick: () => ctxIssue && handleToggleStatus(ctxIssue),
+      disabled: statusBusy,
+    },
     {
       label: "Delete",
       icon: html`<${TrashIcon} />`,
@@ -667,16 +1192,29 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     ...(promptSubmenuItems.length > 0
       ? [{ label: "Prompts", submenu: promptSubmenuItems }]
       : []),
+    ...(otherIssues.length > 0
+      ? [
+          { label: "Depends On", submenu: issueSubmenu("depends-on") },
+          { label: "Blocks", submenu: issueSubmenu("blocks") },
+        ]
+      : []),
   ];
 
   return html`
     <div class="flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
+        <button
+          onClick=${() => onShowSidebar && onShowSidebar()}
+          class="md:hidden p-2 -ml-2 rounded-lg hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          title="Show conversations"
+        >
+          <${MenuIcon} className="w-6 h-6" />
+        </button>
         <span class="font-semibold text-lg flex-1">Beads — ${workspaceLabel}</span>
       </div>
 
-      <div class="flex items-center gap-2 px-4 py-2 border-b border-mitto-border flex-shrink-0 flex-wrap">
+      <div class="flex items-center gap-2 px-4 py-1.5 border-b border-mitto-border flex-shrink-0 flex-wrap">
         <select
           class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text"
           value=${statusFilter}
@@ -702,7 +1240,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         />
       </div>
 
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll">
         ${loading && html`
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary gap-2">
             <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading issues…
@@ -715,7 +1253,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary text-sm">No issues found</div>
         `}
         ${!loading && !error && filtered.length > 0 && html`
-          <table class="w-full text-sm text-left border-collapse">
+          <table class="min-w-full text-sm text-left border-collapse">
             <thead class="sticky top-0 bg-mitto-sidebar text-xs text-mitto-text-secondary uppercase tracking-wide">
               <tr>
                 <th class="px-3 py-2">ID</th>
@@ -738,7 +1276,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                   <td class="px-3 py-2 font-mono text-mitto-text-secondary text-xs whitespace-nowrap">${issue.id}</td>
                   <td class="px-3 py-2 whitespace-nowrap">${typeBadge(issue.issue_type)}</td>
                   <td class="px-3 py-2 whitespace-nowrap">${statusBadge(issue.status)}</td>
-                  <td class="px-3 py-2 text-mitto-text max-w-xs truncate">${issue.title}</td>
+                  <td class="px-3 py-2 text-mitto-text whitespace-nowrap">${issue.title}</td>
                   <td class="px-3 py-2 text-mitto-text-secondary text-xs whitespace-nowrap">${issue.owner || ""}</td>
                   <td class="px-3 py-2 whitespace-nowrap">${priorityBadge(issue.priority)}</td>
                 </tr>
@@ -771,7 +1309,53 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         >
           <${BroomIcon} className="w-4 h-4" />
         </button>
+
+        ${upstream && upstream !== "none" && html`
+          <div class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border">
+            <button
+              onClick=${() => handleSync("pull")}
+              disabled=${!!syncAction}
+              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              title=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+            >
+              ${syncAction === "pull"
+                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                : html`<${ArrowDownIcon} className="w-4 h-4" />`}
+            </button>
+            <button
+              onClick=${() => handleSync("push")}
+              disabled=${!!syncAction}
+              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              title=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+            >
+              ${syncAction === "push"
+                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                : html`<${ArrowUpIcon} className="w-4 h-4" />`}
+            </button>
+            <button
+              onClick=${() => handleSync("sync")}
+              disabled=${!!syncAction}
+              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              title=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+            >
+              ${syncAction === "sync"
+                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                : html`<${SyncIcon} className="w-4 h-4" />`}
+            </button>
+          </div>
+        `}
+
         <span class="text-xs text-mitto-text-secondary ml-auto">${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span>
+
+        ${onOpenConfig && html`
+          <button
+            onClick=${() => onOpenConfig()}
+            class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text ml-2"
+            title="Beads configuration"
+          >
+            <${SettingsIcon} className="w-4 h-4" />
+          </button>
+        `}
       </div>
     </div>
 
@@ -782,6 +1366,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       workingDir=${workingDir}
       onClose=${closePanel}
       onCreated=${fetchList}
+      onUpdated=${fetchList}
       showToast=${showToast}
       onFetchPrompts=${onFetchBeadsPrompts}
       onRunPrompt=${handleRunPrompt}

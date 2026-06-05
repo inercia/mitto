@@ -3299,6 +3299,7 @@ function App() {
     loadMoreMessages,
     updateSessionName,
     renameSession,
+    setSessionBeadsIssue,
     pinSession,
     archiveSession,
     removeSession,
@@ -3519,7 +3520,7 @@ function App() {
     [],
   );
 
-  // Fetch the prompts whose `menus` list includes `beads` for a workspace
+  // Fetch the prompts whose `menus` list includes `beadsIssues` for a workspace
   // directory. Used by the per-issue context menu in the Beads list view. There
   // is no specific conversation here, so `enabledWhen` is evaluated without a
   // session_id; we only keep the prompts that opt into the beads menu via
@@ -3533,7 +3534,7 @@ function App() {
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
-      return all.filter((p) => p && promptMenus(p).includes("beads"));
+      return all.filter((p) => p && promptMenus(p).includes("beadsIssues"));
     } catch (err) {
       console.error("Failed to fetch beads prompts for workspace:", err);
       return [];
@@ -5513,9 +5514,9 @@ function App() {
     setWorkspacesDialog({ isOpen: true });
   };
 
-  const handleShowWorkspacesForFolder = useCallback((workingDir) => {
+  const handleShowWorkspacesForFolder = useCallback((workingDir, tab) => {
     if (configReadonly) return;
-    setWorkspacesDialog({ isOpen: true, workingDir });
+    setWorkspacesDialog({ isOpen: true, workingDir, tab });
   }, [configReadonly]);
 
   const handleShowKeyboardShortcuts = () => {
@@ -6271,6 +6272,7 @@ function App() {
       <${WorkspacesDialog}
         isOpen=${workspacesDialog.isOpen}
         initialWorkingDir=${workspacesDialog.workingDir || null}
+        initialTab=${workspacesDialog.tab || null}
         onClose=${() => setWorkspacesDialog({ isOpen: false })}
         WorkspaceBadge=${WorkspaceBadge}
         showToast=${showToast}
@@ -6387,6 +6389,8 @@ function App() {
               showToast=${showToast}
               onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
               onRunBeadsPrompt=${handleRunBeadsPrompt}
+              onShowSidebar=${() => setShowSidebar(true)}
+              onOpenConfig=${() => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
             />
           </div>
         `
@@ -6817,10 +6821,12 @@ function App() {
         sessionId=${activeSessionId}
         sessionInfo=${sessionInfo}
         onRename=${renameSession}
+        onSetBeadsIssue=${setSessionBeadsIssue}
         isStreaming=${isStreaming}
         configOptions=${configOptions}
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
+        showToast=${showToast}
       />
     </div>
   `;

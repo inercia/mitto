@@ -1247,6 +1247,8 @@ export function useWebSocket() {
                 // GC-suspended state from server (for fresh loads/reconnections)
                 gc_suspended:
                   msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
+                // Linked beads issue ID (always include, even if empty, so frontend can clear the control)
+                beads_issue: msg.data.beads_issue ?? session.info?.beads_issue ?? "",
                 // Processor stats
                 processor_count:
                   msg.data.processor_count ??
@@ -5244,6 +5246,36 @@ export function useWebSocket() {
     [updateSessionName],
   );
 
+  // Set the beads issue linked to a session via REST API
+  const setSessionBeadsIssue = useCallback(async (sessionId, beadsIssue) => {
+    const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ beads_issue: beadsIssue }),
+    });
+    if (!response.ok) {
+      throw new Error("Failed to update beads issue");
+    }
+    // Update in-memory session info
+    setSessions((prev) => {
+      const session = prev[sessionId];
+      if (!session) return prev;
+      return {
+        ...prev,
+        [sessionId]: {
+          ...session,
+          info: { ...session.info, beads_issue: beadsIssue },
+        },
+      };
+    });
+    // Update stored sessions
+    setStoredSessions((prev) =>
+      prev.map((s) =>
+        s.session_id === sessionId ? { ...s, beads_issue: beadsIssue } : s,
+      ),
+    );
+  }, []);
+
   // Pin/unpin a session via REST API
   const pinSession = useCallback(async (sessionId, pinned) => {
     try {
@@ -5968,5 +6000,6 @@ export function useWebSocket() {
     activeUIPrompt,
     sendUIPromptAnswer,
     ensureResumed,
+    setSessionBeadsIssue,
   };
 }
