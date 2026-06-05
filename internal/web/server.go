@@ -730,6 +730,11 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.handleBeadsCleanup)
 	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.handleBeadsDelete)
 	mux.HandleFunc(apiPrefix+"/api/beads/status", s.handleBeadsStatus)
+	mux.HandleFunc(apiPrefix+"/api/beads/update", s.handleBeadsUpdate)
+	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.handleBeadsDep)
+	mux.HandleFunc(apiPrefix+"/api/beads/config", s.handleBeadsConfig)
+	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.handleBeadsUpstream)
+	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.handleBeadsSync)
 	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
 
 	// File save endpoints - restricted to localhost only (used by native macOS app)
