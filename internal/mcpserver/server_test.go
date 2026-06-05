@@ -7782,13 +7782,13 @@ func TestGetConversation_QueuedPrompts_Multiple(t *testing.T) {
 	// Add multiple messages to the queue
 	queue := store.Queue(startOut.SessionID)
 	scheduledTime := time.Now().Add(30 * time.Minute)
-	if _, err := queue.Add("First message", nil, nil, "client-1", nil, 0); err != nil {
+	if _, err := queue.Add("First message", nil, nil, "client-1", nil, 0, nil); err != nil {
 		t.Fatalf("Failed to add first message: %v", err)
 	}
-	if _, err := queue.Add("Second message", nil, nil, "client-2", &scheduledTime, 0); err != nil {
+	if _, err := queue.Add("Second message", nil, nil, "client-2", &scheduledTime, 0, nil); err != nil {
 		t.Fatalf("Failed to add second message: %v", err)
 	}
-	if _, err := queue.Add("Third message", nil, nil, "client-1", nil, 0); err != nil {
+	if _, err := queue.Add("Third message", nil, nil, "client-1", nil, 0, nil); err != nil {
 		t.Fatalf("Failed to add third message: %v", err)
 	}
 
@@ -7845,7 +7845,7 @@ func TestGetConversation_QueuedPrompts_LongMessageTruncated(t *testing.T) {
 	// Add a very long message
 	longMsg := strings.Repeat("x", 500)
 	queue := store.Queue(startOut.SessionID)
-	if _, err := queue.Add(longMsg, nil, nil, "", nil, 0); err != nil {
+	if _, err := queue.Add(longMsg, nil, nil, "", nil, 0, nil); err != nil {
 		t.Fatalf("Failed to add message: %v", err)
 	}
 

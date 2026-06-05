@@ -67,6 +67,9 @@ type QueuedMessage struct {
 	Title string `json:"title,omitempty"`
 	// ScheduledTime is when this message should be delivered. If nil, deliver immediately.
 	ScheduledTime *time.Time `json:"scheduled_time,omitempty"`
+	// Arguments are optional ${VAR}/${VAR:-default} substitution values applied to
+	// the message text when it is sent. Empty/nil means no substitution.
+	Arguments map[string]string `json:"arguments,omitempty"`
 }
 
 // QueueFile represents the persisted queue state.
@@ -138,7 +141,9 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 // If maxSize > 0 and the queue already has maxSize messages, ErrQueueFull is returned.
 // If maxSize <= 0, no size limit is enforced.
 // If scheduledTime is non-nil, the message will only be delivered after that time.
-func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int) (QueuedMessage, error) {
+// If arguments is non-empty, ${VAR}/${VAR:-default} substitution is applied to the
+// message text when it is sent to the agent.
+func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int, arguments map[string]string) (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -160,6 +165,7 @@ func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string,
 		QueuedAt:      time.Now(),
 		ClientID:      clientID,
 		ScheduledTime: scheduledTime,
+		Arguments:     arguments,
 	}
 
 	qf.Messages = append(qf.Messages, msg)

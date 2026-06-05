@@ -1054,6 +1054,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
+			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the prompt text when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -1671,11 +1672,12 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 
 // SendPromptToConversationInput is the input for send_prompt_to_conversation tool.
 type SendPromptToConversationInput struct {
-	SelfID         string `json:"self_id"`         // YOUR session ID (the caller), not the target
-	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
-	Prompt         string `json:"prompt"`
-	Workspace      string `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
-	ScheduleTime   string `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
+	SelfID         string            `json:"self_id"`                 // YOUR session ID (the caller), not the target
+	ConversationID string            `json:"conversation_id"`         // Target conversation ID to send prompt to
+	Prompt         string            `json:"prompt"`
+	Workspace      string            `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
+	ScheduleTime   string            `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
+	Arguments      map[string]string `json:"arguments,omitempty"`     // Optional: ${VAR}/${VAR:-default} substitution values applied to the prompt text when sent
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1794,7 +1796,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	queue := store.Queue(input.ConversationID)
 
 	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0)
+	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -2777,7 +2779,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, scheduledTime, 0)
+		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, scheduledTime, 0, nil)
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -4023,7 +4025,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				continue
 			}
 
-			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0)
+			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0, nil)
 			if err != nil {
 				s.logger.Warn("Failed to enqueue prompt to child",
 					"parent_session", realSessionID,

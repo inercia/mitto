@@ -259,7 +259,8 @@ Provide specific suggestions with code examples where applicable.
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
-| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), and/or `beadsIssues` (per-issue context menu in the Beads list). Defaults to `prompts` if omitted. See [below](#menus). |
+| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
+| `requires`        | No       | string   | Comma-separated list of capabilities the menu must provide for this prompt to appear. See [below](#requires-capability-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
@@ -340,6 +341,7 @@ prompt appears in. The available menu values are:
 | `prompts`      | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
 | `conversation` | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
 | `beadsIssues`  | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
+| `beadsList`    | The **list-level prompts button** — the dropdown next to the `+` button in the Beads list footer.   |
 
 If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
 dropup only). To make a prompt appear in both menus, list both values:
@@ -401,16 +403,165 @@ menu** of the Beads list view — the menu shown when you right-click an issue.
 Alongside common bead actions (e.g. **Delete**), the menu includes a **Prompts**
 submenu listing every `menus: beadsIssues` prompt.
 
+Selecting one of these prompts starts a new conversation seeded with the prompt
+text, and the menu supplies the selected issue's ID as an `ISSUE_ID` argument. The
+prompt body should reference it via `${ISSUE_ID}` and load its own context with
+`bd show ${ISSUE_ID}` rather than relying on a pre-built context block:
+
 ```markdown
 ---
-name: "Beads: decompose"
+name: "Beads issue: start work"
 group: "Beads"
-menus: prompts, beadsIssues
+menus: beadsIssues
+requires: parameters
+---
+
+The target bead is `${ISSUE_ID}`.
+
+Load its full detail:
+
+    bd show ${ISSUE_ID} --long --json
+
+then claim it and propose a plan.
+```
+
+Because the `beadsIssues` menu always provides the `parameters` capability (it
+passes `{ ISSUE_ID: <issue.id> }`), issue-scoped prompts set `requires: parameters`
+so they appear **only** in this menu and not in the generic `prompts` dropup, where
+no `ISSUE_ID` would be available. See [Prompt Arguments](#prompt-arguments) and
+[requires (Capability Gating)](#requires-capability-gating) for the underlying
+mechanism.
+
+### Beads List Menu
+
+Prompts whose `menus` list includes `beadsList` appear in the **list-level prompts
+button** of the Beads list view — the dropdown next to the `+` button in the footer
+toolbar. Unlike `beadsIssues` prompts, these operate on the whole issue list (e.g.
+cleaning up old issues or triaging the backlog) rather than a single issue, so they
+**take no parameters**. Selecting one creates a new conversation seeded with the
+prompt text alone.
+
+```markdown
+---
+name: "Beads: cleanup old issues"
+group: "Beads"
+menus: beadsList
 ---
 ```
 
-> **Note:** This menu currently renders the available actions and prompts but does
-> not yet wire them to behavior — selecting an entry is a no-op for now.
+## Prompt Arguments
+
+Prompt text supports bash-style `${VAR}` placeholder syntax for argument substitution.
+This lets a caller supply named values that are interpolated into the prompt before it
+is sent to the agent.
+
+### Syntax
+
+| Placeholder           | Behaviour                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `${VAR}`              | Replaced with the supplied value, or an empty string if `VAR` was not provided.                                    |
+| `${VAR:-default}`     | Replaced with the supplied value if present **and non-empty**, otherwise with `default` (bash `:-` semantics).     |
+| `\${VAR}`             | The leading backslash is an escape: the literal text `${VAR}` is emitted without substitution.                     |
+
+Surrounding single or double quotes around the default are stripped automatically:
+`${VAR:-"a value"}` → `a value`, `${VAR:-'other'}` → `other`.
+
+### When substitution is applied
+
+Argument substitution is applied **only** when the caller explicitly supplies an
+`arguments` map alongside the prompt — for example:
+
+- Prompts run from a **context menu** (conversation or Beads issue) that passes
+  structured arguments.
+- Prompts sent via the MCP `mitto_conversation_send_prompt` tool's `arguments`
+  parameter.
+
+**Ad-hoc user-typed messages are never substituted.** If a user types or pastes
+text containing `${...}` into the chat input it reaches the agent verbatim — no
+substitution is performed, so shell scripts and code snippets are safe.
+
+The transcript always shows the **substituted** text, not the original template.
+
+### Example
+
+```markdown
+---
+name: "Beads: start work"
+group: "Beads"
+menus: beadsIssues
+requires: parameters
+---
+
+You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
+
+${ISSUE_BODY}
+
+Please begin by reading the full issue description above, then propose a plan.
+```
+
+Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls back to
+`"Untitled"` if omitted, and `${ISSUE_BODY}` expands to empty string if not supplied.
+
+## requires (Capability Gating)
+
+The `requires` front-matter field lets a prompt declare which **capabilities** a menu
+must provide before the prompt is shown in that menu. This is the counterpart to the
+`menus` field: `menus` says *where* a prompt can appear; `requires` says *what the
+menu must supply* for it to be usable there.
+
+### Syntax
+
+```yaml
+requires: capability1, capability2
+```
+
+The value is a **comma-separated list** of capability names (parsed identically to
+`menus`). Whitespace around each entry is ignored.
+
+### Frontmatter example
+
+```markdown
+---
+name: "Beads: start work"
+group: "Beads"
+menus: beadsIssues
+requires: parameters
+---
+```
+
+### Visibility rule
+
+A prompt appears in menu **M** if and only if **both** conditions hold:
+
+1. The prompt's `menus` list includes `M` (or `menus` is omitted and M is `prompts`).
+2. Menu `M` provides **every** capability listed in `requires`.
+
+If a prompt has no `requires` field (or an empty one), condition 2 is vacuously true
+and the prompt appears in any menu it targets via `menus`.
+
+### Provided capabilities per menu
+
+| Menu | Provided capabilities |
+| ---- | --------------------- |
+| `prompts` (ChatInput dropup) | *(none)* |
+| `conversation` (per-conversation context menu) | *(none)* |
+| `beadsIssues` (Beads issue context menu) | `parameters` |
+| `beadsList` (Beads list-level prompts button) | *(none)* |
+
+The `parameters` capability means the menu always passes a structured `arguments` map
+when it invokes a prompt. Prompts that are **useless without arguments** (i.e., they
+have required `${VAR}` placeholders with no meaningful default) should set
+`requires: parameters` so they are hidden from menus that cannot supply them.
+
+Prompts that can degrade gracefully — because all placeholders have sensible defaults
+via `${VAR:-default}` — should **omit** `requires` and let the defaults handle the
+missing arguments instead.
+
+### Why a list, not a boolean?
+
+`requires` is designed as a list (rather than `requires_parameters: true`) so that
+future capability types can be added without changing the field semantics. For now
+`parameters` is the only defined capability.
 
 ## Variable Substitution in Prompts
 

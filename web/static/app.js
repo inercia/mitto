@@ -352,6 +352,35 @@ function promptMenus(prompt) {
     .filter(Boolean);
 }
 
+// Capabilities each menu can supply to prompts. A prompt that declares a
+// `requires` capability is only shown in a menu that provides ALL of the
+// capabilities it requires. Menus advertise what they can supply; prompts
+// declare what they need.
+const MENU_CAPABILITIES = {
+  prompts: [],
+  conversation: [],
+  beadsIssues: ["parameters"],
+  beadsList: [],
+};
+
+// Parse a prompt's comma-separated `requires` list into an array of capability
+// names. Empty or absent → [].
+function promptRequires(prompt) {
+  const raw =
+    typeof prompt?.requires === "string" ? prompt.requires.trim() : "";
+  if (raw === "") return [];
+  return raw
+    .split(",")
+    .map((r) => r.trim())
+    .filter(Boolean);
+}
+
+// True if `menu` provides every capability the prompt requires.
+function menuSatisfiesRequires(prompt, menu) {
+  const provided = MENU_CAPABILITIES[menu] || [];
+  return promptRequires(prompt).every((cap) => provided.includes(cap));
+}
+
 // =============================================================================
 // Workspace Badge Component
 // =============================================================================
@@ -3481,8 +3510,8 @@ function App() {
   // Only prompts whose `menus` list includes "prompts" (or that omit `menus`
   // entirely, defaulting to the dropup) appear in the ChatInput "^" dropup.
   // Prompts that target only other menus (e.g. "conversation") are excluded.
-  const predefinedPrompts = workspacePrompts.filter((p) =>
-    promptMenus(p).includes("prompts"),
+  const predefinedPrompts = workspacePrompts.filter(
+    (p) => promptMenus(p).includes("prompts") && menuSatisfiesRequires(p, "prompts"),
   );
 
   // Fetch the prompts whose `menus` list includes `conversation` for a SPECIFIC
@@ -3508,7 +3537,12 @@ function App() {
         if (!res.ok) return [];
         const data = await res.json();
         const all = data?.prompts || [];
-        return all.filter((p) => p && promptMenus(p).includes("conversation"));
+        return all.filter(
+          (p) =>
+            p &&
+            promptMenus(p).includes("conversation") &&
+            menuSatisfiesRequires(p, "conversation"),
+        );
       } catch (err) {
         console.error(
           "Failed to fetch conversation prompts for session:",
@@ -3534,26 +3568,69 @@ function App() {
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
-      return all.filter((p) => p && promptMenus(p).includes("beadsIssues"));
+      return all.filter(
+        (p) =>
+          p &&
+          promptMenus(p).includes("beadsIssues") &&
+          menuSatisfiesRequires(p, "beadsIssues"),
+      );
     } catch (err) {
       console.error("Failed to fetch beads prompts for workspace:", err);
       return [];
     }
   }, []);
 
+  // Fetch the prompts whose `menus` list includes `beadsList` for a workspace
+  // directory. Used by the list-level prompts button in the Beads list view.
+  // These prompts operate on the whole issue list (e.g. cleanup, triage) rather
+  // than a single issue, so they take no parameters. There is no specific
+  // conversation here, so `enabledWhen` is evaluated without a session_id; we
+  // only keep the prompts that opt into the beads-list menu via `menus`.
+  const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
+    if (!workingDir) return [];
+    try {
+      const res = await authFetch(
+        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      const all = data?.prompts || [];
+      return all.filter(
+        (p) =>
+          p &&
+          promptMenus(p).includes("beadsList") &&
+          menuSatisfiesRequires(p, "beadsList"),
+      );
+    } catch (err) {
+      console.error("Failed to fetch beads list prompts for workspace:", err);
+      return [];
+    }
+  }, []);
+
   // Run a beads prompt against a specific issue: create a new conversation in
-  // the beads workspace, seed it with the issue context plus the prompt text,
-  // then switch to it. Mirrors handleSendPromptToConversation's queue delivery
-  // (the queue runs the message once the new conversation is idle).
+  // the beads workspace, then seed it with the prompt text plus a single
+  // `ISSUE_ID` argument. The backend's ${VAR} substitution engine resolves
+  // `${ISSUE_ID}` in the prompt body when the queued message is sent (see the
+  // queue `arguments` support from mitto-t93); the prompt itself loads any
+  // further detail via `bd show ${ISSUE_ID}`. Mirrors handleSendPromptToConversation's
+  // queue delivery (the queue runs the message once the new conversation is idle).
   const handleRunBeadsPrompt = useCallback(
     async (prompt, issue) => {
       const text = prompt?.prompt;
       if (!text || !issue || !beadsWorkingDir) return;
 
       const ws = workspaces.find((w) => w.working_dir === beadsWorkingDir);
+      // Name the conversation after the issue (e.g. "mitto-kp7 · Fix login") so
+      // it doesn't linger as "New conversation". The prompt is delivered via the
+      // queue, and auto-title generation on that path only runs once the queued
+      // turn completes — which is delayed for beads prompts that immediately wait
+      // on user input. Setting an explicit name fixes the title right away and
+      // also suppresses auto-title generation (it only runs when the name is empty).
+      const convName = issue.title ? `${issue.id} · ${issue.title}` : issue.id;
       const result = await newSession({
         workingDir: beadsWorkingDir,
         acpServer: ws?.acp_server,
+        name: convName,
       });
       if (!result?.sessionId) {
         showToast({
@@ -3564,27 +3641,18 @@ function App() {
         return;
       }
 
-      // Prepend the bead context so the agent works on this specific issue
-      // rather than discovering one via `bd ready`.
-      const ctxLines = [
-        "Work on this Beads issue:",
-        "",
-        `- ID: ${issue.id}`,
-        `- Title: ${issue.title || ""}`,
-        `- Type: ${issue.issue_type || "task"}`,
-        `- Status: ${issue.status || "open"}`,
-      ];
-      if (issue.parent) ctxLines.push(`- Parent: ${issue.parent}`);
-      if (issue.description) {
-        ctxLines.push("", "Description:", issue.description);
-      }
-      const seeded = `${ctxLines.join("\n")}\n\n---\n\n${text}`;
-
+      // Seed the new conversation with the prompt text and a single `ISSUE_ID`
+      // argument. The backend substitutes `${ISSUE_ID}` into the prompt body
+      // when the message is sent; the prompt loads any further detail itself
+      // via `bd show ${ISSUE_ID}`.
       try {
         await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: seeded }),
+          body: JSON.stringify({
+            message: text,
+            arguments: { ISSUE_ID: issue.id },
+          }),
         });
       } catch (err) {
         console.error("Failed to seed beads conversation:", err);
@@ -3596,6 +3664,53 @@ function App() {
       showToast({
         style: "success",
         title: `Started "${prompt.name}" for ${issue.id}`,
+        duration: 3000,
+      });
+    },
+    [beadsWorkingDir, workspaces, newSession, showToast],
+  );
+
+  // Run a beads-list prompt: create a new conversation in the beads workspace,
+  // seed it with the prompt text alone (these prompts operate on the whole issue
+  // list and take no parameters), then switch to it. Mirrors handleRunBeadsPrompt
+  // minus the per-issue context. The conversation is named after the prompt so it
+  // doesn't linger as "New conversation" (this also suppresses auto-title gen).
+  const handleRunBeadsListPrompt = useCallback(
+    async (prompt) => {
+      const text = prompt?.prompt;
+      if (!text || !beadsWorkingDir) return;
+
+      const ws = workspaces.find((w) => w.working_dir === beadsWorkingDir);
+      const result = await newSession({
+        workingDir: beadsWorkingDir,
+        acpServer: ws?.acp_server,
+        name: prompt.name,
+      });
+      if (!result?.sessionId) {
+        showToast({
+          style: "error",
+          title: result?.error || "Failed to create conversation",
+          duration: 4000,
+        });
+        return;
+      }
+
+      try {
+        await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+      } catch (err) {
+        console.error("Failed to seed beads list conversation:", err);
+      }
+
+      // newSession already activates the new conversation; switch the main view
+      // back from the beads panel so the new conversation is shown.
+      setMainView("conversation");
+      showToast({
+        style: "success",
+        title: `Started "${prompt.name}"`,
         duration: 3000,
       });
     },
@@ -6389,8 +6504,10 @@ function App() {
               showToast=${showToast}
               onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
               onRunBeadsPrompt=${handleRunBeadsPrompt}
+              onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
+              onRunBeadsListPrompt=${handleRunBeadsListPrompt}
               onShowSidebar=${() => setShowSidebar(true)}
-              onOpenConfig=${() => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
+              onOpenConfig=${window.mittoIsExternal === true ? undefined : () => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
             />
           </div>
         `

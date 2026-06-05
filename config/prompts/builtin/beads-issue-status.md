@@ -1,13 +1,14 @@
 ---
-name: "Beads: status ONE in-progress"
-menus: prompts
-description: "Pick one in-progress bead and fact-check its implementation status"
+name: "Beads issue: status"
+menus: beadsIssues
+requires: parameters
+description: "Fact-check this bead's implementation status against the codebase"
 backgroundColor: "#F0F4C3"
 group: "Beads"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 
-# Beads: Status Check — One In-Progress Bead
+# Beads: Status Check — One Bead
 
 Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
@@ -15,44 +16,32 @@ Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like
 
 Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
-## Step 1 — Fetch in-progress beads
+The **target bead** is `${ISSUE_ID}`.
 
-Run:
+## Step 1 — Fetch full bead details
 
-```bash
-bd list --status in_progress --json
-```
-
-If **no beads** are in progress: inform the user and stop.
-
-## Step 2 — Let the user choose one bead
-
-Present the in-progress beads using `mitto_ui_options_mitto(self_id: "@mitto:session_id")`, showing each as `bd-id — Title` in the dropdown. Ask: "Which in-progress bead would you like to check status for?"
-
-## Step 3 — Fetch full bead details
-
-For the selected bead, run:
+Load everything about the target bead:
 
 ```bash
-bd show <bead-id> --long --json     # description, acceptance, design, assignee, metadata
-bd dep tree <bead-id>               # blockers and dependents
+bd show ${ISSUE_ID} --long --json     # description, acceptance, design, assignee, metadata
+bd dep tree ${ISSUE_ID}               # blockers and dependents
 ```
 
 Also run locally to gather implementation evidence:
 
 ```bash
 # Find commits that reference this bead ID
-git log --oneline --all | grep -i "<bead-id>"
+git log --oneline --all | grep -i "${ISSUE_ID}"
 
 # Check branches containing the bead ID
-git branch -a | grep -i "<bead-id>"
+git branch -a | grep -i "${ISSUE_ID}"
 ```
 
-## Step 4 — Fact-check implementation status
+## Step 2 — Fact-check implementation status
 
 Analyse all gathered evidence and produce a **Status Report** for the bead:
 
-### Bead: `<bead-id>` — `<Title>`
+### Bead: `${ISSUE_ID}` — `<Title>`
 
 **Goal** (one sentence restating what this bead is supposed to deliver)
 
@@ -78,4 +67,4 @@ For each acceptance criterion listed in the bead (or inferred from the descripti
 - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
 - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`, a failing test, an unanswered question in notes)
 
-> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Beads: start work" prompt to continue implementation.
+> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Beads issue: start work" prompt to continue implementation.

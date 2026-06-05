@@ -1,11 +1,11 @@
 // Mitto Web Interface - BeadsView Component
 // Displays a Beads (bd) issue list and detail view for a workspace.
 
-const { html, useState, useEffect, useCallback, useMemo, useRef } = window.preact;
+const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
 
 import { apiUrl, authFetch, secureFetch } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon } from "./Icons.js";
+import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MagicWandIcon } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 
@@ -112,7 +112,7 @@ function labelValue(label, value) {
 }
 
 /**
- * BeadsDetailPanel is a right-docked panel that serves two modes:
+ * BeadsDetailPanel is a fixed right-side overlay that serves two modes:
  *
  *  - View mode (an `issue` is provided): shows the read-only properties of a
  *    single issue, populated directly from the already-loaded list row so it
@@ -121,12 +121,18 @@ function labelValue(label, value) {
  *  - Create mode (`isCreating` is true): shows editable fields for a new issue
  *    plus a "Save" footer that POSTs to /api/beads/create.
  *
- * It matches the SessionPanel slide animation and look/feel.
+ * Its container mirrors the conversation SessionPanel: a full-screen
+ * `fixed inset-0 z-50` layer with a dimming backdrop on the left and the panel
+ * sliding in on the right. Clicking the backdrop closes the panel.
  */
 function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, statusBusy }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
+  // When true, the panel expands to the full content width (hiding the issue
+  // list behind it) so a single issue's details are easier to read. Reset to
+  // the normal width once the panel has fully closed.
+  const [fullscreen, setFullscreen] = useState(false);
   const lastIssueRef = useRef(issue);
   const lastCreatingRef = useRef(isCreating);
   if (issue) lastIssueRef.current = issue;
@@ -145,7 +151,6 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const [prompts, setPrompts] = useState([]);
   const [promptsLoading, setPromptsLoading] = useState(false);
   const promptsRef = useRef(null);
-  const panelRef = useRef(null);
 
   // View-mode inline description editing. Clicking the rendered description
   // switches it to a textarea; blur saves via /api/beads/update when the text
@@ -203,27 +208,6 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showPrompts]);
 
-  // Close the whole panel when clicking outside of it. Clicks on an issue row
-  // are ignored (rows manage their own open/toggle), as are clicks inside a
-  // floating menu or dialog layered above (z-50), so those flows still work.
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    const onDocPointer = (e) => {
-      if (e.button !== 0) return;
-      if (panelRef.current && panelRef.current.contains(e.target)) return;
-      if (e.target.closest &&
-          (e.target.closest("[data-has-context-menu]") || e.target.closest(".z-50"))) {
-        return;
-      }
-      onClose();
-    };
-    const tid = setTimeout(() => document.addEventListener("mousedown", onDocPointer), 10);
-    return () => {
-      clearTimeout(tid);
-      document.removeEventListener("mousedown", onDocPointer);
-    };
-  }, [isOpen, onClose]);
-
   const togglePrompts = useCallback(() => {
     setShowPrompts((open) => {
       const next = !open;
@@ -246,6 +230,7 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
       const timer = setTimeout(() => {
         setShouldRender(false);
         setIsClosing(false);
+        setFullscreen(false);
       }, 150);
       return () => clearTimeout(timer);
     }
@@ -532,7 +517,21 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const labelClass = "block text-xs font-medium text-mitto-text-secondary mb-1";
 
   return html`
-    <div ref=${panelRef} class="w-80 flex-shrink-0 bg-mitto-sidebar border-l border-mitto-border h-full flex flex-col properties-panel ${isClosing ? "closing" : ""}">
+    <${Fragment}>
+      <div
+        class="fixed inset-0 z-50 flex"
+        onClick=${(e) => { if (e.target === e.currentTarget) handleClose(); }}
+      >
+        <!-- Backdrop on the left (hidden in fullscreen, where the panel fills
+             the whole width) -->
+        ${!fullscreen && html`
+          <div
+            class="flex-1 bg-black/50 properties-backdrop ${isClosing ? "closing" : ""}"
+            onClick=${handleClose}
+          />
+        `}
+        <!-- Panel on the right; expands to full width in fullscreen mode -->
+        <div class="${fullscreen ? "w-full" : "w-80"} bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel ${isClosing ? "closing" : ""}">
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
@@ -561,6 +560,15 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                 `}
             `}
         </div>
+        <button
+          onClick=${() => setFullscreen(f => !f)}
+          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+        >
+          ${fullscreen
+            ? html`<${CollapseIcon} className="w-5 h-5" />`
+            : html`<${ExpandIcon} className="w-5 h-5" />`}
+        </button>
         <button
           onClick=${handleClose}
           class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
@@ -666,8 +674,8 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                     ${savingDesc && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
                     ${data.description
                       ? (md
-                          ? html`<div class="text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                          : html`<pre class="whitespace-pre-wrap text-sm text-mitto-text">${data.description}</pre>`)
+                          ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
+                          : html`<pre class="whitespace-pre-wrap break-words text-sm text-mitto-text">${data.description}</pre>`)
                       : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
                     }
                   </div>
@@ -850,7 +858,9 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
           </div>
         </div>
       `}
-    </div>
+        </div>
+      </div>
+    </${Fragment}>
   `;
 }
 
@@ -864,10 +874,15 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
  *        `menus` list includes `beadsIssues`; populates the per-issue context menu.
  * @param {function} onRunBeadsPrompt - (prompt, issue) => starts a new
  *        conversation seeded with the prompt text and the issue's context.
+ * @param {function} onFetchBeadsListPrompts - Async (workingDir) => prompts whose
+ *        `menus` list includes `beadsList`; populates the list-level prompts
+ *        dropdown in the footer toolbar.
+ * @param {function} onRunBeadsListPrompt - (prompt) => starts a new conversation
+ *        seeded with the prompt text alone (these prompts take no parameters).
  * @param {function} onShowSidebar - Opens the conversations sidebar (mobile);
  *        used by the header hamburger button to return to the conversation list.
  */
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onShowSidebar, onOpenConfig }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -899,6 +914,14 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // upstream sync buttons in the footer.
   const [upstream, setUpstream] = useState("none");
   const [syncAction, setSyncAction] = useState(null);
+
+  // List-level "Prompts" dropdown state (footer toolbar). These are the
+  // `menus: beadsList` prompts that operate on the whole issue list rather than
+  // a single issue. Loaded lazily the first time the dropdown is opened.
+  const [showListPrompts, setShowListPrompts] = useState(false);
+  const [listPrompts, setListPrompts] = useState([]);
+  const [listPromptsLoading, setListPromptsLoading] = useState(false);
+  const listPromptsRef = useRef(null);
 
   const workspaceLabel = workingDir ? getBasename(workingDir) : "Workspace";
 
@@ -1154,6 +1177,39 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     onRunBeadsPrompt && onRunBeadsPrompt(prompt, issue);
   }, [onRunBeadsPrompt, closeContextMenu]);
 
+  // Close the list-level prompts dropdown on outside click while it is open.
+  useEffect(() => {
+    if (!showListPrompts) return undefined;
+    const onDocClick = (e) => {
+      if (listPromptsRef.current && !listPromptsRef.current.contains(e.target)) {
+        setShowListPrompts(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showListPrompts]);
+
+  // Toggle the list-level prompts dropdown, lazily loading the `menus: beadsList`
+  // prompts for this workspace the first time it is opened.
+  const toggleListPrompts = useCallback(() => {
+    setShowListPrompts((open) => {
+      const next = !open;
+      if (next && onFetchBeadsListPrompts && workingDir) {
+        setListPromptsLoading(true);
+        onFetchBeadsListPrompts(workingDir)
+          .then((list) => setListPrompts(list || []))
+          .finally(() => setListPromptsLoading(false));
+      }
+      return next;
+    });
+  }, [onFetchBeadsListPrompts, workingDir]);
+
+  // Run a list-level prompt in a new conversation (no per-issue context).
+  const handleRunListPrompt = useCallback((prompt) => {
+    setShowListPrompts(false);
+    onRunBeadsListPrompt && onRunBeadsListPrompt(prompt);
+  }, [onRunBeadsListPrompt]);
+
   // Build the per-issue context menu: a Close/Reopen toggle and a Delete action,
   // plus a "Prompts" submenu listing every `menus: beadsIssues` prompt — all
   // wired to the same handlers used by the detail panel footer.
@@ -1294,6 +1350,39 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         >
           <${PlusIcon} className="w-4 h-4" />
         </button>
+        <div class="relative" ref=${listPromptsRef}>
+          <button
+            type="button"
+            onClick=${toggleListPrompts}
+            class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+            title="Run a prompt over the issue list in a new conversation"
+          >
+            <${MagicWandIcon} className="w-4 h-4" />
+          </button>
+          ${showListPrompts && html`
+            <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
+              ${listPromptsLoading && html`
+                <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
+                  <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…
+                </div>
+              `}
+              ${!listPromptsLoading && listPrompts.length === 0 && html`
+                <div class="px-3 py-2 text-sm text-mitto-text-secondary">No beads prompts</div>
+              `}
+              ${!listPromptsLoading && listPrompts.map(p => html`
+                <button
+                  key=${p.name}
+                  type="button"
+                  onClick=${() => handleRunListPrompt(p)}
+                  title=${p.description || p.name}
+                  class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors"
+                >
+                  ${p.name}
+                </button>
+              `)}
+            </div>
+          `}
+        </div>
         <button
           onClick=${fetchList}
           class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"

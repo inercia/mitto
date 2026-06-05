@@ -888,7 +888,7 @@ func TestBackgroundSession_ProcessNextQueuedMessage_Disabled(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-disabled-queue")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -940,7 +940,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_IsPrompting(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-prompting")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -989,7 +989,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_IsClosed(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-closed")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_DelayNotElapsed(t *testing.T)
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-delay")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1089,7 +1089,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_DelayElapsed(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-delay-elapsed")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1152,7 +1152,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_ZeroDelayNoLastResponse(t *te
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-zero-delay")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1244,7 +1244,7 @@ func TestQueueTitleWorker_MessageRemovedBeforeTitleGenerated(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-title-race")
-	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0)
+	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1284,7 +1284,7 @@ func TestQueueTitleWorker_UpdateTitleSuccess(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-title-success")
-	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0)
+	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}

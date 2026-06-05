@@ -63,9 +63,11 @@ const MOCK_ISSUES = [
 const MOBILE_OVERLAY = ".fixed.inset-0.z-40";
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
-// The docked detail panel carries the shared `properties-panel` class; no other
-// panel using it is mounted while the Beads view is active, so it is unambiguous.
+// The detail panel carries the shared `properties-panel` class; no other panel
+// using it is mounted while the Beads view is active, so it is unambiguous.
 const DETAIL_PANEL = "div.properties-panel";
+// The dimming backdrop rendered to the panel's left; clicking it closes the panel.
+const PANEL_BACKDROP = "div.properties-backdrop";
 
 // Opens the Beads view from the project-alpha folder header (desktop sidebar)
 // and waits for the mocked issue list to render. Shared by all Beads specs.
@@ -179,13 +181,11 @@ testWithCleanup.describe("Beads view - mobile", () => {
 /**
  * Beads detail panel behavior tests (desktop).
  *
- * The detail panel is docked inline beside the issue list (no backdrop), so a
- * click-outside handler in BeadsDetailPanel dismisses it when clicking anywhere
- * that is not the panel — except issue rows (which manage their own open/toggle)
- * and floating z-50 layers (context menu / confirm dialogs).
+ * The detail panel is a fixed overlay (fixed inset-0 z-50) that slides over the
+ * content with a dimming backdrop, unified with the conversation SessionPanel.
+ * Clicking the backdrop (anywhere outside the panel) dismisses it.
  *
- * These run on the default desktop viewport so the list and the docked panel are
- * visible side by side.
+ * These run on the default desktop viewport.
  */
 testWithCleanup.describe("Beads view - detail panel", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
@@ -213,7 +213,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   });
 
   testWithCleanup(
-    "clicking the list area closes the open detail panel",
+    "clicking the backdrop closes the open detail panel",
     async ({ page, timeouts }) => {
       await openBeads(page, timeouts);
       const panel = page.locator(DETAIL_PANEL);
@@ -226,35 +226,40 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(panel.getByText("mitto-bbb")).toBeVisible();
 
-      // Clicking the view header (outside the panel, not a row, not a z-50
-      // layer) dismisses the panel.
-      await page.locator('span.text-lg:has-text("Beads")').first().click();
+      // Clicking the dimming backdrop (outside the panel) dismisses it.
+      await page.locator(PANEL_BACKDROP).click();
       await expect(panel).toBeHidden({ timeout: timeouts.shortAction });
     },
   );
 
   testWithCleanup(
-    "clicking another row switches the detail panel instead of closing it",
+    "the fullscreen toggle expands the panel and hides the backdrop",
     async ({ page, timeouts }) => {
       await openBeads(page, timeouts);
       const panel = page.locator(DETAIL_PANEL);
 
-      // Open the panel for the short issue (mitto-bbb).
+      // Open the panel for the short issue.
       await page
         .locator('tr[data-has-context-menu]:has-text("Short issue")')
         .first()
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(panel.getByText("mitto-bbb")).toBeVisible();
 
-      // Clicking the other issue's row keeps the panel open but swaps content.
-      await page
-        .locator('tr[data-has-context-menu]:has-text("mitto-aaa")')
-        .first()
-        .click();
-      await expect(panel).toBeVisible();
-      await expect(panel.getByText("mitto-aaa")).toBeVisible();
-      await expect(panel.getByText("mitto-bbb")).toHaveCount(0);
+      // Normal mode: fixed-width panel beside a dimming backdrop.
+      await expect(panel).toHaveClass(/w-80/);
+      await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
+
+      // Toggle fullscreen: the panel fills the width and the backdrop is gone.
+      await page.getByTitle("Fullscreen").click();
+      await expect(panel).toHaveClass(/w-full/);
+      await expect(panel).not.toHaveClass(/w-80/);
+      await expect(page.locator(PANEL_BACKDROP)).toHaveCount(0);
+
+      // Toggle back: the panel returns to its fixed width and the backdrop
+      // reappears.
+      await page.getByTitle("Exit fullscreen").click();
+      await expect(panel).toHaveClass(/w-80/);
+      await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
     },
   );
 

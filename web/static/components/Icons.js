@@ -1148,6 +1148,46 @@ export function SidePanelIcon({ className = "w-5 h-5" }) {
   `;
 }
 
+/**
+ * Expand / enter-fullscreen icon (Heroicons arrows-pointing-out)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function ExpandIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+    </svg>
+  `;
+}
+
+/**
+ * Collapse / exit-fullscreen icon (Heroicons arrows-pointing-in)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function CollapseIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" />
+    </svg>
+  `;
+}
+
 
 /**
  * Terminal/command prompt icon (Heroicons terminal-window)

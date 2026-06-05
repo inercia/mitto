@@ -90,6 +90,7 @@ type rawWorkspaceRC struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		Menus           string `yaml:"menus"`
+		Requires        string `yaml:"requires"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -652,6 +653,7 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,
+			Requires:        p.Requires,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 		}

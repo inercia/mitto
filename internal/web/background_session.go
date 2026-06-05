@@ -2958,6 +2958,11 @@ type PromptMeta struct {
 	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
 	FreshContext     bool            // True to suppress history injection and use a new ACP session for this prompt
+	// Arguments, when non-empty, triggers bash-like ${VAR}/${VAR:-default}
+	// substitution on the resolved prompt text before persistence and broadcast.
+	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that
+	// pasted shell/code containing ${...} is never corrupted.
+	Arguments map[string]string
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -2994,6 +2999,14 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			return fmt.Errorf("failed to resolve prompt %q: %w", meta.PromptName, err)
 		}
 		message = resolved
+	}
+
+	// Apply bash-like ${VAR}/${VAR:-default} argument substitution when the caller
+	// supplied an arguments map. Done here (the single chokepoint for all entry
+	// paths) and before persistence/broadcast so the transcript shows the
+	// substituted text. Guarded on len > 0 so ad-hoc messages are untouched.
+	if len(meta.Arguments) > 0 {
+		message = processors.SubstituteArguments(message, meta.Arguments)
 	}
 
 	imageIDs := meta.ImageIDs
@@ -4530,9 +4543,10 @@ func (bs *BackgroundSession) sendQueuedMessage(queue *session.Queue, msg session
 
 	// Send the queued message
 	meta := PromptMeta{
-		SenderID: "queue",
-		PromptID: msg.ID,
-		ImageIDs: msg.ImageIDs,
+		SenderID:  "queue",
+		PromptID:  msg.ID,
+		ImageIDs:  msg.ImageIDs,
+		Arguments: msg.Arguments,
 	}
 	if err := bs.PromptWithMeta(msg.Message, meta); err != nil {
 		if bs.logger != nil {

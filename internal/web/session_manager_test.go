@@ -1162,7 +1162,7 @@ func TestSessionManager_ProcessPendingQueues_SkipsArchivedSessions(t *testing.T)
 
 	// Add a message to the queue
 	queue := store.Queue("archived-session")
-	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1181,7 +1181,7 @@ func TestSessionManager_ProcessPendingQueues_SkipsArchivedSessions(t *testing.T)
 	}
 
 	queue2 := store.Queue("active-session")
-	_, err = queue2.Add("Test message 2", nil, nil, "client1", nil, 0)
+	_, err = queue2.Add("Test message 2", nil, nil, "client1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}

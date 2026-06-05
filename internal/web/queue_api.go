@@ -13,10 +13,11 @@ import (
 
 // QueueAddRequest represents a request to add a message to the queue.
 type QueueAddRequest struct {
-	Message       string   `json:"message"`
-	ImageIDs      []string `json:"image_ids,omitempty"`
-	FileIDs       []string `json:"file_ids,omitempty"`
-	ScheduledTime *string  `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
+	Message       string            `json:"message"`
+	ImageIDs      []string          `json:"image_ids,omitempty"`
+	FileIDs       []string          `json:"file_ids,omitempty"`
+	ScheduledTime *string           `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
+	Arguments     map[string]string `json:"arguments,omitempty"`      // Optional: ${VAR}/${VAR:-default} substitution values applied when sent
 }
 
 // QueueMoveRequest represents a request to move a message in the queue.
@@ -164,7 +165,7 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		scheduledTime = &t
 	}
 
-	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, scheduledTime, maxSize)
+	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, scheduledTime, maxSize, req.Arguments)
 	if err != nil {
 		if errors.Is(err, session.ErrQueueFull) {
 			writeErrorJSON(w, http.StatusConflict, "queue_full",

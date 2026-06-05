@@ -99,6 +99,10 @@ type WebPrompt struct {
 	// example, "conversation" makes the prompt available in the per-conversation
 	// context menu. Multiple values may be combined, e.g. "conversation,group".
 	Menus string `json:"menus,omitempty"`
+	// Requires is a comma-separated list of capability names this prompt needs
+	// (parsed like Menus). A menu only shows the prompt if the menu provides every
+	// capability the prompt requires. Empty means no requirements.
+	Requires string `json:"requires,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
@@ -1114,6 +1118,7 @@ type rawACPServerConfig struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		Menus           string `yaml:"menus"`
+		Requires        string `yaml:"requires"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1131,6 +1136,7 @@ type rawConfig struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		Menus           string `yaml:"menus"`
+		Requires        string `yaml:"requires"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1332,6 +1338,7 @@ func Parse(data []byte) (*Config, error) {
 					Description:     p.Description,
 					Group:           p.Group,
 					Menus:           p.Menus,
+					Requires:        p.Requires,
 					EnabledWhen:     p.EnabledWhen,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1358,6 +1365,7 @@ func Parse(data []byte) (*Config, error) {
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,
+			Requires:        p.Requires,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 		}
