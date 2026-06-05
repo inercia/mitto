@@ -1,6 +1,6 @@
 ---
 name: "Beads: decompose"
-menus: prompts
+menus: prompts, beadsList
 description: "Break a bead into child beads with dependencies and create them automatically"
 backgroundColor: "#D1C4E9"
 group: "Beads"

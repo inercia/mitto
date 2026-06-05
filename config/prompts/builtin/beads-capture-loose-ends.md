@@ -1,6 +1,6 @@
 ---
 name: "Beads: capture loose ends"
-menus: prompts
+menus: prompts, beadsList
 description: "Scan the conversation for unsolved problems and untracked work, then file beads for each"
 backgroundColor: "#DCEDC8"
 group: "Beads"

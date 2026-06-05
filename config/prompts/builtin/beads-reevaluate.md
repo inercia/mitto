@@ -1,6 +1,6 @@
 ---
 name: "Beads: reevaluate all issues"
-menus: prompts
+menus: prompts, beadsList
 description: "Reevaluate priority, dependencies, and importance of all beads, propose changes, and surface what to do now"
 backgroundColor: "#FFCC80"
 group: "Beads"

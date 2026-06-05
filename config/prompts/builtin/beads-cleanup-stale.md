@@ -1,6 +1,6 @@
 ---
 name: "Beads: cleanup stale issues"
-menus: prompts
+menus: prompts, beadsList
 description: "Find stale, obsolete, or duplicate beads and close them after confirmation"
 backgroundColor: "#BCAAA4"
 group: "Beads"
