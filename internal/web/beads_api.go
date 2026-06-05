@@ -1012,77 +1012,25 @@ func runBD(dir string, args ...string) ([]byte, string, error) {
 
 // ensureBeadsConfigGitignored makes a best-effort attempt to keep
 // ".beads/config.yaml" — which beads uses to store secret keys such as
-// github.token — out of version control. If workingDir is inside a git
-// repository and the file is not already ignored, its repo-relative path is
-// appended to the local ".git/info/exclude" file. That exclude is per-clone and
-// never committed, so it cannot create noise in tracked files (and matches the
-// mechanism beads itself references for fork protection).
+// github.token — out of version control. It ensures a ".gitignore" file exists
+// at the workspace root (workingDir) and that it contains the
+// ".beads/config.yaml" pattern.
 //
-// Every step is best-effort: if git is unavailable, the directory is not a git
-// repository, or the file is already ignored, the function returns nil without
-// modifying anything.
+// Unlike ".git/info/exclude", which is per-clone and never shared, a committed
+// ".gitignore" protects every clone and machine. The pattern is added
+// idempotently, so repeated calls never create duplicate lines.
+//
+// This is best-effort: callers ignore the returned error so a failure here never
+// fails the config write that triggered it.
 func ensureBeadsConfigGitignored(workingDir string) error {
-	configPath := filepath.Join(workingDir, ".beads", "config.yaml")
-
-	// Already ignored? (exit 0 = ignored). For a non-git directory this exits
-	// non-zero, and the rev-parse below then short-circuits to a no-op.
-	if runGitQuiet(workingDir, "check-ignore", "-q", "--", configPath) == nil {
-		return nil
-	}
-
-	// Repository top-level. Fails (non-zero) when workingDir is not a git repo.
-	repoRoot, err := runGitOutput(workingDir, "rev-parse", "--show-toplevel")
-	if err != nil || repoRoot == "" {
-		return nil //nolint:nilerr // not a git repository: nothing to do
-	}
-
-	// Locate the exclude file in a worktree/submodule-safe way.
-	excludePath, err := runGitOutput(workingDir, "rev-parse", "--git-path", "info/exclude")
-	if err != nil || excludePath == "" {
-		return err
-	}
-	if !filepath.IsAbs(excludePath) {
-		excludePath = filepath.Join(repoRoot, excludePath)
-	}
-
-	// Pattern relative to the repo root (handles workingDir being a subdirectory
-	// of the repository). Fall back to the conventional path if it escapes root.
-	pattern, relErr := filepath.Rel(repoRoot, configPath)
-	if relErr != nil || pattern == "" || strings.HasPrefix(pattern, "..") {
-		pattern = filepath.Join(".beads", "config.yaml")
-	}
-	pattern = filepath.ToSlash(pattern)
-
-	return appendGitExcludePattern(excludePath, pattern)
+	gitignorePath := filepath.Join(workingDir, ".gitignore")
+	return appendGitignorePattern(gitignorePath, ".beads/config.yaml")
 }
 
-// runGitQuiet runs "git <args>" in dir, discarding output, returning the run
-// error. Exit code 0 yields a nil error.
-func runGitQuiet(dir string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	return cmd.Run()
-}
-
-// runGitOutput runs "git <args>" in dir and returns trimmed stdout.
-func runGitOutput(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// appendGitExcludePattern appends pattern to the git exclude file at path unless
-// it is already present (idempotent). The parent directory and file are created
-// if needed. A trailing newline is ensured before appending.
-func appendGitExcludePattern(path, pattern string) error {
+// appendGitignorePattern appends pattern to the .gitignore-style file at path
+// unless it is already present (idempotent). The parent directory and file are
+// created if needed. A trailing newline is ensured before appending.
+func appendGitignorePattern(path, pattern string) error {
 	existing, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

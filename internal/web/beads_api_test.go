@@ -1175,10 +1175,10 @@ func TestEnsureBeadsConfigGitignored_GitRepo(t *testing.T) {
 		t.Fatalf("ensureBeadsConfigGitignored() returned error: %v", err)
 	}
 
-	// The exclude file must now list the config.yaml pattern exactly once.
-	excludePath := filepath.Join(dir, ".git", "info", "exclude")
-	if got := countPatternLines(t, excludePath, ".beads/config.yaml"); got != 1 {
-		t.Fatalf("exclude pattern count = %d, want 1", got)
+	// The workspace-root .gitignore must now list the config.yaml pattern exactly once.
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if got := countPatternLines(t, gitignorePath, ".beads/config.yaml"); got != 1 {
+		t.Fatalf("gitignore pattern count = %d, want 1", got)
 	}
 
 	// git must now treat the file as ignored.
@@ -1190,11 +1190,17 @@ func TestEnsureBeadsConfigGitignored_GitRepo(t *testing.T) {
 }
 
 func TestEnsureBeadsConfigGitignored_NotGitRepo(t *testing.T) {
-	skipIfNoGit(t)
 	dir := t.TempDir()
 
 	if err := ensureBeadsConfigGitignored(dir); err != nil {
 		t.Fatalf("ensureBeadsConfigGitignored() returned error: %v", err)
+	}
+
+	// A .gitignore must be created at the workspace root with the pattern, even
+	// when the directory is not a git repository.
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if got := countPatternLines(t, gitignorePath, ".beads/config.yaml"); got != 1 {
+		t.Fatalf("gitignore pattern count = %d, want 1", got)
 	}
 
 	// No .git directory should have been created.
@@ -1204,9 +1210,7 @@ func TestEnsureBeadsConfigGitignored_NotGitRepo(t *testing.T) {
 }
 
 func TestEnsureBeadsConfigGitignored_Idempotent(t *testing.T) {
-	skipIfNoGit(t)
 	dir := t.TempDir()
-	gitInit(t, dir)
 
 	for i := 0; i < 3; i++ {
 		if err := ensureBeadsConfigGitignored(dir); err != nil {
@@ -1214,19 +1218,19 @@ func TestEnsureBeadsConfigGitignored_Idempotent(t *testing.T) {
 		}
 	}
 
-	excludePath := filepath.Join(dir, ".git", "info", "exclude")
-	if got := countPatternLines(t, excludePath, ".beads/config.yaml"); got != 1 {
-		t.Fatalf("exclude pattern count after repeated calls = %d, want 1", got)
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if got := countPatternLines(t, gitignorePath, ".beads/config.yaml"); got != 1 {
+		t.Fatalf("gitignore pattern count after repeated calls = %d, want 1", got)
 	}
 }
 
-func TestEnsureBeadsConfigGitignored_AlreadyIgnored(t *testing.T) {
-	skipIfNoGit(t)
+func TestEnsureBeadsConfigGitignored_ExistingGitignorePreserved(t *testing.T) {
 	dir := t.TempDir()
-	gitInit(t, dir)
 
-	// Pre-ignore the whole .beads/ directory via a tracked .gitignore.
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".beads/\n"), 0o644); err != nil {
+	// A pre-existing .gitignore with unrelated content must be preserved, and the
+	// .beads/config.yaml pattern appended to it.
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
 
@@ -1234,21 +1238,22 @@ func TestEnsureBeadsConfigGitignored_AlreadyIgnored(t *testing.T) {
 		t.Fatalf("ensureBeadsConfigGitignored() returned error: %v", err)
 	}
 
-	// Since the file is already ignored, the exclude file must not be touched.
-	excludePath := filepath.Join(dir, ".git", "info", "exclude")
-	if got := countPatternLines(t, excludePath, ".beads/config.yaml"); got != 0 {
-		t.Fatalf("exclude pattern count = %d, want 0 (already ignored)", got)
+	if got := countPatternLines(t, gitignorePath, "node_modules/"); got != 1 {
+		t.Fatalf("pre-existing pattern count = %d, want 1 (must be preserved)", got)
+	}
+	if got := countPatternLines(t, gitignorePath, ".beads/config.yaml"); got != 1 {
+		t.Fatalf("config.yaml pattern count = %d, want 1", got)
 	}
 }
 
-func TestAppendGitExcludePattern_NewFileAndIdempotent(t *testing.T) {
+func TestAppendGitignorePattern_NewFileAndIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "exclude")
+	path := filepath.Join(dir, ".gitignore")
 
-	if err := appendGitExcludePattern(path, "x/y.yaml"); err != nil {
+	if err := appendGitignorePattern(path, "x/y.yaml"); err != nil {
 		t.Fatalf("first append returned error: %v", err)
 	}
-	if err := appendGitExcludePattern(path, "x/y.yaml"); err != nil {
+	if err := appendGitignorePattern(path, "x/y.yaml"); err != nil {
 		t.Fatalf("second append returned error: %v", err)
 	}
 	if got := countPatternLines(t, path, "x/y.yaml"); got != 1 {
@@ -1256,21 +1261,21 @@ func TestAppendGitExcludePattern_NewFileAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestAppendGitExcludePattern_AppendsNewlineToTruncatedFile(t *testing.T) {
+func TestAppendGitignorePattern_AppendsNewlineToTruncatedFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "exclude")
+	path := filepath.Join(dir, ".gitignore")
 	// Existing content without a trailing newline.
 	if err := os.WriteFile(path, []byte("existing-pattern"), 0o644); err != nil {
-		t.Fatalf("seed exclude: %v", err)
+		t.Fatalf("seed gitignore: %v", err)
 	}
 
-	if err := appendGitExcludePattern(path, "new-pattern"); err != nil {
+	if err := appendGitignorePattern(path, "new-pattern"); err != nil {
 		t.Fatalf("append returned error: %v", err)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read exclude: %v", err)
+		t.Fatalf("read gitignore: %v", err)
 	}
 	// The pre-existing pattern must survive intact on its own line, and the new
 	// pattern must be present exactly once.
