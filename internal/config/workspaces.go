@@ -227,12 +227,16 @@ func LoadWorkspaces() ([]WorkspaceSettings, error) {
 
 	populated := make([]WorkspaceSettings, len(file.Workspaces))
 	copy(populated, file.Workspaces)
-	applyFolderDefaults(populated, folders)
+	ApplyFolderDefaults(populated, folders)
 
-	// Determine the desired on-disk (deduplicated) state. We save back when
-	// UUIDs were generated, or when the on-disk files are not already in the
-	// deduplicated form (one-time migration; idempotent thereafter).
-	cleaned, newFolders := dedupFolders(populated)
+	// Determine the desired on-disk state and migrate to it when needed. The
+	// first load of a legacy file (folder fields inline in workspaces.json)
+	// lifts those fields into the authoritative folders.json; subsequent loads
+	// detect no change and skip the rewrite (idempotent). extractFolderSettings
+	// produces only workspace-derived fields, so merge folder-native settings
+	// (Beads) back before comparing/saving.
+	cleaned, newFolders := extractFolderSettings(populated)
+	newFolders = preserveFolderNativeFields(cleaned, newFolders)
 	if needsSave || !reflect.DeepEqual(file.Workspaces, cleaned) || !foldersEqual(folders, newFolders) {
 		if err := saveWorkspacesAndFolders(cleaned, newFolders); err != nil {
 			// Log but don't fail - the in-memory workspaces are still valid.
@@ -281,18 +285,23 @@ func LoadWorkspacesFromFile(path string) ([]WorkspaceSettings, error) {
 }
 
 // SaveWorkspaces saves workspaces to the Mitto data directory. Folder-level
-// fields (name, color, code, auto_children) that are identical across all
-// workspaces sharing a working directory are deduplicated into folders.json;
-// the remaining per-workspace data is written to workspaces.json.
+// fields (name, color, code, auto_children) are extracted into the authoritative
+// folders.json (keyed by working directory); the remaining per-workspace data is
+// written to workspaces.json.
 func SaveWorkspaces(workspaces []WorkspaceSettings) error {
-	cleaned, folders := dedupFolders(workspaces)
+	cleaned, folders := extractFolderSettings(workspaces)
+	// extractFolderSettings produces only workspace-derived fields, so merge
+	// folder-native settings (e.g. Beads) back from the authoritative
+	// folders.json before writing — otherwise this save would wipe them.
+	folders = preserveFolderNativeFields(cleaned, folders)
 	return saveWorkspacesAndFolders(cleaned, folders)
 }
 
-// saveWorkspacesAndFolders writes the already-deduplicated workspaces and the
-// folders map to disk. folders.json is written FIRST so that hoisted
-// folder-level values can never be lost if a crash occurs between the two
-// writes (workspaces.json no longer contains them once cleaned).
+// saveWorkspacesAndFolders writes the already-extracted workspaces and the
+// folders map to disk. folders.json is written FIRST so that folder-level values
+// can never be lost if a crash occurs between the two writes (workspaces.json no
+// longer contains them once cleaned). The folders map must already include any
+// folder-native fields (callers merge them via preserveFolderNativeFields).
 func saveWorkspacesAndFolders(cleaned []WorkspaceSettings, folders map[string]FolderSettings) error {
 	if err := SaveFolders(folders); err != nil {
 		return err

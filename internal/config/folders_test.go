@@ -79,12 +79,12 @@ func TestSaveFolders_EmptyRemovesFile(t *testing.T) {
 	}
 }
 
-func TestDedupFolders_AllSameHoisted(t *testing.T) {
+func TestExtractFolderSettings_AllSameHoisted(t *testing.T) {
 	ws := []WorkspaceSettings{
 		{ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc", AutoChildren: []AutoChild{{Title: "Reviewer"}}},
 		{ACPServer: "claude", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc", AutoChildren: []AutoChild{{Title: "Reviewer"}}},
 	}
-	cleaned, folders := dedupFolders(ws)
+	cleaned, folders := extractFolderSettings(ws)
 	fs, ok := folders["/proj"]
 	if !ok {
 		t.Fatalf("folders missing /proj")
@@ -102,18 +102,20 @@ func TestDedupFolders_AllSameHoisted(t *testing.T) {
 	}
 }
 
-func TestDedupFolders_DivergentNotHoisted(t *testing.T) {
+func TestExtractFolderSettings_DivergentCollapses(t *testing.T) {
 	ws := []WorkspaceSettings{
 		{ACPServer: "auggie", WorkingDir: "/proj", Name: "A", Code: "PRJ"},
 		{ACPServer: "claude", WorkingDir: "/proj", Name: "B", Code: "PRJ"},
 	}
-	cleaned, folders := dedupFolders(ws)
-	if cleaned[0].Name != "A" || cleaned[1].Name != "B" {
-		t.Errorf("divergent Name should be preserved: %q, %q", cleaned[0].Name, cleaned[1].Name)
+	cleaned, folders := extractFolderSettings(ws)
+	// folders.json is authoritative: divergent values collapse onto the first
+	// non-empty value and are stripped from every workspace.
+	if cleaned[0].Name != "" || cleaned[1].Name != "" {
+		t.Errorf("divergent Name should be stripped from workspaces: %q, %q", cleaned[0].Name, cleaned[1].Name)
 	}
 	fs := folders["/proj"]
-	if fs.Name != "" {
-		t.Errorf("divergent Name should not be hoisted, got %q", fs.Name)
+	if fs.Name != "A" {
+		t.Errorf("divergent Name should collapse to first non-empty (A), got %q", fs.Name)
 	}
 	if fs.Code != "PRJ" {
 		t.Errorf("matching Code should be hoisted, got %q", fs.Code)
@@ -123,11 +125,11 @@ func TestDedupFolders_DivergentNotHoisted(t *testing.T) {
 	}
 }
 
-func TestDedupFolders_SingleWorkspace(t *testing.T) {
+func TestExtractFolderSettings_SingleWorkspace(t *testing.T) {
 	ws := []WorkspaceSettings{
 		{ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc"},
 	}
-	cleaned, folders := dedupFolders(ws)
+	cleaned, folders := extractFolderSettings(ws)
 	fs, ok := folders["/proj"]
 	if !ok {
 		t.Fatalf("folders missing /proj")
@@ -140,11 +142,11 @@ func TestDedupFolders_SingleWorkspace(t *testing.T) {
 	}
 }
 
-func TestDedupFolders_EmptyWorkingDirSkipped(t *testing.T) {
+func TestExtractFolderSettings_EmptyWorkingDirSkipped(t *testing.T) {
 	ws := []WorkspaceSettings{
 		{ACPServer: "auggie", WorkingDir: "", Name: "P", Code: "PRJ"},
 	}
-	cleaned, folders := dedupFolders(ws)
+	cleaned, folders := extractFolderSettings(ws)
 	if len(folders) != 0 {
 		t.Errorf("empty working_dir should not be hoisted, folders = %+v", folders)
 	}
@@ -153,7 +155,7 @@ func TestDedupFolders_EmptyWorkingDirSkipped(t *testing.T) {
 	}
 }
 
-func TestApplyFolderDefaults_PopulatesEmpties_PreservesOverrides(t *testing.T) {
+func TestApplyFolderDefaults_FolderValueWins(t *testing.T) {
 	folders := map[string]FolderSettings{
 		"/proj": {Name: "A"},
 	}
@@ -161,12 +163,14 @@ func TestApplyFolderDefaults_PopulatesEmpties_PreservesOverrides(t *testing.T) {
 		{ACPServer: "auggie", WorkingDir: "/proj"},
 		{ACPServer: "claude", WorkingDir: "/proj", Name: "B"},
 	}
-	applyFolderDefaults(ws, folders)
+	ApplyFolderDefaults(ws, folders)
+	// folders.json is authoritative, so the folder value overwrites both the
+	// empty workspace and the divergent override.
 	if ws[0].Name != "A" {
 		t.Errorf("empty Name should be populated to A, got %q", ws[0].Name)
 	}
-	if ws[1].Name != "B" {
-		t.Errorf("override Name should be preserved as B, got %q", ws[1].Name)
+	if ws[1].Name != "A" {
+		t.Errorf("override Name should collapse to folder value A, got %q", ws[1].Name)
 	}
 }
 
@@ -321,5 +325,214 @@ func TestSaveWorkspaces_OrphanFolderPruned(t *testing.T) {
 	}
 	if _, ok := folders["/proj"]; !ok {
 		t.Error("active folder /proj should be present")
+	}
+}
+
+func TestSetAndGetFolderBeadsUpstream(t *testing.T) {
+	setupFoldersTestDir(t)
+	if got := FolderBeadsUpstream("/proj"); got != "" {
+		t.Errorf("FolderBeadsUpstream() before set = %q, want empty", got)
+	}
+	if err := SetFolderBeadsUpstream("/proj", "jira"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() returned error: %v", err)
+	}
+	if got := FolderBeadsUpstream("/proj"); got != "jira" {
+		t.Errorf("FolderBeadsUpstream() = %q, want jira", got)
+	}
+	// Setting to "none" clears the folder entry.
+	if err := SetFolderBeadsUpstream("/proj", "none"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream(none) returned error: %v", err)
+	}
+	if got := FolderBeadsUpstream("/proj"); got != "" {
+		t.Errorf("FolderBeadsUpstream() after clear = %q, want empty", got)
+	}
+}
+
+func TestSetFolderBeadsUpstream_PreservesDedupFields(t *testing.T) {
+	setupFoldersTestDir(t)
+	if err := SaveFolders(map[string]FolderSettings{"/proj": {Name: "P", Code: "PRJ"}}); err != nil {
+		t.Fatalf("SaveFolders() returned error: %v", err)
+	}
+	if err := SetFolderBeadsUpstream("/proj", "github"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() returned error: %v", err)
+	}
+	folders, err := LoadFolders()
+	if err != nil {
+		t.Fatalf("LoadFolders() returned error: %v", err)
+	}
+	fs := folders["/proj"]
+	if fs.Name != "P" || fs.Code != "PRJ" {
+		t.Errorf("dedup fields lost: %+v", fs)
+	}
+	if fs.Beads == nil || fs.Beads.Upstream != "github" {
+		t.Errorf("beads upstream not set: %+v", fs.Beads)
+	}
+}
+
+// SaveWorkspaces must not wipe folder-native beads settings, since
+// extractFolderSettings produces only workspace-derived fields.
+func TestSaveWorkspaces_PreservesBeadsUpstream(t *testing.T) {
+	setupFoldersTestDir(t)
+	if err := SetFolderBeadsUpstream("/proj", "gitlab"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() returned error: %v", err)
+	}
+
+	ws := []WorkspaceSettings{
+		{UUID: "u1", ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc"},
+		{UUID: "u2", ACPServer: "claude", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc"},
+	}
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() returned error: %v", err)
+	}
+
+	if got := FolderBeadsUpstream("/proj"); got != "gitlab" {
+		t.Errorf("FolderBeadsUpstream() after SaveWorkspaces = %q, want gitlab", got)
+	}
+}
+
+// Beads for a working_dir no longer referenced by any workspace is pruned.
+func TestSaveWorkspaces_OrphanBeadsPruned(t *testing.T) {
+	setupFoldersTestDir(t)
+	if err := SetFolderBeadsUpstream("/orphan", "jira"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() returned error: %v", err)
+	}
+
+	ws := []WorkspaceSettings{
+		{UUID: "u1", ACPServer: "auggie", WorkingDir: "/proj", Name: "P"},
+	}
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() returned error: %v", err)
+	}
+
+	if got := FolderBeadsUpstream("/orphan"); got != "" {
+		t.Errorf("orphan beads upstream should be pruned, got %q", got)
+	}
+}
+
+// ---- LoadFoldersFromFile tests ----
+
+func TestLoadFoldersFromFile_JSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "folders.json")
+	content := `{"folders":{"/proj":{"name":"P","code":"PRJ","beads":{"upstream":"github"}}}}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	folders, err := LoadFoldersFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	fs, ok := folders["/proj"]
+	if !ok {
+		t.Fatal("expected entry for /proj")
+	}
+	if fs.Name != "P" {
+		t.Errorf("Name = %q, want %q", fs.Name, "P")
+	}
+	if fs.Code != "PRJ" {
+		t.Errorf("Code = %q, want %q", fs.Code, "PRJ")
+	}
+	if fs.Beads == nil || fs.Beads.Upstream != "github" {
+		t.Errorf("Beads.Upstream = %v, want %q", fs.Beads, "github")
+	}
+}
+
+func TestLoadFoldersFromFile_YAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "folders.yaml")
+	content := "folders:\n  /proj:\n    name: P\n    auto_children:\n      - title: Reviewer\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	folders, err := LoadFoldersFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	fs, ok := folders["/proj"]
+	if !ok {
+		t.Fatal("expected entry for /proj")
+	}
+	if fs.Name != "P" {
+		t.Errorf("Name = %q, want %q", fs.Name, "P")
+	}
+	if len(fs.AutoChildren) != 1 {
+		t.Fatalf("len(AutoChildren) = %d, want 1", len(fs.AutoChildren))
+	}
+	if fs.AutoChildren[0].Title != "Reviewer" {
+		t.Errorf("AutoChildren[0].Title = %q, want %q", fs.AutoChildren[0].Title, "Reviewer")
+	}
+}
+
+func TestLoadFoldersFromFile_YML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "folders.yml")
+	content := "folders:\n  /proj:\n    name: P\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	folders, err := LoadFoldersFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := folders["/proj"]; !ok {
+		t.Fatal("expected entry for /proj")
+	}
+}
+
+func TestLoadFoldersFromFile_NotFound(t *testing.T) {
+	_, err := LoadFoldersFromFile("/nonexistent/path/folders.json")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file, got nil")
+	}
+}
+
+func TestLoadFoldersFromFile_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(path, []byte("{bad json}"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := LoadFoldersFromFile(path)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestLoadFoldersFromFile_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(path, []byte(":\t:\n"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := LoadFoldersFromFile(path)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML, got nil")
+	}
+}
+
+func TestLoadFoldersFromFile_UnsupportedExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "folders.txt")
+	if err := os.WriteFile(path, []byte("something"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := LoadFoldersFromFile(path)
+	if err == nil {
+		t.Fatal("expected error for unsupported extension, got nil")
+	}
+}
+
+func TestLoadFoldersFromFile_Empty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "folders.json")
+	if err := os.WriteFile(path, []byte(`{"folders":{}}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	folders, err := LoadFoldersFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(folders) != 0 {
+		t.Errorf("expected empty map, got len=%d", len(folders))
 	}
 }
