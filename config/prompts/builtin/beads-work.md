@@ -1,6 +1,6 @@
 ---
 name: "Beads: start work"
-menus: prompts, beads
+menus: prompts, beadsIssues
 description: "Pick a ready bead from the beads tracker and spawn parallel Mitto conversations to implement it"
 backgroundColor: "#B2DFDB"
 group: "Beads"
