@@ -2247,3 +2247,66 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleUpdateSession_BeadsIssue verifies that PATCH /api/sessions/{id} with
+// beads_issue persists the value and GET returns it.
+func TestHandleUpdateSession_BeadsIssue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "20260131-120099-beads001",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// PATCH: set beads_issue
+	body := strings.NewReader(`{"beads_issue": "mitto-42"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/20260131-120099-beads001", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.handleUpdateSession(w, req, "20260131-120099-beads001")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// GET: verify beads_issue is returned in metadata
+	updated, err := store.GetMetadata("20260131-120099-beads001")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updated.BeadsIssue != "mitto-42" {
+		t.Errorf("BeadsIssue = %q, want %q", updated.BeadsIssue, "mitto-42")
+	}
+
+	// PATCH: clear beads_issue with empty string
+	body2 := strings.NewReader(`{"beads_issue": ""}`)
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/20260131-120099-beads001", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	server.handleUpdateSession(w2, req2, "20260131-120099-beads001")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("PATCH clear status = %d, want %d; body: %s", w2.Code, http.StatusOK, w2.Body.String())
+	}
+
+	cleared, err := store.GetMetadata("20260131-120099-beads001")
+	if err != nil {
+		t.Fatalf("GetMetadata after clear failed: %v", err)
+	}
+	if cleared.BeadsIssue != "" {
+		t.Errorf("BeadsIssue after clear = %q, want empty", cleared.BeadsIssue)
+	}
+}

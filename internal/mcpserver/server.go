@@ -871,6 +871,7 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		SessionID:       meta.SessionID,
 		Title:           meta.Name,
 		Description:     meta.Description,
+		BeadsIssue:      meta.BeadsIssue,
 		ACPServer:       meta.ACPServer,
 		WorkingDir:      meta.WorkingDir,
 		MessageCount:    meta.EventCount,
@@ -1186,6 +1187,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Update properties of a conversation. " +
 			"Supports partial updates — only specified fields are changed, others are left untouched. " +
 			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes), " +
+			"'beads_issue' (linked beads issue ID, e.g. \"mitto-123\"; empty string clears it), " +
 			"'periodic' (periodic prompt configuration). " +
 			"User data is validated against the workspace's schema defined in .mittorc. " +
 			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
@@ -1496,6 +1498,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				SessionID:         meta.SessionID,
 				Title:             meta.Name,
 				Description:       meta.Description,
+				BeadsIssue:        meta.BeadsIssue,
 				ACPServer:         meta.ACPServer,
 				WorkingDir:        meta.WorkingDir,
 				CreatedAt:         meta.CreatedAt,
@@ -3337,6 +3340,19 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			"new_name", *input.Name)
 	}
 
+	// Update beads_issue if provided
+	if input.BeadsIssue != nil {
+		if err := store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
+			m.BeadsIssue = *input.BeadsIssue
+		}); err != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to update beads_issue: %v", err),
+			}, nil
+		}
+		updated = append(updated, "beads_issue")
+	}
+
 	// Update user data if provided
 	if len(input.UserData) > 0 {
 		// Determine merge mode (default: true)
@@ -3573,7 +3589,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if len(updated) == 0 {
 		return nil, ConversationUpdateOutput{
 			Success: false,
-			Error:   "no properties to update: specify at least one of 'name', 'user_data', or periodic fields",
+			Error:   "no properties to update: specify at least one of 'name', 'beads_issue', 'user_data', or periodic fields",
 		}, nil
 	}
 
@@ -3584,9 +3600,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		Updated:        updated,
 	}
 
-	// Read back current name
+	// Read back current name and beads_issue
 	if currentMeta, err := store.GetMetadata(input.ConversationID); err == nil {
 		output.Name = currentMeta.Name
+		output.BeadsIssue = currentMeta.BeadsIssue
 	}
 
 	// Read back current user data

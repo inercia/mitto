@@ -445,8 +445,9 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 type SessionUpdateRequest struct {
 	Name        *string `json:"name,omitempty"`
 	Description *string `json:"description,omitempty"`
-	Pinned      *bool   `json:"pinned,omitempty"`   // Deprecated: use Archived instead
-	Archived    *bool   `json:"archived,omitempty"` // If true, session is archived
+	Pinned      *bool   `json:"pinned,omitempty"`      // Deprecated: use Archived instead
+	Archived    *bool   `json:"archived,omitempty"`    // If true, session is archived
+	BeadsIssue  *string `json:"beads_issue,omitempty"` // Linked beads issue ID (empty string clears it)
 }
 
 // archiveWaitTimeout is the maximum time to wait for a response to complete when archiving.
@@ -507,6 +508,9 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		}
 		if req.Description != nil {
 			meta.Description = *req.Description
+		}
+		if req.BeadsIssue != nil {
+			meta.BeadsIssue = *req.BeadsIssue
 		}
 		if req.Pinned != nil {
 			meta.Pinned = *req.Pinned

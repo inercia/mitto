@@ -52,6 +52,7 @@ type ConversationInfo struct {
 	LastSeq        int64  `json:"last_seq,omitempty"`
 	IsPeriodic     bool   `json:"is_periodic"`
 	ChildOrigin    string `json:"child_origin,omitempty"`
+	BeadsIssue     string `json:"beads_issue,omitempty"` // Linked beads issue ID (e.g. "mitto-123"), empty if none
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
@@ -62,6 +63,7 @@ type ConversationDetails struct {
 	SessionID         string `json:"session_id"`
 	Title             string `json:"title,omitempty"`
 	Description       string `json:"description,omitempty"`
+	BeadsIssue        string `json:"beads_issue,omitempty"` // Linked beads issue ID (e.g. "mitto-123"), empty if none
 	ACPServer         string `json:"acp_server,omitempty"`
 	WorkingDir        string `json:"working_dir,omitempty"`
 	CreatedAt         string `json:"created_at,omitempty"`           // ISO 8601 format
@@ -345,7 +347,8 @@ type ConversationUpdateInput struct {
 	ConversationID string `json:"conversation_id"` // Target conversation to update
 
 	// Patchable properties — all optional, only non-nil fields are applied
-	Name *string `json:"name,omitempty"` // Update conversation title
+	Name       *string `json:"name,omitempty"`        // Update conversation title
+	BeadsIssue *string `json:"beads_issue,omitempty"` // Update linked beads issue ID (empty string clears)
 
 	// User data — optional, only applied if non-nil
 	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
@@ -370,9 +373,10 @@ type UserDataAttributeUpdate struct {
 type ConversationUpdateOutput struct {
 	Success        bool                      `json:"success"`
 	ConversationID string                    `json:"conversation_id,omitempty"`
-	Updated        []string                  `json:"updated,omitempty"`   // List of property names that were changed
-	Name           string                    `json:"name,omitempty"`      // Current name after update
-	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"` // Current user data after update
+	Updated        []string                  `json:"updated,omitempty"`     // List of property names that were changed
+	Name           string                    `json:"name,omitempty"`        // Current name after update
+	BeadsIssue     string                    `json:"beads_issue,omitempty"` // Current linked beads issue ID after update
+	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"`   // Current user data after update
 	// Periodic configuration (returned when periodic is configured)
 	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`
 	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"`

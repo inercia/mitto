@@ -239,6 +239,7 @@ type Metadata struct {
 	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
 	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
 	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
+	BeadsIssue              string          `json:"beads_issue,omitempty"`               // Linked beads issue ID (e.g. "mitto-123"), empty if none
 	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
 	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
 	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated
