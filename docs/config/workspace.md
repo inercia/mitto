@@ -33,6 +33,7 @@ The right panel provides these tabs:
 |-----|------------|--------------------|
 | **General** | ![](screenshots/04-workspace-general.png) | ACP server, auxiliary model selection, runner, auto-approve |
 | **Metadata** | ![](screenshots/04-workspace-metadata.png) | Display name, description, URL, user data schema |
+| **Beads** | — | Per-folder Beads (`bd`) integration: upstream task system, `bd config` keys, and Pull/Push/Sync (see [Beads Integration](#beads-integration)) |
 | **Prompts** | ![](screenshots/04-workspace-prompts.png) | Quick-action prompts (enable/disable, add, edit) |
 | **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace) |
 | **Children** | ![](screenshots/04-workspace-children.png) | Auto-spawn child conversations |
@@ -125,9 +126,40 @@ conversations:
 
 ### Folder-Level Fields (folders.json)
 
-When a folder has more than one ACP server entry, four folder-level fields are shared by all of them: the display `name`, badge `code`, badge `color`, and `auto_children`. To avoid repeating these on every entry, they are stored once per folder in a separate `folders.json` file in the Mitto data directory (`$MITTO_DIR`).
+Settings shared by every ACP server entry in the same folder — the display `name`, badge `code`, badge `color`, `auto_children`, and the Beads `beads` subsection — are stored once per folder in a `folders.json` file in the Mitto data directory (`$MITTO_DIR`), keyed by working directory.
 
-This is fully transparent — the UI and API always see complete workspace records. Mitto merges `folders.json` into each workspace on load and deduplicates it back out on save. Migration from older `workspaces.json` files that duplicated these fields happens automatically the first time the file is loaded. Workspace metadata (`description`, `url`, `group`, `user_data_schema`) is **not** stored here; it stays in the committable `.mittorc` so it remains version-controllable. See [docs/devel/workspaces.md](../devel/workspaces.md#folder-level-deduplication-foldersjson) for details.
+`folders.json` is the **authoritative store** for these values, not merely a deduplication of `workspaces.json`. It is created the first time via a one-time automatic migration that lifts any inline folder fields out of `workspaces.json`; thereafter all common folder-level information always lives there. The split is fully transparent — the UI and API always see complete workspace records, because Mitto merges `folders.json` into each workspace on load (the folder value always wins). Workspace metadata (`description`, `url`, `group`, `user_data_schema`) is **not** stored here; it stays in the committable `.mittorc` so it remains version-controllable. See [docs/devel/workspaces.md](../devel/workspaces.md#folder-level-settings-foldersjson) for details.
+
+Example `folders.json`:
+
+```json
+{
+  "folders": {
+    "/path/to/project": {
+      "name": "My Project",
+      "code": "MYP",
+      "color": "#ff5500",
+      "beads": { "upstream": "github" }
+    }
+  }
+}
+```
+
+When running the web interface you can overlay folder settings from an external
+file without persisting them, mirroring `--workspaces`:
+
+```bash
+# Overlay folder settings from a JSON or YAML file (not saved to disk)
+mitto web --folders config/folders.yaml
+```
+
+## Beads Integration
+
+The **Beads** tab (folder-level) is a UI wrapper over the Beads (`bd`) issue tracker for the folder's project. It has three parts:
+
+- **Upstream tasks management** — a dropdown (`none`, `Jira`, `GitHub`, `GitLab`, `Linear`) that selects the external task system Beads syncs with. This is folder-native and persisted in `folders.json` under the `beads` subsection. When set, Pull/Push/Sync actions appear in the Beads view for the folder, and a list of recommended configuration keys for the selected system is shown for convenience.
+- **`bd config` keys** — an editor for the folder's Beads configuration (namespaced keys such as `jira.url`, `github.repository`, `gitlab.project`). These are stored in the folder's Beads database via `bd config`, not in `folders.json`. Operational/system keys are shown read-only (edit them via the `bd` CLI).
+- **Pull / Push / Sync** — buttons in the Beads view that map to the selected upstream's sync operations (`bd <system> sync` with pull-only / push-only / bidirectional). They appear only when an upstream is configured.
 
 ## Auto-Created Children
 

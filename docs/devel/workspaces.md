@@ -166,39 +166,49 @@ Workspaces are NOT persisted when:
 }
 ```
 
-## Folder-Level Deduplication (folders.json)
+## Folder-Level Settings (folders.json)
 
 A single folder can have multiple workspace entries (e.g. the same project paired
-with Auggie and with Claude Code). Four fields are folder-level rather than
-server-level and would otherwise be duplicated on every entry that shares a
-`working_dir`:
+with Auggie and with Claude Code). Some settings are folder-level rather than
+server-level and belong to the **folder**, not to any individual workspace:
 
 - `name` — friendly display name for the folder
 - `color` — custom badge color
 - `code` — three-letter badge code
 - `auto_children` — child conversations to auto-create
+- `beads` — folder-native beads integration settings (e.g. upstream task system)
 
-These are deduplicated into a separate `folders.json` (in `$MITTO_DIR`), keyed by
-working directory. The split is **transparent**: the in-memory
-`[]WorkspaceSettings` returned by `LoadWorkspaces()` is always fully populated, so
-no other code (`SessionManager`, REST API, frontend) needs to know `folders.json`
-exists.
+`folders.json` (in `$MITTO_DIR`, keyed by working directory) is the
+**authoritative store** for these values — not merely a deduplication of
+`workspaces.json`. It is created the **first time via a one-time migration** that
+lifts any inline folder fields out of `workspaces.json`; thereafter all common
+folder-level information always lives in `folders.json`. The split is
+**transparent**: the in-memory `[]WorkspaceSettings` returned by
+`LoadWorkspaces()` is always fully populated, so no other code
+(`SessionManager`, REST API, frontend) needs to know `folders.json` exists.
 
 | Phase | Function | Behavior |
 | ----- | -------- | -------- |
-| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads `folders.json`, and merges folder values into each workspace via `applyFolderDefaults`. A workspace's own non-empty value always wins over the folder default (preserving divergent legacy values). |
-| Save  | `SaveWorkspaces()` | Calls `dedupFolders` to hoist any field that is identical across **all** workspaces sharing a `working_dir`, then writes `folders.json` **first**, then the cleaned `workspaces.json`. |
+| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads the authoritative `folders.json`, and merges folder values into each workspace via `ApplyFolderDefaults`. The folder value **always wins** over any value still on a workspace (collapsing divergent legacy values). |
+| Save  | `SaveWorkspaces()` | Calls `extractFolderSettings` to hoist each folder-level field (first non-empty value across the group, divergence collapses) into `folders.json`, merges folder-native fields (`beads`) via `preserveFolderNativeFields`, then writes `folders.json` **first**, then the cleaned `workspaces.json`. |
 
-`folders.json` is written before `workspaces.json` so hoisted values can never be
-lost if a crash occurs between the two writes. Migration is automatic and
-idempotent: the first `LoadWorkspaces()` of a legacy (duplicated) file rewrites
-both files into deduplicated form; subsequent loads detect no change and skip the
-rewrite. Orphan entries (a folder with no remaining workspaces) are pruned on
-save, and an empty folders map deletes `folders.json` entirely.
+`folders.json` is written before `workspaces.json` so folder-level values can
+never be lost if a crash occurs between the two writes. The migration is
+automatic and idempotent: the first `LoadWorkspaces()` of a legacy (inline) file
+rewrites both files so common settings live in `folders.json`; subsequent loads
+detect no change and skip the rewrite. Orphan entries (a folder with no remaining
+workspaces) are pruned on save, and a folders map with no settings deletes
+`folders.json` entirely.
 
 > **Note:** Workspace **metadata** (`description`, `url`, `group`,
 > `user_data_schema`) is intentionally NOT stored here — it stays in each
 > project's committable `.mittorc` so it remains shareable via version control.
+
+`mitto web --folders FILE` (JSON or YAML) overlays folder-level settings onto
+whatever workspaces were loaded, regardless of source — mirroring how
+`--workspaces` works. Changes are not persisted to disk. The file format mirrors
+`folders.json` and is parsed via `LoadFoldersFromFile`; the overlay is applied
+via `ApplyFolderDefaults` after the three-way workspace loading step.
 
 **folders.json:**
 
@@ -208,7 +218,8 @@ save, and an empty folders map deletes `folders.json` entirely.
     "/path/to/project": {
       "name": "My Project",
       "code": "MYP",
-      "color": "#ff5500"
+      "color": "#ff5500",
+      "beads": { "upstream": "github" }
     }
   }
 }

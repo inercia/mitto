@@ -73,6 +73,17 @@ mitto web --dir /path/to/project1 --dir /path/to/project2
 mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
 ```
 
+You can also load workspaces and folder-level settings from external JSON/YAML
+files. These overlays are applied in memory and are **not** persisted to disk:
+
+```bash
+# Load workspaces from a file
+mitto web --workspaces config/workspaces.yaml
+
+# Overlay folder-level settings (name/code/color/auto_children/beads)
+mitto web --folders config/folders.yaml
+```
+
 ## Predefined Prompts
 
 Configure quick-access prompts that appear in the chat interface. Prompts are a
@@ -249,6 +260,16 @@ Or in config:
 web:
   static_dir: ./web/static
 ```
+
+For the native macOS app (which does not accept CLI flags), use the
+`MITTO_STATIC_DIR` environment variable instead:
+
+```bash
+MITTO_STATIC_DIR=./web/static ./Mitto.app/Contents/MacOS/mitto-app
+```
+
+Resolution priority is `MITTO_STATIC_DIR` > config (`web.static_dir`) >
+embedded assets.
 
 ## Reverse Proxy Setup
 

@@ -167,7 +167,18 @@ open Mitto.app
 # With environment overrides
 MITTO_ACP_SERVER=claude-code open Mitto.app
 MITTO_WORK_DIR=/path/to/project open Mitto.app
+
+# Serve static files from disk for hot-reloading (frontend development)
+MITTO_STATIC_DIR=./web/static ./Mitto.app/Contents/MacOS/mitto-app
 ```
+
+The native app does not accept CLI flags. Use the `MITTO_STATIC_DIR`
+environment variable (the app's equivalent of the CLI `mitto web --static-dir`)
+to serve static assets from a directory instead of the embedded assets. This
+lets you edit files in `web/static/` and see changes on refresh, without
+rebuilding the app. Resolution priority is `MITTO_STATIC_DIR` > config
+(`web.static_dir`) > embedded assets. Paths are resolved relative to the app's
+working directory, so prefer an absolute path when launching via `open`.
 
 ## Debugging
 

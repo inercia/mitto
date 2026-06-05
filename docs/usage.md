@@ -51,6 +51,9 @@ open Mitto.app
 # With environment overrides
 MITTO_ACP_SERVER=claude-code open Mitto.app
 MITTO_WORK_DIR=/path/to/project open Mitto.app
+
+# Serve static files from disk for hot-reloading (frontend development)
+MITTO_STATIC_DIR=./web/static ./Mitto.app/Contents/MacOS/mitto-app
 ```
 
 ## CLI Commands
@@ -77,10 +80,12 @@ Available commands during an interactive session:
 
 | Flag              | Description                           |
 | ----------------- | ------------------------------------- |
-| `--port <number>` | HTTP server port (default: 8080)      |
-| `--host <addr>`   | HTTP server host (default: 127.0.0.1) |
-| `--open`          | Open browser on startup               |
-| `--no-sessions`   | Disable session persistence           |
+| `--port <number>`     | HTTP server port (default: 8080)      |
+| `--host <addr>`       | HTTP server host (default: 127.0.0.1) |
+| `--open`              | Open browser on startup               |
+| `--no-sessions`       | Disable session persistence           |
+| `--workspaces <file>` | Load workspaces from a JSON/YAML file (overlay, not persisted) |
+| `--folders <file>`    | Overlay folder-level settings (name/code/color/auto_children/beads) from a JSON/YAML file (not persisted) |
 
 ## Session Management
 
@@ -99,10 +104,11 @@ Each session is stored as a directory containing:
 
 | Variable           | Description                     |
 | ------------------ | ------------------------------- |
-| `MITTO_DIR`        | Override default data directory |
-| `MITTO_ACP_SERVER` | Default ACP server to use       |
-| `MITTO_WORK_DIR`   | Default working directory       |
-| `MITTORC`          | Path to configuration file      |
+| `MITTO_DIR`         | Override default data directory             |
+| `MITTO_ACP_SERVER`  | Default ACP server to use                   |
+| `MITTO_WORK_DIR`    | Default working directory                   |
+| `MITTO_STATIC_DIR`  | Serve static files from this dir (dev/app)  |
+| `MITTORC`           | Path to configuration file                  |
 
 ## Examples
 

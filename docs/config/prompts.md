@@ -259,7 +259,7 @@ Provide specific suggestions with code examples where applicable.
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
-| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), and/or `beads` (per-issue context menu in the Beads list). Defaults to `prompts` if omitted. See [below](#menus). |
+| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), and/or `beadsIssues` (per-issue context menu in the Beads list). Defaults to `prompts` if omitted. See [below](#menus). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
@@ -339,7 +339,7 @@ prompt appears in. The available menu values are:
 | -------------- | ------------------------------------------------------------------------------------------------- |
 | `prompts`      | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
 | `conversation` | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
-| `beads`        | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
+| `beadsIssues`  | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
 
 If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
 dropup only). To make a prompt appear in both menus, list both values:
@@ -396,16 +396,16 @@ Prompts without a `group` are collected under an **"Other"** submenu.
 
 ### Beads Context Menu
 
-Prompts whose `menus` list includes `beads` appear in the **per-issue context
+Prompts whose `menus` list includes `beadsIssues` appear in the **per-issue context
 menu** of the Beads list view — the menu shown when you right-click an issue.
 Alongside common bead actions (e.g. **Delete**), the menu includes a **Prompts**
-submenu listing every `menus: beads` prompt.
+submenu listing every `menus: beadsIssues` prompt.
 
 ```markdown
 ---
 name: "Beads: decompose"
 group: "Beads"
-menus: prompts, beads
+menus: prompts, beadsIssues
 ---
 ```
 
