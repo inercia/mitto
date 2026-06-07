@@ -134,6 +134,12 @@ type BackgroundSession struct {
 	cachedActionButtons []ActionButton              // In-memory cache for fast access
 	followUpInProgress  atomic.Bool                 // Prevents concurrent follow-up analyses (prompt completion vs session resume race)
 
+	// selfDestructRequested is set when the agent requests deletion of its own
+	// conversation via the mitto_conversation_delete MCP tool. The deletion is
+	// deferred until the current turn completes (see PromptWithMeta), at which
+	// point onSelfDestruct is invoked to actually remove the conversation.
+	selfDestructRequested atomic.Bool
+
 	// File links configuration
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
@@ -159,6 +165,11 @@ type BackgroundSession struct {
 	// onTitleGenerated is called when a title is auto-generated for this session.
 	// Used to broadcast session_renamed events to all clients.
 	onTitleGenerated func(sessionID, title string)
+
+	// onSelfDestruct is called after a turn completes when the agent has
+	// requested deletion of its own conversation. It performs the actual
+	// deletion (close ACP, remove from disk, broadcast) via SessionManager.
+	onSelfDestruct func(sessionID string)
 
 	// isChildPrompting checks if a child session is currently prompting.
 	// Set by SessionManager to enable children.promptingCount CEL context.
@@ -294,6 +305,11 @@ type BackgroundSessionConfig struct {
 	// Used to broadcast session_renamed events to all connected clients.
 	OnTitleGenerated func(sessionID, title string)
 
+	// OnSelfDestruct is called after a turn completes when the agent has requested
+	// deletion of its own conversation via the mitto_conversation_delete MCP tool.
+	// It should permanently delete the conversation (and its children).
+	OnSelfDestruct func(sessionID string)
+
 	// GlobalMCPServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	// If nil, per-session MCP server is used as fallback (legacy behavior).
@@ -355,6 +371,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
 		onTitleGenerated:        cfg.OnTitleGenerated,
+		onSelfDestruct:          cfg.OnSelfDestruct,
 		acpCommand:              cfg.ACPCommand,          // Store for restart
 		acpCwd:                  cfg.ACPCwd,              // Store for restart
 		serverEnv:               cfg.Env,                 // Store for restart
@@ -737,6 +754,22 @@ func (bs *BackgroundSession) StartedAt() time.Time {
 // IsClosed returns true if the session has been closed.
 func (bs *BackgroundSession) IsClosed() bool {
 	return bs.closed.Load() != 0
+}
+
+// RequestSelfDestruct marks this conversation for deletion once the current
+// turn completes. It is invoked by the mitto_conversation_delete MCP handler
+// when the agent requests deletion of its own conversation. The deletion is
+// deferred (rather than performed immediately) so the agent's in-flight tool
+// call can return cleanly before the conversation and its ACP connection are
+// torn down.
+func (bs *BackgroundSession) RequestSelfDestruct() {
+	bs.selfDestructRequested.Store(true)
+}
+
+// IsSelfDestructRequested returns true if the agent has requested deletion of
+// its own conversation during the current turn.
+func (bs *BackgroundSession) IsSelfDestructRequested() bool {
+	return bs.selfDestructRequested.Load()
 }
 
 // HasParent returns true if this session was spawned by another session (has a parent).
@@ -2006,22 +2039,23 @@ func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, 
 }
 
 // buildACPProcessEnv constructs the environment slice for an ACP subprocess.
-// Layers (later entries override earlier ones in os.Environ semantics):
-//  1. os.Environ() — inherited from the Mitto process.
+// Keys are replaced in-place via mittoAcp.MergeEnv; precedence is:
+//
+//  1. os.Environ() — inherited from the Mitto process (lowest).
 //  2. serverEnv — server-specific env from settings.json (acp_servers[].env).
 //  3. mittoEnv — MITTO_* vars set by Mitto (highest precedence).
 //
 // This is shared between the direct-exec and restricted-runner branches so that
 // the runner branch sees the same env as the non-runner branch.
 func buildACPProcessEnv(serverEnv map[string]string, mittoEnv map[string]string) []string {
-	processEnv := os.Environ()
+	combined := make(map[string]string, len(serverEnv)+len(mittoEnv))
 	for k, v := range serverEnv {
-		processEnv = append(processEnv, k+"="+v)
+		combined[k] = v
 	}
 	for k, v := range mittoEnv {
-		processEnv = append(processEnv, k+"="+v)
+		combined[k] = v // MITTO_* vars keep highest precedence
 	}
-	return processEnv
+	return mittoAcp.MergeEnv(os.Environ(), combined)
 }
 
 // doStartACPProcess performs a single attempt to start the ACP process.
@@ -3840,6 +3874,18 @@ retryAfterRestart:
 		// so the caller can accurately track the final outcome (nil = success, non-nil = failure).
 		if meta.OnComplete != nil {
 			meta.OnComplete(err)
+		}
+
+		// Self-destruct: if the agent requested deletion of its own conversation
+		// during this turn, delete it now that the turn has fully completed and
+		// observers have seen the final response. Run asynchronously so this
+		// goroutine can unwind before the session (and its ACP connection) is
+		// torn down by the deletion path.
+		if bs.IsSelfDestructRequested() && bs.onSelfDestruct != nil {
+			if bs.logger != nil {
+				bs.logger.Info("self_destruct_triggered", "session_id", bs.persistedID)
+			}
+			go bs.onSelfDestruct(bs.persistedID)
 		}
 	}()
 

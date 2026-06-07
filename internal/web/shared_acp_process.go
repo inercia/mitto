@@ -650,6 +650,12 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		cwd = "."
 	}
 
+	ctxRemainingMs := int64(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		ctxRemainingMs = time.Until(dl).Milliseconds()
+	}
+	ctxAlreadyExpired := ctx.Err() != nil
+
 	rpcStart := time.Now()
 	sessResp, err := conn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
@@ -661,6 +667,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		if p.logger != nil {
 			p.logger.Warn("SharedACPProcess.NewSession failed",
 				"rpc_ms", rpcDuration.Milliseconds(),
+				"ctx_remaining_ms", ctxRemainingMs,
+				"ctx_already_expired", ctxAlreadyExpired,
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to create session: %w", err)
@@ -724,6 +732,12 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		cwd = "."
 	}
 
+	ctxRemainingMs := int64(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		ctxRemainingMs = time.Until(dl).Milliseconds()
+	}
+	ctxAlreadyExpired := ctx.Err() != nil
+
 	rpcStart := time.Now()
 	loadResp, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
@@ -737,6 +751,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 			p.logger.Info("SharedACPProcess.LoadSession failed",
 				"acp_session_id", acpSessionID,
 				"rpc_ms", rpcDuration.Milliseconds(),
+				"ctx_remaining_ms", ctxRemainingMs,
+				"ctx_already_expired", ctxAlreadyExpired,
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to load session: %w", err)
@@ -934,10 +950,28 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		return fmt.Errorf("shared ACP process is not running")
 	}
 
+	ctxRemainingMs := int64(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		ctxRemainingMs = time.Until(dl).Milliseconds()
+	}
+	ctxAlreadyExpired := ctx.Err() != nil
+
+	rpcStart := time.Now()
 	_, err := conn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
 		SessionId: sessionID,
 		ModelId:   acp.UnstableModelId(modelID),
 	})
+	rpcDuration := time.Since(rpcStart)
+
+	if err != nil && p.logger != nil {
+		p.logger.Warn("SharedACPProcess.SetSessionModel failed",
+			"session_id", sessionID,
+			"model_id", modelID,
+			"rpc_ms", rpcDuration.Milliseconds(),
+			"ctx_remaining_ms", ctxRemainingMs,
+			"ctx_already_expired", ctxAlreadyExpired,
+			"error", err)
+	}
 	return err
 }
 

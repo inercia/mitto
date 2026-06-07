@@ -275,6 +275,23 @@ func TestBackgroundSession_IsClosed(t *testing.T) {
 	}
 }
 
+// TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
+// in-memory flag and IsSelfDestructRequested reflects it. The flag drives the
+// deferred deletion triggered at the end of a turn in PromptWithMeta.
+func TestBackgroundSession_SelfDestruct(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	if bs.IsSelfDestructRequested() {
+		t.Error("New BackgroundSession should not have self-destruct requested")
+	}
+
+	bs.RequestSelfDestruct()
+
+	if !bs.IsSelfDestructRequested() {
+		t.Error("BackgroundSession should have self-destruct requested after RequestSelfDestruct")
+	}
+}
+
 func TestBackgroundSession_IsPrompting(t *testing.T) {
 	bs := &BackgroundSession{}
 
@@ -4557,4 +4574,50 @@ func (h *capturingLogHandler) entriesAt(level slog.Level) []capturedLogEntry {
 		}
 	}
 	return out
+}
+
+func TestBuildACPProcessEnv_ReplacesExistingKey(t *testing.T) {
+	// Ensure NODE_OPTIONS exists in os.Environ() with a different value.
+	t.Setenv("NODE_OPTIONS", "--max-old-space-size=2048")
+
+	serverEnv := map[string]string{
+		"NODE_OPTIONS": "--max-old-space-size=6144",
+	}
+	result := buildACPProcessEnv(serverEnv, nil)
+
+	var found []string
+	for _, kv := range result {
+		if strings.HasPrefix(kv, "NODE_OPTIONS=") {
+			found = append(found, kv)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly one NODE_OPTIONS entry, got %d: %v", len(found), found)
+	}
+	if found[0] != "NODE_OPTIONS=--max-old-space-size=6144" {
+		t.Errorf("expected NODE_OPTIONS=--max-old-space-size=6144, got %s", found[0])
+	}
+}
+
+func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
+	serverEnv := map[string]string{
+		"MITTO_TEST_VAR": "from-server",
+	}
+	mittoEnv := map[string]string{
+		"MITTO_TEST_VAR": "from-mitto",
+	}
+	result := buildACPProcessEnv(serverEnv, mittoEnv)
+
+	var found []string
+	for _, kv := range result {
+		if strings.HasPrefix(kv, "MITTO_TEST_VAR=") {
+			found = append(found, kv)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly one MITTO_TEST_VAR entry, got %d: %v", len(found), found)
+	}
+	if found[0] != "MITTO_TEST_VAR=from-mitto" {
+		t.Errorf("expected MITTO_TEST_VAR=from-mitto, got %s", found[0])
+	}
 }
