@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -88,6 +89,15 @@ func (e *Executor) Execute(ctx context.Context, proc *Processor, input *Processo
 	// Parse output
 	if proc.GetOutput() == OutputDiscard {
 		return &ProcessorOutput{}, nil
+	}
+
+	// Raw format: use trimmed stdout directly as both Message and Text.
+	// This allows commands that output plain text (e.g. markdown) to work
+	// without a JSON wrapper. Both fields are set so raw output works for
+	// transform (uses Message) AND prepend/append (uses Text) in both code paths.
+	if proc.GetOutputFormat() == OutputFormatRaw {
+		trimmed := strings.TrimSpace(stdout.String())
+		return &ProcessorOutput{Message: trimmed, Text: trimmed}, nil
 	}
 
 	return e.parseOutput(stdout.Bytes())

@@ -722,11 +722,26 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 					"name", proc.Name, "error", err)
 				continue
 			}
-			result.Message = output.Message
+			switch proc.GetOutput() {
+			case OutputTransform:
+				if output.Message != "" {
+					result.Message = output.Message
+				}
+			case OutputPrepend:
+				if output.Text != "" {
+					result.Message = output.Text + result.Message
+				}
+			case OutputAppend:
+				if output.Text != "" {
+					result.Message += output.Text
+				}
+			case OutputDiscard:
+				// Do nothing with output
+			}
 			if len(output.Attachments) > 0 {
 				result.Attachments = append(result.Attachments, output.Attachments...)
 			}
-			input.Message = output.Message
+			input.Message = result.Message
 		}
 
 		// Record run for rerun tracking

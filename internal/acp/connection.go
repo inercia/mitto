@@ -81,7 +81,7 @@ func NewConnection(
 	for k, v := range env {
 		allEnv[k] = v // user env overrides MITTO env
 	}
-	processEnv := mergeEnv(os.Environ(), allEnv)
+	processEnv := MergeEnv(os.Environ(), allEnv)
 
 	var stdin runner.WriteCloser
 	var stdout runner.ReadCloser
@@ -338,11 +338,11 @@ func (c *Connection) Done() <-chan struct{} {
 	return c.conn.Done()
 }
 
-// mergeEnv merges server-specific environment variables with the base environment.
+// MergeEnv merges server-specific environment variables with the base environment.
 // Server-specific variables take precedence over existing ones with the same name.
 // baseEnv should be in the format returned by os.Environ() (e.g., "KEY=value").
 // serverEnv is a map of variable names to values.
-func mergeEnv(baseEnv []string, serverEnv map[string]string) []string {
+func MergeEnv(baseEnv []string, serverEnv map[string]string) []string {
 	if len(serverEnv) == 0 {
 		return baseEnv
 	}

@@ -439,13 +439,13 @@ func TestMergeEnv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mergeEnv(tt.baseEnv, tt.serverEnv)
+			got := MergeEnv(tt.baseEnv, tt.serverEnv)
 			if len(got) != len(tt.want) {
-				t.Fatalf("mergeEnv() returned %d items, want %d: got %v", len(got), len(tt.want), got)
+				t.Fatalf("MergeEnv() returned %d items, want %d: got %v", len(got), len(tt.want), got)
 			}
 			for i := range got {
 				if got[i] != tt.want[i] {
-					t.Errorf("mergeEnv()[%d] = %q, want %q", i, got[i], tt.want[i])
+					t.Errorf("MergeEnv()[%d] = %q, want %q", i, got[i], tt.want[i])
 				}
 			}
 		})

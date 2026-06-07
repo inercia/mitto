@@ -150,6 +150,14 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 		return nil, fmt.Errorf("processor with 'prompt' must not specify 'command' or 'text'")
 	}
 
+	// Validate outputFormat
+	if proc.OutputFormat != "" && proc.OutputFormat != OutputFormatRaw && proc.OutputFormat != OutputFormatJSON {
+		return nil, fmt.Errorf("processor 'outputFormat' has invalid value %q; must be 'raw' or 'json'", proc.OutputFormat)
+	}
+	if proc.OutputFormat != "" && proc.Command == "" {
+		return nil, fmt.Errorf("processor 'outputFormat' is only valid for command-mode processors")
+	}
+
 	// Validate when.on
 	if proc.When.On == "" {
 		return nil, fmt.Errorf("processor 'when.on' is required (must be 'userPrompt', 'agentResponded', or 'agentIdle')")

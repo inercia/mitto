@@ -60,6 +60,14 @@ func (h *Processor) GetOutput() OutputType {
 	return h.Output
 }
 
+// GetOutputFormat returns the processor's output format, using the default (json) if not set.
+func (h *Processor) GetOutputFormat() OutputFormat {
+	if h.OutputFormat == "" {
+		return DefaultOutputFormat
+	}
+	return h.OutputFormat
+}
+
 // GetWorkingDir returns the processor's working directory type, using the default if not set.
 func (h *Processor) GetWorkingDir() WorkingDirType {
 	if h.WorkingDir == "" {

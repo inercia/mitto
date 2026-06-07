@@ -86,14 +86,27 @@ const (
 	ErrorFail ErrorHandling = "fail"
 )
 
+// OutputFormat defines how command-mode stdout is interpreted.
+type OutputFormat string
+
+const (
+	// OutputFormatJSON (default) parses stdout as JSON ProcessorOutput.
+	OutputFormatJSON OutputFormat = "json"
+	// OutputFormatRaw uses trimmed stdout directly as both Message and Text.
+	// Useful when the command outputs plain text (e.g. markdown) rather than JSON.
+	// Command-mode only.
+	OutputFormatRaw OutputFormat = "raw"
+)
+
 // Default values for processor configuration.
 const (
-	DefaultTimeout     = 5 * time.Second
-	DefaultPriority    = 100
-	DefaultInput       = InputMessage
-	DefaultOutput      = OutputTransform
-	DefaultWorkingDir  = WorkingDirSession
-	DefaultErrorHandle = ErrorSkip
+	DefaultTimeout      = 5 * time.Second
+	DefaultPriority     = 100
+	DefaultInput        = InputMessage
+	DefaultOutput       = OutputTransform
+	DefaultWorkingDir   = WorkingDirSession
+	DefaultErrorHandle  = ErrorSkip
+	DefaultOutputFormat = OutputFormatJSON
 )
 
 // PromptFunc is a callback for executing prompt-mode processors.
@@ -225,6 +238,12 @@ type Processor struct {
 	Input InputType `yaml:"input,omitempty" json:"input,omitempty"`
 	// Output defines how to use stdout: "transform", "prepend", "append", "discard".
 	Output OutputType `yaml:"output,omitempty" json:"output,omitempty"`
+	// OutputFormat defines how command-mode stdout is interpreted:
+	//   - "json" (default): stdout is parsed as JSON ProcessorOutput.
+	//   - "raw": trimmed stdout is used directly as both Message and Text,
+	//     enabling plain-text (e.g. markdown) output without a JSON wrapper.
+	// Command-mode only; ignored for text-mode and prompt-mode processors.
+	OutputFormat OutputFormat `yaml:"outputFormat,omitempty" json:"output_format,omitempty"`
 
 	// Timeout is the maximum execution time. Default: 5s.
 	Timeout Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`

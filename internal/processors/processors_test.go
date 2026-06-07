@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	rootconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -3235,6 +3236,244 @@ func TestCadenceConfig_Validation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestExecutorExecuteRawOutput verifies that a command-mode processor with outputFormat:raw
+// returns the trimmed stdout as both Message and Text (no JSON parsing required).
+func TestExecutorExecuteRawOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	scriptPath := filepath.Join(tmpDir, "raw.sh")
+	scriptContent := "#!/bin/sh\nprintf '  ## Beads Memories\\n\\nSome project context.  '\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to write script: %v", err)
+	}
+
+	executor := NewExecutor(tmpDir, nil)
+	proc := &Processor{
+		Name:         "raw-output-test",
+		Command:      scriptPath,
+		Output:       OutputPrepend,
+		OutputFormat: OutputFormatRaw,
+		Input:        InputNone,
+		HookDir:      tmpDir,
+	}
+	input := &ProcessorInput{
+		Message:    "user question",
+		WorkingDir: tmpDir,
+	}
+
+	ctx := context.Background()
+	output, err := executor.Execute(ctx, proc, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	want := "## Beads Memories\n\nSome project context."
+	if output.Message != want {
+		t.Errorf("Execute() Message = %q, want %q", output.Message, want)
+	}
+	if output.Text != want {
+		t.Errorf("Execute() Text = %q, want %q", output.Text, want)
+	}
+}
+
+// TestApplyWithRerun_PrependPreservesOriginalMessage is a regression test for the bug where
+// the applyWithRerun command-mode path ignored output type and replaced the message entirely.
+// A command-mode processor with output:prepend + outputFormat:raw must PREPEND to the user
+// message and PRESERVE the original — not replace it.
+func TestApplyWithRerun_PrependPreservesOriginalMessage(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Script outputs raw text (not JSON) simulating `bd prime --memories-only`
+	scriptPath := filepath.Join(tmpDir, "inject.sh")
+	scriptContent := "#!/bin/sh\necho '[INJECTED CONTEXT]'\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to write script: %v", err)
+	}
+
+	// We need at least one prompt-mode processor to force the applyWithRerun path.
+	mgr := NewManager(tmpDir, nil)
+	mgr.processors = []*Processor{
+		// Prompt-mode processor forces applyWithRerun path for ALL processors
+		{
+			Name:   "force-rerun-path",
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Prompt: "Analyze: @mitto:session_id",
+		},
+		// Command-mode prepend processor — this is the bug-under-test
+		{
+			Name:         "inject-context",
+			When:         WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Command:      scriptPath,
+			Output:       OutputPrepend,
+			OutputFormat: OutputFormatRaw,
+			Input:        InputNone,
+			HookDir:      tmpDir,
+			Priority:     50, // run before prompt-mode
+		},
+	}
+
+	// SetPromptFunc to handle the prompt-mode processor (fire-and-forget)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "original user message",
+		IsFirstMessage: true,
+		WorkingDir:     tmpDir,
+		WorkspaceUUID:  "ws-test",
+	}
+
+	ctx := context.Background()
+	result, err := mgr.Apply(ctx, input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	// Original message must be preserved (prepended to, not replaced)
+	if !strings.Contains(result.Message, "original user message") {
+		t.Errorf("original message lost; got %q", result.Message)
+	}
+	// Injected context must appear before the original message
+	if !strings.HasPrefix(result.Message, "[INJECTED CONTEXT]") {
+		t.Errorf("expected injected context prepended; got %q", result.Message)
+	}
+}
+
+// TestLoader_OutputFormatValidation verifies the outputFormat validation rules.
+func TestLoader_OutputFormatValidation(t *testing.T) {
+	t.Run("invalid outputFormat rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad.yaml", `
+name: bad-format
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+outputFormat: bogus
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error (bad files skipped): %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (bad outputFormat skipped), got %d", len(procs))
+		}
+	})
+
+	t.Run("outputFormat on text-mode processor rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad.yaml", `
+name: text-with-format
+when:
+  on: userPrompt
+  match: all
+text: "hello"
+mutate: prepend
+outputFormat: raw
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error (bad files skipped): %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (outputFormat on text-mode skipped), got %d", len(procs))
+		}
+	})
+
+	t.Run("valid outputFormat:raw on command-mode loads OK", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "good.yaml", `
+name: raw-command
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+output: prepend
+outputFormat: raw
+input: none
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if len(procs) != 1 {
+			t.Fatalf("expected 1 processor, got %d", len(procs))
+		}
+		if procs[0].GetOutputFormat() != OutputFormatRaw {
+			t.Errorf("expected OutputFormatRaw, got %q", procs[0].GetOutputFormat())
+		}
+	})
+
+	t.Run("valid outputFormat:json on command-mode loads OK", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "good.yaml", `
+name: json-command
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+outputFormat: json
+input: none
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if len(procs) != 1 {
+			t.Fatalf("expected 1 processor, got %d", len(procs))
+		}
+		if procs[0].GetOutputFormat() != OutputFormatJSON {
+			t.Errorf("expected OutputFormatJSON, got %q", procs[0].GetOutputFormat())
+		}
+	})
+}
+
+// TestBuiltinProcessorsValidity walks every embedded builtin YAML and asserts that
+// LoadFile parses and validates it without error. This guards all builtins including
+// the new beads-prime.yaml.
+func TestBuiltinProcessorsValidity(t *testing.T) {
+	filenames, err := rootconfig.ListEmbeddedProcessors()
+	if err != nil {
+		t.Fatalf("ListEmbeddedProcessors() error = %v", err)
+	}
+	if len(filenames) == 0 {
+		t.Fatal("no embedded builtin processors found; check config/processors/builtin/")
+	}
+
+	for _, filename := range filenames {
+		filename := filename
+		t.Run(filename, func(t *testing.T) {
+			// Read the embedded file content
+			srcPath := rootconfig.BuiltinProcessorsDir + "/" + filename
+			content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+			}
+
+			// Write to a temp dir and load via the Loader (full validation path)
+			dir := t.TempDir()
+			destPath := filepath.Join(dir, filename)
+			if err := os.WriteFile(destPath, content, 0644); err != nil {
+				t.Fatalf("WriteFile error = %v", err)
+			}
+
+			loader := NewLoader(dir, nil)
+			procs, err := loader.Load()
+			if err != nil {
+				t.Fatalf("Load() returned unexpected error: %v", err)
+			}
+			if len(procs) == 0 {
+				t.Errorf("Load() returned 0 processors (file may have failed validation); check loader warnings")
 			}
 		})
 	}
