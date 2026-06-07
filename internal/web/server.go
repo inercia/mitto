@@ -71,6 +71,10 @@ type Config struct {
 	// DisableAuxiliaryPrewarm disables auxiliary session pre-warming on process creation.
 	// Used in tests to avoid interference with mock ACP servers.
 	DisableAuxiliaryPrewarm bool
+
+	// Logger overrides the default logger (logging.Web()). When nil, the global
+	// web logger is used. Primarily used by tests to capture log output.
+	Logger *slog.Logger
 }
 
 // GetWorkspaces returns the effective list of workspaces.
@@ -212,8 +216,10 @@ func (s *Server) APIPrefix() string {
 
 // NewServer creates a new web server.
 func NewServer(config Config) (*Server, error) {
-	// Use the global logger from the logging package
-	logger := logging.Web()
+	logger := config.Logger
+	if logger == nil {
+		logger = logging.Web()
+	}
 
 	// Create session store for persistence
 	store, err := session.DefaultStore()

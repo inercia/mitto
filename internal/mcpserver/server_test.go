@@ -669,6 +669,149 @@ func TestConversationStart_InitialPrompt_NoDelay_Immediate(t *testing.T) {
 	}
 }
 
+func TestConversationStart_BeadsIssue(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		Title:      "Worker for bead",
+		BeadsIssue: "mitto-123",
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+	if output.BeadsIssue != "mitto-123" {
+		t.Errorf("Expected output BeadsIssue 'mitto-123', got %q", output.BeadsIssue)
+	}
+
+	meta, err := store.GetMetadata(output.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata() error: %v", err)
+	}
+	if meta.BeadsIssue != "mitto-123" {
+		t.Errorf("Expected persisted BeadsIssue 'mitto-123', got %q", meta.BeadsIssue)
+	}
+}
+
+// setupConversationStartServerWithPrompts is like setupConversationStartServer but
+// also injects a Config whose Prompts list contains the given named prompts, so that
+// findPromptByName (via loadMergedPrompts) can resolve them in prompt_name tests.
+func setupConversationStartServerWithPrompts(t *testing.T, prompts []config.WebPrompt) (*session.Store, *Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:  store,
+		Config: &config.Config{Prompts: prompts},
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	return store, srv, parentMeta.SessionID
+}
+
+func TestConversationStart_PromptName_ResolvesWithArguments(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "Work on ${ISSUE_ID} now"},
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "start WORK", // case-insensitive
+		Arguments:  map[string]string{"ISSUE_ID": "mitto-42"},
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	// The named prompt text is queued verbatim; substitution happens at send time.
+	if msg.Message != "Work on ${ISSUE_ID} now" {
+		t.Errorf("Expected queued message to be the named prompt text, got %q", msg.Message)
+	}
+	if got := msg.Arguments["ISSUE_ID"]; got != "mitto-42" {
+		t.Errorf("Expected queued ISSUE_ID argument 'mitto-42', got %q", got)
+	}
+}
+
+func TestConversationStart_PromptName_AndInitialPrompt_Error(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "Work on ${ISSUE_ID}"},
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		PromptName:    "Start work",
+		InitialPrompt: "inline text",
+	})
+	if err == nil {
+		t.Fatal("Expected error when both prompt_name and initial_prompt are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") &&
+		!strings.Contains(err.Error(), "both") {
+		t.Errorf("Expected mutual-exclusivity error, got: %v", err)
+	}
+}
+
+func TestConversationStart_PromptName_NotFound(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "text"},
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Nonexistent prompt",
+	})
+	if err == nil {
+		t.Fatal("Expected error for nonexistent prompt_name")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Expected 'not found' error, got: %v", err)
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
@@ -2406,6 +2549,101 @@ func TestConversationDelete_NonExistent(t *testing.T) {
 	}
 }
 
+// setupSelfDestructServer creates a server whose calling session has a running
+// BackgroundSession registered with the SessionManager, enabling self-destruct tests.
+func setupSelfDestructServer(t *testing.T) (*Server, string, *mockBackgroundSessionForWait) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	callerID := session.GenerateSessionID()
+	callerMeta := session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(callerMeta); err != nil {
+		t.Fatalf("Failed to create caller session: %v", err)
+	}
+
+	callerBS := newMockBackgroundSessionForWait(true) // currently prompting
+	sm := &mockSessionManagerForWait{
+		sessions: map[string]BackgroundSession{
+			callerID: callerBS,
+		},
+	}
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{
+			Store:          store,
+			SessionManager: sm,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller session: %v", err)
+	}
+
+	return srv, callerID, callerBS
+}
+
+// TestConversationDelete_SelfDestruct_Keyword verifies that passing "self" as the
+// conversation_id marks the calling conversation for self-destruction (deferred
+// deletion) rather than attempting an immediate parent-scoped deletion.
+func TestConversationDelete_SelfDestruct_Keyword(t *testing.T) {
+	srv, callerID, callerBS := setupSelfDestructServer(t)
+	ctx := context.Background()
+
+	_, output, err := srv.handleDeleteConversation(ctx, nil, DeleteConversationInput{
+		SelfID:         callerID,
+		ConversationID: "self",
+	})
+	if err != nil {
+		t.Fatalf("handleDeleteConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if output.ConversationID != callerID {
+		t.Errorf("Expected conversation ID %s, got %s", callerID, output.ConversationID)
+	}
+	if !callerBS.selfDestructCalled.Load() {
+		t.Error("Expected RequestSelfDestruct to be called on the calling session")
+	}
+}
+
+// TestConversationDelete_SelfDestruct_OwnID verifies that passing the caller's own
+// conversation ID is treated as a self-destruct request.
+func TestConversationDelete_SelfDestruct_OwnID(t *testing.T) {
+	srv, callerID, callerBS := setupSelfDestructServer(t)
+	ctx := context.Background()
+
+	_, output, err := srv.handleDeleteConversation(ctx, nil, DeleteConversationInput{
+		SelfID:         callerID,
+		ConversationID: callerID,
+	})
+	if err != nil {
+		t.Fatalf("handleDeleteConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if !callerBS.selfDestructCalled.Load() {
+		t.Error("Expected RequestSelfDestruct to be called on the calling session")
+	}
+}
+
 func TestListConversationsFiltering(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -3195,8 +3433,9 @@ func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 
 // mockBackgroundSessionForWait implements BackgroundSession for testing the wait tool.
 type mockBackgroundSessionForWait struct {
-	prompting     atomic.Bool
-	waitCompleted chan struct{} // close to simulate prompt completion
+	prompting          atomic.Bool
+	waitCompleted      chan struct{} // close to simulate prompt completion
+	selfDestructCalled atomic.Bool   // records whether RequestSelfDestruct was called
 }
 
 func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWait {
@@ -3212,6 +3451,7 @@ func (m *mockBackgroundSessionForWait) GetEventCount() int            { return 0
 func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64      { return 0 }
 func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool { return false }
 func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string) {}
+func (m *mockBackgroundSessionForWait) RequestSelfDestruct()          { m.selfDestructCalled.Store(true) }
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -4365,6 +4605,7 @@ func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                
 func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                   { return 0 }
 func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool { return true }
 func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)              {}
+func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                       {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false

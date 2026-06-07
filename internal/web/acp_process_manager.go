@@ -733,7 +733,13 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil && ws.AuxiliaryModelSelection != nil && ws.AuxiliaryModelSelection.Pattern != "" {
 			options := modelsToConfigOptions(sessionHandle.Models)
 			if matched := matchConstraintOption(ws.AuxiliaryModelSelection, options); matched != "" {
-				setCtx, setCancel := context.WithTimeout(ctx, 10*time.Second)
+				// Derive from m.ctx, NOT from ctx: NewSession above may have consumed most
+				// of ctx's budget (e.g., in prewarmAuxiliarySessions where multiple goroutines
+				// were previously sharing a single deadline), making ctx already expired by the
+				// time SetSessionModel runs. Using m.ctx gives SetSessionModel its full 10-second
+				// window regardless of caller-deadline pressure. m.ctx is cancelled on manager
+				// shutdown, providing a safety backstop so this never hangs indefinitely.
+				setCtx, setCancel := context.WithTimeout(m.ctx, 10*time.Second)
 				defer setCancel()
 				if setErr := process.SetSessionModel(setCtx, acp.SessionId(sessionHandle.SessionID), matched); setErr != nil {
 					if m.logger != nil {
@@ -964,11 +970,6 @@ func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.L
 //
 // Run in a goroutine after releasing the ACPProcessManager lock.
 func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logger *slog.Logger) {
-	// Use a short timeout: session creation should complete quickly after process start.
-	// 30 seconds is generous; in practice session creation completes in < 1 second per session.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	purposes := []string{
 		auxiliary.PurposeTitleGen,
 		auxiliary.PurposeMCPCheck,
@@ -977,11 +978,18 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 	}
 
 	// Fire off all prewarm requests in parallel so all sessions are created concurrently.
+	// Each goroutine gets its OWN independent timeout context so that a slow or queued
+	// NewSession for one purpose cannot drain the shared budget and starve the others.
+	// Derived from m.ctx (not context.Background()) so manager shutdown propagates.
 	var wg sync.WaitGroup
 	for _, purpose := range purposes {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
+			// Independent per-goroutine timeout: avoids cross-session budget starvation.
+			// 30 seconds is generous; in practice session creation completes in < 1s.
+			ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+			defer cancel()
 			if _, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, p); err != nil {
 				if logger != nil {
 					logger.Debug("auxiliary session pre-warm failed",

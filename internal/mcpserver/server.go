@@ -196,6 +196,10 @@ type BackgroundSession interface {
 	// Used by MCP tools and API handlers to generate titles for sessions that received
 	// prompts via paths that don't normally trigger title generation (e.g., periodic config).
 	TriggerTitleGeneration(message string)
+	// RequestSelfDestruct marks the conversation for deletion once the current turn
+	// completes. Used by the mitto_conversation_delete tool when an agent requests
+	// deletion of its own conversation.
+	RequestSelfDestruct()
 }
 
 // Config holds the configuration for the MCP server.
@@ -1017,6 +1021,7 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Name: "mitto_workspace_list",
 		Description: "List all configured workspaces with their settings and metadata. " +
 			"Returns workspace UUID, display name, working directory, ACP server, " +
+			"an is_default flag (the preferred workspace for its folder when several share the same directory), " +
 			"and optional metadata from the workspace .mittorc file (description, URL, group, user data schema). " +
 			"Optionally filter by activity: 'active' returns only workspaces with at least one non-archived conversation, " +
 			"'archived' returns only workspaces where all conversations are archived (excludes workspaces with zero conversations). " +
@@ -1122,10 +1127,13 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
+			"Instead of an inline 'initial_prompt', you may provide 'prompt_name' to use a predefined prompt by name (resolved the same way as 'mitto_prompt_get', case-insensitive) as the initial prompt — 'prompt_name' and 'initial_prompt' are mutually exclusive. " +
+			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the initial prompt when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. This pairs with 'prompt_name' to fill a predefined prompt's parameters without fetching it first. " +
 			"Optionally provide 'initial_prompt_delay' to delay the initial prompt delivery instead of sending it immediately. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
-			"Requires 'initial_prompt' to be set. " +
+			"Requires 'initial_prompt' or 'prompt_name' to be set. " +
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
+			"Optionally provide 'beads_issue' to link the new conversation to a beads issue ID (e.g. 'mitto-123'). " +
 			"Optionally configure the conversation as periodic by providing 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit'. " +
 			"This is equivalent to configuring periodic via 'mitto_conversation_update' after creation, but done in one step. " +
 			"For periodic with days, optionally specify 'periodic_frequency_at' (HH:MM in UTC). " +
@@ -1175,9 +1183,10 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	// mitto_conversation_delete - Permanently delete a child conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_delete",
-		Description: "Delete a child conversation. " +
-			"This permanently deletes the child conversation, gracefully stopping any active agent response and closing its ACP connection. " +
-			"The caller MUST be the parent of the target conversation (verified via the parent-child relationship). " +
+		Description: "Delete a conversation. " +
+			"This permanently deletes the conversation, gracefully stopping any active agent response and closing its ACP connection. " +
+			"To delete a CHILD conversation, pass its conversation_id; the caller MUST be the parent of the target conversation (verified via the parent-child relationship). " +
+			"To delete YOUR OWN conversation (self-destruct), pass \"self\" (or your own conversation ID) as conversation_id; the deletion happens automatically once your current response finishes. " +
 			"Deleted conversations are permanently removed and cannot be recovered. " +
 			selfIDNote,
 	}, s.handleDeleteConversation)
@@ -1287,6 +1296,7 @@ type WorkspaceInfo struct {
 	Name       string                    `json:"name,omitempty"`
 	WorkingDir string                    `json:"working_dir"`
 	ACPServer  string                    `json:"acp_server"`
+	IsDefault  bool                      `json:"is_default,omitempty"` // True if this is the default workspace for its folder
 	Metadata   *config.WorkspaceMetadata `json:"metadata,omitempty"`
 }
 
@@ -1363,6 +1373,7 @@ func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListI
 				Name:       ws.Name,
 				WorkingDir: ws.WorkingDir,
 				ACPServer:  ws.ACPServer,
+				IsDefault:  ws.IsDefault,
 			}
 
 			// Load .mittorc metadata if workspace has a working directory
@@ -1672,8 +1683,8 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 
 // SendPromptToConversationInput is the input for send_prompt_to_conversation tool.
 type SendPromptToConversationInput struct {
-	SelfID         string            `json:"self_id"`                 // YOUR session ID (the caller), not the target
-	ConversationID string            `json:"conversation_id"`         // Target conversation ID to send prompt to
+	SelfID         string            `json:"self_id"`         // YOUR session ID (the caller), not the target
+	ConversationID string            `json:"conversation_id"` // Target conversation ID to send prompt to
 	Prompt         string            `json:"prompt"`
 	Workspace      string            `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
 	ScheduleTime   string            `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
@@ -2395,12 +2406,15 @@ func computeUnifiedDiff(original, edited, originalName, editedName string) strin
 
 // ConversationStartInput is the input for mitto_conversation_new tool.
 type ConversationStartInput struct {
-	SelfID             string `json:"self_id"`                        // YOUR session ID (the caller)
-	Title              string `json:"title,omitempty"`                // Optional title for the new conversation
-	InitialPrompt      string `json:"initial_prompt,omitempty"`       // Optional initial message to queue
-	InitialPromptDelay string `json:"initial_prompt_delay,omitempty"` // Optional: delay initial prompt delivery (RFC 3339 timestamp or relative duration like "5m", "1h")
-	ACPServer          string `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
-	Workspace          string `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
+	SelfID             string            `json:"self_id"`                        // YOUR session ID (the caller)
+	Title              string            `json:"title,omitempty"`                // Optional title for the new conversation
+	InitialPrompt      string            `json:"initial_prompt,omitempty"`       // Optional initial message to queue
+	PromptName         string            `json:"prompt_name,omitempty"`          // Optional: name of a predefined prompt to use as the initial prompt (mutually exclusive with initial_prompt)
+	InitialPromptDelay string            `json:"initial_prompt_delay,omitempty"` // Optional: delay initial prompt delivery (RFC 3339 timestamp or relative duration like "5m", "1h")
+	Arguments          map[string]string `json:"arguments,omitempty"`            // Optional: ${VAR}/${VAR:-default} substitution values applied to the initial prompt when sent
+	ACPServer          string            `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
+	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
+	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
 	// Periodic configuration (optional) - creates the conversation as periodic
 	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
 	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
@@ -2502,6 +2516,29 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// Resolve the effective initial prompt. A named prompt (prompt_name) is
+	// mutually exclusive with an inline initial_prompt: when prompt_name is set,
+	// its full text is looked up from the merged prompt list (same resolution as
+	// mitto_prompt_get) and used as the initial prompt. Optional 'arguments' are
+	// applied as ${VAR}/${VAR:-default} substitution when the prompt is sent.
+	initialPromptText := input.InitialPrompt
+	if input.PromptName != "" {
+		if input.InitialPrompt != "" {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"cannot specify both 'prompt_name' and 'initial_prompt' — use one or the other")
+		}
+		promptWorkingDir, err := s.resolvePromptWorkingDir(realSessionID, input.Workspace)
+		if err != nil {
+			return nil, ConversationStartOutput{}, err
+		}
+		p, found := s.findPromptByName(promptWorkingDir, input.PromptName)
+		if !found {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"prompt not found: no prompt named %q is available in this workspace", input.PromptName)
+		}
+		initialPromptText = p.Prompt
+	}
+
 	// Check max child conversations limit
 	// This prevents a single session from spawning too many children and exhausting resources.
 	// Auto-children (from workspace config) are excluded from the count.
@@ -2537,10 +2574,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				errMsg := fmt.Sprintf(
 					"a conversation with the title '%s' already exists (conversation_id: %s)",
 					input.Title, existingMeta.SessionID)
-				if input.InitialPrompt != "" {
+				if initialPromptText != "" {
 					errMsg += fmt.Sprintf(
 						". To send a prompt to it, use 'mitto_conversation_send_prompt' with conversation_id='%s' and prompt='%s'",
-						existingMeta.SessionID, truncateForError(input.InitialPrompt, 200))
+						existingMeta.SessionID, truncateForError(initialPromptText, 200))
 					if input.InitialPromptDelay != "" {
 						errMsg += fmt.Sprintf(" and schedule_time='%s'", input.InitialPromptDelay)
 					}
@@ -2626,6 +2663,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		ParentSessionID:  realSessionID,          // Mark this session as a child
 		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
+		BeadsIssue:       input.BeadsIssue,
 	}
 
 	// Create the session
@@ -2761,13 +2799,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		output.IsRunning = true
 	}
 
-	// Validate initial_prompt_delay requires initial_prompt
-	if input.InitialPromptDelay != "" && input.InitialPrompt == "" {
-		return nil, ConversationStartOutput{}, fmt.Errorf("initial_prompt_delay requires initial_prompt to be set")
+	// Validate initial_prompt_delay requires an initial prompt (inline or named)
+	if input.InitialPromptDelay != "" && initialPromptText == "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf("initial_prompt_delay requires initial_prompt or prompt_name to be set")
 	}
 
 	// If initial prompt provided, add it to the queue
-	if input.InitialPrompt != "" {
+	if initialPromptText != "" {
 		// Parse optional initial prompt delay
 		var scheduledTime *time.Time
 		if input.InitialPromptDelay != "" {
@@ -2779,7 +2817,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, scheduledTime, 0, nil)
+		_, err := queue.Add(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments)
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -3196,6 +3234,32 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 	store := s.store
 	sessionManager := s.sessionManager
 	s.mu.RUnlock()
+
+	// Self-deletion: the agent requests deletion of its OWN conversation by passing
+	// "self" or its actual conversation ID. We cannot delete synchronously here —
+	// the agent is mid-turn and the ACP connection is in use — and the parent-only
+	// security check below would also reject it. Instead, set an in-memory flag on
+	// the calling session; the backend deletes the conversation once the turn
+	// completes (see BackgroundSession.PromptWithMeta).
+	if input.ConversationID == "self" || input.ConversationID == realSessionID {
+		if sessionManager == nil {
+			return nil, DeleteConversationOutput{Success: false, Error: "session manager not available"}, nil
+		}
+		bs := sessionManager.GetSession(realSessionID)
+		if bs == nil {
+			return nil, DeleteConversationOutput{
+				Success: false,
+				Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
+			}, nil
+		}
+		bs.RequestSelfDestruct()
+		s.logger.Info("Conversation marked for self-destruction via MCP",
+			"session_id", realSessionID)
+		return nil, DeleteConversationOutput{
+			Success:        true,
+			ConversationID: realSessionID,
+		}, nil
+	}
 
 	if store == nil {
 		return nil, DeleteConversationOutput{Success: false, Error: "session store not available"}, nil

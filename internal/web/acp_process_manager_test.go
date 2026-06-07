@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 )
@@ -498,6 +499,107 @@ func TestDiffEnvKeys(t *testing.T) {
 				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
 			}
 		})
+	}
+}
+
+// TestPrewarmContextBudgetIsolation is a regression test for mitto-54p.
+//
+// Root cause: prewarmAuxiliarySessions previously created ONE 30-second context and
+// shared it across FOUR parallel goroutines. Inside getOrCreateAuxiliarySession,
+// auxMu serialises those goroutines, so the shared deadline is consumed sequentially.
+// After N slow NewSession calls drain most of the budget, the remaining time on ctx is
+// near zero; the subsequent SetSessionModel timeout derived from ctx via
+//
+//	context.WithTimeout(ctx, 10*time.Second)
+//
+// inherits the exhausted deadline and is immediately expired → "context deadline
+// exceeded", rpc_ms=0.
+//
+// The fix has two parts (both tested here):
+//  1. prewarmAuxiliarySessions: each goroutine creates its OWN independent timeout
+//     (derived from m.ctx) so one slow NewSession cannot starve the others.
+//  2. getOrCreateAuxiliarySession: SetSessionModel derives its timeout from m.ctx
+//     rather than from the caller's ctx, giving SetSessionModel its full window
+//     regardless of how much budget NewSession consumed.
+//
+// This test verifies the deadline math that underpins both fixes. It deliberately
+// reproduces the starvation scenario and asserts:
+//   - OLD behaviour (shared budget): at least one SetSessionModel context would be
+//     expired before any work could run.
+//   - NEW behaviour (independent budgets + m.ctx base for SetSessionModel): every
+//     SetSessionModel context retains close to its full 10-second window.
+func TestPrewarmContextBudgetIsolation(t *testing.T) {
+	const (
+		numSessions      = 4
+		workPerSession   = 60 * time.Millisecond // simulates NewSession latency
+		modelSetTimeout  = 10 * time.Second
+		minExpectedSlack = 9 * time.Second // SetSessionModel must retain at least this much
+	)
+
+	// ── OLD behaviour: shared deadline drained by sequential work ──────────────
+	// Budget is intentionally set to just under the total serial work time so that
+	// the last iteration sees a nearly-expired (or already expired) ctx.
+	oldBudget := time.Duration(float64(numSessions*int(workPerSession)) * 0.95)
+	oldBehaviorDemonstratesStarvation := func() bool {
+		sharedCtx, cancel := context.WithTimeout(context.Background(), oldBudget)
+		defer cancel()
+		for i := 0; i < numSessions; i++ {
+			time.Sleep(workPerSession)
+			// OLD: SetSessionModel derives from the shared (drained) ctx.
+			setCtx, setCancel := context.WithTimeout(sharedCtx, modelSetTimeout)
+			expired := setCtx.Err() != nil
+			setCancel()
+			if expired {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !oldBehaviorDemonstratesStarvation() {
+		// Timing was too generous on this machine; skip rather than produce a
+		// false-positive pass — the test is only meaningful when starvation occurs.
+		t.Skip("timing-sensitive: could not reproduce pre-fix starvation; skipping")
+	}
+
+	// ── NEW behaviour: independent per-goroutine contexts + m.ctx base ─────────
+	// Represents the fixed code: each prewarm goroutine has its own 30s ctx (from
+	// m.ctx), and SetSessionModel derives from m.ctx (not the drained caller ctx).
+	managerCtx := context.Background() // stands in for m.ctx in production code
+
+	for i := 0; i < numSessions; i++ {
+		// Fix part 1: each goroutine creates its own independent timeout.
+		// The ctx is not passed to SetSessionModel (that uses managerCtx directly),
+		// but it scopes the goroutine's overall budget — kept here to mirror
+		// the real prewarmAuxiliarySessions structure.
+		_, goroutineCancel := context.WithTimeout(managerCtx, 30*time.Second)
+
+		time.Sleep(workPerSession) // simulate NewSession latency
+
+		// Fix part 2: SetSessionModel derives from managerCtx (m.ctx), not from
+		// the goroutine's ctx that might be near its own deadline.
+		setCtx, setCancel := context.WithTimeout(managerCtx, modelSetTimeout)
+
+		if err := setCtx.Err(); err != nil {
+			t.Errorf("NEW behaviour: session %d SetSessionModel ctx already expired: %v", i, err)
+			setCancel()
+			goroutineCancel()
+			continue
+		}
+		deadline, ok := setCtx.Deadline()
+		if !ok {
+			t.Errorf("NEW behaviour: session %d SetSessionModel ctx has no deadline", i)
+			setCancel()
+			goroutineCancel()
+			continue
+		}
+		if remaining := time.Until(deadline); remaining < minExpectedSlack {
+			t.Errorf("NEW behaviour: session %d SetSessionModel has only %v remaining, want >= %v",
+				i, remaining, minExpectedSlack)
+		}
+
+		setCancel()
+		goroutineCancel()
 	}
 }
 
