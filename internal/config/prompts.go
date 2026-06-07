@@ -103,6 +103,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Name:            p.Name,
 		Prompt:          p.Content,
 		BackgroundColor: p.BackgroundColor,
+		Icon:            p.Icon,
 		Description:     p.Description,
 		Group:           p.Group,
 		Menus:           p.Menus,

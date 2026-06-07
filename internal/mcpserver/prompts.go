@@ -138,6 +138,18 @@ func (s *Server) resolvePromptWorkingDir(realSessionID string, workspaceUUID str
 	return workingDir, nil
 }
 
+// findPromptByName returns the merged prompt whose name matches (case-insensitive)
+// the given name for the given working directory, and whether it was found.
+// Resolution uses the same merged prompt list as mitto_prompt_get.
+func (s *Server) findPromptByName(workingDir, name string) (config.WebPrompt, bool) {
+	for _, p := range s.loadMergedPrompts(workingDir) {
+		if strings.EqualFold(p.Name, name) {
+			return p, true
+		}
+	}
+	return config.WebPrompt{}, false
+}
+
 // handlePromptList handles the mitto_prompt_list tool.
 func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest, input PromptListInput) (*mcp.CallToolResult, PromptListOutput, error) {
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
@@ -161,6 +173,7 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 			Description:     p.Description,
 			Group:           p.Group,
 			BackgroundColor: p.BackgroundColor,
+			Icon:            p.Icon,
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
 		})
@@ -186,24 +199,23 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 		return nil, PromptGetOutput{Error: err.Error()}, nil
 	}
 
-	merged := s.loadMergedPrompts(workingDir)
-	for _, p := range merged {
-		if strings.EqualFold(p.Name, input.Name) {
-			return nil, PromptGetOutput{
-				Success: true,
-				Prompt: &PromptDetail{
-					Name:            p.Name,
-					Prompt:          p.Prompt,
-					Description:     p.Description,
-					Group:           p.Group,
-					BackgroundColor: p.BackgroundColor,
-					Source:          string(p.Source),
-					Enabled:         p.Enabled,
-				},
-			}, nil
-		}
+	p, found := s.findPromptByName(workingDir, input.Name)
+	if !found {
+		return nil, PromptGetOutput{Error: "prompt not found: " + input.Name}, nil
 	}
-	return nil, PromptGetOutput{Error: "prompt not found: " + input.Name}, nil
+	return nil, PromptGetOutput{
+		Success: true,
+		Prompt: &PromptDetail{
+			Name:            p.Name,
+			Prompt:          p.Prompt,
+			Description:     p.Description,
+			Group:           p.Group,
+			BackgroundColor: p.BackgroundColor,
+			Icon:            p.Icon,
+			Source:          string(p.Source),
+			Enabled:         p.Enabled,
+		},
+	}, nil
 }
 
 // handlePromptUpdate handles the mitto_prompt_update tool.

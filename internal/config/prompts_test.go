@@ -132,6 +132,7 @@ func TestToWebPrompt(t *testing.T) {
 		Name:            "Test",
 		Content:         "Content here",
 		BackgroundColor: "#FF0000",
+		Icon:            "beads",
 		Description:     "Test description",
 		Group:           "Testing",
 		Menus:           "conversation",
@@ -148,6 +149,9 @@ func TestToWebPrompt(t *testing.T) {
 	}
 	if wp.BackgroundColor != "#FF0000" {
 		t.Errorf("WebPrompt.BackgroundColor = %q, want %q", wp.BackgroundColor, "#FF0000")
+	}
+	if wp.Icon != "beads" {
+		t.Errorf("WebPrompt.Icon = %q, want %q", wp.Icon, "beads")
 	}
 	if wp.Description != "Test description" {
 		t.Errorf("WebPrompt.Description = %q, want %q", wp.Description, "Test description")

@@ -88,6 +88,9 @@ type WebPrompt struct {
 	Prompt string `json:"prompt"`
 	// BackgroundColor is an optional hex color string for the prompt button (e.g., "#E8F5E9")
 	BackgroundColor string `json:"backgroundColor,omitempty"`
+	// Icon is an optional icon name (from the frontend icon registry) shown next to
+	// the prompt in menus, e.g. "beads", "search", "settings".
+	Icon string `json:"icon,omitempty"`
 	// Description is an optional description shown as tooltip in the UI
 	Description string `json:"description,omitempty"`
 	// Group is an optional group name for organizing prompts in the UI.
@@ -1115,6 +1118,7 @@ type rawACPServerConfig struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		Menus           string `yaml:"menus"`
@@ -1133,6 +1137,7 @@ type rawConfig struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		Menus           string `yaml:"menus"`
@@ -1335,6 +1340,7 @@ func Parse(data []byte) (*Config, error) {
 					Name:            p.Name,
 					Prompt:          p.Prompt,
 					BackgroundColor: p.BackgroundColor,
+					Icon:            p.Icon,
 					Description:     p.Description,
 					Group:           p.Group,
 					Menus:           p.Menus,
@@ -1362,6 +1368,7 @@ func Parse(data []byte) (*Config, error) {
 			Name:            p.Name,
 			Prompt:          p.Prompt,
 			BackgroundColor: p.BackgroundColor,
+			Icon:            p.Icon,
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,

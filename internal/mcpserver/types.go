@@ -331,7 +331,7 @@ type SendPromptOutput struct {
 // DeleteConversationInput is the input for mitto_conversation_delete tool.
 type DeleteConversationInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the parent)
-	ConversationID string `json:"conversation_id"` // Child conversation to delete
+	ConversationID string `json:"conversation_id"` // Child conversation to delete, or "self"/your own ID to self-destruct
 }
 
 // DeleteConversationOutput is the output for mitto_conversation_delete tool.
@@ -806,6 +806,7 @@ type PromptInfo struct {
 	Description     string `json:"description,omitempty"`
 	Group           string `json:"group,omitempty"`
 	BackgroundColor string `json:"background_color,omitempty"`
+	Icon            string `json:"icon,omitempty"`
 	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
 	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
 }
@@ -832,6 +833,7 @@ type PromptDetail struct {
 	Description     string `json:"description,omitempty"`
 	Group           string `json:"group,omitempty"`
 	BackgroundColor string `json:"background_color,omitempty"`
+	Icon            string `json:"icon,omitempty"`
 	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
 	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
 }

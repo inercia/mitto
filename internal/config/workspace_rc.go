@@ -87,6 +87,7 @@ type rawWorkspaceRC struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		Menus           string `yaml:"menus"`
@@ -650,6 +651,7 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			Name:            p.Name,
 			Prompt:          p.Prompt,
 			BackgroundColor: p.BackgroundColor,
+			Icon:            p.Icon,
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,
