@@ -1245,3 +1245,60 @@ export function BeadsIcon({ className = "w-5 h-5" }) {
     </svg>
   `;
 }
+
+// PROMPT_ICONS maps the optional "icon" front-matter value of a prompt to an
+// icon component. Names are matched case-insensitively. Keep names stable and
+// kebab-case so they can be referenced from prompt markdown files.
+export const PROMPT_ICONS = {
+  beads: BeadsIcon,
+  settings: SettingsIcon,
+  sliders: SlidersIcon,
+  search: SearchIcon,
+  edit: EditIcon,
+  trash: TrashIcon,
+  broom: BroomIcon,
+  save: SaveIcon,
+  "magic-wand": MagicWandIcon,
+  lightning: LightningIcon,
+  robot: RobotIcon,
+  person: PersonIcon,
+  image: ImageIcon,
+  folder: FolderIcon,
+  "folder-open": FolderOpenIcon,
+  terminal: TerminalIcon,
+  server: ServerIcon,
+  globe: GlobeIcon,
+  "chat-bubble": ChatBubbleIcon,
+  shield: ShieldIcon,
+  layers: LayersIcon,
+  list: ListIcon,
+  tag: TagIcon,
+  check: CheckIcon,
+  question: QuestionMarkIcon,
+  error: ErrorIcon,
+  plus: PlusIcon,
+  hourglass: HourglassIcon,
+  refresh: RefreshIcon,
+  sync: SyncIcon,
+  keyboard: KeyboardIcon,
+  duplicate: DuplicateIcon,
+  pin: PinIcon,
+  archive: ArchiveIcon,
+  periodic: PeriodicIcon,
+  queue: QueueIcon,
+  play: PlayFilledIcon,
+};
+
+// getPromptIcon returns the icon component for a given prompt icon name, or
+// null if the name is empty or unknown. Matching is case-insensitive.
+export function getPromptIcon(name) {
+  if (!name || typeof name !== "string") return null;
+  return PROMPT_ICONS[name.trim().toLowerCase()] || null;
+}
+
+// getPromptIconOrDefault returns the icon component for a prompt's icon name,
+// falling back to the default lightning icon when the name is empty or unknown.
+// Use this in menus that always want to render an icon for every prompt.
+export function getPromptIconOrDefault(name) {
+  return getPromptIcon(name) || LightningIcon;
+}

@@ -941,3 +941,55 @@ export function setPromptSortMode(mode) {
     console.warn("[Mitto] Failed to set prompt sort mode:", e);
   }
 }
+
+// =============================================================================
+// Beads View Filters
+// =============================================================================
+//
+// Persists the Beads view filter criteria (status, type, search text) in
+// localStorage so they are restored when the user navigates away from the
+// Beads view and returns within the same session. These do not need to survive
+// app restarts, so a simple localStorage-only approach is used (no server sync).
+
+const BEADS_FILTERS_KEY = "mitto_beads_filters";
+
+const DEFAULT_BEADS_FILTERS = { status: "all", type: "all", search: "" };
+
+/**
+ * Get the persisted Beads view filters from localStorage.
+ * @returns {{status: string, type: string, search: string}} The filter state,
+ *          falling back to defaults ("all"/"all"/"") for any missing field.
+ */
+export function getBeadsFilters() {
+  try {
+    const value = localStorage.getItem(BEADS_FILTERS_KEY);
+    if (value) {
+      const parsed = JSON.parse(value);
+      return {
+        status: typeof parsed.status === "string" ? parsed.status : DEFAULT_BEADS_FILTERS.status,
+        type: typeof parsed.type === "string" ? parsed.type : DEFAULT_BEADS_FILTERS.type,
+        search: typeof parsed.search === "string" ? parsed.search : DEFAULT_BEADS_FILTERS.search,
+      };
+    }
+  } catch (e) {
+    console.warn("Failed to read Beads filters from localStorage:", e);
+  }
+  return { ...DEFAULT_BEADS_FILTERS };
+}
+
+/**
+ * Persist the Beads view filters to localStorage.
+ * @param {{status?: string, type?: string, search?: string}} filters - Filter state to save.
+ */
+export function setBeadsFilters(filters) {
+  try {
+    const toStore = {
+      status: filters?.status ?? DEFAULT_BEADS_FILTERS.status,
+      type: filters?.type ?? DEFAULT_BEADS_FILTERS.type,
+      search: filters?.search ?? DEFAULT_BEADS_FILTERS.search,
+    };
+    localStorage.setItem(BEADS_FILTERS_KEY, JSON.stringify(toStore));
+  } catch (e) {
+    console.warn("Failed to save Beads filters to localStorage:", e);
+  }
+}

@@ -43,6 +43,8 @@ export {
   getSidebarWidth,
   setSidebarWidth,
   getSidebarWidthConstraints,
+  getBeadsFilters,
+  setBeadsFilters,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

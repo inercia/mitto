@@ -14,6 +14,8 @@ import {
   setFilterTabGrouping,
   getAllFilterTabGroupings,
   cycleFilterTabGrouping,
+  getBeadsFilters,
+  setBeadsFilters,
 } from "./storage.js";
 
 // Simple localStorage mock
@@ -380,5 +382,76 @@ describe("cycleFilterTabGrouping", () => {
     const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
     // Archived defaults to 'folder', cycling goes to 'workspace'
     expect(stored[FILTER_TAB.ARCHIVED]).toBe("workspace");
+  });
+});
+
+// =============================================================================
+// getBeadsFilters / setBeadsFilters Tests
+// =============================================================================
+
+const BEADS_FILTERS_KEY = "mitto_beads_filters";
+
+describe("getBeadsFilters", () => {
+  test("returns defaults when localStorage is empty", () => {
+    expect(getBeadsFilters()).toEqual({ status: "all", type: "all", search: "" });
+  });
+
+  test("returns stored filters when present", () => {
+    mockStore[BEADS_FILTERS_KEY] = JSON.stringify({
+      status: "open",
+      type: "bug",
+      search: "timeout",
+    });
+    expect(getBeadsFilters()).toEqual({ status: "open", type: "bug", search: "timeout" });
+  });
+
+  test("fills missing fields with defaults", () => {
+    mockStore[BEADS_FILTERS_KEY] = JSON.stringify({ status: "closed" });
+    expect(getBeadsFilters()).toEqual({ status: "closed", type: "all", search: "" });
+  });
+
+  test("ignores non-string field values and uses defaults", () => {
+    mockStore[BEADS_FILTERS_KEY] = JSON.stringify({ status: 5, type: null, search: {} });
+    expect(getBeadsFilters()).toEqual({ status: "all", type: "all", search: "" });
+  });
+
+  test("returns defaults for corrupt JSON", () => {
+    mockStore[BEADS_FILTERS_KEY] = "not-json{";
+    expect(getBeadsFilters()).toEqual({ status: "all", type: "all", search: "" });
+  });
+});
+
+describe("setBeadsFilters", () => {
+  test("persists filters to localStorage", () => {
+    setBeadsFilters({ status: "open", type: "feature", search: "copy" });
+    expect(JSON.parse(mockStore[BEADS_FILTERS_KEY])).toEqual({
+      status: "open",
+      type: "feature",
+      search: "copy",
+    });
+  });
+
+  test("fills missing fields with defaults when saving", () => {
+    setBeadsFilters({ search: "abc" });
+    expect(JSON.parse(mockStore[BEADS_FILTERS_KEY])).toEqual({
+      status: "all",
+      type: "all",
+      search: "abc",
+    });
+  });
+
+  test("uses all defaults when given no argument", () => {
+    setBeadsFilters();
+    expect(JSON.parse(mockStore[BEADS_FILTERS_KEY])).toEqual({
+      status: "all",
+      type: "all",
+      search: "",
+    });
+  });
+
+  test("round-trips through getBeadsFilters", () => {
+    const filters = { status: "in_progress", type: "task", search: "port" };
+    setBeadsFilters(filters);
+    expect(getBeadsFilters()).toEqual(filters);
   });
 });

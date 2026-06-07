@@ -3,9 +3,9 @@
 
 const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
 
-import { apiUrl, authFetch, secureFetch } from "../utils/index.js";
+import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MagicWandIcon } from "./Icons.js";
+import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 
@@ -60,6 +60,7 @@ const STATUS_COLORS = {
   in_progress: "bg-blue-700 text-blue-100",
   closed: "bg-slate-600 text-white",
   blocked: "bg-red-700 text-red-100",
+  deferred: "bg-cyan-800 text-cyan-100",
 };
 
 const TYPE_COLORS = {
@@ -97,6 +98,12 @@ function renderMarkdown(text) {
   return null;
 }
 
+function commentBody(text) {
+  const m = renderMarkdown(text);
+  if (m) return html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: m }} />`;
+  return html`<pre class="whitespace-pre-wrap break-words text-sm text-mitto-text">${text || ""}</pre>`;
+}
+
 // ---- Detail side panel ------------------------------------------------------
 
 const ISSUE_TYPES = ["task", "feature", "epic", "bug", "chore"];
@@ -125,7 +132,7 @@ function labelValue(label, value) {
  * `fixed inset-0 z-50` layer with a dimming backdrop on the left and the panel
  * sliding in on the right. Clicking the backdrop closes the panel.
  */
-function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, statusBusy }) {
+function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -175,6 +182,24 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const titleRef = useRef(null);
   const titleCancelRef = useRef(false);
 
+  // View-mode inline priority editing. Clicking the priority badge opens a small
+  // dropdown of the available priorities; selecting one saves via
+  // /api/beads/update. `savingPriority` gates the in-flight request.
+  const [editingPriority, setEditingPriority] = useState(false);
+  const [savingPriority, setSavingPriority] = useState(false);
+  const priorityRef = useRef(null);
+
+  // View-mode inline assignee editing. Clicking the rendered assignee switches
+  // it to a text input; blur saves via /api/beads/update when the text changed
+  // (an empty value clears the assignee). `assigneeDraft` holds the in-progress
+  // text; `savingAssignee` gates the in-flight request. `assigneeCancelRef` lets
+  // Escape blur without saving.
+  const [editingAssignee, setEditingAssignee] = useState(false);
+  const [assigneeDraft, setAssigneeDraft] = useState("");
+  const [savingAssignee, setSavingAssignee] = useState(false);
+  const assigneeRef = useRef(null);
+  const assigneeCancelRef = useRef(false);
+
   // View-mode dependencies. The list rows only carry a dependency_count, so the
   // full edges (id + title + status + dependency_type) are fetched from
   // /api/beads/show when an issue is opened. `depsBusy` gates add/remove
@@ -184,6 +209,8 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const [depsBusy, setDepsBusy] = useState(false);
   const [newDepType, setNewDepType] = useState("blocks");
   const [newDepId, setNewDepId] = useState("");
+  const [comments, setComments] = useState([]);
+  const [notes, setNotes] = useState("");
 
   // Reset the form whenever create mode is (re)entered.
   useEffect(() => {
@@ -207,6 +234,18 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showPrompts]);
+
+  // Close the priority dropdown on outside click while it is open.
+  useEffect(() => {
+    if (!editingPriority) return undefined;
+    const onDocClick = (e) => {
+      if (priorityRef.current && !priorityRef.current.contains(e.target)) {
+        setEditingPriority(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [editingPriority]);
 
   const togglePrompts = useCallback(() => {
     setShowPrompts((open) => {
@@ -286,6 +325,10 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     setSavingDesc(false);
     setEditingTitle(false);
     setSavingTitle(false);
+    setEditingPriority(false);
+    setSavingPriority(false);
+    setEditingAssignee(false);
+    setSavingAssignee(false);
   }, [data && data.id]);
 
   // Focus the textarea (cursor at end) when entering edit mode.
@@ -305,6 +348,15 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
       el.setSelectionRange(el.value.length, el.value.length);
     }
   }, [editingTitle]);
+
+  // Focus the assignee input (cursor at end) when entering edit mode.
+  useEffect(() => {
+    if (editingAssignee && assigneeRef.current) {
+      const el = assigneeRef.current;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, [editingAssignee]);
 
   // Enter inline edit mode, seeding the draft from the current description.
   // Capture the rendered area's height first so the textarea opens at least as
@@ -406,8 +458,95 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     }
   }, []);
 
-  // Load the issue's full dependency edges. The list row only carries a count,
-  // so the actual edges come from /api/beads/show (its `dependencies` array).
+  // Persist a newly selected priority via /api/beads/update, then refresh the
+  // list via onUpdated so the panel re-renders with the saved value. Selecting
+  // the current priority just closes the dropdown without a request.
+  const handleSetPriority = useCallback(async (next) => {
+    setEditingPriority(false);
+    const current = (data && typeof data.priority === "number") ? data.priority : null;
+    if (next === current) return;
+    setSavingPriority(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: data.id, priority: next }),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to update priority" });
+      } else {
+        showToast && showToast({ style: "success", title: "Priority updated" });
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to update priority" });
+    } finally {
+      setSavingPriority(false);
+    }
+  }, [data && data.id, data && data.priority, workingDir, showToast, onUpdated]);
+
+  // Enter inline assignee-edit mode, seeding the draft from the current assignee.
+  const startEditAssignee = useCallback(() => {
+    if (savingAssignee) return;
+    assigneeCancelRef.current = false;
+    setAssigneeDraft((data && data.assignee) || "");
+    setEditingAssignee(true);
+  }, [data && data.assignee, savingAssignee]);
+
+  // Persist the edited assignee on blur. Saves only when the (trimmed) text
+  // changed; otherwise just leaves edit mode. An empty value clears the
+  // assignee. Escape sets assigneeCancelRef so the blur it triggers discards the
+  // draft. Uses /api/beads/update and refreshes the list via onUpdated so the
+  // panel re-renders with the saved value.
+  const handleAssigneeBlur = useCallback(async () => {
+    if (assigneeCancelRef.current) {
+      assigneeCancelRef.current = false;
+      setEditingAssignee(false);
+      return;
+    }
+    const original = (data && data.assignee) || "";
+    const next = assigneeDraft.trim();
+    if (next === original) {
+      setEditingAssignee(false);
+      return;
+    }
+    setSavingAssignee(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: data.id, assignee: next }),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to update assignee" });
+      } else {
+        showToast && showToast({ style: "success", title: next === "" ? "Assignee cleared" : "Assignee updated" });
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to update assignee" });
+    } finally {
+      setSavingAssignee(false);
+      setEditingAssignee(false);
+    }
+  }, [data && data.id, data && data.assignee, assigneeDraft, workingDir, showToast, onUpdated]);
+
+  // Enter saves (via blur); Escape discards the draft (via blur).
+  const handleAssigneeKeyDown = useCallback((e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.target.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      assigneeCancelRef.current = true;
+      e.target.blur();
+    }
+  }, []);
+
+  // Load the issue's full dependency edges, notes, and comments. The list row
+  // only carries counts, so the actual data comes from /api/beads/show.
   const fetchDeps = useCallback(async () => {
     if (!workingDir || !data || !data.id) return;
     setDepsLoading(true);
@@ -418,20 +557,28 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
       const respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
         setDeps([]);
+        setComments([]);
+        setNotes("");
       } else {
         const issueObj = Array.isArray(respData) ? respData[0] : respData;
         setDeps((issueObj && issueObj.dependencies) || []);
+        setComments((issueObj && issueObj.comments) || []);
+        setNotes((issueObj && issueObj.notes) || "");
       }
     } catch (_err) {
       setDeps([]);
+      setComments([]);
+      setNotes("");
     } finally {
       setDepsLoading(false);
     }
   }, [workingDir, data && data.id]);
 
-  // Fetch dependencies whenever a (non-create) issue is opened or switched.
+  // Fetch dependencies, notes, and comments whenever a (non-create) issue is opened or switched.
   useEffect(() => {
     setDeps([]);
+    setComments([]);
+    setNotes("");
     setNewDepId("");
     setNewDepType("blocks");
     if (isOpen && !creating && data && data.id) {
@@ -637,11 +784,70 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
             <div class="flex flex-wrap gap-2 items-center">
               ${typeBadge(data.issue_type)}
               ${statusBadge(data.status)}
-              ${priorityBadge(data.priority)}
+              <div class="relative" ref=${priorityRef}>
+                <button
+                  type="button"
+                  onClick=${() => !savingPriority && setEditingPriority(o => !o)}
+                  disabled=${savingPriority}
+                  class="cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-default"
+                  title="Click to change priority"
+                >
+                  ${priorityBadge(data.priority)}
+                </button>
+                ${savingPriority && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin inline-block ml-1 text-mitto-text-secondary align-middle" />`}
+                ${editingPriority && html`
+                  <div class="absolute left-0 top-full mt-1 z-10 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]">
+                    ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
+                      const num = Number(n);
+                      const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
+                      return html`
+                        <button
+                          key=${n}
+                          type="button"
+                          onClick=${() => handleSetPriority(num)}
+                          class="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-gray-200 hover:bg-slate-700 transition-colors"
+                        >
+                          ${priorityBadge(num)}
+                          <span class="flex-1">${label}</span>
+                          ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 text-gray-400" />`}
+                        </button>
+                      `;
+                    })}
+                  </div>
+                `}
+              </div>
             </div>
 
             <div class="grid grid-cols-2 gap-3">
-              ${labelValue("Assignee", data.assignee)}
+              <div>
+                <div class="text-xs text-mitto-text-secondary mb-0.5">Assignee</div>
+                ${editingAssignee
+                  ? html`
+                    <input
+                      ref=${assigneeRef}
+                      type="text"
+                      class=${inputClass}
+                      placeholder="Assignee (empty to clear)"
+                      value=${assigneeDraft}
+                      onInput=${e => setAssigneeDraft(e.target.value)}
+                      onBlur=${handleAssigneeBlur}
+                      onKeyDown=${handleAssigneeKeyDown}
+                      disabled=${savingAssignee}
+                    />
+                  `
+                  : html`
+                    <div
+                      class="text-sm text-mitto-text break-words cursor-text hover:text-mitto-text-secondary transition-colors flex items-center gap-2"
+                      onClick=${startEditAssignee}
+                      title="Click to edit"
+                    >
+                      ${savingAssignee && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin text-mitto-text-secondary flex-shrink-0" />`}
+                      ${data.assignee
+                        ? html`<span>${data.assignee}</span>`
+                        : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
+                    </div>
+                  `}
+              </div>
               ${labelValue("Owner", data.owner)}
               ${labelValue("Created", data.created_at && new Date(data.created_at).toLocaleDateString())}
               ${labelValue("Updated", data.updated_at && new Date(data.updated_at).toLocaleDateString())}
@@ -687,10 +893,17 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                 <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Subtasks (${subtasks.length})</div>
                 <ul class="space-y-1">
                   ${subtasks.map(c => html`
-                    <li key=${c.id} class="flex items-center gap-2 text-sm text-mitto-text">
-                      ${statusBadge(c.status)}
-                      <span class="font-mono text-mitto-text-secondary text-xs">${c.id}</span>
-                      <span class="truncate">${c.title}</span>
+                    <li key=${c.id}>
+                      <button
+                        type="button"
+                        onClick=${() => onSelectIssue && onSelectIssue(c)}
+                        class="w-full flex items-center gap-2 text-sm text-mitto-text text-left rounded px-1 py-0.5 hover:bg-mitto-input-box transition-colors"
+                        title="Open ${c.id}"
+                      >
+                        ${statusBadge(c.status)}
+                        <span class="font-mono text-mitto-text-secondary text-xs">${c.id}</span>
+                        <span class="truncate">${c.title}</span>
+                      </button>
                     </li>
                   `)}
                 </ul>
@@ -727,7 +940,12 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                         >
                           ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
                         </select>
-                        <span class="font-mono text-xs text-mitto-text flex-1 min-w-0 truncate" title=${d.title || d.id}>${d.id}</span>
+                        <button
+                          type="button"
+                          onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
+                          class="font-mono text-xs text-blue-400 hover:text-blue-300 hover:underline flex-1 min-w-0 truncate text-left"
+                          title=${"Open " + d.id}
+                        >${d.id}</button>
                         <button
                           type="button"
                           onClick=${() => mutateDep("remove", d.id)}
@@ -773,6 +991,46 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                     </div>
                   </div>
                 `}
+            </div>
+
+            <div>
+              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Notes</div>
+              ${depsLoading
+                ? html`
+                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
+                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                  </div>
+                `
+                : (notes && notes.trim()
+                    ? html`<div class="border border-mitto-border rounded p-2 bg-mitto-input-box">${commentBody(notes)}</div>`
+                    : html`<div class="text-xs text-mitto-text-secondary italic">No notes.</div>`)
+              }
+            </div>
+
+            <div>
+              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Comments${comments.length ? ` (${comments.length})` : ""}</div>
+              ${depsLoading
+                ? html`
+                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
+                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                  </div>
+                `
+                : (comments.length === 0
+                    ? html`<div class="text-xs text-mitto-text-secondary italic">No comments.</div>`
+                    : html`
+                      <ul class="space-y-2">
+                        ${[...comments].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(cm => html`
+                          <li key=${cm.id} class="border border-mitto-border rounded p-2 bg-mitto-input-box">
+                            <div class="flex items-center justify-between gap-2 mb-1">
+                              <span class="text-xs font-medium text-mitto-text">${cm.author || "Unknown"}</span>
+                              <span class="text-xs text-mitto-text-secondary" title=${cm.created_at}>${cm.created_at ? new Date(cm.created_at).toLocaleString() : ""}</span>
+                            </div>
+                            ${commentBody(cm.text)}
+                          </li>
+                        `)}
+                      </ul>
+                    `)
+              }
             </div>
           `}
       </div>
@@ -820,17 +1078,21 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                 ${!promptsLoading && prompts.length === 0 && html`
                   <div class="px-3 py-2 text-sm text-mitto-text-secondary">No beads prompts</div>
                 `}
-                ${!promptsLoading && prompts.map(p => html`
+                ${!promptsLoading && prompts.map(p => {
+                  const PromptIcon = getPromptIconOrDefault(p.icon);
+                  return html`
                   <button
                     key=${p.name}
                     type="button"
                     onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
                     title=${p.description || p.name}
-                    class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors"
+                    class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
                   >
-                    ${p.name}
+                    <${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-70" />
+                    <span class="truncate flex-1">${p.name}</span>
                   </button>
-                `)}
+                `;
+                })}
               </div>
             `}
           </div>
@@ -846,6 +1108,17 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
               ${data.status === "closed"
                 ? html`<${RefreshIcon} className="w-4 h-4" />`
                 : html`<${CheckIcon} className="w-4 h-4" />`}
+            </button>
+            <button
+              type="button"
+              onClick=${() => onToggleDefer && onToggleDefer(data)}
+              disabled=${statusBusy}
+              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              title=${data.status === "deferred" ? "Undefer issue" : "Defer issue"}
+            >
+              ${data.status === "deferred"
+                ? html`<${SunIcon} className="w-4 h-4" />`
+                : html`<${MoonIcon} className="w-4 h-4" />`}
             </button>
             <button
               type="button"
@@ -882,16 +1155,24 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
  * @param {function} onShowSidebar - Opens the conversations sidebar (mobile);
  *        used by the header hamburger button to return to the conversation list.
  */
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, onOpenConversation, initialSelectedIssueId, initialSelectNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [search, setSearch] = useState("");
+  // Filter state is initialized from localStorage so that the user's applied
+  // criteria are restored when they navigate away from the Beads view and
+  // return within the same session. Changes are persisted via the effect below.
+  const [statusFilter, setStatusFilter] = useState(() => getBeadsFilters().status);
+  const [typeFilter, setTypeFilter] = useState(() => getBeadsFilters().type);
+  const [search, setSearch] = useState(() => getBeadsFilters().search);
+
+  // Persist filter criteria whenever they change.
+  useEffect(() => {
+    setBeadsFilters({ status: statusFilter, type: typeFilter, search });
+  }, [statusFilter, typeFilter, search]);
 
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
@@ -1001,6 +1282,23 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setIsCreating(false);
     setSelectedIssue(prev => (prev && prev.id === issue.id ? null : issue));
   }, []);
+
+  // Auto-select an issue when the view is opened focused on one (e.g. via the
+  // conversation properties panel's linked-issue link). We apply once per nonce
+  // — so re-opening the same issue re-selects it — and wait until the list has
+  // loaded so the row data is available.
+  const appliedSelectNonceRef = useRef(0);
+  useEffect(() => {
+    if (!initialSelectedIssueId) return;
+    if (initialSelectNonce === appliedSelectNonceRef.current) return;
+    if (!issues || issues.length === 0) return;
+    const match = issues.find((i) => i.id === initialSelectedIssueId);
+    if (match) {
+      setIsCreating(false);
+      setSelectedIssue(match);
+      appliedSelectNonceRef.current = initialSelectNonce;
+    }
+  }, [initialSelectedIssueId, initialSelectNonce, issues]);
 
   // Open the side panel in "create" mode for a brand-new issue.
   const openCreate = useCallback(() => {
@@ -1140,6 +1438,33 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }
   }, [workingDir, showToast, fetchList]);
 
+  // Defer or undefer a single issue ("on ice" for later) depending on its
+  // current status, then refresh. Shares the /api/beads/status endpoint, which
+  // also handles the defer/undefer verbs.
+  const handleToggleDefer = useCallback(async (issue) => {
+    if (!issue) return;
+    const action = issue.status === "deferred" ? "undefer" : "defer";
+    setStatusBusy(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/status"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: issue.id, action }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
+      } else {
+        showToast && showToast({ style: "success", title: action === "defer" ? `Deferred ${issue.id}` : `Undeferred ${issue.id}` });
+        fetchList();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
+    } finally {
+      setStatusBusy(false);
+    }
+  }, [workingDir, showToast, fetchList]);
+
   // Create a "blocks" dependency edge from the context menu. `direction` picks
   // the argument order (the edge kind is always "blocks"):
   //   "depends-on" → issue depends on other      (bd dep add <issue> <other>)
@@ -1215,13 +1540,18 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // wired to the same handlers used by the detail panel footer.
   const promptSubmenuItems = (menuPrompts || [])
     .filter((p) => p && p.name)
-    .map((p) => ({
-      label: p.name,
-      onClick: () => handleRunPrompt(p, contextMenu && contextMenu.issue),
-    }));
+    .map((p) => {
+      const PromptIcon = getPromptIconOrDefault(p.icon);
+      return {
+        label: p.name,
+        icon: html`<${PromptIcon} className="w-4 h-4" />`,
+        onClick: () => handleRunPrompt(p, contextMenu && contextMenu.issue),
+      };
+    });
 
   const ctxIssue = contextMenu && contextMenu.issue;
   const ctxIsClosed = ctxIssue && ctxIssue.status === "closed";
+  const ctxIsDeferred = ctxIssue && ctxIssue.status === "deferred";
 
   // "Depends On" / "Blocks" submenus list every other issue. Picking one creates
   // a "blocks" edge in the chosen direction via handleAddDependencyEdge.
@@ -1233,10 +1563,25 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }));
 
   const contextMenuItems = [
+    ...(promptSubmenuItems.length > 0
+      ? [{ label: "New", icon: html`<${PlusIcon} />`, submenu: promptSubmenuItems }]
+      : []),
+    ...(otherIssues.length > 0
+      ? [
+          { label: "Depends On", icon: html`<${ArrowDownIcon} />`, submenu: issueSubmenu("depends-on") },
+          { label: "Blocks", icon: html`<${ArrowUpIcon} />`, submenu: issueSubmenu("blocks") },
+        ]
+      : []),
     {
       label: ctxIsClosed ? "Reopen" : "Close",
       icon: ctxIsClosed ? html`<${RefreshIcon} />` : html`<${CheckIcon} />`,
       onClick: () => ctxIssue && handleToggleStatus(ctxIssue),
+      disabled: statusBusy,
+    },
+    {
+      label: ctxIsDeferred ? "Undefer" : "Defer",
+      icon: ctxIsDeferred ? html`<${SunIcon} />` : html`<${MoonIcon} />`,
+      onClick: () => ctxIssue && handleToggleDefer(ctxIssue),
       disabled: statusBusy,
     },
     {
@@ -1245,15 +1590,6 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       onClick: () => contextMenu && setDeleteTarget(contextMenu.issue),
       danger: true,
     },
-    ...(promptSubmenuItems.length > 0
-      ? [{ label: "Prompts", submenu: promptSubmenuItems }]
-      : []),
-    ...(otherIssues.length > 0
-      ? [
-          { label: "Depends On", submenu: issueSubmenu("depends-on") },
-          { label: "Blocks", submenu: issueSubmenu("blocks") },
-        ]
-      : []),
   ];
 
   return html`
@@ -1312,7 +1648,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <table class="min-w-full text-sm text-left border-collapse">
             <thead class="sticky top-0 bg-mitto-sidebar text-xs text-mitto-text-secondary uppercase tracking-wide">
               <tr>
-                <th class="px-3 py-2">ID</th>
+                <th class="px-3 py-2 max-w-[7rem]">ID</th>
                 <th class="px-3 py-2">Type</th>
                 <th class="px-3 py-2">Status</th>
                 <th class="px-3 py-2">Title</th>
@@ -1321,7 +1657,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               </tr>
             </thead>
             <tbody>
-              ${filtered.map(issue => html`
+              ${filtered.map(issue => {
+                // If a conversation is linked to this issue, render the ID as a
+                // link that opens that conversation. stopPropagation keeps the
+                // row's own click (which opens the detail panel) from firing.
+                const linkedSessionId = issueSessionMap[issue.id];
+                return html`
                 <tr
                   key=${issue.id}
                   data-has-context-menu
@@ -1329,14 +1670,23 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                   onClick=${() => selectIssue(issue)}
                   onContextMenu=${(e) => handleRowContextMenu(e, issue)}
                 >
-                  <td class="px-3 py-2 font-mono text-mitto-text-secondary text-xs whitespace-nowrap">${issue.id}</td>
+                  <td class="px-3 py-2 font-mono text-xs max-w-[7rem] truncate" title=${issue.id}>
+                    ${linkedSessionId && onOpenConversation
+                      ? html`<a
+                          href="#"
+                          class="text-blue-400 hover:text-blue-300 hover:underline"
+                          onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
+                        >${issue.id}</a>`
+                      : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
+                  </td>
                   <td class="px-3 py-2 whitespace-nowrap">${typeBadge(issue.issue_type)}</td>
                   <td class="px-3 py-2 whitespace-nowrap">${statusBadge(issue.status)}</td>
                   <td class="px-3 py-2 text-mitto-text whitespace-nowrap">${issue.title}</td>
                   <td class="px-3 py-2 text-mitto-text-secondary text-xs whitespace-nowrap">${issue.owner || ""}</td>
                   <td class="px-3 py-2 whitespace-nowrap">${priorityBadge(issue.priority)}</td>
                 </tr>
-              `)}
+              `;
+              })}
             </tbody>
           </table>
         `}
@@ -1357,7 +1707,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
             title="Run a prompt over the issue list in a new conversation"
           >
-            <${MagicWandIcon} className="w-4 h-4" />
+            <${ChevronUpIcon} className="w-4 h-4" />
           </button>
           ${showListPrompts && html`
             <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
@@ -1369,17 +1719,21 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               ${!listPromptsLoading && listPrompts.length === 0 && html`
                 <div class="px-3 py-2 text-sm text-mitto-text-secondary">No beads prompts</div>
               `}
-              ${!listPromptsLoading && listPrompts.map(p => html`
+              ${!listPromptsLoading && listPrompts.map(p => {
+                const PromptIcon = getPromptIconOrDefault(p.icon);
+                return html`
                 <button
                   key=${p.name}
                   type="button"
                   onClick=${() => handleRunListPrompt(p)}
                   title=${p.description || p.name}
-                  class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors"
+                  class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
                 >
-                  ${p.name}
+                  <${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-70" />
+                  <span class="truncate flex-1">${p.name}</span>
                 </button>
-              `)}
+              `;
+              })}
             </div>
           `}
         </div>
@@ -1461,7 +1815,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       onRunPrompt=${handleRunPrompt}
       onDelete=${(issue) => setDeleteTarget(issue)}
       onToggleStatus=${handleToggleStatus}
+      onToggleDefer=${handleToggleDefer}
       statusBusy=${statusBusy}
+      onSelectIssue=${selectIssue}
     />
     </div>
 
