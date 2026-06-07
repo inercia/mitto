@@ -1,4 +1,5 @@
 ---
+icon: "list"
 name: "Implement spec"
 menus: prompts
 description: "Create a detailed implementation plan from a specification"

@@ -1,4 +1,5 @@
 ---
+icon: "check"
 name: "Add tests"
 menus: prompts
 description: "Write comprehensive tests for new or modified code"

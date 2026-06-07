@@ -1,4 +1,5 @@
 ---
+icon: "sync"
 name: "Rebase changes"
 menus: prompts
 description: "Rebase changes on top of main"

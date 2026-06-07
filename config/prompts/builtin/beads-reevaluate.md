@@ -1,7 +1,8 @@
 ---
-name: "Beads: reevaluate all issues"
+icon: "beads"
+name: "Reevaluate all issues"
 menus: prompts, beadsList
-description: "Reevaluate priority, dependencies, and importance of all beads, propose changes, and surface what to do now"
+description: "Reevaluate priority, dependencies, and importance of all beads — delegating deeper evaluation to child conversations when needed — then propose changes and surface what to do now"
 backgroundColor: "#FFCC80"
 group: "Beads"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
@@ -10,6 +11,8 @@ enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ## Session Context
 
 Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
 
 # Beads: Reevaluate All Issues
 
@@ -58,7 +61,47 @@ For each non-closed bead, reason carefully across three axes:
   Consider user impact, how many other beads it unblocks, staleness, and whether it is a
   duplicate or no longer relevant.
 
-## Step 3 — Detect anomalies
+## Step 3 — Delegate deep evaluation where needed
+
+Most beads can be reassessed directly from the data gathered in Step 1. Some, however, need
+**deeper investigation** before you can judge them fairly — for example a bead whose:
+
+- relevance is unclear and must be checked against the **current codebase** (is it already done? still needed?),
+- scope or acceptance criteria are ambiguous and require reading related code or design,
+- priority depends on real implementation status, or
+- suspected duplication with another bead needs a careful side-by-side comparison.
+
+For these beads — and **only** when the conversation-spawning tools (`mitto_conversation_*`)
+are available and you have permission to start conversations and send prompts — delegate the
+deep evaluation to child conversations instead of investigating inline:
+
+1. Select the beads that genuinely warrant deep evaluation. **Cap this at ~3–5 per run** to
+   avoid spawning excessively; prefer the highest-impact or most-uncertain beads. Reuse an
+   existing child from `@mitto:children` if one already covers the same bead rather than
+   spawning a duplicate.
+
+2. For each selected bead, call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
+   - `title`: the bead ID and a short label (e.g., `"bd-1234 · deep reevaluation"`)
+   - `beads_issue`: the bead ID (links the child to this bead)
+   - `acp_server`: choose from `@mitto:available_acp_servers` — prefer a faster/cheaper model
+     for simple checks, and a slower/more capable model for complex reasoning
+   - `initial_prompt`: a **self-contained** prompt that includes the bead ID, title, full
+     description and acceptance criteria; the specific question(s) to answer (relevance,
+     correct priority, missing/stale dependencies, duplication); an instruction to verify
+     against the actual codebase where relevant; and an instruction to report a concise
+     recommendation (keep / close / reprioritise / re-scope, with justification) via
+     `mitto_children_tasks_report_mitto` when done.
+
+3. Spawn all the deep-evaluation children in parallel — do **not** wait between spawns.
+
+4. Wait for their findings with
+   `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "reevaluate", timeout_seconds: 600)`,
+   then fold each child's recommendation into your reevaluation.
+
+If the spawning tools are unavailable, perform this deeper evaluation inline yourself using
+`bd show`, `bd dep tree`, and the codebase, then continue.
+
+## Step 4 — Detect anomalies
 
 Explicitly look for and flag:
 
@@ -68,7 +111,7 @@ Explicitly look for and flag:
 - **Stale claims** — `in_progress` beads with no evidence of work.
 - **Orphans / duplicates** — beads that overlap heavily or appear abandoned.
 
-## Step 4 — Compose a proposal
+## Step 5 — Compose a proposal
 
 Produce a concise **Reevaluation Report** with a table of every change you recommend:
 
@@ -78,10 +121,10 @@ Produce a concise **Reevaluation Report** with a table of every change you recom
 | `bd-2` | `<title>` | Add dep | — → blocked by `bd-9` | Needs schema first |
 | `bd-3` | `<title>` | Remove dep | blocked by `bd-7` (closed) | Blocker already done |
 
-If, after analysis, **no changes are warranted**, say so clearly and skip Steps 5–6 — but
-still produce the final summary in Step 7.
+If, after analysis, **no changes are warranted**, say so clearly and skip Steps 6–7 — but
+still produce the final summary in Step 8.
 
-## Step 5 — Confirm before changing anything
+## Step 6 — Confirm before changing anything
 
 This reevaluation is **read-only until you confirm**. Present your single best proposal and
 confirm via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`,
@@ -93,7 +136,7 @@ e.g. "Apply these N proposed changes to the beads tracker?" with options:
 
 Honour the user's choice. Do not apply changes they did not approve.
 
-## Step 6 — Apply the approved changes
+## Step 7 — Apply the approved changes
 
 For each approved change, run the appropriate command:
 
@@ -101,6 +144,12 @@ For each approved change, run the appropriate command:
 bd update <bead-id> --priority <0-4>          # reprioritise
 bd dep add <blocked-id> <blocker-id>          # add a blocking dependency
 bd dep remove <blocked-id> <blocker-id>       # remove a stale dependency
+```
+
+For each bead you change, append an audit note recording what changed and why:
+
+```bash
+bd update <bead-id> --append-notes "Reevaluation: <what changed — e.g. priority P2→P1, added blocker bd-12> — <why, from the assessment above>."
 ```
 
 After wiring dependencies, verify integrity:
@@ -111,7 +160,7 @@ bd dep cycles
 
 Report any command that failed and why.
 
-## Step 7 — Final summary
+## Step 8 — Final summary
 
 Always finish with two clearly separated sections:
 
@@ -123,5 +172,3 @@ A bullet summary of what was **actually changed** (or, if the user declined, wha
 A short, ranked list (top ~3–5) of the beads that matter most to tackle next, based on your
 reevaluation — favouring high-priority, ready (unblocked) work that unblocks the most other
 beads. For each, give the bead ID, title, and a one-line justification.
-
-Then remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.

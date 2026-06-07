@@ -1,4 +1,5 @@
 ---
+icon: "magic-wand"
 name: "Specialize prompts"
 menus: prompts
 description: "Analyze and specialize workspace prompts for this project"

@@ -1,4 +1,5 @@
 ---
+icon: "check"
 name: "Run tests"
 menus: prompts
 description: "Run the test suite and report results"

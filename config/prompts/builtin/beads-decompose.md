@@ -1,6 +1,7 @@
 ---
-name: "Beads: decompose"
-menus: prompts, beadsList
+icon: "beads"
+name: "Decompose"
+menus: prompts
 description: "Break a bead into child beads with dependencies and create them automatically"
 backgroundColor: "#D1C4E9"
 group: "Beads"
@@ -119,4 +120,11 @@ After all child beads are created and wired, present a summary listing:
 - The dependency edges created between them
 - Any failures or warnings from `bd`
 
-Run `bd dep tree <parent-id>` to display the final structure, and remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.
+Record the decomposition in the parent bead's history for future reference. Write the breakdown summary — the **decomposition rationale**, each child bead (**ID + title**), and the **dependency edges** created — to a temp file and post it as a comment, then add a terse audit note:
+
+```bash
+bd comment <parent-id> --file /tmp/decomposition-summary.md   # analysis + design + resulting structure
+bd update <parent-id> --append-notes "Decomposed into <N> sub-issues (<child-ids>): <one-line rationale for the breakdown>."
+```
+
+Run `bd dep tree <parent-id>` to display the final structure.

@@ -1,6 +1,7 @@
 ---
-name: "Beads: status ALL in-progress"
-menus: prompts
+icon: "beads"
+name: "Status ALL in-progress"
+menus: prompts, beadsList
 description: "Fact-check implementation status for all in-progress beads in this repo"
 backgroundColor: "#FFCCBC"
 group: "Beads"

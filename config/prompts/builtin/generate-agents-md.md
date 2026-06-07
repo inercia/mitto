@@ -1,4 +1,5 @@
 ---
+icon: "robot"
 name: "Generate AGENTS.md"
 menus: prompts
 description: "Analyze project and generate an AGENTS.md file for AI coding agents"

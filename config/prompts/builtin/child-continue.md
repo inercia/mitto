@@ -1,6 +1,7 @@
 ---
-name: "Continue work in existing child"
-description: "Continue work in an existing child conversation"
+icon: "play"
+name: "Continue in existing"
+description: "Continue work by sending instructions to an existing child conversation"
 group: "Work flow"
 menus: prompts, conversation
 backgroundColor: "#FFF9C4"
@@ -8,37 +9,64 @@ enabledWhen: 'children.exists && permissions.canSendPrompt && tools.hasPattern("
 ---
 
 Continue working on this by sending instructions to an existing child conversation.
+Let the user pick the child and choose whether to wait for it to report back.
 
 ## Phase 1: Context
 
 Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
 
-Available ACP servers:
-@mitto:available_acp_servers
-
 Existing children:
 @mitto:children
 
-Filter results to only show conversations where the parent is this session.
+Filter to only conversations whose parent is this session. If none found: inform the
+user "No child conversations found. Use 'Continue in new' or 'Distribute among
+children' to create one." and abort.
 
-If no children found: inform user "No child conversations found. Use 'Create minions' or 'Handoff to new conversation' to create one." Abort.
+## Phase 2: Select Child + Wait Option
 
-## Phase 2: Select Child
+Present a single `mitto_ui_form(self_id: "@mitto:session_id", ...)` (timeout: 60s) with:
 
-Present children with their status:
+1. A `<select name="child">` whose `<option value="<child_id>">` entries are the
+   children, labelled `Title — ACP Server (running/idle)`.
+2. A `<input type="checkbox" name="wait" value="yes">` labelled
+   "Wait for the child to report back when done".
 
-Ask via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 60s):
+Example HTML:
 
+```html
+<label>Child conversation
+  <select name="child">
+    <option value="<id1>">Title 1 — Server (idle)</option>
+    <option value="<id2>">Title 2 — Server (running)</option>
+  </select>
+</label>
+<label><input type="checkbox" name="wait" value="yes" /> Wait for the child to report back when done</label>
 ```
-question: "Which child conversation should continue working?"
-options: <children formatted as "Title - ACP Server (running/idle)">
-```
 
-On timeout: abort. Do not send without explicit selection.
+On timeout or cancel: abort. Do not send without an explicit selection.
+
+Read back `child` (the chosen conversation id) and `wait` (present/"yes" = wait).
 
 ## Phase 3: Prepare Instructions
 
-Based on the conversation context and the overall goal, prepare continuation instructions for the child.
+Based on the conversation context and the overall goal, prepare continuation
+instructions for the child. Build on what it has already accomplished; don't repeat work.
+
+**If the user chose to wait**, also pick a short, descriptive `task_id` (e.g.
+`"iter2-fix-tests"`) and append this reporting block to the instructions:
+
+```
+When complete, report via
+
+mitto_children_tasks_report:
+    self_id: "<the child's own session ID>"
+    task_id: "<task_id from the parent's wait call>"
+    status: "completed" | "failed" | "partial"
+    summary: "<what was accomplished>"
+    details: "<files modified, errors, discoveries, open questions>"
+
+Do this as your final action.
+```
 
 Present to user:
 
@@ -46,10 +74,11 @@ Present to user:
 ## Continue Child Work
 
 **Child:** <title> (<id>)
+**Wait for report:** <yes/no>  <if yes: **Task ID:** <task_id>>
 
 **Proposed Instructions:**
 ---
-<continuation prompt for the child>
+<continuation prompt (including the reporting block when waiting)>
 ---
 ```
 
@@ -70,7 +99,21 @@ On timeout: abort. Do not send without explicit confirmation.
 
 `mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id: <child_id>, prompt: <confirmed instructions>)`
 
-## Phase 5: Report
+## Phase 5: Wait or Report
+
+**If the user chose to wait:**
+
+```
+mitto_children_tasks_wait(self_id, children_list: [<child_id>], task_id: "<task_id>", timeout_seconds: 600)
+```
+
+Inform user: "Waiting for the child to report... Monitor in the Conversations panel."
+
+**On timeout**: retry with `mitto_children_tasks_wait` using the **same `task_id`**
+(omit the prompt to avoid duplicates). Reports already received are preserved. After
+two timeouts, treat as failure.
+
+**If the user chose not to wait:**
 
 ```markdown
 ✅ Instructions Sent
@@ -81,14 +124,13 @@ On timeout: abort. Do not send without explicit confirmation.
 The child conversation will continue working. You can:
 - Monitor progress in the Conversations panel
 - Wait for a status report from the child
-- Use "Continue work in child" again to send more instructions
+- Use "Continue in existing" again to send more instructions
 ```
 
 ## Guidelines
 
-- Review child's current state before sending instructions
-- Build on what the child has already accomplished
+- Review the child's current state before sending instructions
+- Build on what the child has already accomplished — don't repeat work
 - Be specific about what to do next
-- Don't repeat work the child has already done
-- Consider if the child is currently busy (running) vs idle
+- Consider whether the child is currently busy (running) vs idle
 - Get user confirmation before sending

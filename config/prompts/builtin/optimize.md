@@ -1,4 +1,5 @@
 ---
+icon: "sliders"
 name: "Optimize"
 menus: prompts
 description: "Identify and propose performance improvements"

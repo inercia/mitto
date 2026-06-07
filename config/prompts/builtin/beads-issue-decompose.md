@@ -1,5 +1,6 @@
 ---
-name: "Beads issue: decompose"
+icon: "beads"
+name: "Decompose issue"
 menus: beadsIssues
 requires: parameters
 description: "Break this bead into child beads with dependencies and create them automatically"
@@ -46,7 +47,7 @@ Before proposing child beads, reason carefully:
 - The bead is large enough that a single PR would be difficult to review
 - Multiple distinct acceptance criteria map cleanly to separate deliverables
 
-If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, stop here.
+If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, skip to the final **Clean up this conversation** step.
 
 ## Step 3 — Produce a decomposition plan
 
@@ -107,4 +108,30 @@ After all child beads are created and wired, present a summary listing:
 - The dependency edges created between them
 - Any failures or warnings from `bd`
 
-Run `bd dep tree ${ISSUE_ID}` to display the final structure, and remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.
+Record the decomposition in the parent bead's history for future reference. Write the breakdown summary — the **decomposition rationale**, each child bead (**ID + title**), and the **dependency edges** created — to a temp file and post it as a comment, then add a terse audit note:
+
+```bash
+bd comment ${ISSUE_ID} --file /tmp/decomposition-summary.md   # analysis + design + resulting structure
+bd update ${ISSUE_ID} --append-notes "Decomposed into <N> sub-issues (<child-ids>): <one-line rationale for the breakdown>."
+```
+
+Run `bd dep tree ${ISSUE_ID}` to display the final structure.
+
+## Step 8 — Clean up this conversation
+
+This conversation was spawned solely to decompose `${ISSUE_ID}`, and that work is now complete (the
+durable record — child beads, dependency edges, and the decomposition comment — already lives in the
+tracker). Tidy up so the conversation list does not accumulate finished one-off tasks:
+
+1. Notify the user of the outcome so they still get feedback after the conversation disappears:
+
+   `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Decomposed: ${ISSUE_ID}", message: "<N sub-issues created, or 'not decomposed' if declined>", style: "success")`
+
+2. Self-destruct this conversation:
+
+   `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
+
+Run this on **every** completion path — whether children were created or the user declined to
+decompose — because the conversation has served its single purpose. The deletion is deferred until
+your turn finishes, so the notification is delivered first. If the delete tool is unavailable, skip
+this step silently.

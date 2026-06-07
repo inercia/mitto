@@ -1,4 +1,5 @@
 ---
+icon: "tag"
 name: "JIRA: decompose"
 menus: prompts
 description: "Break a JIRA ticket into sub-tickets and create them automatically"

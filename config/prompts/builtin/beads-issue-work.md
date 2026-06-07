@@ -1,5 +1,6 @@
 ---
-name: "Beads issue: start work"
+icon: "beads"
+name: "Start work"
 menus: beadsIssues
 requires: parameters
 description: "Plan this bead and spawn parallel Mitto conversations to implement it"
@@ -71,31 +72,53 @@ Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to show the plan summ
 - If the user says **No** or provides feedback: revise the plan and present it again. Repeat until the user explicitly approves.
 - If the user says **Yes**: proceed to Step 5.
 
-## Step 5 — Spawn one Mitto conversation per work item
+## Step 5 — Dispatch work items to child conversations
 
-For each work item in the approved plan:
+Only parallelize work items that are **truly independent** (no shared files, no ordering dependency). Run trivial or tightly-coupled items inline in this conversation rather than dispatching a separate conversation for each.
 
-1. Call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
-   - `title`: the work item title prefixed with the bead ID (e.g., `"${ISSUE_ID} · Add database migration"`)
-   - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
-   - `initial_prompt`: a **self-contained** prompt that includes:
-     - The full bead ID, title, and description
-     - The acceptance criteria from the bead
-     - The specific work item title and description
-     - The definition of done for this task
-     - Any relevant context from the bead's design notes or dependencies
-     - Instruction to report back using `mitto_children_tasks_report_mitto` when done
+For each parallelizable work item in the approved plan, **reuse a suitable existing child when possible, otherwise create a new one**:
 
-2. Do **not** wait for each conversation to complete before spawning the next — spawn all conversations in parallel.
+1. **Reuse vs. create:**
+   - Check the existing children listed above (`@mitto:children`). If one is **idle** (not currently running) and a good fit for this work item (same workspace, related prior task), **reuse it** by sending the worker prompt with
+     `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.
+   - Otherwise create a new conversation with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", ...)`:
+     - `title`: the work item title prefixed with the bead ID (e.g., `"${ISSUE_ID} · Add database migration"`)
+     - `beads_issue`: `${ISSUE_ID}` (links the worker conversation to this bead)
+     - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
 
-3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "${ISSUE_ID}", timeout_seconds: 600)` to wait for them to report back, then summarise results to the user.
+2. The **worker prompt** (reused or new) must be **self-contained** and include:
+   - The full bead ID, title, and description
+   - The acceptance criteria from the bead
+   - The specific work item title and description
+   - The definition of done for this task
+   - Any relevant context from the bead's design notes or dependencies
+   - Instruction to report back using `mitto_children_tasks_report_mitto` when done
 
-## Step 6 — Close out
+3. Do **not** wait for each conversation before dispatching the next — dispatch all in parallel.
 
-Once the work is complete and verified, offer to close the bead:
+## Step 6 — Log work start on the bead
+
+Immediately after dispatching, record a progress comment in the bead's history so the tracker reflects that work has begun and where it is happening:
 
 ```bash
+bd comment ${ISSUE_ID} "Started work. Plan: <N> work items. Dispatched to: <child titles / IDs> (reused: <which, if any>)."
+```
+
+## Step 7 — Wait for workers and synthesise
+
+Use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "${ISSUE_ID}", timeout_seconds: 600)` to wait for the workers to report back. On timeout, retry the pending children with the **same `task_id`** (omit the prompt to avoid duplicates). Summarise the consolidated results to the user, and log a short progress comment for any notable milestone or blocker:
+
+```bash
+bd comment ${ISSUE_ID} "Progress: <what completed / what remains / blockers>."
+```
+
+## Step 8 — Log completion and close out
+
+Once the work is complete and verified, record a completion comment in the bead's history, then offer to close it:
+
+```bash
+bd comment ${ISSUE_ID} "Completed: <what was delivered, key changes, verification performed>."
 bd close ${ISSUE_ID} --reason "<short summary of what was delivered>"
 ```
 
-Remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.
+After closing, clean up any finished child conversations that are no longer needed with `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>")`.

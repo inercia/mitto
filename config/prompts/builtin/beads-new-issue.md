@@ -1,5 +1,6 @@
 ---
-name: "Beads: new issue"
+icon: "beads"
+name: "New issue"
 menus: prompts
 description: "Create a beads issue — from the current conversation context or from scratch"
 backgroundColor: "#C8E6C9"
@@ -143,4 +144,4 @@ After creation, use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to as
   - "Link it to another bead (dependency)" — ask for the target bead ID and run `bd dep add <id> <blocker-id>` (or `bd link <id> <other-id> --type related`)
   - "Done — no further action"
 
-Finish by showing the new bead with `bd show <id>` and remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.
+Finish by showing the new bead with `bd show <id>`.

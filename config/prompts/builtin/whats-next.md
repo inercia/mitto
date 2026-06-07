@@ -1,4 +1,5 @@
 ---
+icon: "question"
 name: "What's next?"
 description: "Analyze progress and suggest next steps"
 group: "Work flow"

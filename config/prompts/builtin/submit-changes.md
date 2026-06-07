@@ -1,4 +1,5 @@
 ---
+icon: "globe"
 name: "Submit changes"
 menus: prompts
 description: "Submit changes"

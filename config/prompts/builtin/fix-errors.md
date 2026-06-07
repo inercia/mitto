@@ -1,4 +1,5 @@
 ---
+icon: "error"
 name: "Fix errors"
 menus: prompts
 description: "Analyze and fix the errors shown"

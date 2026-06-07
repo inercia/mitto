@@ -1,6 +1,7 @@
 ---
-name: "Beads: capture loose ends"
-menus: prompts, beadsList
+icon: "beads"
+name: "Capture loose ends"
+menus: prompts
 description: "Scan the conversation for unsolved problems and untracked work, then file beads for each"
 backgroundColor: "#DCEDC8"
 group: "Beads"
@@ -59,29 +60,37 @@ bd list --json             # all beads (scan titles/descriptions for overlap)
 Drop or merge any candidate that clearly duplicates an existing open bead. Note which
 existing bead it matched so you can report it.
 
-## Step 4 — Propose the beads to file
+## Step 4 — Assemble the candidate beads
 
-Present a single, concise proposal listing every bead you intend to create as a table:
+Build the list of candidates internally. For each, assign sensible defaults: `bug` for defects,
+`task`/`feature`/`chore` otherwise; priority by real impact (P0 highest .. P4 lowest), defaulting
+to P2/P3 for follow-ups. Number them so each maps to a checkbox in the form below.
 
-| # | Title | Type | Priority | Why it matters |
-|---|-------|------|----------|----------------|
-| 1 | `<title>` | bug | P2 | Discovered while fixing X; crashes on empty input |
-| 2 | `<title>` | task | P3 | Part B of the original request, not yet done |
+## Step 5 — Let the user accept or ignore each bead via a checkbox form
 
-Assign sensible defaults: `bug` for defects, `task`/`feature`/`chore` otherwise; priority by
-real impact (P0 highest .. P4 lowest), defaulting to P2/P3 for follow-ups.
+This is **read-only until you confirm**. Present **every** candidate in a single
+`mitto_ui_form_mitto(self_id: "@mitto:session_id")` as a checkbox, **checked by default**, so the
+user can simply uncheck the ones to ignore. Put the key facts (type, priority, title, and a short
+"why") in each checkbox's label:
 
-## Step 5 — Confirm before creating anything
+```html
+<p>Select which loose ends to file as beads. Unchecked items are skipped.</p>
 
-This is **read-only until you confirm**. Present your best proposal and confirm via
-`mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g.
-"File these N beads for the loose ends from this conversation?" with options:
+<label><input type="checkbox" name="bead_1" checked /> [bug · P2] Crash on empty input — found while fixing X</label>
+<label><input type="checkbox" name="bead_2" checked /> [task · P3] Part B of the original request — not yet done</label>
+<label><input type="checkbox" name="bead_3" checked /> [chore · P3] Add missing tests for the parser</label>
+```
 
-- **"Create all proposed beads"**
-- **"Create only some"** (let the user specify which via free text)
-- **"Don't create anything — report only"**
+Use a stable `name` like `bead_<N>` for each candidate (matching the numbering from Step 4). The
+form's Submit/Cancel buttons are added automatically.
 
-Honour the user's choice exactly. Do not create beads they did not approve.
+Interpreting the result:
+- A candidate is **approved** only if its `bead_<N>` key is **present** in the returned values —
+  checked boxes are submitted, unchecked boxes are omitted entirely.
+- If the user **cancels** the form, or submits with **everything unchecked**, create nothing and
+  report that no beads were filed.
+
+Create only the approved candidates. Do not create beads the user unchecked.
 
 ## Step 6 — Create the approved beads
 
@@ -121,6 +130,3 @@ Finish with a short summary listing:
 - Each **created** bead (ID + title), grouped by type.
 - Any candidates **skipped** as duplicates (and which existing bead they matched).
 - Any failures or warnings from `bd`.
-
-Then remind the user to run `bd dolt push` to push the beads data to the remote when
-appropriate.

@@ -1,4 +1,5 @@
 ---
+icon: "magic-wand"
 name: "Simplify"
 menus: prompts
 description: "Simplify implementation while preserving functionality"

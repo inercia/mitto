@@ -1,4 +1,5 @@
 ---
+icon: "tag"
 name: "JIRA: status ONE in-progress"
 menus: prompts
 description: "Pick one in-progress ticket relevant to this repo and fact-check its implementation status"

@@ -1,5 +1,6 @@
 ---
-name: "Beads: status ONE in-progress"
+icon: "beads"
+name: "Status ONE in-progress"
 menus: prompts
 description: "Pick one in-progress bead and fact-check its implementation status"
 backgroundColor: "#F0F4C3"

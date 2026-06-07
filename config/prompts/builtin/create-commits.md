@@ -1,4 +1,5 @@
 ---
+icon: "save"
 name: "Commit changes"
 menus: prompts
 description: "Stage and commit changes with descriptive messages"

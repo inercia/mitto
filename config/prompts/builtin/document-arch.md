@@ -1,4 +1,5 @@
 ---
+icon: "layers"
 name: "Document Architecture"
 menus: prompts
 description: "Update developer/architecture documentation for the changes we just made"

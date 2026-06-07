@@ -1,4 +1,5 @@
 ---
+icon: "search"
 name: "Review"
 menus: prompts
 description: "Review changes for quality and correctness"

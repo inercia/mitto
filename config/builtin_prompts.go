@@ -91,12 +91,16 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 
 	deployed := false
 	var errs []error
+	// Track the embedded filenames so we can prune orphaned builtin prompts
+	// (files that were removed or renamed in a newer build) from targetDir.
+	embeddedNames := make(map[string]struct{})
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 
 		filename := entry.Name()
+		embeddedNames[filename] = struct{}{}
 		srcPath := filepath.Join(BuiltinPromptsDir, filename)
 		dstPath := filepath.Join(targetDir, filename)
 
@@ -119,6 +123,29 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 			continue
 		}
 		deployed = true
+	}
+
+	// Prune orphaned builtin prompts: the builtin directory is fully managed by
+	// Mitto, so any deployed .md file not present in the embedded set is stale
+	// (e.g. a prompt that was consolidated or removed in a newer build).
+	if deployedEntries, derr := os.ReadDir(targetDir); derr == nil {
+		for _, entry := range deployedEntries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if filepath.Ext(name) != ".md" {
+				continue
+			}
+			if _, ok := embeddedNames[name]; ok {
+				continue
+			}
+			if err := os.Remove(filepath.Join(targetDir, name)); err != nil {
+				errs = append(errs, fmt.Errorf("failed to remove stale prompt %s: %w", name, err))
+				continue
+			}
+			deployed = true
+		}
 	}
 
 	if len(errs) > 0 {

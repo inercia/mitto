@@ -1,4 +1,5 @@
 ---
+icon: "magic-wand"
 name: "Refactor"
 menus: prompts
 description: "Propose refactoring improvements for better code quality"

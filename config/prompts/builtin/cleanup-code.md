@@ -1,4 +1,5 @@
 ---
+icon: "broom"
 name: "Cleanup Code"
 menus: prompts
 description: "Remove dead code, unused imports, and outdated documentation"

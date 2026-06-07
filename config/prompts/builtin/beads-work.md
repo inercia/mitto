@@ -1,21 +1,23 @@
 ---
-name: "Beads: start work"
-menus: prompts
-description: "Pick a ready bead from the beads tracker and spawn parallel Mitto conversations to implement it"
+icon: "beads"
+name: "Start working on ready"
+menus: prompts, beadsList
+description: "Pick a ready (not-in-progress) bead, claim it, and launch a worker conversation that runs the per-issue Start Work prompt"
 backgroundColor: "#B2DFDB"
 group: "Beads"
-enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!session.isChild && permissions.canStartConversation && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*")'
 ---
 
 ## Session Context
 
 Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
 Available ACP servers: `@mitto:available_acp_servers`
-Existing children: `@mitto:children`
 
 # Beads: Start Work on a Bead
 
 Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+This prompt is a **launcher**: it finds a ready bead, claims it, and spawns a dedicated worker conversation that runs the per-issue **"Start work"** prompt against that bead. The worker conversation owns the actual planning, implementation, and progress/completion logging.
 
 ## Step 0 — Check for prior bead context
 
@@ -23,7 +25,7 @@ Before doing anything else, review the current conversation history to check whe
 
 - If a bead **has** been discussed in this conversation:
   Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask the user whether to:
-  - **Option 1**: `"Start working on [BEAD-ID]: [title]"` — if chosen, skip directly to Step 3 (fetch full details) using that bead ID.
+  - **Option 1**: `"Start working on [BEAD-ID]: [title]"` — if chosen, skip directly to Step 3 (claim) using that bead ID.
   - **Option 2**: `"Work on a different bead"` — if chosen, continue to Step 1.
 
 - If **no** bead has been previously discussed: skip this step and proceed directly to Step 1.
@@ -36,33 +38,22 @@ Run the following to discover claimable work (open beads with no active blockers
 bd ready --json
 ```
 
-If `bd ready` returns nothing, fall back to listing open beads:
+Filter the results to **exclude any bead whose `status` is already `in_progress`** — those are already being worked on and should not be presented. If `bd ready` returns nothing (or everything is filtered out), fall back to listing open, not-in-progress beads:
 
 ```bash
 bd list --status open --json
 ```
 
+If after filtering there are **no ready, not-in-progress beads**, inform the user that there is nothing to start and stop.
+
 ## Step 2 — Let the user choose a bead
 
-- If **multiple beads** are found: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to present the list and ask which one to work on. Include the bead ID, title, and priority in each option label.
-- If **exactly one bead** is found: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to confirm before proceeding.
-- If **no beads** are found: inform the user and stop.
+- If **multiple beads** are available: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to present the list and ask which one to work on. Include the bead ID, title, and priority in each option label.
+- If **exactly one bead** is available: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to confirm before proceeding.
 
-## Step 3 — Fetch full bead details
+## Step 3 — Claim the bead
 
-Using the selected bead ID, run:
-
-```bash
-bd show <bead-id> --long --json        # full fields, metadata, design, acceptance
-bd dep tree <bead-id>                   # dependency tree (blockers and what it blocks)
-bd show <bead-id> --children --json     # any child beads
-```
-
-Analyze all gathered context thoroughly: understand the problem statement, scope, constraints, acceptance criteria, design notes, and any dependencies or prior discussion in notes/comments.
-
-## Step 4 — Claim the bead
-
-Atomically claim the bead so others know it is being worked on:
+Atomically claim the selected bead so others know it is being worked on:
 
 ```bash
 bd update <bead-id> --claim
@@ -70,60 +61,27 @@ bd update <bead-id> --claim
 
 This sets the assignee to you and the status to `in_progress` (idempotent if already claimed by you).
 
-## Step 5 — Produce an implementation plan
+## Step 4 — Launch the worker conversation
 
-Create a structured plan with the following sections:
+Spawn a new conversation that runs the per-issue **"Start work"** prompt against the claimed bead. Pass the prompt **by name** and supply the bead ID as an argument — `mitto_conversation_new` resolves the named prompt and substitutes `${ISSUE_ID}` for you, so there is no need to fetch the prompt text first:
 
-### Goal
-One-paragraph summary of what needs to be built or fixed, and why.
-
-### Approach
-High-level technical approach: which components are affected, what design decisions are involved, and why this approach was chosen.
-
-### Work Items
-A numbered list of concrete, independently executable tasks. Each task must have:
-- **Title**: short action-oriented name (e.g., "Add database migration for new column")
-- **What to do**: a focused description of the work
-- **Inputs / context needed**: what the task needs to know or have access to
-- **Definition of done**: how to verify the task is complete
-
-### Open Questions & Risks
-- Any ambiguities in the bead that need clarification
-- Technical risks or unknowns
-- Dependencies on other beads or systems
-
-## Step 6 — Present the plan and iterate
-
-Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to show the plan summary and ask: "Does this plan look correct? Shall I proceed with spawning work conversations?"
-
-- If the user says **No** or provides feedback: revise the plan and present it again. Repeat until the user explicitly approves.
-- If the user says **Yes**: proceed to Step 7.
-
-## Step 7 — Spawn one Mitto conversation per work item
-
-For each work item in the approved plan:
-
-1. Call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
-   - `title`: the work item title prefixed with the bead ID (e.g., `"bd-1234 · Add database migration"`)
-   - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
-   - `initial_prompt`: a **self-contained** prompt that includes:
-     - The full bead ID, title, and description
-     - The acceptance criteria from the bead
-     - The specific work item title and description
-     - The definition of done for this task
-     - Any relevant context from the bead's design notes or dependencies
-     - Instruction to report back using `mitto_children_tasks_report_mitto` when done
-
-2. Do **not** wait for each conversation to complete before spawning the next — spawn all conversations in parallel.
-
-3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "<bead-id>", timeout_seconds: 600)` to wait for them to report back, then summarise results to the user.
-
-## Step 8 — Close out
-
-Once the work is complete and verified, offer to close the bead:
-
-```bash
-bd close <bead-id> --reason "<short summary of what was delivered>"
+```
+mitto_conversation_new_mitto(
+  self_id: "@mitto:session_id",
+  title: "<bead-id>: <bead title>",
+  beads_issue: "<bead-id>",
+  acp_server: "<chosen server>",
+  prompt_name: "Start work",
+  arguments: { "ISSUE_ID": "<bead-id>" },
+)
 ```
 
-Remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.
+- `title`: the bead ID and title (e.g., `"bd-1234: Add database migration"`).
+- `beads_issue`: the claimed bead ID (links the worker conversation to this bead).
+- `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward beads, and a slower/more capable model for complex beads that require deep reasoning.
+- `prompt_name`: the per-issue **"Start work"** prompt (mutually exclusive with `initial_prompt`).
+- `arguments`: fills the prompt's `${ISSUE_ID}` placeholder with the claimed bead ID.
+
+## Step 5 — Report back
+
+Tell the user that the worker conversation has been launched for the bead (give its title and bead ID), and that they can monitor its progress in the Conversations panel. The worker handles planning, implementation, and logging its own progress/completion comments on the bead — do **not** duplicate that work here.

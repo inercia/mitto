@@ -1,4 +1,5 @@
 ---
+icon: "list"
 name: "Propose a plan"
 menus: prompts
 description: "Create a detailed plan for the current task"

@@ -1,5 +1,6 @@
 ---
-name: "Distribute work among children"
+icon: "layers"
+name: "Distribute among children"
 description: "Break down a complex problem into parallel tasks, coordinate workers, and iterate until solved"
 group: "Work flow"
 menus: prompts, conversation

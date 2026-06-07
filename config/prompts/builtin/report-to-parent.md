@@ -1,4 +1,5 @@
 ---
+icon: "chat-bubble"
 name: "Report to parent"
 description: "Send a status report to the parent conversation"
 group: "Work flow"

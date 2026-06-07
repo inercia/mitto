@@ -1,5 +1,6 @@
 ---
-name: "Beads: cleanup stale issues"
+icon: "beads"
+name: "Cleanup stale issues"
 menus: prompts, beadsList
 description: "Find stale, obsolete, or duplicate beads and close them after confirmation"
 backgroundColor: "#BCAAA4"
@@ -74,17 +75,31 @@ can see your judgement was deliberate.
 If **nothing** should be closed, say so clearly and skip Steps 4–5 — but still give the
 final summary in Step 6.
 
-## Step 4 — Confirm before closing anything
+## Step 4 — Let the user choose closures via a checkbox form
 
-This cleanup is **read-only until you confirm**. Present your single best proposal and
-confirm via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`,
-e.g. "Close these N beads?" with options:
+This cleanup is **read-only until you confirm**. Present **every** recommended-for-closure bead in
+a single `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as a checkbox, **checked by default**,
+so the user can simply uncheck any bead they want to keep open. Put the key facts (bead ID,
+category, title, and a short reason) in each checkbox's label:
 
-- **"Close all proposed beads"**
-- **"Close only some"** (let the user specify which via free text)
-- **"Don't close anything — report only"**
+```html
+<p>Select which beads to close. Unchecked beads stay open.</p>
 
-Honour the user's choice. Never close a bead they did not approve.
+<label><input type="checkbox" name="bd-1" checked /> [Already done] bd-1 · <title> — implemented in abc1234</label>
+<label><input type="checkbox" name="bd-2" checked /> [Duplicate] bd-2 · <title> — overlaps bd-5 (will link, then close)</label>
+<label><input type="checkbox" name="bd-3" checked /> [Obsolete] bd-3 · <title> — feature removed</label>
+```
+
+Use the **bead ID** as each checkbox's `name`. The form's Submit/Cancel buttons are added
+automatically.
+
+Interpreting the result:
+- A bead is **approved for closure** only if its ID key is **present** in the returned values —
+  checked boxes are submitted, unchecked boxes are omitted entirely.
+- If the user **cancels** the form, or submits with **everything unchecked**, close nothing and
+  report that no beads were closed.
+
+Never close a bead the user unchecked.
 
 ## Step 5 — Apply the approved closures
 
@@ -113,5 +128,3 @@ A bullet list of what was **actually closed** (or, if the user declined, what wa
 ### Tracker health now
 A brief snapshot after cleanup: how many beads remain open, how many are ready
 (unblocked), and any follow-ups worth noting (e.g. beads that became unblocked by a closure).
-
-Then remind the user to run `bd dolt push` to push the beads data to the remote when appropriate.

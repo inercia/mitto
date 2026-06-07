@@ -1,4 +1,5 @@
 ---
+icon: "error"
 name: "Fix CI"
 menus: prompts
 description: "Diagnose and fix CI pipeline failures"

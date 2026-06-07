@@ -1,4 +1,5 @@
 ---
+icon: "refresh"
 name: "Iterate implementing"
 menus: prompts
 description: "Continue iterating to implement the feature we have been working on"

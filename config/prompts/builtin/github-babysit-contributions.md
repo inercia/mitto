@@ -1,4 +1,5 @@
 ---
+icon: "globe"
 name: "GitHub: babysit contributions"
 menus: prompts
 description: "Periodically check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs"
