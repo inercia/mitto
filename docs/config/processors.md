@@ -419,6 +419,7 @@ priority: 100                # Execution order, lower = earlier (default: 100)
 input: message   # "message", "conversation", or "none" (default: message)
 output: transform # "transform", "prepend", "append", "discard" (default: transform)
                   # NOTE: transform/prepend/append are forbidden for on:agentResponded and on:agentIdle
+outputFormat: json # "json" (default) or "raw"; command-mode only. "raw" uses trimmed stdout directly as the message/prepend/append text instead of parsing JSON.
 
 # Execution settings
 timeout: 5s       # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
@@ -720,7 +721,9 @@ No stdin is provided (useful for side-effect-only processors).
 
 ## Output Format — Command-Mode (stdout)
 
-All output must be JSON. The format depends on the `output` setting:
+By default (`outputFormat: json`), all output must be JSON. The format depends on the `output` setting.
+
+When `outputFormat: raw` is set, stdout is used verbatim (trimmed) as the message/prepend/append text — no JSON wrapper required. See [`outputFormat: raw`](#outputformat-raw) below.
 
 ### `output: transform` (default)
 
@@ -741,6 +744,29 @@ Add text before/after the message:
 ### `output: discard`
 
 Output is ignored (processor runs for side effects only).
+
+### `outputFormat: raw`
+
+When `outputFormat: raw` is set, stdout is used verbatim (trimmed whitespace removed) as the message,
+prepend, or append text — no JSON wrapper is needed. This is useful for piping plain-text or markdown
+output from commands that don't produce JSON, such as `bd prime --memories-only`.
+
+**Example** — inject `bd prime` memories at the start of a conversation:
+
+```yaml
+name: beads-prime
+command: bd
+args: [prime, --memories-only]
+input: none
+output: prepend
+outputFormat: raw
+when:
+  on: userPrompt
+  match: first
+```
+
+With `outputFormat: raw`, whatever the command prints to stdout is prepended directly to the user's
+message without any JSON parsing. Error output (non-zero exit) is still handled according to `on_error`.
 
 ### Error Output
 

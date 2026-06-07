@@ -237,7 +237,7 @@ Global prompt files use markdown with YAML front-matter:
 name: "Code Review"
 description: "Review code for bugs and improvements"
 backgroundColor: "#E8F5E9"
-icon: "code"
+icon: "search"
 tags: ["review", "quality"]
 enabled: true
 ---
@@ -262,7 +262,7 @@ Provide specific suggestions with code examples where applicable.
 | `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
 | `requires`        | No       | string   | Comma-separated list of capabilities the menu must provide for this prompt to appear. See [below](#requires-capability-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
-| `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
+| `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
@@ -270,6 +270,23 @@ Provide specific suggestions with code examples where applicable.
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.md` →
 "code-review").
+
+### icon (Names)
+
+The optional `icon` field shows an icon next to the prompt in menus. The value is the
+name of one of Mitto's built-in icons (matched case-insensitively). If the name is
+empty or unknown, the prompt falls back to the default lightning/insert icon.
+
+Available names:
+
+`beads`, `settings`, `sliders`, `search`, `edit`, `trash`, `broom`, `save`,
+`magic-wand`, `lightning`, `robot`, `person`, `image`, `folder`, `folder-open`,
+`terminal`, `server`, `globe`, `chat-bubble`, `shield`, `layers`, `list`, `tag`,
+`check`, `question`, `error`, `plus`, `hourglass`, `refresh`, `sync`, `keyboard`,
+`duplicate`, `pin`, `archive`, `periodic`, `queue`, `play`.
+
+The registry is defined in `web/static/components/Icons.js` (`PROMPT_ICONS`); add an
+entry there to expose additional icons by name.
 
 ### Conditional Enablement Overview
 
@@ -390,7 +407,7 @@ Prompts without a `group` are collected under an **"Other"** submenu.
   prompt's `enabledWhen` against the **conversation you right-clicked**. The menu
   is populated on demand for that specific conversation, so context-dependent
   prompts (e.g. `enabledWhen: "session.isChild"` for "Report to parent", or
-  `enabledWhen: "children.exists"` for "Continue work in existing child") appear
+  `enabledWhen: "children.exists"` for "Continue in existing") appear
   only on the conversations where they apply.
 - `@mitto:` [variable substitution](#variable-substitution-in-prompts) is applied
   to the enqueued text in the target conversation's context before it reaches the
@@ -400,7 +417,7 @@ Prompts without a `group` are collected under an **"Other"** submenu.
 
 Prompts whose `menus` list includes `beadsIssues` appear in the **per-issue context
 menu** of the Beads list view — the menu shown when you right-click an issue.
-Alongside common bead actions (e.g. **Delete**), the menu includes a **Prompts**
+Alongside common bead actions (e.g. **Delete**), the menu includes a **New**
 submenu listing every `menus: beadsIssues` prompt.
 
 Selecting one of these prompts starts a new conversation seeded with the prompt
@@ -410,7 +427,7 @@ prompt body should reference it via `${ISSUE_ID}` and load its own context with
 
 ```markdown
 ---
-name: "Beads issue: start work"
+name: "Start work"
 group: "Beads"
 menus: beadsIssues
 requires: parameters

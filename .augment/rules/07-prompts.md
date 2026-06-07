@@ -70,6 +70,7 @@ type WebPrompt struct {
     Description     string       `json:"description,omitempty"`
     Group           string       `json:"group,omitempty"`
     BackgroundColor string       `json:"backgroundColor,omitempty"`
+    Icon            string       `json:"icon,omitempty"`      // name in frontend PROMPT_ICONS registry (Icons.js)
     Source          PromptSource `json:"source,omitempty"`    // "builtin", "file", "settings", "workspace"
     Enabled         *bool        `json:"enabled,omitempty"`   // nil = enabled, false = disabled
     EnabledWhen     string       `json:"-"`                   // CEL expression (server-side filtering only)

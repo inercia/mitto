@@ -84,6 +84,7 @@ The following fields are stored in `workspaces.json` and edited through the UI. 
 | `auxiliary_model_selection` | object | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
 | `restricted_runner` | string | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker` |
 | `auto_approve` | boolean | Auto-approve all agent tool-call permission requests |
+| `is_default` | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this. |
 | `acp_command_override` | string | Custom command line for the ACP server (overrides the server's default command) |
 
 ### Complete `.mittorc` Example

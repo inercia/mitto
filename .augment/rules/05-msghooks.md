@@ -59,6 +59,7 @@ command: ./script.sh
 input: message         # message | conversation | none
 output: prepend        # transform | prepend | append | discard
                        # transform/prepend/append FORBIDDEN for agentResponded/agentIdle
+outputFormat: json     # json | raw — raw uses stdout verbatim (trimmed); command-mode only
 
 # Prompt-mode only:
 prompt: |
@@ -113,6 +114,7 @@ processors:
 | `use-ui-tools`        | text    | `tools.hasPattern("mitto_ui_*")`                                | Remind agent to use Mitto UI tools |
 | `beads-track-tasks`   | text    | `commandExists("bd")`                                           | Remind agent to track tasks in beads |
 | `beads-ready-tasks`   | text    | `commandExists("bd") && dirExists(".beads")`                    | Remind agent to review ready beads tasks |
+| `beads-prime`         | command | `commandExists("bd") && dirExists(".beads")`                    | Inject `bd prime --memories-only` memories at conversation start (output: prepend, outputFormat: raw) |
 | `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")` | Generate initial `.augment/rules/` files |
 | `auggie-update-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")`  | Update rules from conversation insights (agentIdle, cadence: every 6 turns/15k tokens/5m) |
 | `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")` | Generate initial memory files |
@@ -161,4 +163,4 @@ userPrompt` and `cadence` only applies to `on: agentResponded` / `on: agentIdle`
 
 ## Defaults
 
-`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `working_dir=session`, `on_error=skip`.
+`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `outputFormat=json`, `working_dir=session`, `on_error=skip`.

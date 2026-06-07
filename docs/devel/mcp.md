@@ -358,30 +358,53 @@ Returns (embeds `ConversationDetails`):
 
 #### `mitto_conversation_delete`
 
-Permanently delete a child conversation. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
+Permanently delete a conversation. This tool supports two modes:
 
-The child conversation is gracefully stopped (waits for any active response to complete) and then permanently deleted from disk. Deleted conversations cannot be recovered.
+1. **Delete a child conversation** — pass the child's `conversation_id`. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
+2. **Self-destruct** — pass `"self"` or your own conversation ID as `conversation_id` to delete the conversation you are currently running in.
 
-| Parameter         | Type   | Required | Description                      |
-| ----------------- | ------ | -------- | -------------------------------- |
-| `self_id`         | string | Yes      | Parent session ID (your session) |
-| `conversation_id` | string | Yes      | Child conversation ID to delete  |
+The target conversation is gracefully stopped (waits for any active response to complete) and then permanently deleted from disk, along with all of its descendants. Deleted conversations cannot be recovered.
+
+| Parameter         | Type   | Required | Description                                                        |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------ |
+| `self_id`         | string | Yes      | Your session ID (the caller)                                       |
+| `conversation_id` | string | Yes      | Child conversation ID to delete, or `"self"` / your own ID to self-destruct |
 
 Returns:
 
-| Field             | Description                      |
-| ----------------- | -------------------------------- |
-| `success`         | Whether the deletion succeeded   |
-| `conversation_id` | The deleted conversation's ID    |
-| `error`           | Error message if deletion failed |
+| Field             | Description                                            |
+| ----------------- | ------------------------------------------------------ |
+| `success`         | Whether the deletion (or self-destruct request) succeeded |
+| `conversation_id` | The deleted conversation's ID                          |
+| `error`           | Error message if deletion failed                       |
 
-**Security:** Only the parent that created the child can delete it. Attempting to delete a conversation that is not your child returns `"permission denied: can only delete your own child conversations"`.
+**Security:** Only the parent that created a child can delete it. Attempting to delete a conversation that is neither your child nor your own returns `"permission denied: can only delete your own child conversations"`.
+
+**Self-destruct (deferred deletion):** When the agent requests deletion of its **own** conversation, the deletion cannot run synchronously — the agent is mid-turn and its ACP connection is in use, and the parent-only security check would also reject a self-targeting request. Instead, the handler sets an in-memory flag on the calling `BackgroundSession` (`RequestSelfDestruct`) and returns success immediately. Once the current turn finishes (at the end of `BackgroundSession.PromptWithMeta`, after observers are notified), the backend invokes the `OnSelfDestruct` callback, which calls `SessionManager.deleteSessionAndChildren` to close the ACP process(es), remove the conversation and its descendants from disk, and broadcast `session_deleted` to all connected clients.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant MCP as MCP handler
+    participant BS as BackgroundSession
+    participant SM as SessionManager
+
+    Agent->>MCP: mitto_conversation_delete(conversation_id="self")
+    MCP->>BS: RequestSelfDestruct()
+    MCP-->>Agent: success (deferred)
+    Note over Agent: finishes current turn
+    BS->>BS: turn completes (PromptWithMeta)
+    BS->>SM: OnSelfDestruct(sessionID)
+    SM->>SM: deleteSessionAndChildren()
+    Note over SM: close ACP, store.Delete,<br/>broadcast session_deleted
+```
 
 **Example use cases:**
 
 - Clean up child conversations after collecting their results via `mitto_children_tasks_wait`
 - Remove failed children before retrying with new instructions
 - Tidy up the conversation list after a multi-iteration workflow completes
+- A short-lived agent removing its own conversation once its task is complete (self-destruct)
 
 #### `mitto_conversation_update`
 
