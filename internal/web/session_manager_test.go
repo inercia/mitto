@@ -1826,3 +1826,76 @@ func TestSessionManager_DeleteChildSessions(t *testing.T) {
 		t.Error("unrelated-1 should still exist")
 	}
 }
+
+// TestSessionManager_DeleteSessionAndChildren tests that deleteSessionAndChildren
+// (used by the self-destruct path) permanently removes the target session and all
+// of its descendants while leaving unrelated sessions intact.
+func TestSessionManager_DeleteSessionAndChildren(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create the self-destructing session
+	if err := store.Create(session.Metadata{
+		SessionID:  "selfdestruct-1",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Self Destruct",
+	}); err != nil {
+		t.Fatalf("Create selfdestruct session failed: %v", err)
+	}
+
+	// Create a child and a grandchild (descendants that must be removed)
+	if err := store.Create(session.Metadata{
+		SessionID:       "child-1",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Child 1",
+		ParentSessionID: "selfdestruct-1",
+	}); err != nil {
+		t.Fatalf("Create child1 failed: %v", err)
+	}
+	if err := store.Create(session.Metadata{
+		SessionID:       "grandchild-1",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Grandchild 1",
+		ParentSessionID: "child-1",
+	}); err != nil {
+		t.Fatalf("Create grandchild1 failed: %v", err)
+	}
+
+	// Create an unrelated session (should NOT be deleted)
+	if err := store.Create(session.Metadata{
+		SessionID:  "unrelated-1",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Unrelated",
+	}); err != nil {
+		t.Fatalf("Create unrelated failed: %v", err)
+	}
+
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetStore(store)
+
+	sm.deleteSessionAndChildren("selfdestruct-1", "self_destructed")
+
+	// The session and all its descendants should be deleted
+	if store.Exists("selfdestruct-1") {
+		t.Error("selfdestruct-1 should be deleted")
+	}
+	if store.Exists("child-1") {
+		t.Error("child-1 should be deleted")
+	}
+	if store.Exists("grandchild-1") {
+		t.Error("grandchild-1 should be deleted")
+	}
+
+	// Unrelated session should still exist
+	if !store.Exists("unrelated-1") {
+		t.Error("unrelated-1 should still exist")
+	}
+}

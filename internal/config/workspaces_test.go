@@ -315,6 +315,45 @@ func TestSaveWorkspaces(t *testing.T) {
 	}
 }
 
+func TestNormalizeDefaultWorkspaces(t *testing.T) {
+	t.Run("keeps first default and clears later ones in same folder", func(t *testing.T) {
+		ws := []WorkspaceSettings{
+			{ACPServer: "auggie", WorkingDir: "/proj", IsDefault: true},
+			{ACPServer: "claude", WorkingDir: "/proj", IsDefault: true},
+			{ACPServer: "gemini", WorkingDir: "/proj", IsDefault: true},
+		}
+		NormalizeDefaultWorkspaces(ws)
+		if !ws[0].IsDefault {
+			t.Errorf("ws[0].IsDefault = false, want true (first default should be kept)")
+		}
+		if ws[1].IsDefault || ws[2].IsDefault {
+			t.Errorf("later defaults in same folder should be cleared: ws[1]=%v ws[2]=%v", ws[1].IsDefault, ws[2].IsDefault)
+		}
+	})
+
+	t.Run("defaults in different folders are independent", func(t *testing.T) {
+		ws := []WorkspaceSettings{
+			{ACPServer: "auggie", WorkingDir: "/a", IsDefault: true},
+			{ACPServer: "claude", WorkingDir: "/b", IsDefault: true},
+		}
+		NormalizeDefaultWorkspaces(ws)
+		if !ws[0].IsDefault || !ws[1].IsDefault {
+			t.Errorf("defaults in different folders should both be kept: ws[0]=%v ws[1]=%v", ws[0].IsDefault, ws[1].IsDefault)
+		}
+	})
+
+	t.Run("no defaults remain untouched", func(t *testing.T) {
+		ws := []WorkspaceSettings{
+			{ACPServer: "auggie", WorkingDir: "/proj"},
+			{ACPServer: "claude", WorkingDir: "/proj"},
+		}
+		NormalizeDefaultWorkspaces(ws)
+		if ws[0].IsDefault || ws[1].IsDefault {
+			t.Errorf("workspaces without defaults should stay non-default")
+		}
+	})
+}
+
 // TestWorkspaceSettings_RedundantFields_NotSerialized verifies that removed fields
 // (acp_command, acp_cwd, acp_env) are NOT present in the serialized JSON output.
 // These fields were removed in favour of runtime resolution from global ACP server config.

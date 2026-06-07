@@ -36,7 +36,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 type SessionCreateRequest struct {
 	Name       string `json:"name,omitempty"`
 	WorkingDir string `json:"working_dir,omitempty"`
-	ACPServer  string `json:"acp_server,omitempty"` // Optional: specify ACP server for the session
+	ACPServer  string `json:"acp_server,omitempty"`  // Optional: specify ACP server for the session
+	BeadsIssue string `json:"beads_issue,omitempty"` // Optional: link conversation to a beads issue ID at creation
 }
 
 // handleCreateSession handles POST /api/sessions
@@ -58,16 +59,27 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	workspaces := s.sessionManager.GetWorkspaces()
 
 	if req.WorkingDir != "" {
-		// User specified a working directory - find matching workspace
-		// If acp_server is also specified, match both (for duplicate workspaces with same dir)
+		// User specified a working directory - find matching workspace.
+		// If acp_server is also specified, match both (for duplicate workspaces with
+		// same dir). If only the directory is known and multiple workspaces share it,
+		// prefer the one marked IsDefault so folder-only launches (e.g. from the beads
+		// menu) are deterministic.
 		for i := range workspaces {
 			if workspaces[i].WorkingDir == req.WorkingDir {
 				// If ACP server is specified, only match if it also matches
 				if req.ACPServer != "" && workspaces[i].ACPServer != req.ACPServer {
 					continue
 				}
-				workspace = &workspaces[i]
-				break
+				if req.ACPServer == "" && workspaces[i].IsDefault {
+					workspace = &workspaces[i]
+					break
+				}
+				if workspace == nil {
+					workspace = &workspaces[i]
+					if req.ACPServer != "" {
+						break
+					}
+				}
 			}
 		}
 		// If not found in workspaces but working dir provided, create ad-hoc workspace
@@ -143,6 +155,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		s.negativeSessionCache.Remove(bs.GetSessionID())
 	}
 
+	// Persist the linked beads issue (if provided) on the freshly created session.
+	if req.BeadsIssue != "" {
+		if store := s.Store(); store != nil {
+			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
+				meta.BeadsIssue = req.BeadsIssue
+			}); err != nil && s.logger != nil {
+				s.logger.Warn("Failed to set beads_issue on new session", "error", err, "session_id", bs.GetSessionID())
+			}
+		}
+	}
+
 	// Determine the ACP server name for the response
 	acpServerName := s.config.ACPServer
 	if workspace != nil && workspace.ACPServer != "" {
@@ -157,6 +180,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"acp_server":     acpServerName,
 		"working_dir":    req.WorkingDir,
 		"status":         "active",
+		"beads_issue":    req.BeadsIssue,
 	}
 	s.eventsManager.Broadcast(WSMsgTypeSessionCreated, sessionData)
 

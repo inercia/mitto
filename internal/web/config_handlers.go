@@ -281,6 +281,12 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce a single default workspace per folder. The UI already clears
+	// is_default on sibling workspaces when one is set, but normalize here as a
+	// safety net so direct API callers (or pre-existing data) cannot persist
+	// multiple defaults for the same folder.
+	configPkg.NormalizeDefaultWorkspaces(req.Workspaces)
+
 	// Validate restricted_runner field for all workspaces and check platform support
 	for i, ws := range req.Workspaces {
 		tempWs := configPkg.WorkspaceSettings{RestrictedRunner: ws.RestrictedRunner}

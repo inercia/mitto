@@ -323,19 +323,26 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 	return result
 }
 
-// GetWorkspace returns the first workspace matching the given directory.
+// GetWorkspace returns a workspace matching the given directory.
 // If multiple workspaces share the same directory (with different ACP servers),
-// this returns the first one found. Use GetWorkspaceByDirAndACP for a specific match.
+// the one marked IsDefault is preferred; otherwise the first one found is
+// returned. Use GetWorkspaceByDirAndACP for a specific ACP server match.
 func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	var first *config.WorkspaceSettings
 	for _, ws := range sm.workspaces {
 		if ws.WorkingDir == workingDir {
-			return ws
+			if ws.IsDefault {
+				return ws
+			}
+			if first == nil {
+				first = ws
+			}
 		}
 	}
-	return nil
+	return first
 }
 
 // GetWorkspaceByDirAndACP returns the workspace matching both directory and ACP server.
@@ -349,16 +356,24 @@ func (sm *SessionManager) GetWorkspaceByDirAndACP(workingDir, acpServer string) 
 }
 
 // getWorkspaceByDirAndACPLocked returns the workspace matching both directory and ACP server.
+// When acpServer is empty and multiple workspaces share the directory, the one marked
+// IsDefault is preferred; otherwise the first match wins.
 // Caller must hold sm.mu.
 func (sm *SessionManager) getWorkspaceByDirAndACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
+	var first *config.WorkspaceSettings
 	for _, ws := range sm.workspaces {
 		if ws.WorkingDir == workingDir {
 			if acpServer == "" || ws.ACPServer == acpServer {
-				return ws
+				if acpServer == "" && ws.IsDefault {
+					return ws
+				}
+				if first == nil {
+					first = ws
+				}
 			}
 		}
 	}
-	return nil
+	return first
 }
 
 // resolveWorkspaceForACPLocked returns the workspace to use for a given directory/server pair.
@@ -1334,6 +1349,56 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 	}
 }
 
+// deleteSessionAndChildren permanently deletes a session and all of its
+// descendants: it closes their ACP processes, removes the data from disk
+// (store.Delete cascade-deletes auto-children), and broadcasts the deletions
+// to all connected clients. Used by the self-destruct path when an agent
+// requests deletion of its own conversation.
+func (sm *SessionManager) deleteSessionAndChildren(sessionID, reason string) {
+	sm.mu.RLock()
+	store := sm.store
+	sm.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+
+	// Find all descendants BEFORE deletion so we can close their ACP processes
+	// and broadcast their removal (store.Delete cascade-deletes them on disk).
+	descendantIDs, err := store.FindAllChildrenRecursive(sessionID)
+	if err != nil && sm.logger != nil {
+		sm.logger.Warn("Failed to find descendants for self-destruct deletion",
+			"session_id", sessionID,
+			"error", err)
+	}
+
+	// Close ACP processes for the session and all descendants.
+	sm.CloseSession(sessionID, reason)
+	for _, descendantID := range descendantIDs {
+		sm.CloseSession(descendantID, "ancestor_self_destructed")
+	}
+
+	if err := store.Delete(sessionID); err != nil {
+		if sm.logger != nil {
+			sm.logger.Error("Failed to delete self-destructed session",
+				"session_id", sessionID,
+				"error", err)
+		}
+		return
+	}
+
+	sm.BroadcastSessionDeleted(sessionID)
+	for _, descendantID := range descendantIDs {
+		sm.BroadcastSessionDeleted(descendantID)
+	}
+
+	if sm.logger != nil {
+		sm.logger.Info("Self-destructed conversation deleted",
+			"session_id", sessionID,
+			"descendants_deleted", len(descendantIDs))
+	}
+}
+
 // SetGlobalMCPServer sets the global MCP server for session registration.
 // Sessions will register with this server to enable session-scoped MCP tools.
 func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {
@@ -1688,6 +1753,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 				return childBS.IsPrompting()
 			}
 			return false
+		},
+		OnSelfDestruct: func(sessionID string) {
+			sm.deleteSessionAndChildren(sessionID, "self_destructed")
 		},
 	})
 	if err != nil {
@@ -2267,6 +2335,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				return childBS.IsPrompting()
 			}
 			return false
+		},
+		OnSelfDestruct: func(sessionID string) {
+			sm.deleteSessionAndChildren(sessionID, "self_destructed")
 		},
 	})
 	// Release the startup semaphore now that the expensive ACP work is done.

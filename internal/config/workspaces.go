@@ -97,6 +97,14 @@ type WorkspaceSettings struct {
 	// workspace, then the model is switched to the best match from available models.
 	// When nil or Pattern is empty, the ACP server's default model is used.
 	AuxiliaryModelSelection *ACPServerConstraint `json:"auxiliary_model_selection,omitempty" yaml:"auxiliary_model_selection,omitempty"`
+	// IsDefault marks this workspace as the default for its working directory.
+	// When multiple workspaces share the same folder (e.g. different ACP servers
+	// or model variants), the one with IsDefault set is preferred when a workspace
+	// must be resolved from the folder alone (no ACP server specified). This is a
+	// per-workspace field and is intentionally NOT hoisted to folders.json, since
+	// it distinguishes between workspaces in the same folder. At most one workspace
+	// per folder should set this; if several do, the first match wins.
+	IsDefault bool `json:"is_default,omitempty" yaml:"is_default,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.
@@ -133,6 +141,24 @@ func (w *WorkspaceSettings) GetRestrictedRunner() string {
 // or false if explicitly disabled.
 func (w *WorkspaceSettings) GetAutoApprove() *bool {
 	return w.AutoApprove
+}
+
+// NormalizeDefaultWorkspaces enforces the invariant that at most one workspace
+// per working directory has IsDefault set. When several workspaces sharing the
+// same folder are marked default, the first one (in slice order) is kept and the
+// IsDefault flag is cleared on the rest. The slice is modified in place.
+func NormalizeDefaultWorkspaces(workspaces []WorkspaceSettings) {
+	seen := make(map[string]bool)
+	for i := range workspaces {
+		if !workspaces[i].IsDefault {
+			continue
+		}
+		if seen[workspaces[i].WorkingDir] {
+			workspaces[i].IsDefault = false
+			continue
+		}
+		seen[workspaces[i].WorkingDir] = true
+	}
 }
 
 // ValidateRestrictedRunner validates the restricted_runner field.
