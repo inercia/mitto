@@ -89,7 +89,7 @@ testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
   }
 
   testWithCleanup(
-    "shows the prompt group submenu after Archive/Properties/Delete",
+    "shows the prompt group submenu before Properties/Archive/Delete",
     async ({ page, timeouts }) => {
       await openSessionMenu(page, timeouts);
 
@@ -102,18 +102,18 @@ testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
       await expect(menuButtons.filter({ hasText: "Delete" })).toBeVisible();
 
       // The "Workflow" group submenu (from the menus:conversation prompt) appears
-      // after the standard actions. It may take a moment to show because the
+      // before the standard actions. It may take a moment to show because the
       // prompt list is fetched asynchronously once the session becomes active;
       // toBeVisible retries until the menu re-renders with the loaded prompts.
       const groupItem = menuButtons.filter({ hasText: PROMPT_GROUP });
       await expect(groupItem).toBeVisible({ timeout: timeouts.appReady });
 
-      // The group submenu must come after Properties and Delete.
+      // The group submenu must come before Properties and Delete.
       const labels = await menuButtons.allTextContents();
       const deleteIdx = labels.findIndex((t) => t.includes("Delete"));
       const groupIdx = labels.findIndex((t) => t.includes(PROMPT_GROUP));
-      expect(deleteIdx).toBeGreaterThanOrEqual(0);
-      expect(groupIdx).toBeGreaterThan(deleteIdx);
+      expect(groupIdx).toBeGreaterThanOrEqual(0);
+      expect(deleteIdx).toBeGreaterThan(groupIdx);
 
       // The prompt itself lives in a submenu that is not rendered until hover.
       const promptItem = menuButtons.filter({ hasText: PROMPT_NAME });
