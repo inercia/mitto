@@ -457,6 +457,35 @@ func TestHandleBeadsStatus_UnknownWorkspace(t *testing.T) {
 	}
 }
 
+func TestHandleBeadsStatus_DeferActionAccepted(t *testing.T) {
+	// "defer" is a valid action — the request reaches bd execution, so the
+	// response is 200 (success or JSON error body), never a 4xx for the action.
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/status",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","action":"defer"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsStatus(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleBeadsStatus_UndeferActionAccepted(t *testing.T) {
+	// "undefer" is a valid action — same 200 expectation as defer above.
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/status",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","action":"undefer"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsStatus(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
 // --- handleBeadsUpdate -------------------------------------------------------
 
 func TestHandleBeadsUpdate_MethodNotAllowed(t *testing.T) {
@@ -583,6 +612,67 @@ func TestHandleBeadsUpdate_TitleOnlyAllowed(t *testing.T) {
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","title":"New title"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleBeadsUpdate_PriorityOnlyAllowed(t *testing.T) {
+	// A priority with no title or description is valid — including 0 ("Critical"),
+	// which the *int field distinguishes from absent. The request reaches bd
+	// execution, so the response is 200 (success or JSON error body).
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","priority":0}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleBeadsUpdate_PriorityOutOfRangeRejected(t *testing.T) {
+	// A priority outside the 0-4 range is rejected before reaching bd execution.
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","priority":7}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleBeadsUpdate_AssigneeOnlyAllowed(t *testing.T) {
+	// An assignee with no other field is valid — the request reaches bd
+	// execution, so the response is 200 (success or JSON error body).
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","assignee":"alice"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleBeadsUpdate_EmptyAssigneeAllowed(t *testing.T) {
+	// An empty (but present) assignee is valid — it clears the field. The *string
+	// field distinguishes it from absent, so the request reaches bd execution and
+	// the response is 200 (success or JSON error body).
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","assignee":""}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

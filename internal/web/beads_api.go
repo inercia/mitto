@@ -59,7 +59,8 @@ func (s *Server) handleBeadsList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBeadsShow handles GET /api/beads/show?working_dir=...&id=...
-// Runs "bd show <id> --json --include-comments --children" in the workspace directory.
+// Runs "bd show <id> --json --include-comments" in the workspace directory,
+// returning the full issue including its comments and dependencies.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsShow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -88,7 +89,7 @@ func (s *Server) handleBeadsShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, stderr, err := runBD(workingDir, "show", id, "--json", "--include-comments", "--children")
+	out, stderr, err := runBD(workingDir, "show", id, "--json", "--include-comments")
 	if err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
 		return
@@ -307,7 +308,7 @@ func (s *Server) handleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // beadsStatusRequest is the JSON body for POST /api/beads/status.
-// Action must be "close" or "reopen".
+// Action must be "close", "reopen", "defer" or "undefer".
 type beadsStatusRequest struct {
 	WorkingDir string `json:"working_dir"`
 	ID         string `json:"id"`
@@ -315,7 +316,7 @@ type beadsStatusRequest struct {
 }
 
 // handleBeadsStatus handles POST /api/beads/status.
-// Runs "bd close <id>" or "bd reopen <id>" in the workspace directory.
+// Runs "bd close|reopen|defer|undefer <id>" in the workspace directory.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -348,8 +349,12 @@ func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 		verb = "close"
 	case "reopen":
 		verb = "reopen"
+	case "defer":
+		verb = "defer"
+	case "undefer":
+		verb = "undefer"
 	default:
-		http.Error(w, "action must be 'close' or 'reopen'", http.StatusBadRequest)
+		http.Error(w, "action must be 'close', 'reopen', 'defer' or 'undefer'", http.StatusBadRequest)
 		return
 	}
 
@@ -358,7 +363,7 @@ func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// "bd close"/"bd reopen" emit plain text (not JSON), so use the raw runner.
+	// These status verbs emit plain text (not JSON), so use the raw runner.
 	if _, stderr, err := runBDRaw(req.WorkingDir, verb, req.ID); err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
 		return
@@ -368,21 +373,25 @@ func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // beadsUpdateRequest is the JSON body for POST /api/beads/update.
-// Description and Title are pointers so an omitted field (nil) is distinguishable
-// from an intentional empty string (an empty description clears the field; an
-// empty title is rejected).
+// Description, Title, Priority and Assignee are pointers so an omitted field
+// (nil) is distinguishable from an intentional value (an empty description or
+// assignee clears the field; an empty title is rejected; priority 0 is a valid
+// "Critical" value).
 type beadsUpdateRequest struct {
 	WorkingDir  string  `json:"working_dir"`
 	ID          string  `json:"id"`
 	Description *string `json:"description,omitempty"`
 	Title       *string `json:"title,omitempty"`
+	Priority    *int    `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
+	Assignee    *string `json:"assignee,omitempty"` // pointer so an empty string (clear assignee) is distinguishable from absent
 }
 
 // handleBeadsUpdate handles POST /api/beads/update.
-// Runs "bd update <id> [--title <title>] [-d <description>]" in the workspace
-// directory. At least one of title or description must be supplied. When the
-// description is an empty string, the --allow-empty-description flag is added so
-// the description can be cleared; an empty title is rejected.
+// Runs "bd update <id> [--title <title>] [-d <description>] [--priority N] [-a <assignee>]"
+// in the workspace directory. At least one of title, description, priority or
+// assignee must be supplied. When the description is an empty string, the
+// --allow-empty-description flag is added so the description can be cleared; an
+// empty title is rejected; an empty assignee clears the assignee.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -408,12 +417,16 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	if req.Description == nil && req.Title == nil {
-		http.Error(w, "title or description is required", http.StatusBadRequest)
+	if req.Description == nil && req.Title == nil && req.Priority == nil && req.Assignee == nil {
+		http.Error(w, "title, description, priority or assignee is required", http.StatusBadRequest)
 		return
 	}
 	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
 		http.Error(w, "title must not be empty", http.StatusBadRequest)
+		return
+	}
+	if req.Priority != nil && (*req.Priority < 0 || *req.Priority > 4) {
+		http.Error(w, "priority must be between 0 and 4", http.StatusBadRequest)
 		return
 	}
 
@@ -434,6 +447,12 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		if *req.Description == "" {
 			args = append(args, "--allow-empty-description")
 		}
+	}
+	if req.Priority != nil {
+		args = append(args, "--priority", strconv.Itoa(*req.Priority))
+	}
+	if req.Assignee != nil {
+		args = append(args, "-a", *req.Assignee)
 	}
 	if _, stderr, err := runBDRaw(req.WorkingDir, args...); err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
