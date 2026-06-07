@@ -26,7 +26,7 @@ import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon } from "./Icons.js";
+import { GripIcon, getPromptIcon } from "./Icons.js";
 
 /**
  * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
@@ -2895,14 +2895,20 @@ ${activeUIPrompt.text || ""}</textarea
                                   style=${selectedStyle}
                                   ref=${isSelected ? selectedPromptItemRef : null}
                                 >
-                                  ${shiftHeld
-                                    ? html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  ${(() => {
+                                    if (shiftHeld) {
+                                      return html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                      </svg>`
-                                    : html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      </svg>`;
+                                    }
+                                    const PromptIcon = getPromptIcon(prompt.icon);
+                                    if (PromptIcon) {
+                                      return html`<${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-60" />`;
+                                    }
+                                    return html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                      </svg>`
-                                  }
+                                      </svg>`;
+                                  })()}
                                   <span class="truncate flex-1">${prompt.name}</span>
                                   <span
                                     class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(

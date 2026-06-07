@@ -116,6 +116,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
+  const [editIsDefault, setEditIsDefault] = useState(false);
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
   const [editAutoChildren, setEditAutoChildren] = useState([]);
   const [effectiveConfig, setEffectiveConfig] = useState(null);
@@ -305,6 +306,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
     setEditAutoApprove(selectedWorkspace.auto_approve === true);
+    setEditIsDefault(selectedWorkspace.is_default === true);
     setEffectiveConfig(null);
     setMcpTools(null);
     setMcpToolsError("");
@@ -658,6 +660,22 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
     });
   }, [mcpTools, handleMcpRemove]);
 
+  // Toggle the "default workspace for this folder" flag. Enforce a single default
+  // per folder live: when enabling it, immediately clear is_default on every other
+  // workspace that shares this folder so the UI reflects the change before saving.
+  const handleToggleIsDefault = (checked) => {
+    setEditIsDefault(checked);
+    if (checked && selectedWorkspace?.working_dir) {
+      setWorkspaces((prev) =>
+        prev.map((ws) =>
+          ws.working_dir === selectedWorkspace.working_dir && getWorkspaceKey(ws) !== selectedWorkspaceKey
+            ? { ...ws, is_default: undefined }
+            : ws
+        )
+      );
+    }
+  };
+
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
@@ -672,6 +690,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
       restricted_runner: editRunner,
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
       auto_approve: editAutoApprove || undefined,
+      is_default: editIsDefault || undefined,
       acp_command_override: editAcpCommandOverride || undefined,
     };
   };
@@ -701,6 +720,16 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
       // Apply workspace-level edits if a workspace is selected
       if (selectedWorkspaceKey) {
         updated = updated.map(applyWorkspaceEdits);
+
+        // Enforce a single default workspace per folder: if the selected workspace
+        // was marked default, clear is_default on the other workspaces in the same folder.
+        if (editIsDefault && selectedWorkspace?.working_dir) {
+          updated = updated.map((ws) =>
+            ws.working_dir === selectedWorkspace.working_dir && getWorkspaceKey(ws) !== selectedWorkspaceKey
+              ? { ...ws, is_default: undefined }
+              : ws
+          );
+        }
       }
 
       if (updated.length === 0) { setError("At least one workspace is required"); const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed)); return; }
@@ -1329,9 +1358,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                   const isNewFolder = newFolderKey && getWorkspaceKey(firstWs) === newFolderKey;
                   const isIncomplete = isNewFolder && (!firstWs.working_dir || firstWs.working_dir.trim() === "");
                   const updateNewFolderPath = (path) => {
-                    setWorkspaces((prev) => prev.map((ws) =>
-                      getWorkspaceKey(ws) === newFolderKey ? { ...ws, working_dir: path } : ws
-                    ));
+                    setWorkspaces((prev) => {
+                      // If no other workspace already lives in this folder, this is the
+                      // folder's first workspace — mark it as the default for the folder.
+                      const isFirstForFolder = !prev.some(
+                        (ws) => getWorkspaceKey(ws) !== newFolderKey && ws.working_dir === path
+                      );
+                      return prev.map((ws) =>
+                        getWorkspaceKey(ws) === newFolderKey
+                          ? { ...ws, working_dir: path, is_default: isFirstForFolder ? true : undefined }
+                          : ws
+                      );
+                    });
                     // Update the selected folder name to reflect new path
                     const newDisplayName = editName || getBasename(path) || "New Workspace";
                     setSelectedFolder(newDisplayName);
@@ -2043,6 +2081,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                         />
                         <span class="text-sm">Auto-approve tool calls</span>
                       </label>
+                      <label class="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked=${editIsDefault}
+                          onChange=${(e) => handleToggleIsDefault(e.target.checked)}
+                          class="rounded border-mitto-border text-blue-500 focus:ring-blue-500"
+                        />
+                        <span class="text-sm">Default workspace for this folder</span>
+                      </label>
+                      <p class="text-xs text-gray-500 -mt-2 ml-7">
+                        Preferred when this folder has several workspaces and one is launched without a specific agent.
+                      </p>
                     </div>
                   `}
 

@@ -117,6 +117,7 @@ import {
   SunIcon,
   MoonIcon,
   LightningIcon,
+  getPromptIconOrDefault,
   RobotIcon,
   PersonIcon,
   HourglassIcon,
@@ -1376,15 +1377,30 @@ function SessionItem({
     for (const [groupName, prompts] of groups) {
       promptGroupItems.push({
         label: groupName,
-        submenu: prompts.map((p) => ({
-          label: p.name,
-          onClick: () => onSendPromptToConversation(session, p),
-        })),
+        icon: html`<${LightningIcon} />`,
+        submenu: prompts
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((p) => {
+            const PromptIcon = getPromptIconOrDefault(p.icon);
+            return {
+              label: p.name,
+              icon: html`<${PromptIcon} className="w-4 h-4" />`,
+              onClick: () => onSendPromptToConversation(session, p),
+            };
+          }),
       });
     }
   }
 
   const contextMenuItems = [
+    // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
+    ...promptGroupItems,
+    {
+      label: "Properties",
+      icon: html`<${EditIcon} />`,
+      onClick: () => handleRename(),
+    },
     // Hide archive option for child (spawned) sessions
     ...(isSpawned
       ? []
@@ -1403,18 +1419,11 @@ function SessionItem({
           },
         ]),
     {
-      label: "Properties",
-      icon: html`<${EditIcon} />`,
-      onClick: () => handleRename(),
-    },
-    {
       label: "Delete",
       icon: html`<${TrashIcon} />`,
       onClick: () => handleDelete(),
       danger: true,
     },
-    // Prompt group submenus (menus:conversation prompts)
-    ...promptGroupItems,
   ];
 
   // Calculate visual feedback intensity based on swipe progress
@@ -3328,7 +3337,6 @@ function App() {
     loadMoreMessages,
     updateSessionName,
     renameSession,
-    setSessionBeadsIssue,
     pinSession,
     archiveSession,
     removeSession,
@@ -3418,6 +3426,27 @@ function App() {
     mainViewRef.current = mainView;
   }, [mainView]);
   const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
+  // Switch to a conversation AND bring it into focus. Unlike a bare
+  // switchSession (which only changes the active session), this also leaves the
+  // beads view if it is open and closes the mobile side panels, so the target
+  // conversation is actually shown. Use this for notification/toast clicks where
+  // the user expects the conversation to come to the foreground.
+  const focusSession = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+      switchSession(sessionId);
+      setMainView("conversation");
+      setShowSidebar(false);
+      setShowSidePanel(false);
+    },
+    [switchSession],
+  );
+  // When the beads view is opened from a linked conversation (e.g. the
+  // properties panel's "Linked beads issue" link), these drive auto-selecting
+  // that issue once the list loads. The nonce bumps on every open so clicking
+  // the same issue again re-selects it.
+  const [beadsInitialIssueId, setBeadsInitialIssueId] = useState(null);
+  const [beadsSelectNonce, setBeadsSelectNonce] = useState(0);
   const [sidePanelTab, setSidePanelTab] = useState("properties");
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
@@ -3504,6 +3533,24 @@ function App() {
     [activeSessions, storedSessions],
   );
 
+  // Map a beads issue ID → the most recently updated conversation linked to it.
+  // The beads view uses this to render issue IDs as links that open the
+  // associated conversation (if any).
+  const beadsIssueSessionMap = useMemo(() => {
+    const map = {};
+    const updatedAt = {};
+    for (const s of allSessions) {
+      const issue = s.beads_issue;
+      if (!issue) continue;
+      const t = new Date(s.updated_at || 0).getTime();
+      if (!(issue in map) || t >= updatedAt[issue]) {
+        map[issue] = s.session_id;
+        updatedAt[issue] = t;
+      }
+    }
+    return map;
+  }, [allSessions]);
+
   // Predefined prompts: the backend's /api/workspace-prompts endpoint now returns
   // all prompts fully merged (global + server-specific + workspace) and filtered.
   // The frontend just uses them directly — no client-side merge needed.
@@ -3568,12 +3615,14 @@ function App() {
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
-      return all.filter(
-        (p) =>
-          p &&
-          promptMenus(p).includes("beadsIssues") &&
-          menuSatisfiesRequires(p, "beadsIssues"),
-      );
+      return all
+        .filter(
+          (p) =>
+            p &&
+            promptMenus(p).includes("beadsIssues") &&
+            menuSatisfiesRequires(p, "beadsIssues"),
+        )
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } catch (err) {
       console.error("Failed to fetch beads prompts for workspace:", err);
       return [];
@@ -3595,12 +3644,14 @@ function App() {
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
-      return all.filter(
-        (p) =>
-          p &&
-          promptMenus(p).includes("beadsList") &&
-          menuSatisfiesRequires(p, "beadsList"),
-      );
+      return all
+        .filter(
+          (p) =>
+            p &&
+            promptMenus(p).includes("beadsList") &&
+            menuSatisfiesRequires(p, "beadsList"),
+        )
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } catch (err) {
       console.error("Failed to fetch beads list prompts for workspace:", err);
       return [];
@@ -3619,7 +3670,10 @@ function App() {
       const text = prompt?.prompt;
       if (!text || !issue || !beadsWorkingDir) return;
 
-      const ws = workspaces.find((w) => w.working_dir === beadsWorkingDir);
+      // When a folder has several workspaces (e.g. Opus and Sonnet variants),
+      // prefer the one marked is_default so beads launches use the intended agent.
+      const beadsMatches = workspaces.filter((w) => w.working_dir === beadsWorkingDir);
+      const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
       // Name the conversation after the issue (e.g. "mitto-kp7 · Fix login") so
       // it doesn't linger as "New conversation". The prompt is delivered via the
       // queue, and auto-title generation on that path only runs once the queued
@@ -3631,6 +3685,7 @@ function App() {
         workingDir: beadsWorkingDir,
         acpServer: ws?.acp_server,
         name: convName,
+        beadsIssue: issue.id,
       });
       if (!result?.sessionId) {
         showToast({
@@ -3680,7 +3735,9 @@ function App() {
       const text = prompt?.prompt;
       if (!text || !beadsWorkingDir) return;
 
-      const ws = workspaces.find((w) => w.working_dir === beadsWorkingDir);
+      // Prefer the folder's default workspace when several share this directory.
+      const beadsMatches = workspaces.filter((w) => w.working_dir === beadsWorkingDir);
+      const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
       const result = await newSession({
         workingDir: beadsWorkingDir,
         acpServer: ws?.acp_server,
@@ -3763,11 +3820,11 @@ function App() {
         title: backgroundCompletion.sessionName || "Conversation",
         message: "finished",
         duration: 5000,
-        onClick: () => switchSession(backgroundCompletion.sessionId),
+        onClick: () => focusSession(backgroundCompletion.sessionId),
       });
       clearBackgroundCompletion();
     }
-  }, [backgroundCompletion, clearBackgroundCompletion, showToast, switchSession]);
+  }, [backgroundCompletion, clearBackgroundCompletion, showToast, focusSession]);
 
   // Show toast and native notification when a periodic prompt starts
   useEffect(() => {
@@ -3791,11 +3848,11 @@ function App() {
         title: periodicStarted.sessionName || "Periodic Conversation",
         message: "periodic run started",
         duration: 5000,
-        onClick: () => switchSession(periodicStarted.sessionId),
+        onClick: () => focusSession(periodicStarted.sessionId),
       });
       clearPeriodicStarted();
     }
-  }, [periodicStarted, clearPeriodicStarted, showToast, switchSession]);
+  }, [periodicStarted, clearPeriodicStarted, showToast, focusSession]);
 
   // Show toast when a UI prompt arrives in a background session
   useEffect(() => {
@@ -3805,11 +3862,11 @@ function App() {
         style: "warning",
         title: `Question in ${backgroundUIPrompt.sessionName || "conversation"}`,
         duration: 8000,
-        onClick: () => switchSession(backgroundUIPrompt.sessionId),
+        onClick: () => focusSession(backgroundUIPrompt.sessionId),
       });
       clearBackgroundUIPrompt();
     }
-  }, [backgroundUIPrompt, clearBackgroundUIPrompt, showToast, switchSession]);
+  }, [backgroundUIPrompt, clearBackgroundUIPrompt, showToast, focusSession]);
 
   // Show toast and native notification when a background UI prompt times out
   // This fires when a blocking prompt expired while the user was not viewing the session.
@@ -3834,11 +3891,11 @@ function App() {
         title: `Missed prompt in ${sessionName}`,
         message: backgroundUIPromptTimeout.question || "Agent needed your input",
         duration: 10000,
-        onClick: () => switchSession(backgroundUIPromptTimeout.sessionId),
+        onClick: () => focusSession(backgroundUIPromptTimeout.sessionId),
       });
       clearBackgroundUIPromptTimeout();
     }
-  }, [backgroundUIPromptTimeout, clearBackgroundUIPromptTimeout, showToast, switchSession]);
+  }, [backgroundUIPromptTimeout, clearBackgroundUIPromptTimeout, showToast, focusSession]);
 
   // Listen for runner fallback events
   useEffect(() => {
@@ -3896,7 +3953,7 @@ function App() {
           title: "AI Agent Failed to Start",
           message: "Try switching to the session and sending a message to retry.",
           duration: 10000,
-          onClick: data.session_id ? () => switchSession(data.session_id) : null,
+          onClick: data.session_id ? () => focusSession(data.session_id) : null,
         });
       }
     };
@@ -3904,7 +3961,7 @@ function App() {
     return () => {
       window.removeEventListener("mitto:acp_start_failed", handleAcpStartFailed);
     };
-  }, [showToast, switchSession]);
+  }, [showToast, focusSession]);
 
   // Listen for ACP permanent error events (non-retryable errors with guidance)
   useEffect(() => {
@@ -3973,19 +4030,21 @@ function App() {
         );
       }
 
-      // Show in-app toast
+      // Show in-app toast. When the notification carries a session_id, clicking
+      // it brings that conversation into focus (leaving the beads view if open).
       showToast({
         style: data.style || "info",
         title: data.title || "Notification",
         message: data.message || "",
         duration: data.style === "error" ? 8000 : 5000,
+        onClick: data.session_id ? () => focusSession(data.session_id) : null,
       });
     };
     window.addEventListener("mitto:notification", handleNotification);
     return () => {
       window.removeEventListener("mitto:notification", handleNotification);
     };
-  }, [showToast]);
+  }, [showToast, focusSession]);
 
   // Remove native notifications for the active session when switching to it
   // This prevents stale notifications from lingering in Notification Center
@@ -5338,6 +5397,9 @@ function App() {
           !configReadonly
         ) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
+        } else {
+          // Switch away from the beads panel so the new conversation is shown.
+          setMainView("conversation");
         }
       }
       setShowSidebar(false);
@@ -5438,10 +5500,12 @@ function App() {
       navigateToPreviousSession();
     };
 
-    // Switch to Session - called from native notification tap
+    // Switch to Session - called from native notification tap. Bring the
+    // conversation into focus (leaving the beads view if it is open) so the
+    // tapped conversation is actually shown, not just activated underneath.
     window.mittoSwitchToSession = (sessionId) => {
       if (sessionId) {
-        switchSession(sessionId);
+        focusSession(sessionId);
       }
     };
 
@@ -5484,6 +5548,7 @@ function App() {
     navigateToNextSession,
     navigateToPreviousSession,
     switchSession,
+    focusSession,
     forceReconnectActiveSession,
     reconnectAllSessionsStaggered,
     archiveSession,
@@ -5508,6 +5573,9 @@ function App() {
       } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
       } else {
+        // newSession activates the new conversation; switch away from the beads
+        // panel so the new conversation is shown instead of the beads view.
+        setMainView("conversation");
         // Focus the input after creating new session
         setTimeout(() => {
           if (chatInputRef.current) {
@@ -5538,6 +5606,8 @@ function App() {
         } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
         } else {
+          // Switch away from the beads panel so the new conversation is shown.
+          setMainView("conversation");
           setTimeout(() => {
             if (chatInputRef.current) chatInputRef.current.focus();
           }, 100);
@@ -5580,6 +5650,8 @@ function App() {
       } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
       } else {
+        // Switch away from the beads panel so the new conversation is shown.
+        setMainView("conversation");
         // Focus the input after creating new session
         setTimeout(() => {
           if (chatInputRef.current) {
@@ -5607,6 +5679,8 @@ function App() {
     } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
       setSettingsDialog({ isOpen: true, forceOpen: true });
     } else {
+      // Switch away from the beads panel so the new conversation is shown.
+      setMainView("conversation");
       // Focus the input after creating new session
       setTimeout(() => {
         if (chatInputRef.current) {
@@ -6037,6 +6111,22 @@ function App() {
   const handleBeadsOpen = useCallback((workingDir) => {
     setBeadsWorkingDir(workingDir);
     setMainView("beads");
+    // On mobile the beads button lives inside the sidebar overlay; close it so
+    // the beads view is not obscured by the still-open left side panel.
+    setShowSidebar(false);
+  }, []);
+
+  // Open the beads view focused on a specific issue (used by the conversation
+  // properties panel's linked-issue link). The nonce bump lets BeadsView
+  // re-select even when the same issue is opened again.
+  const handleOpenBeadsIssue = useCallback((issueId, workingDir) => {
+    if (!issueId || !workingDir) return;
+    setBeadsWorkingDir(workingDir);
+    setBeadsInitialIssueId(issueId);
+    setBeadsSelectNonce((n) => n + 1);
+    setMainView("beads");
+    setShowSidebar(false);
+    setShowSidePanel(false);
   }, []);
 
   // Handle badge click action - calls API to execute configured command
@@ -6508,6 +6598,10 @@ function App() {
               onRunBeadsListPrompt=${handleRunBeadsListPrompt}
               onShowSidebar=${() => setShowSidebar(true)}
               onOpenConfig=${window.mittoIsExternal === true ? undefined : () => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
+              issueSessionMap=${beadsIssueSessionMap}
+              onOpenConversation=${handleSelectSession}
+              initialSelectedIssueId=${beadsInitialIssueId}
+              initialSelectNonce=${beadsSelectNonce}
             />
           </div>
         `
@@ -6938,7 +7032,7 @@ function App() {
         sessionId=${activeSessionId}
         sessionInfo=${sessionInfo}
         onRename=${renameSession}
-        onSetBeadsIssue=${setSessionBeadsIssue}
+        onOpenBeadsIssue=${handleOpenBeadsIssue}
         isStreaming=${isStreaming}
         configOptions=${configOptions}
         onSetConfigOption=${setConfigOption}

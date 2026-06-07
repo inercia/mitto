@@ -4506,6 +4506,7 @@ export function useWebSocket() {
             name: opts.name || "",
             working_dir: opts.workingDir || "",
             acp_server: opts.acpServer || "",
+            beads_issue: opts.beadsIssue || "",
           }),
         });
 
@@ -5246,36 +5247,6 @@ export function useWebSocket() {
     [updateSessionName],
   );
 
-  // Set the beads issue linked to a session via REST API
-  const setSessionBeadsIssue = useCallback(async (sessionId, beadsIssue) => {
-    const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ beads_issue: beadsIssue }),
-    });
-    if (!response.ok) {
-      throw new Error("Failed to update beads issue");
-    }
-    // Update in-memory session info
-    setSessions((prev) => {
-      const session = prev[sessionId];
-      if (!session) return prev;
-      return {
-        ...prev,
-        [sessionId]: {
-          ...session,
-          info: { ...session.info, beads_issue: beadsIssue },
-        },
-      };
-    });
-    // Update stored sessions
-    setStoredSessions((prev) =>
-      prev.map((s) =>
-        s.session_id === sessionId ? { ...s, beads_issue: beadsIssue } : s,
-      ),
-    );
-  }, []);
-
   // Pin/unpin a session via REST API
   const pinSession = useCallback(async (sessionId, pinned) => {
     try {
@@ -6000,6 +5971,5 @@ export function useWebSocket() {
     activeUIPrompt,
     sendUIPromptAnswer,
     ensureResumed,
-    setSessionBeadsIssue,
   };
 }
