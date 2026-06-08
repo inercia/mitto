@@ -33,60 +33,25 @@ keywords:
 
 All components use Preact/HTM with window globals: `const { useState, useEffect, useRef, html } = window.preact;`
 
-## Component Inventory
+## Key Components
 
-| Component                    | File                              | Purpose                                              |
-| ---------------------------- | --------------------------------- | ---------------------------------------------------- |
-| `ChatInput`                  | `ChatInput.js`                    | Message composition, images, prompts dropdown, queue |
-| `QueueDropdown`              | `QueueDropdown.js`                | Queued messages panel with delete/move actions       |
-| `Message`                    | `Message.js`                      | Renders user/agent/tool/error messages               |
-| `ConfirmDialog`              | `ConfirmDialog.js`                | Reusable modal confirmation dialog; supports `children` prop for extra content below message |
-| `SettingsDialog`             | `SettingsDialog.js`               | Configuration, workspaces, auth                      |
-| `Icons`                      | `Icons.js`                        | SVG icon components                                  |
-| `SessionPanel`               | `SessionPanel.js`                 | Unified right-side overlay with tabs (Changes + Properties + User Data) |
-| `ToastContainer`             | `ToastContainer.js`               | Renders toast stack, color-coded by severity         |
-| `PeriodicPromptSelector`     | `PeriodicPromptSelector.js`       | Dropdown to select a workspace prompt by name for periodic execution |
-| `PeriodicFrequencyPanel`     | `PeriodicFrequencyPanel.js`       | Frequency controls; `disabled=true` shows "run now" icon but controls (input/select/time) stay editable |
-| `ContextMenu`                | `ContextMenu.js`                  | Shared right-click menu with viewport-aware positioning + hover-flyout submenus (used by SessionItem/SessionList and BeadsView) |
-| `SessionItem`                | `app.js`                          | Session list item with swipe, context menu, status   |
+| Component           | Purpose                                       |
+| ------------------- | --------------------------------------------- |
+| `ChatInput`         | Composition, images, prompts, queue           |
+| `QueueDropdown`     | Queued messages panel                         |
+| `Message`           | User/agent/tool/error messages                |
+| `SettingsDialog`    | Settings modal                                |
+| `SessionPanel`      | Unified overlay (Changes + Properties tabs)   |
+| `ContextMenu`       | Right-click menu with viewport-aware position |
+| `SessionItem`       | List item with swipe, menu, status            |
 
 ## ChatInput
 
-### Layout: "Contained Composition" (GitHub-style)
+Single bordered container: textarea + bottom toolbar (left/center/right). **No external button column** — all actions in always-visible bottom bar.
 
-Single bordered container: textarea (no own border) + bottom toolbar with left/center/right sections.
-
-- **Outer container**: provides border and rounded corners — textarea has no own border
-- **Bottom toolbar left**: improve-prompt (magic wand), attach-image, attach-file, save-prompt (native only), clear/delete
-- **Bottom toolbar center**: config selectors (model, mode — only when `configOptions` has `type === "select"`) + context usage percentage
-- **Bottom toolbar right**: queue-toggle (visible when queue non-empty or dropdown open), prompts-toggle, enqueue (visible while streaming), send/stop/lock
-- **No floating action-toolbar** — all actions are in the always-visible bottom bar
-
-> **Anti-pattern**: Do NOT use the old "textarea + external button column" layout. The floating toolbar that appeared on focus has been removed.
-
-### Config Selectors (configOptions)
-
-ChatInput accepts `configOptions` (array) and `onSetConfigOption` (callback) props from `app.js`. The center bar shows **all** `type === "select"` options (e.g. "Mode" and "Model"):
-
-```javascript
-const selectConfigOptions = useMemo(() => {
-  return configOptions?.filter(o => o.type === "select" && o.options?.length > 0) || [];
-}, [configOptions]);
-// Renders one <select> per option; hidden when array is empty
-// Each: <select disabled=${isStreaming} onInput=${e => onSetConfigOption?.(opt.id, e.target.value)}>
-```
-
-- Disabled while streaming; hidden when no select-type config options exist
-- CSS classes: `chat-input-model-selector` (container) / `chat-input-model-select` (each `<select>`)
-- **Anti-pattern**: Do NOT use `find()` to show only the first option — use `filter()` to show all
-
-### Context Usage Percentage (center bar)
-
-**Primary**: `context_usage` from ACP `SessionUsageUpdate` (UNSTABLE — most agents don't send it). **Fallback**: `tokenUsage.input_tokens ÷ getContextWindowSize(modelId)` from `utils/models.js`. Implement both.
-
-### Keyboard Shortcuts
-
-**Shortcuts**: `Enter`=send · `Shift+Enter`=new line · `Cmd/Ctrl+Enter`=queue
+- **Center bar**: config selectors + context usage % (use `filter()` not `find()`)
+- **Context %**: Primary from ACP `context_usage`, fallback: `input_tokens ÷ getContextWindowSize()`
+- **Shortcuts**: `Enter`=send · `Shift+Enter`=newline · `Cmd/Ctrl+Enter`=queue
 
 ## QueueDropdown
 
@@ -94,7 +59,7 @@ Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min:
 
 ## Icons
 
-Naming: `[Name]Icon` (e.g., `TrashIcon`, `GripIcon`, `QueueIcon`, `TagIcon`). Always use `CloseIcon` SVG — never plain text `✕`. Small: `w-4 h-4` (toasts), Large: `w-5 h-5` (dialogs).
+Naming: `[Name]Icon` (e.g., `TrashIcon`, `QueueIcon`). Always `CloseIcon` SVG, never `✕`. Sizes: `w-4 h-4` (toasts), `w-5 h-5` (dialogs).
 
 ## Side Panel Overlay Pattern
 
@@ -117,10 +82,10 @@ showToast({ message: "Pinned", sticky: true });     // no auto-dismiss
 
 Severity durations: info/success=5s, warning/error=10s. Max 5 simultaneous. Render via `<ToastContainer toasts=${toasts} onDismiss=${dismissToast} />`. Use `error` (red) for actual errors only.
 
-## useResizeHandle / useSwipeNavigation / New Hooks
+## useResizeHandle / useSwipeNavigation
 
-- `useResizeHandle`: mouse+touch drag for height. Spread `handleProps` on handle element. ChatInput uses **two instances**: one for QueueDropdown panel height, one for textarea max-height (min: 80px, default: 200px, max: 500px, persisted in `mitto_ui_textarea_max_height` localStorage key).
-- `useSwipeNavigation`: swipe left/right with threshold, edge detection. 500ms window.
+- `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key)
+- `useSwipeNavigation`: swipe left/right with threshold, 500ms window
 
 ## Hooks in Conditionals (Anti-Pattern)
 
@@ -146,3 +111,22 @@ function Message({ isThought, ...props }) {
 ```
 
 Define extracted components in the **same file** — no new files needed.
+
+## Session List Tab Filtering
+
+The SessionList component filters conversations by a tab (Conversations, Periodic, Archived) derived via `getFilterTabForSession(session)`:
+
+```javascript
+function getFilterTabForSession(session) {
+  if (session.archived) return "archived";
+  if (session.periodic_enabled) return "periodic";
+  return "conversations";
+}
+```
+
+**Multi-click behavior**: Clicking a tab button fires `handleFilterTabChange` which:
+1. Sets the active filter tab (updates UI list)
+2. If the session for that tab still exists and belongs to it, restores the last-focused conversation via `getLastActiveSessionIdForTab(tab)`
+3. Only user clicks trigger restoration (programmatic changes skip it)
+
+**Guard against races**: Keep `(prevTab, prevSession)` refs in the recording effect to avoid redundant localStorage updates during streaming.
