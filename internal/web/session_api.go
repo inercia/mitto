@@ -125,8 +125,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// No need to create a new store here.
 
 	// Create the background session with workspace configuration.
-	// Pass r.Context() so that the 30s request-timeout middleware can cancel the
-	// blocking NewSession RPC if the agent is busy, freeing the goroutine immediately.
+	// The session/new ACP RPC is no longer performed here — it is deferred to the
+	// first prompt (see ensureSharedACPSession) so creating a conversation never
+	// blocks on a busy agent. r.Context() is still passed for the create call.
 	bs, err := s.sessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
 	if err != nil {
 		if err == ErrTooManySessions {
