@@ -1,20 +1,24 @@
 package web
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 )
+
+// beadsClient returns the injectable beads Client. When the server was
+// constructed without an explicit client (e.g. in tests via &Server{...}),
+// it falls back to a default client backed by the real bd binary.
+func (s *Server) beadsClient() beads.Client {
+	if s.beads != nil {
+		return s.beads
+	}
+	return beads.NewClient()
+}
 
 // beadsErrorResponse is returned when bd is missing or exits non-zero.
 type beadsErrorResponse struct {
@@ -40,15 +44,14 @@ func (s *Server) handleBeadsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(workingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	out, stderr, err := runBD(workingDir, "list", "--json", "--all", "-n", "0")
+	out, err := s.beadsClient().List(r.Context(), workingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -83,15 +86,14 @@ func (s *Server) handleBeadsShow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(workingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	out, stderr, err := runBD(workingDir, "show", id, "--json", "--include-comments")
+	out, err := s.beadsClient().Show(r.Context(), workingDir, id)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -137,26 +139,19 @@ func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "title is required", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	args := []string{"create", req.Title, "--json"}
-	if req.Type != "" {
-		args = append(args, "--type", req.Type)
-	}
-	if req.Priority != nil {
-		args = append(args, "--priority", strconv.Itoa(*req.Priority))
-	}
-	if req.Description != "" {
-		args = append(args, "-d", req.Description)
-	}
-
-	out, stderr, err := runBD(req.WorkingDir, args...)
+	out, err := s.beadsClient().Create(r.Context(), req.WorkingDir, beads.CreateParams{
+		Title:       req.Title,
+		Type:        req.Type,
+		Priority:    req.Priority,
+		Description: req.Description,
+	})
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -174,11 +169,6 @@ type beadsCleanupRequest struct {
 // beadsCleanupResponse reports how many closed issues were deleted.
 type beadsCleanupResponse struct {
 	Deleted int `json:"deleted"`
-}
-
-// beadsListItem is the minimal shape needed to collect issue IDs from bd list.
-type beadsListItem struct {
-	ID string `json:"id"`
 }
 
 // handleBeadsCleanup handles POST /api/beads/cleanup.
@@ -205,52 +195,18 @@ func (s *Server) handleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	// Collect the IDs of all closed issues.
-	out, stderr, err := runBD(req.WorkingDir, "list", "--json", "--status", "closed", "-n", "0")
+	count, err := s.beadsClient().Cleanup(r.Context(), req.WorkingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
-	var items []beadsListItem
-	if err := json.Unmarshal(out, &items); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: "failed to parse closed issues"})
-		return
-	}
-
-	ids := make([]string, 0, len(items))
-	for _, it := range items {
-		if it.ID != "" {
-			ids = append(ids, it.ID)
-		}
-	}
-
-	// Nothing to clean up — report success with a zero count.
-	if len(ids) == 0 {
-		writeJSONOK(w, beadsCleanupResponse{Deleted: 0})
-		return
-	}
-
-	// "bd delete" emits plain text (not JSON), so use the raw runner. --force is
-	// required to actually delete (and to orphan, rather than block on, any
-	// dependents that live outside the closed set).
-	args := make([]string, 0, len(ids)+2)
-	args = append(args, "delete")
-	args = append(args, ids...)
-	args = append(args, "--force")
-
-	if _, stderr, err := runBDRaw(req.WorkingDir, args...); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
-		return
-	}
-
-	writeJSONOK(w, beadsCleanupResponse{Deleted: len(ids)})
+	writeJSONOK(w, beadsCleanupResponse{Deleted: count})
 }
 
 // beadsActionResponse is a minimal success body for delete/status actions.
@@ -291,16 +247,13 @@ func (s *Server) handleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	// "bd delete" emits plain text (not JSON), so use the raw runner. --force is
-	// required to delete (and to orphan, rather than block on, any dependents).
-	if _, stderr, err := runBDRaw(req.WorkingDir, "delete", req.ID, "--force"); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+	if err := s.beadsClient().Delete(r.Context(), req.WorkingDir, req.ID); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -345,14 +298,8 @@ func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 
 	var verb string
 	switch req.Action {
-	case "close":
-		verb = "close"
-	case "reopen":
-		verb = "reopen"
-	case "defer":
-		verb = "defer"
-	case "undefer":
-		verb = "undefer"
+	case "close", "reopen", "defer", "undefer":
+		verb = req.Action
 	default:
 		http.Error(w, "action must be 'close', 'reopen', 'defer' or 'undefer'", http.StatusBadRequest)
 		return
@@ -363,9 +310,8 @@ func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// These status verbs emit plain text (not JSON), so use the raw runner.
-	if _, stderr, err := runBDRaw(req.WorkingDir, verb, req.ID); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+	if err := s.beadsClient().SetStatus(r.Context(), req.WorkingDir, req.ID, verb); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -429,33 +375,19 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "priority must be between 0 and 4", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	// "bd update" emits plain text (not JSON), so use the raw runner. The title
-	// and description are each passed as discrete argv elements (no shell), so
-	// newlines and special characters are safe.
-	args := []string{"update", req.ID}
-	if req.Title != nil {
-		args = append(args, "--title", *req.Title)
-	}
-	if req.Description != nil {
-		args = append(args, "-d", *req.Description)
-		if *req.Description == "" {
-			args = append(args, "--allow-empty-description")
-		}
-	}
-	if req.Priority != nil {
-		args = append(args, "--priority", strconv.Itoa(*req.Priority))
-	}
-	if req.Assignee != nil {
-		args = append(args, "-a", *req.Assignee)
-	}
-	if _, stderr, err := runBDRaw(req.WorkingDir, args...); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+	if err := s.beadsClient().Update(r.Context(), req.WorkingDir, beads.UpdateParams{
+		ID:          req.ID,
+		Title:       req.Title,
+		Description: req.Description,
+		Priority:    req.Priority,
+		Assignee:    req.Assignee,
+	}); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -472,20 +404,6 @@ type beadsDepRequest struct {
 	DependsOn  string `json:"depends_on"`
 	Type       string `json:"type,omitempty"`
 	Action     string `json:"action"`
-}
-
-// beadsDepTypes is the set of dependency edge kinds accepted by "bd dep add -t".
-var beadsDepTypes = map[string]bool{
-	"blocks":          true,
-	"tracks":          true,
-	"related":         true,
-	"parent-child":    true,
-	"discovered-from": true,
-	"until":           true,
-	"caused-by":       true,
-	"validates":       true,
-	"relates-to":      true,
-	"supersedes":      true,
 }
 
 // isValidBeadsIssueRef reports whether s is a safe issue reference: non-empty,
@@ -540,34 +458,35 @@ func (s *Server) handleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "depends_on is required", http.StatusBadRequest)
 		return
 	}
-
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
-	var args []string
 	switch req.Action {
 	case "add":
 		depType := req.Type
 		if depType == "" {
 			depType = "blocks"
 		}
-		if !beadsDepTypes[depType] {
+		if !beads.IsValidDepType(depType) {
 			http.Error(w, "invalid dependency type", http.StatusBadRequest)
 			return
 		}
-		args = []string{"dep", "add", req.ID, req.DependsOn, "-t", depType}
 	case "remove":
-		args = []string{"dep", "remove", req.ID, req.DependsOn}
+		// no extra validation needed
 	default:
 		http.Error(w, "action must be 'add' or 'remove'", http.StatusBadRequest)
 		return
 	}
 
-	// "bd dep" emits plain text (not JSON), so use the raw runner.
-	if _, stderr, err := runBDRaw(req.WorkingDir, args...); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+	if err := s.beadsClient().Dep(r.Context(), req.WorkingDir, beads.DepParams{
+		ID:        req.ID,
+		DependsOn: req.DependsOn,
+		Type:      req.Type,
+		Action:    req.Action,
+	}); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -579,24 +498,6 @@ type beadsConfigSetRequest struct {
 	WorkingDir string `json:"working_dir"`
 	Key        string `json:"key"`
 	Value      string `json:"value"`
-}
-
-// isValidBeadsConfigKey reports whether key is a safe bd config key: non-empty,
-// not flag-like (no leading '-'), and composed only of letters, digits, '.',
-// '-', and '_'. This prevents flag injection into the bd argument list.
-func isValidBeadsConfigKey(key string) bool {
-	if key == "" || strings.HasPrefix(key, "-") {
-		return false
-	}
-	for _, r := range key {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '.' || r == '-' || r == '_':
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // handleBeadsConfig handles the per-folder beads config store:
@@ -616,24 +517,6 @@ func (s *Server) handleBeadsConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
-}
-
-// beadsConfigShowEntry is one item in the array returned by "bd config show
-// --json". Each entry carries the effective value of a config key plus its
-// provenance (database, config.yaml, env, git, metadata, default).
-type beadsConfigShowEntry struct {
-	Key    string `json:"key"`
-	Value  string `json:"value"`
-	Source string `json:"source"`
-}
-
-// beadsConfigEditableSources is the set of provenance sources whose keys are
-// user-set in this workspace and therefore safe to surface (and edit) in the
-// UI. "default", "git", and "metadata" entries are excluded: they are derived
-// or environment-implied values, not explicit per-folder configuration.
-var beadsConfigEditableSources = map[string]bool{
-	"database":    true,
-	"config.yaml": true,
 }
 
 // handleBeadsConfigGet runs "bd config show --json" in the workspace directory
@@ -659,29 +542,19 @@ func (s *Server) handleBeadsConfigGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, stderr, err := runBD(workingDir, "config", "show", "--json")
+	result, err := s.beadsClient().ConfigShow(r.Context(), workingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
-	}
-
-	var entries []beadsConfigShowEntry
-	if err := json.Unmarshal(out, &entries); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: "bd returned unexpected config format"})
-		return
-	}
-
-	result := make(map[string]string, len(entries))
-	for _, e := range entries {
-		if beadsConfigEditableSources[e.Source] {
-			result[e.Key] = e.Value
-		}
 	}
 
 	writeJSONOK(w, result)
 }
 
-// handleBeadsConfigSet runs "bd config set <key> <value>" in the workspace directory.
+// handleBeadsConfigSet runs "bd config set <key> <value>" in the workspace
+// directory. The folder is auto-initialized first when needed so configuring
+// an integration in a fresh folder "just works" rather than failing with
+// "run 'bd init' first".
 func (s *Server) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) {
 	var req beadsConfigSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -697,7 +570,7 @@ func (s *Server) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
 		return
 	}
-	if !isValidBeadsConfigKey(req.Key) {
+	if !beads.IsValidConfigKey(req.Key) {
 		http.Error(w, "invalid config key", http.StatusBadRequest)
 		return
 	}
@@ -706,16 +579,10 @@ func (s *Server) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// "bd config set" emits plain text (not JSON), so use the raw runner.
-	if _, stderr, err := runBDRaw(req.WorkingDir, "config", "set", req.Key, req.Value); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+	if err := s.beadsClient().ConfigSet(r.Context(), req.WorkingDir, req.Key, req.Value); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
-
-	// Best-effort: keep .beads/config.yaml (which beads uses to store secrets
-	// such as github.token) out of version control. Failures here must not fail
-	// the save — the value was already written successfully.
-	_ = ensureBeadsConfigGitignored(req.WorkingDir)
 
 	writeJSONOK(w, beadsActionResponse{OK: true})
 }
@@ -733,7 +600,7 @@ func (s *Server) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
 		return
 	}
-	if !isValidBeadsConfigKey(key) {
+	if !beads.IsValidConfigKey(key) {
 		http.Error(w, "invalid config key", http.StatusBadRequest)
 		return
 	}
@@ -742,9 +609,8 @@ func (s *Server) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// "bd config unset" emits plain text (not JSON), so use the raw runner.
-	if _, stderr, err := runBDRaw(workingDir, "config", "unset", key); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+	if err := s.beadsClient().ConfigUnset(r.Context(), workingDir, key); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
@@ -760,16 +626,6 @@ type beadsUpstreamRequest struct {
 // beadsUpstreamResponse reports the configured upstream task system for a folder.
 type beadsUpstreamResponse struct {
 	Upstream string `json:"upstream"`
-}
-
-// isValidBeadsUpstream reports whether u is a recognised upstream task system.
-func isValidBeadsUpstream(u string) bool {
-	switch u {
-	case "none", "jira", "github", "gitlab", "linear":
-		return true
-	default:
-		return false
-	}
 }
 
 // handleBeadsUpstream manages the per-folder beads upstream task system stored
@@ -826,7 +682,7 @@ func (s *Server) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
 		return
 	}
-	if !isValidBeadsUpstream(req.Upstream) {
+	if !beads.IsValidUpstream(req.Upstream) {
 		http.Error(w, "upstream must be one of: none, jira, github, gitlab, linear", http.StatusBadRequest)
 		return
 	}
@@ -858,60 +714,6 @@ type beadsSyncRequest struct {
 type beadsSyncResponse struct {
 	OK     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
-}
-
-// beadsSyncArgs maps an (integration, action) pair to the bd argument list.
-// The flag spelling differs per integration: Jira and Linear use --pull/--push
-// while GitHub and GitLab use --pull-only/--push-only. Returns false for unknown
-// integration/action combinations.
-func beadsSyncArgs(integration, action string) ([]string, bool) {
-	switch integration {
-	case "jira":
-		switch action {
-		case "pull":
-			return []string{"jira", "sync", "--pull"}, true
-		case "push":
-			return []string{"jira", "sync", "--push"}, true
-		case "sync":
-			return []string{"jira", "sync"}, true
-		case "status":
-			return []string{"jira", "status"}, true
-		}
-	case "github":
-		switch action {
-		case "pull":
-			return []string{"github", "sync", "--pull-only"}, true
-		case "push":
-			return []string{"github", "sync", "--push-only"}, true
-		case "sync":
-			return []string{"github", "sync"}, true
-		case "status":
-			return []string{"github", "status"}, true
-		}
-	case "gitlab":
-		switch action {
-		case "pull":
-			return []string{"gitlab", "sync", "--pull-only"}, true
-		case "push":
-			return []string{"gitlab", "sync", "--push-only"}, true
-		case "sync":
-			return []string{"gitlab", "sync"}, true
-		case "status":
-			return []string{"gitlab", "status"}, true
-		}
-	case "linear":
-		switch action {
-		case "pull":
-			return []string{"linear", "sync", "--pull"}, true
-		case "push":
-			return []string{"linear", "sync", "--push"}, true
-		case "sync":
-			return []string{"linear", "sync"}, true
-		case "status":
-			return []string{"linear", "status"}, true
-		}
-	}
-	return nil, false
 }
 
 // handleBeadsSync handles POST /api/beads/sync. It runs the configured
@@ -950,21 +752,22 @@ func (s *Server) handleBeadsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args, ok := beadsSyncArgs(upstream, req.Action)
-	if !ok {
+	// Validate the action before invoking bd (keeps HTTP 400 for invalid actions).
+	switch req.Action {
+	case "pull", "push", "sync", "status":
+		// valid
+	default:
 		http.Error(w, "action must be one of: pull, push, sync, status", http.StatusBadRequest)
 		return
 	}
 
-	// Sync can be slow (network round-trips to the upstream), so allow a longer
-	// budget than the default raw runner timeout.
-	out, stderr, err := runBDRawWithTimeout(req.WorkingDir, 120*time.Second, args...)
+	out, err := s.beadsClient().Sync(r.Context(), req.WorkingDir, upstream, req.Action)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: stderr})
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
 
-	writeJSONOK(w, beadsSyncResponse{OK: true, Output: string(out)})
+	writeJSONOK(w, beadsSyncResponse{OK: true, Output: out})
 }
 
 // isKnownWorkspaceDir returns true if workingDir matches any configured workspace.
@@ -978,106 +781,4 @@ func (s *Server) isKnownWorkspaceDir(workingDir string) bool {
 		}
 	}
 	return false
-}
-
-// runBDRaw executes "bd <args>" with a 15-second timeout in dir, without
-// validating that the output is JSON. Use this for commands such as "delete"
-// that emit plain text. Returns stdout bytes, stderr string, and error.
-func runBDRaw(dir string, args ...string) ([]byte, string, error) {
-	return runBDRawWithTimeout(dir, 15*time.Second, args...)
-}
-
-// runBDRawWithTimeout is runBDRaw with a caller-supplied timeout. Used for
-// long-running commands such as upstream sync (pull/push) which can exceed the
-// default 15-second budget.
-func runBDRawWithTimeout(dir string, timeout time.Duration, args ...string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "bd", args...)
-	cmd.Dir = dir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		msg := err.Error()
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			msg = "bd command timed out"
-		} else if errors.As(err, &exitErr) {
-			msg = "bd exited with non-zero status"
-		}
-		return nil, stderr.String(), errors.New(msg)
-	}
-
-	return stdout.Bytes(), "", nil
-}
-
-// runBD executes "bd <args>" like runBDRaw but additionally validates that the
-// output is valid JSON before passing it through.
-// Returns stdout bytes, stderr string, and error.
-func runBD(dir string, args ...string) ([]byte, string, error) {
-	out, stderr, err := runBDRaw(dir, args...)
-	if err != nil {
-		return nil, stderr, err
-	}
-	if !json.Valid(out) {
-		return nil, stderr, errors.New("bd returned invalid JSON")
-	}
-	return out, "", nil
-}
-
-// ensureBeadsConfigGitignored makes a best-effort attempt to keep
-// ".beads/config.yaml" — which beads uses to store secret keys such as
-// github.token — out of version control. It ensures a ".gitignore" file exists
-// at the workspace root (workingDir) and that it contains the
-// ".beads/config.yaml" pattern.
-//
-// Unlike ".git/info/exclude", which is per-clone and never shared, a committed
-// ".gitignore" protects every clone and machine. The pattern is added
-// idempotently, so repeated calls never create duplicate lines.
-//
-// This is best-effort: callers ignore the returned error so a failure here never
-// fails the config write that triggered it.
-func ensureBeadsConfigGitignored(workingDir string) error {
-	gitignorePath := filepath.Join(workingDir, ".gitignore")
-	return appendGitignorePattern(gitignorePath, ".beads/config.yaml")
-}
-
-// appendGitignorePattern appends pattern to the .gitignore-style file at path
-// unless it is already present (idempotent). The parent directory and file are
-// created if needed. A trailing newline is ensured before appending.
-func appendGitignorePattern(path, pattern string) error {
-	existing, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == pattern {
-			return nil // already present
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close() //nolint:errcheck
-
-	var b strings.Builder
-	// Start on a fresh line if the file is non-empty without a trailing newline.
-	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
-		b.WriteString("\n")
-	}
-	b.WriteString("# Added by Mitto: keep beads secrets out of version control\n")
-	b.WriteString(pattern + "\n")
-
-	_, err = f.WriteString(b.String())
-	return err
 }

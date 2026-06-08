@@ -16,6 +16,7 @@ import (
 	builtinConfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/beads"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
@@ -192,6 +193,10 @@ type Server struct {
 	// Negative session cache for circuit-breaking "Session not found" error storms.
 	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
 	negativeSessionCache *NegativeSessionCache
+
+	// beads is the injectable Client for bd operations.
+	// When nil, beadsClient() falls back to beads.NewClient() (real bd binary).
+	beads beads.Client
 
 	// Health monitor for external address reachability checking
 	healthMonitor          *hooks.HealthMonitor
@@ -533,6 +538,7 @@ func NewServer(config Config) (*Server, error) {
 		auxiliaryManager:     auxiliaryManager,
 		negativeSessionCache: NewNegativeSessionCache(),
 		recentStartFails:     make(map[string]time.Time),
+		beads:                beads.NewClient(),
 	}
 
 	// Set events manager in session manager for broadcasting
