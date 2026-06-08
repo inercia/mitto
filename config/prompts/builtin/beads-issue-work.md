@@ -33,6 +33,23 @@ bd show ${ISSUE_ID} --children --json     # any child beads
 
 Analyze all gathered context thoroughly: understand the problem statement, scope, constraints, acceptance criteria, design notes, and any dependencies or prior discussion in notes/comments.
 
+## Step 1b — If the bead is an epic, pick the first child to tackle
+
+Before planning, determine whether the target bead is an **epic** (or otherwise a parent with child beads): check its `type` (`issue_type` is `epic`) and the `bd show ${ISSUE_ID} --children --json` output from Step 1.
+
+- If the bead is **not** an epic and has **no children**: skip this step and continue to Step 2, working `${ISSUE_ID}` directly.
+- If the bead **is** an epic / has children: an epic is a container, not directly implementable. You must first decide which child to start with:
+
+  1. **Map the children's dependencies** — both explicit edges (`blocks` / `depends-on`, visible via `bd dep tree ${ISSUE_ID}`) and implicit ones you infer from the children's descriptions (e.g., a child that establishes schema, infrastructure, or shared scaffolding that its siblings build on). Inspect children as needed with `bd show <child-id> --long --json`.
+  2. **Determine the execution order** that respects those dependencies (a topological order: a child only comes after everything it depends on), and skip any child already `closed`/`done` or `in_progress`.
+  3. **Find the first workable child(ren)** — every child with **no unresolved blockers** that can be started right now. There may be **more than one** when several have no dependencies between them; in that case they can all be tackled in parallel.
+  4. **Propose to the user** which child(ren) to start with, using `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`:
+     - Make the first option your top recommendation among the workable children (highest declared priority, then highest blocking leverage over its siblings), labelled with the child bead ID and title.
+     - If multiple children are independently workable, offer an option to **start them together**, plus an option for each individually.
+     - Set `allow_free_text: true` so the user can override and name a different child.
+     - **Do not** offer any child that is blocked (directly or transitively) by an unfinished child — it is not in a workable state yet.
+  5. **Wait for the user's confirmation.** Once they confirm, treat the chosen child (or children) as the bead(s) to work for the rest of this prompt — substitute the chosen child bead ID for `${ISSUE_ID}` in the steps below (claim, plan, dispatch, and log against the chosen child). If the user picked multiple independent children, plan and dispatch each of them. Leave the epic itself open as the parent.
+
 ## Step 2 — Claim the bead
 
 Atomically claim the bead so others know it is being worked on:
