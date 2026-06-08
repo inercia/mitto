@@ -1697,19 +1697,18 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               // so it reads as a distinct container row. A selected card always
               // wins on background/border.
               //
-              // The hovered (non-selected) row gets a translucent tint of Mitto's
-              // brand red (bg-red-600/40 — the same red used for delete buttons and
-              // swipe-to-delete). It stays translucent on purpose: the priority/
-              // status/type badges that are themselves red or orange (Critical,
-              // High, blocked, bug) are solid opaque pills, so they retain strong
-              // contrast against the tint and never blend into the row.
+              // The hovered (non-selected) row gets Mitto's solid brand red
+              // (bg-red-600 / #dc2626 — the same red used for the active session
+              // item, delete buttons, and swipe-to-delete). The priority/status/
+              // type badges (Critical, High, blocked, bug) are solid opaque pills,
+              // so they keep strong contrast on top of the red and never blend in.
               const childCount = childCountById[issue.id] || 0;
               const isEpic = issue.issue_type === "epic" || childCount > 0;
               const bgTone = isSelected
                 ? "bg-slate-700/30"
                 : isEpic
-                  ? "bg-purple-500/5 hover:bg-red-600/40"
-                  : "bg-slate-700/20 hover:bg-red-600/40";
+                  ? "bg-purple-500/5 hover:bg-red-600"
+                  : "bg-slate-700/20 hover:bg-red-600";
               const borderTone = isSelected
                 ? "border-blue-500/60"
                 : isEpic
