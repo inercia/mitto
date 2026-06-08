@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,10 +106,18 @@ func TestResumeModelConstraint(t *testing.T) {
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Connect once so the ACP session is fully initialized (models advertised).
+	// Connect and send a prompt so the deferred session/new handshake runs and
+	// populates model info (lazy creation defers this to the first prompt).
+	var promptComplete bool
+	var promptMu sync.Mutex
 	callbacks := client.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			t.Logf("Connected: session=%s", sid)
+		},
+		OnPromptComplete: func(_ int) {
+			promptMu.Lock()
+			promptComplete = true
+			promptMu.Unlock()
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -120,6 +129,15 @@ func TestResumeModelConstraint(t *testing.T) {
 	if err := ws.LoadEvents(50, 0, 0); err != nil {
 		t.Fatalf("LoadEvents failed: %v", err)
 	}
+	time.Sleep(100 * time.Millisecond)
+	if err := ws.SendPrompt("hello"); err != nil {
+		t.Fatalf("SendPrompt failed: %v", err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		promptMu.Lock()
+		defer promptMu.Unlock()
+		return promptComplete
+	}, "initial prompt to complete (triggers deferred session/new + model setup)")
 
 	sm := ts.Server.GetSessionManager()
 	bs := sm.GetSession(sess.SessionID)
@@ -128,6 +146,7 @@ func TestResumeModelConstraint(t *testing.T) {
 	}
 
 	// Initial constraint application: model should auto-select to Opus.
+	// applyPendingSharedModes runs during the prompt goroutine above.
 	waitFor(t, 5*time.Second, func() bool {
 		return bs.GetConfigValue("model") == expectedModelID
 	}, "initial model constraint to be applied (Opus)")

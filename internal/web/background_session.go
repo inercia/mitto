@@ -227,6 +227,17 @@ type BackgroundSession struct {
 	// slot on the shared process. nil = legacy per-session process ownership.
 	sharedProcess *SharedACPProcess
 
+	// Lazy ACP session handshake for shared-process sessions.
+	// When pendingShared is true, session/new has not yet been called;
+	// it is deferred to the first prompt to avoid blocking the create path
+	// when the shared agent process is busy.
+	pendingShared           bool
+	pendingSharedMu         sync.Mutex                     // Guards the lazy handshake (idempotency)
+	pendingSharedWorkingDir string                         // Stored for deferred session/new RPC
+	pendingSharedMcpServers []acp.McpServer                // Must be empty array, not nil — ACP validates this
+	pendingSharedModes      *acp.SessionModeState          // Modes from NewSession, applied by applyPendingSharedModes
+	pendingSharedModels     *acp.UnstableSessionModelState // Models from NewSession, applied by applyPendingSharedModes
+
 	// resumeMethod tracks which method was used to establish the ACP session:
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
@@ -491,8 +502,10 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 
 	// Use shared process if available, otherwise start a new per-session process.
+	// For shared sessions, defer the session/new RPC to the first prompt so that
+	// creating a conversation never blocks on a busy agent process.
 	if cfg.SharedProcess != nil {
-		if err := bs.startSharedACPSession(cfg.SharedProcess, cfg.WorkingDir); err != nil {
+		if err := bs.prepareSharedACPSession(cfg.SharedProcess, cfg.WorkingDir); err != nil {
 			cancel()
 			if bs.recorder != nil {
 				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
@@ -2610,58 +2623,39 @@ func (bs *BackgroundSession) creationRPCCtx() (context.Context, context.CancelFu
 	return context.WithTimeout(base, sessionCreationRPCTimeout)
 }
 
-// startSharedACPSession sets up this BackgroundSession to use a session on the
-// given shared ACP process instead of starting its own OS process.
-// The session is registered with the shared process's MultiplexClient so that it
-// receives only its own events.
-func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProcess, workingDir string) error {
+// prepareSharedACPSession sets up this BackgroundSession to use a session on the
+// given shared ACP process WITHOUT issuing the blocking session/new RPC.
+// All eager setup (capabilities, MCP server, acpClient, death-channel bridge) is
+// done here; the session/new RPC is deferred to the first prompt via
+// ensureSharedACPSession so that creating a conversation never blocks on a busy agent.
+func (bs *BackgroundSession) prepareSharedACPSession(sharedProcess *SharedACPProcess, workingDir string) error {
 	bs.sharedProcess = sharedProcess
 
-	// Register with global MCP server and get the (empty) mcpServers list.
 	var caps acp.AgentCapabilities
 	if sharedCaps := sharedProcess.Capabilities(); sharedCaps != nil {
 		caps = *sharedCaps
 	}
 	mcpServers := bs.startSessionMcpServer(bs.store, caps)
-
-	// Create WebClient for stream processing (same callbacks as per-session path).
-	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
-
-	// Create a session on the shared process.
-	// Use the creation context so that the HTTP handler's timeout can cancel the RPC.
-	rpcCtx, rpcCancel := bs.creationRPCCtx()
-	handle, err := sharedProcess.NewSession(rpcCtx, workingDir, mcpServers)
-	rpcCancel()
-	bs.creationCtx = nil // Release reference — only needed for this one RPC.
-	if err != nil {
-		bs.stopSessionMcpServer()
-		bs.acpClient.Close()
-		bs.acpClient = nil
-		bs.sharedProcess = nil
-		return fmt.Errorf("failed to create session on shared process: %w", err)
+	if mcpServers == nil {
+		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
 	}
 
-	// Register this session's WebClient callbacks with the shared MultiplexClient.
-	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
-		OnSessionUpdate:       bs.acpClient.SessionUpdate,
-		OnReadTextFile:        bs.acpClient.ReadTextFile,
-		OnWriteTextFile:       bs.acpClient.WriteTextFile,
-		OnRequestPermission:   bs.acpClient.RequestPermission,
-		OnCreateTerminal:      bs.acpClient.CreateTerminal,
-		OnTerminalOutput:      bs.acpClient.TerminalOutput,
-		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
-		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
-		OnKillTerminal:        bs.acpClient.KillTerminal,
-	})
-
-	bs.acpID = handle.SessionID
+	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
 	bs.agentSupportsImages = caps.PromptCapabilities.Image
-	bs.setSessionModes(handle.Modes)
-	bs.setAgentModels(handle.Models)
+
+	// Store what ensureSharedACPSession will need for the deferred RPC.
+	bs.pendingSharedWorkingDir = workingDir
+	bs.pendingSharedMcpServers = mcpServers
+	bs.pendingShared = true
+
+	// Release the creation context — it is the HTTP request context and will be
+	// cancelled as soon as the create handler returns. The deferred session/new uses
+	// bs.ctx instead (see ensureSharedACPSession). resumeSharedACPSession (called on
+	// crash restart) also uses creationRPCCtx(), so this nil ensures it falls back to
+	// bs.ctx rather than the long-expired HTTP request context.
+	bs.creationCtx = nil
 
 	// Bridge the shared process's death channel to bs.acpProcessDone.
-	// bs.acpProcessDone is a bidirectional chan; sharedProcess.ProcessDone() is receive-only.
-	// We bridge them with a goroutine so all existing select sites work unchanged.
 	done := make(chan struct{})
 	bs.acpProcessDone = done
 	bs.acpProcessDoneOnce = sync.Once{}
@@ -2675,13 +2669,87 @@ func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProce
 	}()
 
 	if bs.logger != nil {
-		bs.logger.Info("Created ACP session on shared process",
+		bs.logger.Info("Prepared shared ACP session (session/new deferred to first prompt)",
 			"session_id", bs.persistedID,
-			"acp_session_id", bs.acpID,
 			"supports_images", bs.agentSupportsImages)
+	}
+	return nil
+}
+
+// ensureSharedACPSession performs the deferred session/new RPC for a shared-process
+// session. It is idempotent and safe under concurrent callers (guarded by pendingSharedMu).
+// Returns nil immediately if the handshake already completed or was handled by a restart.
+// On error, the session is left in a retryable state — the caller should surface a clear
+// error to the user and allow the next prompt to retry.
+func (bs *BackgroundSession) ensureSharedACPSession() error {
+	bs.pendingSharedMu.Lock()
+	defer bs.pendingSharedMu.Unlock()
+
+	// Return if already done or if a restart path already set bs.acpID.
+	if !bs.pendingShared || bs.acpID != "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(bs.ctx, sessionCreationRPCTimeout)
+	handle, err := bs.sharedProcess.NewSession(ctx, bs.pendingSharedWorkingDir, bs.pendingSharedMcpServers)
+	cancel()
+	if err != nil {
+		// Leave pendingShared=true so the next prompt can retry.
+		return fmt.Errorf("failed to create session on shared process: %w", err)
+	}
+
+	bs.sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
+		OnSessionUpdate:       bs.acpClient.SessionUpdate,
+		OnReadTextFile:        bs.acpClient.ReadTextFile,
+		OnWriteTextFile:       bs.acpClient.WriteTextFile,
+		OnRequestPermission:   bs.acpClient.RequestPermission,
+		OnCreateTerminal:      bs.acpClient.CreateTerminal,
+		OnTerminalOutput:      bs.acpClient.TerminalOutput,
+		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
+		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
+		OnKillTerminal:        bs.acpClient.KillTerminal,
+	})
+
+	bs.acpID = handle.SessionID
+
+	// Stash modes and models for applyPendingSharedModes to apply from the prompt
+	// goroutine. We must NOT call setSessionModes / setAgentModels here because
+	// they trigger store writes (via persistConfigValue / applyConfigConstraints)
+	// that may race with concurrent store access from other goroutines (e.g., the
+	// test event-injector using a separate Store instance on the same directory).
+	bs.pendingSharedModes = handle.Modes
+	bs.pendingSharedModels = handle.Models
+
+	bs.pendingShared = false
+
+	if bs.logger != nil {
+		bs.logger.Info("Completed deferred session/new on shared process",
+			"session_id", bs.persistedID,
+			"acp_session_id", bs.acpID)
 		bs.logAgentModels(handle.Models)
 	}
 	return nil
+}
+
+// applyPendingSharedModes applies the modes and models that were stashed by
+// ensureSharedACPSession. Safe to call only from a single goroutine (the prompt
+// goroutine) because setSessionModes and setAgentModels trigger store writes via
+// persistConfigValue / applyConfigConstraints.
+// Calling this more than once is a no-op once the fields are cleared.
+func (bs *BackgroundSession) applyPendingSharedModes() {
+	bs.pendingSharedMu.Lock()
+	modes := bs.pendingSharedModes
+	models := bs.pendingSharedModels
+	bs.pendingSharedModes = nil
+	bs.pendingSharedModels = nil
+	bs.pendingSharedMu.Unlock()
+
+	if modes != nil {
+		bs.setSessionModes(modes)
+	}
+	if models != nil {
+		bs.setAgentModels(models)
+	}
 }
 
 // resumeSharedACPSession sets up this BackgroundSession to use a session on the
@@ -3316,7 +3384,7 @@ retryAfterRestart:
 	// Fetch session metadata for @mitto:variable substitution.
 	// Done unconditionally so substitution works even with no processors configured.
 	// Best-effort: unavailable fields substitute to "".
-	var sessionName, acpServer, parentSessionID, parentSessionName string
+	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
 	var childSessions []processors.ChildSession
 	var advancedSettings map[string]bool
 	if bs.store != nil && bs.persistedID != "" {
@@ -3325,6 +3393,7 @@ retryAfterRestart:
 			acpServer = sessionMeta.ACPServer
 			parentSessionID = sessionMeta.ParentSessionID
 			advancedSettings = sessionMeta.AdvancedSettings
+			beadsIssue = sessionMeta.BeadsIssue
 		}
 		// Resolve parent session name for @mitto:parent variable
 		if parentSessionID != "" {
@@ -3403,6 +3472,7 @@ retryAfterRestart:
 		SessionName:            sessionName,
 		ACPServer:              acpServer,
 		WorkspaceUUID:          bs.workspaceUUID,
+		BeadsIssue:             beadsIssue,
 		AvailableACPServers:    bs.availableACPServers,
 		ChildSessions:          childSessions,
 		MCPToolNames:           mcpToolNames,
@@ -3499,6 +3569,42 @@ retryAfterRestart:
 		// retryPrompt; if the retry also crashes we fall through to the normal
 		// "please resend" message instead of looping forever.
 		autoRetried := false
+
+		// For shared-process sessions, complete the deferred session/new handshake
+		// before the first prompt. This runs after the HTTP create path has already
+		// returned, so a busy agent delays the prompt — not conversation creation.
+		if bs.sharedProcess != nil && bs.pendingShared {
+			if err := bs.ensureSharedACPSession(); err != nil {
+				if bs.logger != nil {
+					bs.logger.Error("Deferred session/new failed",
+						"session_id", bs.persistedID,
+						"error", err)
+				}
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("Could not start the agent session: " + err.Error() + ". Please try again.")
+				})
+				bs.promptMu.Lock()
+				bs.isPrompting = false
+				bs.promptStartTime = time.Time{}
+				bs.promptCond.Broadcast()
+				bs.promptMu.Unlock()
+				if bs.onStreamingStateChanged != nil {
+					bs.onStreamingStateChanged(bs.persistedID, false)
+				}
+				return
+			}
+			// Persist the ACP session ID and apply session modes/models.
+			// Done here (not inside ensureSharedACPSession) so that store writes
+			// happen from a single serialised goroutine, not a background one.
+			if bs.store != nil && bs.persistedID != "" && bs.acpID != "" {
+				if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+					m.ACPSessionID = bs.acpID
+				}); err != nil && bs.logger != nil {
+					bs.logger.Warn("Failed to persist ACP session ID after deferred handshake", "error", err)
+				}
+			}
+			bs.applyPendingSharedModes()
+		}
 
 		// For fresh-context runs, create a new ACP session so the agent has no
 		// in-memory context from prior interactions. Only supported on non-shared
@@ -4589,10 +4695,11 @@ func (bs *BackgroundSession) sendQueuedMessage(queue *session.Queue, msg session
 
 	// Send the queued message
 	meta := PromptMeta{
-		SenderID:  "queue",
-		PromptID:  msg.ID,
-		ImageIDs:  msg.ImageIDs,
-		Arguments: msg.Arguments,
+		SenderID:   "queue",
+		PromptID:   msg.ID,
+		ImageIDs:   msg.ImageIDs,
+		Arguments:  msg.Arguments,
+		PromptName: msg.PromptName,
 	}
 	if err := bs.PromptWithMeta(msg.Message, meta); err != nil {
 		if bs.logger != nil {
