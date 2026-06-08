@@ -10,3 +10,5 @@ export { useToast } from "./useToast.js";
 export { useTheme } from "./useTheme.js";
 export { useBackgroundNotifications } from "./useBackgroundNotifications.js";
 export { useScrollManagement } from "./useScrollManagement.js";
+export { useQueueActions } from "./useQueueActions.js";
+export { useAgentPlan } from "./useAgentPlan.js";
