@@ -12,3 +12,6 @@ export { useBackgroundNotifications } from "./useBackgroundNotifications.js";
 export { useScrollManagement } from "./useScrollManagement.js";
 export { useQueueActions } from "./useQueueActions.js";
 export { useAgentPlan } from "./useAgentPlan.js";
+export { useWorkspacePrompts } from "./useWorkspacePrompts.js";
+export { useBeadsIntegration } from "./useBeadsIntegration.js";
+export { useSessionNavigation } from "./useSessionNavigation.js";

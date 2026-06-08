@@ -78,7 +78,6 @@ import {
 // Import hooks
 import {
   useWebSocket,
-  useSwipeNavigation,
   useSwipeToAction,
   useInfiniteScroll,
   useToast,
@@ -88,6 +87,9 @@ import {
   useScrollManagement,
   useQueueActions,
   useAgentPlan,
+  useWorkspacePrompts,
+  useBeadsIntegration,
+  useSessionNavigation,
 } from "./hooks/index.js";
 
 // Import components
@@ -285,7 +287,6 @@ function App() {
   useEffect(() => {
     mainViewRef.current = mainView;
   }, [mainView]);
-  const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
   // Switch to a conversation AND bring it into focus. Unlike a bare
   // switchSession (which only changes the active session), this also leaves the
   // beads view if it is open and closes the mobile side panels, so the target
@@ -305,8 +306,6 @@ function App() {
   // properties panel's "Linked beads issue" link), these drive auto-selecting
   // that issue once the list loads. The nonce bumps on every open so clicking
   // the same issue again re-selects it.
-  const [beadsInitialIssueId, setBeadsInitialIssueId] = useState(null);
-  const [beadsSelectNonce, setBeadsSelectNonce] = useState(0);
   const [sidePanelTab, setSidePanelTab] = useState("properties");
   // Agent Plan panel (extracted to hooks/useAgentPlan.js): per-session plan
   // entries, mitto:plan_update handling, auto-expand/erase/expire, panel
@@ -349,10 +348,18 @@ function App() {
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
-  const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
-  const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
-  const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
-    useState(null); // Last-Modified header for conditional requests
+  // Workspace prompts: fetch/cache, predefined (dropup) subset, and per-session helpers.
+  // (Extracted to hooks/useWorkspacePrompts.js)
+  const {
+    workspacePrompts,
+    predefinedPrompts,
+    fetchWorkspacePrompts,
+    fetchConversationPromptsForSession,
+  } = useWorkspacePrompts({
+    workingDir: sessionInfo?.working_dir,
+    activeSessionId,
+  });
+
   const [configReadonly, setConfigReadonly] = useState(
     () => window.mittoIsExternal === true, // Start as true for external connections, or when --config flag was used or using RC file
   );
@@ -377,246 +384,28 @@ function App() {
     [activeSessions, storedSessions],
   );
 
-  // Map a beads issue ID → the most recently updated conversation linked to it.
-  // The beads view uses this to render issue IDs as links that open the
-  // associated conversation (if any).
-  const beadsIssueSessionMap = useMemo(() => {
-    const map = {};
-    const updatedAt = {};
-    for (const s of allSessions) {
-      const issue = s.beads_issue;
-      if (!issue) continue;
-      const t = new Date(s.updated_at || 0).getTime();
-      if (!(issue in map) || t >= updatedAt[issue]) {
-        map[issue] = s.session_id;
-        updatedAt[issue] = t;
-      }
-    }
-    return map;
-  }, [allSessions]);
-
-  // Predefined prompts: the backend's /api/workspace-prompts endpoint now returns
-  // all prompts fully merged (global + server-specific + workspace) and filtered.
-  // The frontend just uses them directly — no client-side merge needed.
-  // Only prompts whose `menus` list includes "prompts" (or that omit `menus`
-  // entirely, defaulting to the dropup) appear in the ChatInput "^" dropup.
-  // Prompts that target only other menus (e.g. "conversation") are excluded.
-  const predefinedPrompts = workspacePrompts.filter(
-    (p) => promptMenus(p).includes("prompts") && menuSatisfiesRequires(p, "prompts"),
-  );
-
-  // Fetch the prompts whose `menus` list includes `conversation` for a SPECIFIC
-  // conversation, evaluating each prompt's `enabledWhen` against that
-  // conversation's own context (child status, children, permissions, tools).
-  //
-  // The context menu must reflect the conversation being right-clicked, not the
-  // active session, so we cannot reuse the active-session `workspacePrompts`
-  // list. Instead we query /api/workspace-prompts with the target session_id so
-  // the backend evaluates `enabledWhen` for that conversation, then keep only the
-  // prompts that opt into the conversation menu via `menus`.
-  const fetchConversationPromptsForSession = useCallback(
-    async (session, workingDir) => {
-      const sessionId = session?.session_id;
-      const dir = workingDir || session?.working_dir;
-      if (!sessionId || !dir) return [];
-      try {
-        const res = await authFetch(
-          apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(dir)}&session_id=${encodeURIComponent(sessionId)}`,
-          ),
-        );
-        if (!res.ok) return [];
-        const data = await res.json();
-        const all = data?.prompts || [];
-        return all.filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("conversation") &&
-            menuSatisfiesRequires(p, "conversation"),
-        );
-      } catch (err) {
-        console.error(
-          "Failed to fetch conversation prompts for session:",
-          err,
-        );
-        return [];
-      }
-    },
-    [],
-  );
-
-  // Fetch the prompts whose `menus` list includes `beadsIssues` for a workspace
-  // directory. Used by the per-issue context menu in the Beads list view. There
-  // is no specific conversation here, so `enabledWhen` is evaluated without a
-  // session_id; we only keep the prompts that opt into the beads menu via
-  // `menus`.
-  const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir) => {
-    if (!workingDir) return [];
-    try {
-      const res = await authFetch(
-        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
-      );
-      if (!res.ok) return [];
-      const data = await res.json();
-      const all = data?.prompts || [];
-      return all
-        .filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("beadsIssues") &&
-            menuSatisfiesRequires(p, "beadsIssues"),
-        )
-        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    } catch (err) {
-      console.error("Failed to fetch beads prompts for workspace:", err);
-      return [];
-    }
-  }, []);
-
-  // Fetch the prompts whose `menus` list includes `beadsList` for a workspace
-  // directory. Used by the list-level prompts button in the Beads list view.
-  // These prompts operate on the whole issue list (e.g. cleanup, triage) rather
-  // than a single issue, so they take no parameters. There is no specific
-  // conversation here, so `enabledWhen` is evaluated without a session_id; we
-  // only keep the prompts that opt into the beads-list menu via `menus`.
-  const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
-    if (!workingDir) return [];
-    try {
-      const res = await authFetch(
-        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
-      );
-      if (!res.ok) return [];
-      const data = await res.json();
-      const all = data?.prompts || [];
-      return all
-        .filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("beadsList") &&
-            menuSatisfiesRequires(p, "beadsList"),
-        )
-        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    } catch (err) {
-      console.error("Failed to fetch beads list prompts for workspace:", err);
-      return [];
-    }
-  }, []);
-
-  // Run a beads prompt against a specific issue: create a new conversation in
-  // the beads workspace, then seed it with the prompt text plus a single
-  // `ISSUE_ID` argument. The backend's ${VAR} substitution engine resolves
-  // `${ISSUE_ID}` in the prompt body when the queued message is sent (see the
-  // queue `arguments` support from mitto-t93); the prompt itself loads any
-  // further detail via `bd show ${ISSUE_ID}`. Mirrors handleSendPromptToConversation's
-  // queue delivery (the queue runs the message once the new conversation is idle).
-  const handleRunBeadsPrompt = useCallback(
-    async (prompt, issue) => {
-      const text = prompt?.prompt;
-      if (!text || !issue || !beadsWorkingDir) return;
-
-      // When a folder has several workspaces (e.g. Opus and Sonnet variants),
-      // prefer the one marked is_default so beads launches use the intended agent.
-      const beadsMatches = workspaces.filter((w) => w.working_dir === beadsWorkingDir);
-      const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
-      // Name the conversation after the issue (e.g. "mitto-kp7 · Fix login") so
-      // it doesn't linger as "New conversation". The prompt is delivered via the
-      // queue, and auto-title generation on that path only runs once the queued
-      // turn completes — which is delayed for beads prompts that immediately wait
-      // on user input. Setting an explicit name fixes the title right away and
-      // also suppresses auto-title generation (it only runs when the name is empty).
-      const convName = issue.title ? `${issue.id} · ${issue.title}` : issue.id;
-      const result = await newSession({
-        workingDir: beadsWorkingDir,
-        acpServer: ws?.acp_server,
-        name: convName,
-        beadsIssue: issue.id,
-      });
-      if (!result?.sessionId) {
-        showToast({
-          style: "error",
-          title: result?.error || "Failed to create conversation",
-          duration: 4000,
-        });
-        return;
-      }
-
-      // Seed the new conversation with the prompt text and a single `ISSUE_ID`
-      // argument. The backend substitutes `${ISSUE_ID}` into the prompt body
-      // when the message is sent; the prompt loads any further detail itself
-      // via `bd show ${ISSUE_ID}`.
-      try {
-        await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            arguments: { ISSUE_ID: issue.id },
-          }),
-        });
-      } catch (err) {
-        console.error("Failed to seed beads conversation:", err);
-      }
-
-      // newSession already activates the new conversation; switch the main view
-      // back from the beads panel so the new conversation is shown.
-      setMainView("conversation");
-      showToast({
-        style: "success",
-        title: `Started "${prompt.name}" for ${issue.id}`,
-        duration: 3000,
-      });
-    },
-    [beadsWorkingDir, workspaces, newSession, showToast],
-  );
-
-  // Run a beads-list prompt: create a new conversation in the beads workspace,
-  // seed it with the prompt text alone (these prompts operate on the whole issue
-  // list and take no parameters), then switch to it. Mirrors handleRunBeadsPrompt
-  // minus the per-issue context. The conversation is named after the prompt so it
-  // doesn't linger as "New conversation" (this also suppresses auto-title gen).
-  const handleRunBeadsListPrompt = useCallback(
-    async (prompt) => {
-      const text = prompt?.prompt;
-      if (!text || !beadsWorkingDir) return;
-
-      // Prefer the folder's default workspace when several share this directory.
-      const beadsMatches = workspaces.filter((w) => w.working_dir === beadsWorkingDir);
-      const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
-      const result = await newSession({
-        workingDir: beadsWorkingDir,
-        acpServer: ws?.acp_server,
-        name: prompt.name,
-      });
-      if (!result?.sessionId) {
-        showToast({
-          style: "error",
-          title: result?.error || "Failed to create conversation",
-          duration: 4000,
-        });
-        return;
-      }
-
-      try {
-        await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text }),
-        });
-      } catch (err) {
-        console.error("Failed to seed beads list conversation:", err);
-      }
-
-      // newSession already activates the new conversation; switch the main view
-      // back from the beads panel so the new conversation is shown.
-      setMainView("conversation");
-      showToast({
-        style: "success",
-        title: `Started "${prompt.name}"`,
-        duration: 3000,
-      });
-    },
-    [beadsWorkingDir, workspaces, newSession, showToast],
-  );
+  // Beads integration: view state, issue-session map, prompt helpers, handlers.
+  // (Extracted to hooks/useBeadsIntegration.js)
+  const {
+    beadsWorkingDir,
+    beadsInitialIssueId,
+    beadsSelectNonce,
+    beadsIssueSessionMap,
+    fetchBeadsPromptsForWorkspace,
+    fetchBeadsListPromptsForWorkspace,
+    handleRunBeadsPrompt,
+    handleRunBeadsListPrompt,
+    handleBeadsOpen,
+    handleOpenBeadsIssue,
+  } = useBeadsIntegration({
+    allSessions,
+    workspaces,
+    newSession,
+    showToast,
+    setMainView,
+    setShowSidebar,
+    setShowSidePanel,
+  });
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
@@ -798,282 +587,30 @@ function App() {
     debounceMs: 500, // Prevent rapid-fire loading
   });
 
-  // Conversation cycling mode setting (web UI, default: "all" - cycle through all non-archived)
-  const [conversationCyclingMode, setConversationCyclingMode] = useState(
-    CYCLING_MODE.ALL,
-  );
-
-  // Track expanded groups state for re-computing navigableSessions in "visible_groups" mode
-  // We store the actual groups map in state rather than just a version counter, because
-  // on mobile/WKWebView, localStorage can become stale and isGroupExpanded() might return
-  // incorrect values. By storing the map in React state, we ensure the navigation filtering
-  // always uses the correct, current expanded/collapsed state.
-  const [expandedGroupsForNav, setExpandedGroupsForNav] = useState(() =>
-    getExpandedGroups(),
-  );
-
-  // Track filter tab for navigation (needed for filtering navigable sessions)
-  const [filterTabForNav, setFilterTabForNav] = useState(() => getFilterTab());
-
-  // Track grouping mode for navigation (needed for "visible_groups" cycling mode)
-  // Uses per-tab grouping based on the current filter tab
-  const [groupingModeForNav, setGroupingModeForNav] = useState(() =>
-    getFilterTabGrouping(getFilterTab()),
-  );
-
-  // Helper to get group key for a session (same logic as sidebar grouping)
-  const getSessionGroupKey = useCallback(
-    (session) => {
-      if (groupingModeForNav === "server") {
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        return session.acp_server || storedSession?.acp_server || "Unknown";
-      } else if (
-        groupingModeForNav === "workspace" ||
-        groupingModeForNav === "folder"
-      ) {
-        // workspace and folder modes - group by working_dir|acp_server
-        // In folder mode, this returns the subgroup key (sessions are in subgroups, not folders directly)
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        const workingDir =
-          session.working_dir ||
-          storedSession?.working_dir ||
-          getGlobalWorkingDir(session.session_id) ||
-          "";
-        const acpServer = session.acp_server || storedSession?.acp_server || "";
-        return `${workingDir}|${acpServer}`;
-      }
-      return null; // no grouping
-    },
-    [groupingModeForNav, storedSessions],
-  );
-
-  // Helper to get group label for sorting (same as sidebar)
-  const getSessionGroupLabel = useCallback(
-    (session) => {
-      if (groupingModeForNav === "server") {
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        return session.acp_server || storedSession?.acp_server || "Unknown";
-      } else if (
-        groupingModeForNav === "workspace" ||
-        groupingModeForNav === "folder"
-      ) {
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        const workingDir =
-          session.working_dir ||
-          storedSession?.working_dir ||
-          getGlobalWorkingDir(session.session_id) ||
-          "";
-        // Label is the workspace display name if available, otherwise basename
-        const acpServer = session.acp_server || storedSession?.acp_server || "";
-        const ws = workspaces.find(w => w.working_dir === workingDir && (!acpServer || w.acp_server === acpServer));
-        return ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
-      }
-      return "";
-    },
-    [groupingModeForNav, storedSessions, workspaces],
-  );
-
-  // Sessions available for navigation based on active filter tab
-  // Navigation via keyboard shortcuts and swipe gestures should only cycle within the active tab
-  // In "visible_groups" cycling mode, also skip sessions in collapsed groups
-  // Sessions are ordered to match the visual order in the sidebar:
-  // - When grouped: groups sorted alphabetically, sessions within groups by created_at (newest first)
-  // - When not grouped: sessions sorted by created_at (newest first)
-  const navigableSessions = useMemo(() => {
-    // First filter sessions based on the active filter tab
-    // Also exclude child sessions (those with parent_session_id) — navigation
-    // should only cycle through top-level conversations
-    let tabFilteredSessions;
-    switch (filterTabForNav) {
-      case FILTER_TAB.PERIODIC:
-        tabFilteredSessions = allSessions.filter(
-          (s) => !s.archived && s.periodic_enabled && !s.parent_session_id,
-        );
-        break;
-      case FILTER_TAB.ARCHIVED:
-        tabFilteredSessions = allSessions.filter(
-          (s) => s.archived && !s.parent_session_id,
-        );
-        break;
-      case FILTER_TAB.CONVERSATIONS:
-      default:
-        tabFilteredSessions = allSessions.filter(
-          (s) => !s.archived && !s.periodic_enabled && !s.parent_session_id,
-        );
-        break;
-    }
-
-    // If no grouping mode, sessions are already sorted by created_at from allSessions
-    if (groupingModeForNav === "none") {
-      return tabFilteredSessions;
-    }
-
-    // When grouping is enabled, we need to sort sessions to match the sidebar visual order:
-    // 1. Groups sorted alphabetically by label
-    // 2. Sessions within each group sorted by created_at (newest first)
-    //
-    // We do this by sorting all sessions with a composite sort key:
-    // primary: group label (alphabetical)
-    // secondary: created_at (newest first)
-    const sortedSessions = [...tabFilteredSessions].sort((a, b) => {
-      const labelA = getSessionGroupLabel(a);
-      const labelB = getSessionGroupLabel(b);
-
-      // Primary sort: group label (alphabetical)
-      const labelCompare = labelA.localeCompare(labelB);
-      if (labelCompare !== 0) return labelCompare;
-
-      // Secondary sort: created_at (newest first)
-      return new Date(b.created_at) - new Date(a.created_at);
-    });
-
-    // In "visible_groups" cycling mode, only include sessions that are in expanded groups
-    if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
-      return sortedSessions;
-    }
-
-    // Filter sessions based on their group's expanded state
-    // Use expandedGroupsForNav (React state) instead of calling isGroupExpanded()
-    // which reads from localStorage. This is critical for mobile/WKWebView where
-    // localStorage can become stale or inconsistent.
-    return sortedSessions.filter((session) => {
-      const groupKey = getSessionGroupKey(session);
-      // Check if group is expanded using React state (not localStorage)
-      // Default: archived section is collapsed, all others are expanded
-      if (groupKey in expandedGroupsForNav) {
-        return expandedGroupsForNav[groupKey];
-      }
-      if (groupKey === "__archived__") {
-        return false;
-      }
-      return true;
-    });
-  }, [
+  // Conversation navigation: cycling mode, navigable-sessions memo, keyboard/swipe
+  // navigate handlers, and sidebar-sync event listeners.
+  // (Extracted to hooks/useSessionNavigation.js)
+  const {
+    conversationCyclingMode,
+    setConversationCyclingMode,
+    navigableSessions,
+    navigateToPreviousSession,
+    navigateToNextSession,
+    navigateToSessionAbove,
+    navigateToSessionBelow,
+    navigateToSessionByIndex,
+    openSidebar,
+  } = useSessionNavigation({
     allSessions,
     storedSessions,
-    conversationCyclingMode,
-    groupingModeForNav,
-    filterTabForNav,
-    expandedGroupsForNav,
-    getSessionGroupKey,
-    getSessionGroupLabel,
-  ]);
-
-  // Navigate to previous/next session with animation direction (wraps around for swipe gestures)
-  // Skips archived sessions
-  const navigateToPreviousSession = useCallback(() => {
-    if (navigableSessions.length === 0) return;
-    const currentIndex = navigableSessions.findIndex(
-      (s) => s.session_id === activeSessionId,
-    );
-    // If current session is not in navigableSessions (e.g., in a collapsed group),
-    // jump to the last navigable session
-    const prevIndex =
-      currentIndex === -1
-        ? navigableSessions.length - 1
-        : currentIndex === 0
-          ? navigableSessions.length - 1
-          : currentIndex - 1;
-    setSwipeDirection("right"); // Content slides in from left
-    setSwipeArrow("right"); // Show right arrow (user swiped right)
-    switchSession(navigableSessions[prevIndex].session_id);
-  }, [navigableSessions, activeSessionId, switchSession]);
-
-  const navigateToNextSession = useCallback(() => {
-    if (navigableSessions.length === 0) return;
-    const currentIndex = navigableSessions.findIndex(
-      (s) => s.session_id === activeSessionId,
-    );
-    // If current session is not in navigableSessions (e.g., in a collapsed group),
-    // jump to the first navigable session
-    const nextIndex =
-      currentIndex === -1
-        ? 0
-        : currentIndex === navigableSessions.length - 1
-          ? 0
-          : currentIndex + 1;
-    setSwipeDirection("left"); // Content slides in from right
-    setSwipeArrow("left"); // Show left arrow (user swiped left)
-    switchSession(navigableSessions[nextIndex].session_id);
-  }, [navigableSessions, activeSessionId, switchSession]);
-
-  // Navigate to session above in the list (no wrap-around, for keyboard shortcuts)
-  // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
-  // Skips archived sessions
-  const navigateToSessionAbove = useCallback(() => {
-    if (navigableSessions.length === 0) return;
-    const currentIndex = navigableSessions.findIndex(
-      (s) => s.session_id === activeSessionId,
-    );
-    // If current session is not in navigableSessions (e.g., in a collapsed group),
-    // jump to the last navigable session (conceptually "above" since list goes down)
-    if (currentIndex === -1) {
-      switchSession(navigableSessions[navigableSessions.length - 1].session_id);
-      return;
-    }
-    if (currentIndex === 0) return; // Already at top
-    switchSession(navigableSessions[currentIndex - 1].session_id);
-  }, [navigableSessions, activeSessionId, switchSession]);
-
-  // Navigate to session below in the list (no wrap-around, for keyboard shortcuts)
-  // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
-  // Skips archived sessions
-  const navigateToSessionBelow = useCallback(() => {
-    if (navigableSessions.length === 0) return;
-    const currentIndex = navigableSessions.findIndex(
-      (s) => s.session_id === activeSessionId,
-    );
-    // If current session is not in navigableSessions (e.g., in a collapsed group),
-    // jump to the first navigable session (conceptually "below" since list goes down)
-    if (currentIndex === -1) {
-      switchSession(navigableSessions[0].session_id);
-      return;
-    }
-    if (currentIndex === navigableSessions.length - 1) return; // Already at bottom
-    switchSession(navigableSessions[currentIndex + 1].session_id);
-  }, [navigableSessions, activeSessionId, switchSession]);
-
-  // Open sidebar handler for edge swipe
-  const openSidebar = useCallback(() => {
-    setShowSidebar(true);
-  }, []);
-
-  // Enable swipe navigation on mobile
-  // - Swipe left/right anywhere: switch sessions
-  // - Swipe right from left edge: open sidebar
-  useSwipeNavigation(
+    workspaces,
+    activeSessionId,
+    switchSession,
+    setShowSidebar,
+    setSwipeDirection,
+    setSwipeArrow,
     mainContentRef,
-    navigateToNextSession,
-    navigateToPreviousSession,
-    {
-      threshold: 80, // Require a decent swipe distance
-      maxVertical: 80, // Allow some vertical movement
-      edgeWidth: 40, // Start from edge zone
-      onEdgeSwipeRight: openSidebar, // Swipe right from left edge opens sidebar
-    },
-  );
-
-  // Navigate to session by index (0-based) for keyboard shortcuts
-  // Uses navigableSessions to skip archived conversations
-  const navigateToSessionByIndex = useCallback(
-    (index) => {
-      if (index >= 0 && index < navigableSessions.length) {
-        const targetSession = navigableSessions[index];
-        if (targetSession.session_id !== activeSessionId) {
-          switchSession(targetSession.session_id);
-        }
-      }
-    },
-    [navigableSessions, activeSessionId, switchSession],
-  );
+  });
 
   // Global keyboard shortcuts for Command+1-9 to switch sessions and Command+, for settings
   useEffect(() => {
@@ -1288,138 +825,6 @@ function App() {
       .catch((err) => console.error("Failed to fetch config:", err));
   }, []);
 
-  // Listen for grouping mode, expanded groups, and filter tab changes for navigation
-  useEffect(() => {
-    const handleExpandedGroupsChanged = (e) => {
-      // Update React state with the new expanded groups state
-      // This uses the event detail (groupKey, expanded) to update state directly,
-      // avoiding a read from localStorage which can be stale on mobile/WKWebView
-      setExpandedGroupsForNav((prev) => {
-        const { groupKey, expanded } = e.detail || {};
-        if (groupKey !== undefined) {
-          return { ...prev, [groupKey]: expanded };
-        }
-        // If no detail provided, fall back to reading from localStorage
-        // (this handles the case where the event is dispatched without detail)
-        return getExpandedGroups();
-      });
-    };
-    const handleGroupingModeChanged = (e) => {
-      setGroupingModeForNav(e.detail.mode);
-      // Re-read expanded groups when grouping mode changes
-      setExpandedGroupsForNav(getExpandedGroups());
-    };
-    const handleFilterTabChanged = (e) => {
-      setFilterTabForNav(e.detail.tab);
-      // Also update grouping mode for the new tab
-      const tabGroupingMode = getFilterTabGrouping(e.detail.tab);
-      setGroupingModeForNav(tabGroupingMode);
-    };
-    window.addEventListener(
-      "mitto-expanded-groups-changed",
-      handleExpandedGroupsChanged,
-    );
-    window.addEventListener(
-      "mitto-grouping-mode-changed",
-      handleGroupingModeChanged,
-    );
-    window.addEventListener("mitto-filter-tab-changed", handleFilterTabChanged);
-    return () => {
-      window.removeEventListener(
-        "mitto-expanded-groups-changed",
-        handleExpandedGroupsChanged,
-      );
-      window.removeEventListener(
-        "mitto-grouping-mode-changed",
-        handleGroupingModeChanged,
-      );
-      window.removeEventListener(
-        "mitto-filter-tab-changed",
-        handleFilterTabChanged,
-      );
-    };
-  }, []);
-
-  // Fetch workspace prompts with conditional request support (If-Modified-Since)
-  // This enables efficient periodic refresh without transferring data if unchanged
-  const fetchWorkspacePrompts = useCallback(
-    async (workingDir, forceRefresh = false) => {
-      if (!workingDir) return;
-
-      const headers = {};
-      // Use If-Modified-Since for conditional requests (unless forcing refresh)
-      if (
-        !forceRefresh &&
-        workspacePromptsLastModified &&
-        workingDir === workspacePromptsDir
-      ) {
-        headers["If-Modified-Since"] = workspacePromptsLastModified;
-      }
-
-      try {
-        const sessionParam = activeSessionId
-          ? `&session_id=${encodeURIComponent(activeSessionId)}`
-          : "";
-        const res = await authFetch(
-          apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}${sessionParam}`,
-          ),
-          { headers },
-        );
-
-        // 304 Not Modified - prompts haven't changed
-        if (res.status === 304) {
-          return;
-        }
-
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-
-        const data = await res.json();
-        setWorkspacePrompts(data?.prompts || []);
-        setWorkspacePromptsDir(workingDir);
-
-        // Store Last-Modified header for future conditional requests
-        const lastModified = res.headers.get("Last-Modified");
-        setWorkspacePromptsLastModified(lastModified);
-      } catch (err) {
-        console.error("Failed to fetch workspace prompts:", err);
-        // Only clear prompts on error if this is a new workspace
-        if (workingDir !== workspacePromptsDir) {
-          setWorkspacePrompts([]);
-          setWorkspacePromptsDir(workingDir);
-          setWorkspacePromptsLastModified(null);
-        }
-      }
-    },
-    [workspacePromptsDir, workspacePromptsLastModified, activeSessionId],
-  );
-
-  // Fetch workspace prompts when the active session's working_dir changes
-  useEffect(() => {
-    const workingDir = sessionInfo?.working_dir;
-    if (!workingDir) return;
-
-    // Always fetch if workspace changed
-    if (workingDir !== workspacePromptsDir) {
-      fetchWorkspacePrompts(workingDir, true); // Force refresh for new workspace
-    }
-  }, [sessionInfo?.working_dir, workspacePromptsDir, fetchWorkspacePrompts]);
-
-  // Re-fetch prompts when active session changes (session switch in same workspace)
-  // CEL expressions like session.isChild and parent.exists vary per session,
-  // so the filtered prompt list may differ even for the same workspace files.
-  useEffect(() => {
-    const workingDir = sessionInfo?.working_dir;
-    if (!workingDir || !activeSessionId) return;
-    // Only re-fetch if we already have prompts for this workspace
-    // (initial fetch is handled by the working_dir change effect above)
-    if (workingDir === workspacePromptsDir) {
-      fetchWorkspacePrompts(workingDir, true); // Force to bypass conditional request (304)
-    }
-  }, [activeSessionId]);
-
   // Set current workspace for file URL conversion (used in web browser mode)
   // Use workspace_uuid directly from sessionInfo (sent by backend in 'connected' message)
   // instead of looking it up by working_dir, which fails when multiple workspaces
@@ -1431,56 +836,6 @@ function App() {
       setCurrentWorkspace(workingDir, workspaceUUID);
     }
   }, [sessionInfo?.working_dir, sessionInfo?.workspace_uuid]);
-
-  // Periodic refresh of workspace prompts (every 30 seconds)
-  // Uses conditional requests to avoid unnecessary data transfer
-  useEffect(() => {
-    const workingDir = sessionInfo?.working_dir;
-    if (!workingDir) return;
-
-    const intervalId = setInterval(() => {
-      fetchWorkspacePrompts(workingDir, false); // Conditional request
-    }, 30000); // 30 seconds
-
-    return () => clearInterval(intervalId);
-  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
-
-  // Refresh workspace prompts when app becomes visible (tab switch, phone wake)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && sessionInfo?.working_dir) {
-        // Small delay to avoid racing with other visibility handlers
-        setTimeout(() => {
-          fetchWorkspacePrompts(sessionInfo.working_dir, false);
-        }, 500);
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
-
-  // Refresh prompts when file watcher detects changes (mitto:prompts_changed event)
-  // This event is dispatched by handleGlobalEvent when receiving prompts_changed from WebSocket
-  useEffect(() => {
-    const handlePromptsChanged = (event) => {
-      console.log("[prompts] File watcher detected changes:", event.detail);
-
-      // Refresh workspace prompts (force refresh to skip conditional request)
-      // The backend merges all sources (global + server + workspace), so this is all we need.
-      if (sessionInfo?.working_dir) {
-        fetchWorkspacePrompts(sessionInfo.working_dir, true);
-      }
-    };
-
-    window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
-    return () =>
-      window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
-  }, [
-    sessionInfo?.working_dir,
-    fetchWorkspacePrompts,
-  ]);
 
   // Theme, font-size, and reduced-motion preferences (extracted to hooks/useTheme.js)
   const { theme, toggleTheme, fontSize, toggleFontSize } = useTheme();
@@ -2006,28 +1361,6 @@ function App() {
     setShowSidePanel(false);
     setMainView("conversation");
   };
-
-  // Handle Beads button — switch main view to the beads panel for the given workspace
-  const handleBeadsOpen = useCallback((workingDir) => {
-    setBeadsWorkingDir(workingDir);
-    setMainView("beads");
-    // On mobile the beads button lives inside the sidebar overlay; close it so
-    // the beads view is not obscured by the still-open left side panel.
-    setShowSidebar(false);
-  }, []);
-
-  // Open the beads view focused on a specific issue (used by the conversation
-  // properties panel's linked-issue link). The nonce bump lets BeadsView
-  // re-select even when the same issue is opened again.
-  const handleOpenBeadsIssue = useCallback((issueId, workingDir) => {
-    if (!issueId || !workingDir) return;
-    setBeadsWorkingDir(workingDir);
-    setBeadsInitialIssueId(issueId);
-    setBeadsSelectNonce((n) => n + 1);
-    setMainView("beads");
-    setShowSidebar(false);
-    setShowSidePanel(false);
-  }, []);
 
   // Handle badge click action - calls API to execute configured command
   const handleBadgeClick = useCallback(
