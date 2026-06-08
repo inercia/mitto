@@ -3669,6 +3669,12 @@ func TestConversationWait_AgentResponded_Timeout(t *testing.T) {
 	if !output.TimedOut {
 		t.Error("Expected timed_out=true")
 	}
+	if !output.StillPrompting {
+		t.Error("Expected still_prompting=true (mock was created with prompting=true and never finished)")
+	}
+	if output.Message == "" {
+		t.Error("Expected non-empty message on timeout")
+	}
 	if elapsed < 900*time.Millisecond {
 		t.Errorf("Expected to wait ~1s, but only waited %v", elapsed)
 	}
@@ -8023,13 +8029,13 @@ func TestGetConversation_QueuedPrompts_Multiple(t *testing.T) {
 	// Add multiple messages to the queue
 	queue := store.Queue(startOut.SessionID)
 	scheduledTime := time.Now().Add(30 * time.Minute)
-	if _, err := queue.Add("First message", nil, nil, "client-1", nil, 0, nil); err != nil {
+	if _, err := queue.Add("First message", nil, nil, "client-1", nil, 0, nil, ""); err != nil {
 		t.Fatalf("Failed to add first message: %v", err)
 	}
-	if _, err := queue.Add("Second message", nil, nil, "client-2", &scheduledTime, 0, nil); err != nil {
+	if _, err := queue.Add("Second message", nil, nil, "client-2", &scheduledTime, 0, nil, ""); err != nil {
 		t.Fatalf("Failed to add second message: %v", err)
 	}
-	if _, err := queue.Add("Third message", nil, nil, "client-1", nil, 0, nil); err != nil {
+	if _, err := queue.Add("Third message", nil, nil, "client-1", nil, 0, nil, ""); err != nil {
 		t.Fatalf("Failed to add third message: %v", err)
 	}
 
@@ -8086,7 +8092,7 @@ func TestGetConversation_QueuedPrompts_LongMessageTruncated(t *testing.T) {
 	// Add a very long message
 	longMsg := strings.Repeat("x", 500)
 	queue := store.Queue(startOut.SessionID)
-	if _, err := queue.Add(longMsg, nil, nil, "", nil, 0, nil); err != nil {
+	if _, err := queue.Add(longMsg, nil, nil, "", nil, 0, nil, ""); err != nil {
 		t.Fatalf("Failed to add message: %v", err)
 	}
 

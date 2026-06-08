@@ -745,10 +745,12 @@ type ConversationWaitInput struct {
 
 // ConversationWaitOutput is the output for mitto_conversation_wait tool.
 type ConversationWaitOutput struct {
-	Success  bool   `json:"success"`
-	What     string `json:"what"`                // The condition that was waited on
-	TimedOut bool   `json:"timed_out,omitempty"` // True if the wait timed out before the condition was met
-	Error    string `json:"error,omitempty"`
+	Success        bool   `json:"success"`
+	What           string `json:"what"`                      // The condition that was waited on
+	TimedOut       bool   `json:"timed_out,omitempty"`       // True if the wait timed out before the condition was met
+	StillPrompting bool   `json:"still_prompting,omitempty"` // True if the target agent is still responding (set on timeout)
+	Message        string `json:"message,omitempty"`         // Human-readable description of the wait outcome
+	Error          string `json:"error,omitempty"`
 }
 
 // =============================================================================

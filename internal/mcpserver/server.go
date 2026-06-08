@@ -1216,6 +1216,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Currently supports: 'agent_responded' — blocks until the agent finishes responding. " +
 			"Returns immediately if the condition is already met (e.g., agent is not currently responding). " +
 			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
+			"If the wait times out, the result includes 'timed_out: true' and 'still_prompting' indicating whether the agent is still responding — you do NOT need to separately check the prompting status. " +
 			selfIDNote,
 	}, s.handleConversationWait)
 
@@ -1807,7 +1808,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	queue := store.Queue(input.ConversationID)
 
 	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments)
+	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -2817,7 +2818,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments)
+		_, err := queue.Add(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -3850,15 +3851,25 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 			}, nil
 		}
 		// Timed out
+		stillPrompting := targetBS.IsPrompting()
+		var msg string
+		if stillPrompting {
+			msg = fmt.Sprintf("timed out after %s; the agent is still responding", timeout)
+		} else {
+			msg = fmt.Sprintf("timed out after %s; the agent has finished responding", timeout)
+		}
 		s.logger.Warn("Conversation wait timed out",
 			"source_session", realSessionID,
 			"target_conversation", input.ConversationID,
 			"what", input.What,
-			"timeout", timeout)
+			"timeout", timeout,
+			"still_prompting", stillPrompting)
 		return nil, ConversationWaitOutput{
-			Success:  true,
-			What:     input.What,
-			TimedOut: true,
+			Success:        true,
+			What:           input.What,
+			TimedOut:       true,
+			StillPrompting: stillPrompting,
+			Message:        msg,
 		}, nil
 	case <-ctx.Done():
 		return nil, ConversationWaitOutput{
@@ -4089,7 +4100,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				continue
 			}
 
-			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0, nil)
+			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0, nil, "")
 			if err != nil {
 				s.logger.Warn("Failed to enqueue prompt to child",
 					"parent_session", realSessionID,
