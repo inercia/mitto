@@ -4,7 +4,7 @@ name: "Capture loose ends"
 menus: prompts
 description: "Scan the conversation for unsolved problems and untracked work, then file beads for each"
 backgroundColor: "#DCEDC8"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

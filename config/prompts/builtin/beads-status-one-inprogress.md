@@ -4,7 +4,7 @@ name: "Status ONE in-progress"
 menus: prompts
 description: "Pick one in-progress bead and fact-check its implementation status"
 backgroundColor: "#F0F4C3"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 
@@ -79,4 +79,4 @@ For each acceptance criterion listed in the bead (or inferred from the descripti
 - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
 - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`, a failing test, an unanswered question in notes)
 
-> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Beads: start work" prompt to continue implementation.
+> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start working on ready" prompt to continue implementation.

@@ -5,7 +5,7 @@ menus: beadsIssues
 requires: parameters
 description: "Map and wire this bead's relationships: what blocks it, what it blocks, related beads, and its parent"
 backgroundColor: "#FFCCBC"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

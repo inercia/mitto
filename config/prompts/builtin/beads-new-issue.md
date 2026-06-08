@@ -4,7 +4,7 @@ name: "New issue"
 menus: prompts
 description: "Create a beads issue — from the current conversation context or from scratch"
 backgroundColor: "#C8E6C9"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd")'
 ---
 
@@ -140,7 +140,7 @@ If creation fails, report the error to the user and suggest corrections (e.g., i
 ## Step 7 — Offer follow-up actions
 
 After creation, use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "Bead `<id>` is ready. Would you like to:"
-  - "Claim it and start working now" — run `bd update <id> --claim`, then suggest using the "Beads: start work" prompt
+  - "Claim it and start working now" — run `bd update <id> --claim`, then suggest using the "Start working on ready" prompt
   - "Link it to another bead (dependency)" — ask for the target bead ID and run `bd dep add <id> <blocker-id>` (or `bd link <id> <other-id> --type related`)
   - "Done — no further action"
 

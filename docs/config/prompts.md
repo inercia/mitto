@@ -597,6 +597,7 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:working_dir`           | Session working directory                                                    |
 | `@mitto:acp_server`            | ACP server name (e.g., "claude-code")                                        |
 | `@mitto:workspace_uuid`        | Workspace identifier                                                         |
+| `@mitto:beads_issue`           | Linked beads issue ID (e.g. "bd-123"), empty if none                         |
 | `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
@@ -721,6 +722,8 @@ Information about the current conversation/session.
 | `session.parentId`    | string | Parent session ID (empty if not a child)                 |
 | `session.isPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
 | `session.isPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
+| `session.hasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
+| `session.beadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
 
 #### Parent Context (`parent.*`)
 

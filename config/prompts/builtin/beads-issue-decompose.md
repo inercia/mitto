@@ -5,7 +5,7 @@ menus: beadsIssues
 requires: parameters
 description: "Break this bead into child beads with dependencies and create them automatically"
 backgroundColor: "#D1C4E9"
-group: "Beads"
+group: "Tasks"
 enabledWhen: '!session.isChild && commandExists("bd") && dirExists(".beads")'
 ---
 

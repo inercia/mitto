@@ -5,7 +5,7 @@ menus: beadsIssues
 requires: parameters
 description: "Talk through a bead: resolve pending decisions or explore an aspect, then capture the conclusions back into the tracker"
 backgroundColor: "#F8BBD0"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

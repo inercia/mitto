@@ -5,7 +5,7 @@ menus: beadsIssues
 requires: parameters
 description: "Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex"
 backgroundColor: "#B3E5FC"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

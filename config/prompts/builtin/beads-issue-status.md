@@ -5,7 +5,7 @@ menus: beadsIssues
 requires: parameters
 description: "Fact-check this bead's implementation status against the codebase"
 backgroundColor: "#F0F4C3"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

@@ -4,7 +4,7 @@ name: "Overview"
 menus: prompts, beadsList
 description: "Read-only health snapshot of the whole tracker: ready, blocked, in-progress, stale, and dependency cycles"
 backgroundColor: "#CFD8DC"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 
@@ -93,7 +93,7 @@ Summarise concisely for the user. Keep it scannable:
 Based on what the snapshot reveals, point the user to the right follow-up prompt — without taking
 the action yourself:
 
-- Lots of ready work → **"Beads: start work"** (or per-bead **"Start work"**).
+- Lots of ready work → **"Start working on ready"** (or per-bead **"Start work"**).
 - Stale / obsolete / duplicate beads → **"Beads: cleanup stale issues"**.
 - Priorities or dependencies look off → **"Beads: reevaluate all issues"**.
 - A specific bead is vague or under-specified → per-bead **"Investigate more"**.

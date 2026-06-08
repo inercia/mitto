@@ -4,7 +4,7 @@ name: "Reevaluate all issues"
 menus: prompts, beadsList
 description: "Reevaluate priority, dependencies, and importance of all beads — delegating deeper evaluation to child conversations when needed — then propose changes and surface what to do now"
 backgroundColor: "#FFCC80"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

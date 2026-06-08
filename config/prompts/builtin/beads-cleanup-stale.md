@@ -4,7 +4,7 @@ name: "Cleanup stale issues"
 menus: prompts, beadsList
 description: "Find stale, obsolete, or duplicate beads and close them after confirmation"
 backgroundColor: "#BCAAA4"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 

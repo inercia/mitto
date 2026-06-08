@@ -4,7 +4,7 @@ name: "Status ALL in-progress"
 menus: prompts, beadsList
 description: "Fact-check implementation status for all in-progress beads in this repo"
 backgroundColor: "#FFCCBC"
-group: "Beads"
+group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
 ---
 
@@ -89,4 +89,4 @@ Then surface beads that may need attention:
 - Beads marked `in_progress` with **no evidence of any work** (possibly stale claims)
 - Beads that appear **done** but are still open (candidates for `bd close`)
 
-> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Beads: start work" prompt to continue implementation on a specific bead.
+> ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start working on ready" prompt to continue implementation on a specific bead.
