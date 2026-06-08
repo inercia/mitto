@@ -30,6 +30,10 @@ type ProcessorInput struct {
 	ACPServer string `json:"acp_server,omitempty"`
 	// WorkspaceUUID is the workspace identifier.
 	WorkspaceUUID string `json:"workspace_uuid,omitempty"`
+	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
+	// Used for @mitto:beads_issue variable substitution and the session.hasBeadsIssue /
+	// session.beadsIssue CEL context in enabledWhen expressions.
+	BeadsIssue string `json:"beads_issue,omitempty"`
 	// AvailableACPServers lists the ACP servers that have workspaces configured for the
 	// session's working directory. Mirrors the data reported by the MCP tool.
 	// Each entry includes the server name, type, tags, and whether it is the current server.

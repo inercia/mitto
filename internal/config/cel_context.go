@@ -68,6 +68,11 @@ type SessionContext struct {
 	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
 	// was triggered by the scheduler. Populated in the prompt-menu evaluation context.
 	IsPeriodicConversation bool
+	// HasBeadsIssue indicates whether the conversation has a beads issue associated
+	// (the session metadata BeadsIssue field is non-empty).
+	HasBeadsIssue bool
+	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
+	BeadsIssue string
 }
 
 // ParentContext holds parent session context for CEL evaluation.

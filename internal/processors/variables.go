@@ -17,6 +17,7 @@ import (
 //   - @mitto:working_dir            — Session working directory
 //   - @mitto:acp_server             — ACP server name (e.g., "claude-code")
 //   - @mitto:workspace_uuid         — Workspace identifier
+//   - @mitto:beads_issue            — Linked beads issue ID (e.g. "bd-123"), empty if none
 //   - @mitto:available_acp_servers  — ACP servers with workspaces for this folder,
 //     comma-separated with tags and current marker
 //   - @mitto:children               — Child sessions, comma-separated with names and ACP servers
@@ -73,6 +74,7 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 		"@mitto:working_dir":           input.WorkingDir,
 		"@mitto:acp_server":            input.ACPServer,
 		"@mitto:workspace_uuid":        input.WorkspaceUUID,
+		"@mitto:beads_issue":           input.BeadsIssue,
 		"@mitto:available_acp_servers": formatAvailableACPServers(input.AvailableACPServers),
 		"@mitto:mcp_children_count":    formatMCPChildrenCount(input.ChildSessions),
 		"@mitto:mcp_children":          formatMCPChildren(input.ChildSessions),

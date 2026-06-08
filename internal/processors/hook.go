@@ -179,6 +179,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.IsChild = input.ParentSessionID != ""
 	ctx.Session.ParentID = input.ParentSessionID
 	ctx.Session.IsPeriodic = input.IsPeriodic
+	ctx.Session.BeadsIssue = input.BeadsIssue
+	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer
