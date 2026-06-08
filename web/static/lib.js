@@ -1543,3 +1543,27 @@ export function formatTimeAgo(date) {
     return `${years}y ago`;
   }
 }
+
+// =============================================================================
+// Archive Reason Helpers
+// =============================================================================
+
+/**
+ * Returns a human-readable description of why a session was archived.
+ * @param {string} reason - The archive reason code (e.g. "manual", "inactivity", "acp_start_failures")
+ * @param {string|null} archivedAt - ISO 8601 timestamp when the session was archived
+ * @returns {string}
+ */
+export function getArchiveReasonText(reason, archivedAt) {
+  const dateStr = archivedAt ? new Date(archivedAt).toLocaleDateString() : "";
+  switch (reason) {
+    case "manual":
+      return `Archived by user${dateStr ? ` on ${dateStr}` : ""}`;
+    case "inactivity":
+      return `Auto-archived due to inactivity${dateStr ? ` on ${dateStr}` : ""}`;
+    case "acp_start_failures":
+      return `Auto-archived: agent failed to start after repeated attempts${dateStr ? ` on ${dateStr}` : ""}`;
+    default:
+      return `Archived${dateStr ? ` on ${dateStr}` : ""}`;
+  }
+}

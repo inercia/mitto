@@ -33,6 +33,7 @@ import {
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { WorkspaceBadge } from "./WorkspaceBadge.js";
 
 import {
   AutoChildrenEditor,
@@ -88,7 +89,7 @@ const BEADS_UPSTREAM_HELP = {
   },
 };
 
-export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, initialWorkingDir, initialTab, showToast }) {
+export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, initialTab, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");

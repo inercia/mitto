@@ -59,6 +59,7 @@ import {
   renderUserMarkdown,
   formatTimeAgo,
   parseToolTitlePaths,
+  getArchiveReasonText,
 } from "./lib.js";
 
 // =============================================================================
@@ -5101,5 +5102,57 @@ describe("parseToolTitlePaths", () => {
   test("returns single text segment when no path found", () => {
     const result = parseToolTitlePaths("List files");
     expect(result).toEqual([{ type: "text", value: "List files" }]);
+  });
+});
+
+// =============================================================================
+// getArchiveReasonText Tests
+// =============================================================================
+
+describe("getArchiveReasonText", () => {
+  test("returns 'Archived by user' for manual reason without date", () => {
+    expect(getArchiveReasonText("manual", null)).toBe("Archived by user");
+  });
+
+  test("returns 'Archived by user on <date>' for manual reason with date", () => {
+    const result = getArchiveReasonText("manual", "2024-06-01T00:00:00Z");
+    expect(result).toMatch(/^Archived by user on /);
+  });
+
+  test("returns inactivity message without date", () => {
+    expect(getArchiveReasonText("inactivity", null)).toBe(
+      "Auto-archived due to inactivity"
+    );
+  });
+
+  test("returns inactivity message with date", () => {
+    const result = getArchiveReasonText("inactivity", "2024-06-01T00:00:00Z");
+    expect(result).toMatch(/^Auto-archived due to inactivity on /);
+  });
+
+  test("returns acp_start_failures message without date", () => {
+    expect(getArchiveReasonText("acp_start_failures", null)).toBe(
+      "Auto-archived: agent failed to start after repeated attempts"
+    );
+  });
+
+  test("returns acp_start_failures message with date", () => {
+    const result = getArchiveReasonText("acp_start_failures", "2024-06-01T00:00:00Z");
+    expect(result).toMatch(
+      /^Auto-archived: agent failed to start after repeated attempts on /
+    );
+  });
+
+  test("returns default 'Archived' for unknown reason without date", () => {
+    expect(getArchiveReasonText("unknown_reason", null)).toBe("Archived");
+  });
+
+  test("returns default 'Archived on <date>' for unknown reason with date", () => {
+    const result = getArchiveReasonText("some_other_reason", "2024-06-01T00:00:00Z");
+    expect(result).toMatch(/^Archived on /);
+  });
+
+  test("returns default for undefined reason", () => {
+    expect(getArchiveReasonText(undefined, null)).toBe("Archived");
   });
 });

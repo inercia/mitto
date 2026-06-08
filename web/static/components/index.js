@@ -9,6 +9,12 @@ export { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
+export { WorkspaceBadge, WorkspacePill } from "./WorkspaceBadge.js";
+export { DeleteDialog } from "./DeleteDialog.js";
+export { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog.js";
+export { NewSessionWorkspaceDialog } from "./NewSessionWorkspaceDialog.js";
+export { SessionItem } from "./SessionItem.js";
+export { SessionList } from "./SessionList.js";
 
 // Icon components
 export {

@@ -49,8 +49,7 @@ import { ModelSelection } from "./ModelSelection.js";
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
 
-// Import WorkspaceBadge from app.js - we'll need to pass it as a prop or extract it
-// For now, we'll receive it as a prop
+// WorkspaceBadge is now a standalone component module (not prop-drilled from app.js)
 
 /**
  * FolderListEditor — reusable folder list editing component with append/replace modes.
@@ -928,7 +927,6 @@ export function SettingsDialog({
   onClose,
   onSave,
   forceOpen = false,
-  WorkspaceBadge,
   showToast,
 }) {
   const [activeTab, setActiveTab] = useState("servers");
