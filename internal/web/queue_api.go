@@ -18,6 +18,7 @@ type QueueAddRequest struct {
 	FileIDs       []string          `json:"file_ids,omitempty"`
 	ScheduledTime *string           `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
 	Arguments     map[string]string `json:"arguments,omitempty"`      // Optional: ${VAR}/${VAR:-default} substitution values applied when sent
+	PromptName    string            `json:"prompt_name,omitempty"`    // Optional: name of a workspace prompt to send by name (resolved at dispatch)
 }
 
 // QueueMoveRequest represents a request to move a message in the queue.
@@ -132,7 +133,7 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		return
 	}
 
-	if strings.TrimSpace(req.Message) == "" {
+	if strings.TrimSpace(req.Message) == "" && strings.TrimSpace(req.PromptName) == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "empty_message", "Message cannot be empty")
 		return
 	}
@@ -165,7 +166,7 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		scheduledTime = &t
 	}
 
-	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, scheduledTime, maxSize, req.Arguments)
+	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, scheduledTime, maxSize, req.Arguments, req.PromptName)
 	if err != nil {
 		if errors.Is(err, session.ErrQueueFull) {
 			writeErrorJSON(w, http.StatusConflict, "queue_full",
@@ -182,8 +183,8 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 	// Notify observers about queue update
 	s.notifyQueueUpdate(sessionID, "added", msg.ID)
 
-	// Enqueue title generation if enabled
-	if s.queueTitleWorker != nil && queueConfig.ShouldAutoGenerateTitles() {
+	// Enqueue title generation if enabled (skip for named-prompt items — the prompt name is the label)
+	if s.queueTitleWorker != nil && queueConfig.ShouldAutoGenerateTitles() && req.PromptName == "" {
 		s.queueTitleWorker.Enqueue(QueueTitleRequest{
 			SessionID: sessionID,
 			MessageID: msg.ID,

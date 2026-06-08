@@ -70,6 +70,9 @@ type QueuedMessage struct {
 	// Arguments are optional ${VAR}/${VAR:-default} substitution values applied to
 	// the message text when it is sent. Empty/nil means no substitution.
 	Arguments map[string]string `json:"arguments,omitempty"`
+	// PromptName is the name of the workspace prompt to send by name (resolved to
+	// full text at dispatch). Empty for ad-hoc messages.
+	PromptName string `json:"prompt_name,omitempty"`
 }
 
 // QueueFile represents the persisted queue state.
@@ -143,7 +146,9 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 // If scheduledTime is non-nil, the message will only be delivered after that time.
 // If arguments is non-empty, ${VAR}/${VAR:-default} substitution is applied to the
 // message text when it is sent to the agent.
-func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int, arguments map[string]string) (QueuedMessage, error) {
+// If promptName is non-empty, the message is stored by name and resolved to full text
+// at dispatch via PromptWithMeta (message should be empty in this case).
+func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int, arguments map[string]string, promptName string) (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -166,6 +171,7 @@ func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string,
 		ClientID:      clientID,
 		ScheduledTime: scheduledTime,
 		Arguments:     arguments,
+		PromptName:    promptName,
 	}
 
 	qf.Messages = append(qf.Messages, msg)
