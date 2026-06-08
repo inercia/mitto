@@ -59,7 +59,7 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
-  calculateSessionCreationDelay,
+
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   isReconnectLimitReached,
@@ -68,16 +68,26 @@ import {
 } from "../utils/websocket.js";
 
 // =============================================================================
-// Session creation backoff state (module-level, persists across re-renders)
-// Prevents hammering POST /api/sessions when the ACP process is overloaded.
+// Session creation retry state (module-level, persists across re-renders)
+// Auto-retries POST /api/sessions on 503 session_creation_timeout instead of
+// silently blocking clicks. Keeps the button in a visible busy/spinner state.
 // =============================================================================
 
-// Number of consecutive session creation failures since last success
-let _sessionCreationFailureCount = 0;
+// Maximum number of automatic retries on 503 session_creation_timeout
+const SESSION_CREATION_MAX_RETRIES = 4;
 
-// Timestamp (ms) after which the next session creation attempt is allowed
-// 0 means no restriction (first attempt or after a success)
-let _sessionCreationNextAllowedMs = 0;
+// Fixed delay between retries (ms). The agent needs time to finish its turn;
+// a fixed 30s gap is more predictable than exponential backoff here.
+const SESSION_CREATION_RETRY_DELAY_MS = 30000;
+
+// Number of retries attempted for the current creation series (0 = first attempt)
+let _sessionCreationRetryCount = 0;
+
+// setTimeout handle for the pending auto-retry (null = no retry scheduled)
+let _sessionCreationRetryTimer = null;
+
+// Options snapshot for the pending auto-retry
+let _sessionCreationPendingOpts = null;
 
 // Time threshold (in ms) for considering the session potentially stale
 // If the page has been hidden for longer than this, we do an explicit auth check
@@ -301,6 +311,10 @@ export function useWebSocket() {
 
   const [eventsConnected, setEventsConnected] = useState(false);
 
+  // True while a session-creation request is in-flight or an auto-retry is pending.
+  // Used to show a spinner on the "New Conversation" button and prevent duplicate clicks.
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+
   // Multi-session state: { sessionId: { messages: [], info: {}, lastSeq: 0, isStreaming: false, ws: WebSocket } }
   const [sessions, setSessions] = useState({});
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -363,6 +377,9 @@ export function useWebSocket() {
   const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
   const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
+  // Always points to the latest createNewSession callback — used by the retry timer
+  // to avoid stale-closure issues when connectToSession changes between retries.
+  const createNewSessionRef = useRef(null);
   // Track pending send operations for ACK handling
   // { promptId: { resolve, reject, timeoutId } }
   const pendingSendsRef = useRef({});
@@ -4475,25 +4492,23 @@ export function useWebSocket() {
 
   // Create a new session via REST API
   // Options: { name?: string, workingDir?: string, acpServer?: string }
-  // Returns: { sessionId: string } on success, { error: string, errorCode?: string } on failure, or null on network error
+  // Returns on first call:
+  //   { sessionId } on immediate success
+  //   { error, errorCode: "session_creation_timeout", retrying: true } when agent is busy
+  //     → the auto-retry loop continues silently; isCreatingSession stays true
+  //   { error, errorCode } for other failures
+  // When an auto-retry eventually succeeds, setActiveSessionId fires and the session
+  // appears in the sidebar (the original caller has already returned).
   const createNewSession = useCallback(
     async (options = {}) => {
-      // --- Backoff guard ---
-      // Reject immediately if still within the cooldown window from previous failures.
-      // This prevents hammering POST /api/sessions when the ACP process is overloaded.
-      const now = Date.now();
-      if (_sessionCreationNextAllowedMs > now) {
-        const waitSecs = Math.ceil(
-          (_sessionCreationNextAllowedMs - now) / 1000,
-        );
-        console.warn(
-          `[createNewSession] Backoff active — ${waitSecs}s remaining (failure #${_sessionCreationFailureCount})`,
-        );
-        return {
-          error: `Please wait ${waitSecs} second${waitSecs !== 1 ? "s" : ""} before creating another conversation`,
-          errorCode: "session_creation_backoff",
-        };
+      // Cancel any pending auto-retry — a fresh manual click supersedes it.
+      if (_sessionCreationRetryTimer !== null) {
+        clearTimeout(_sessionCreationRetryTimer);
+        _sessionCreationRetryTimer = null;
       }
+
+      // Mark creation as in-flight so the button shows a spinner.
+      setIsCreatingSession(true);
 
       try {
         // Support both old (name string) and new (options object) signatures
@@ -4511,34 +4526,60 @@ export function useWebSocket() {
         });
 
         if (!response.ok) {
-          // Record failure and schedule next allowed attempt
-          _sessionCreationFailureCount++;
-          const delay = calculateSessionCreationDelay(
-            _sessionCreationFailureCount - 1,
-          );
-          _sessionCreationNextAllowedMs = Date.now() + delay;
-          console.warn(
-            `[createNewSession] Failure #${_sessionCreationFailureCount} — backoff ${delay}ms`,
-          );
-
-          // Try to parse as JSON for structured error
+          // Parse structured error response when available
           const contentType = response.headers.get("content-type");
+          let errorCode, errorMessage;
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
             console.error("Failed to create session:", errorData);
+            errorCode = errorData.error;
+            errorMessage = errorData.message || "Failed to create session";
+          } else {
+            const errorText = await response.text();
+            console.error("Failed to create session:", errorText);
+            errorMessage = errorText || "Failed to create session";
+          }
+
+          // Agent is busy (503 session_creation_timeout) — schedule auto-retry
+          // instead of silently backing off. isCreatingSession stays true so the
+          // button remains in spinner state until the retry succeeds or is exhausted.
+          if (
+            errorCode === "session_creation_timeout" &&
+            _sessionCreationRetryCount < SESSION_CREATION_MAX_RETRIES
+          ) {
+            _sessionCreationRetryCount++;
+            _sessionCreationPendingOpts = opts;
+            console.warn(
+              `[createNewSession] Agent busy — scheduling retry ${_sessionCreationRetryCount}/${SESSION_CREATION_MAX_RETRIES} in ${SESSION_CREATION_RETRY_DELAY_MS}ms`,
+            );
+            _sessionCreationRetryTimer = setTimeout(() => {
+              const pendingOpts = _sessionCreationPendingOpts;
+              _sessionCreationRetryTimer = null;
+              if (pendingOpts) {
+                // Use ref to always call the latest version of createNewSession
+                createNewSessionRef.current?.(pendingOpts);
+              }
+            }, SESSION_CREATION_RETRY_DELAY_MS);
+            // Return immediately so the caller can show a toast; isCreatingSession
+            // remains true while the retry is pending.
             return {
-              error: errorData.message || "Failed to create session",
-              errorCode: errorData.error,
+              error: "Agent is busy — retrying automatically\u2026",
+              errorCode: "session_creation_timeout",
+              retrying: true,
             };
           }
-          const error = await response.text();
-          console.error("Failed to create session:", error);
-          return { error: error || "Failed to create session" };
+
+          // Other errors, or retry limit exhausted — clear busy state.
+          _sessionCreationRetryCount = 0;
+          _sessionCreationPendingOpts = null;
+          setIsCreatingSession(false);
+          return { error: errorMessage, errorCode };
         }
 
-        // Success — reset backoff state
-        _sessionCreationFailureCount = 0;
-        _sessionCreationNextAllowedMs = 0;
+        // Success — reset all retry state and clear busy indicator.
+        _sessionCreationRetryCount = 0;
+        _sessionCreationPendingOpts = null;
+        setIsCreatingSession(false);
 
         const data = await response.json();
         const sessionId = data.session_id;
@@ -4582,21 +4623,20 @@ export function useWebSocket() {
 
         return { sessionId };
       } catch (err) {
-        // Network/fetch error — also apply backoff
-        _sessionCreationFailureCount++;
-        const delay = calculateSessionCreationDelay(
-          _sessionCreationFailureCount - 1,
-        );
-        _sessionCreationNextAllowedMs = Date.now() + delay;
-        console.error(
-          `[createNewSession] Network error (failure #${_sessionCreationFailureCount}, backoff ${delay}ms):`,
-          err,
-        );
+        // Network/fetch error — clear busy state
+        _sessionCreationRetryCount = 0;
+        _sessionCreationPendingOpts = null;
+        setIsCreatingSession(false);
+        console.error(`[createNewSession] Network error:`, err);
         return { error: err.message || "Network error" };
       }
     },
     [connectToSession],
   );
+
+  // Keep ref current so the retry timer always calls the latest createNewSession
+  // (connectToSession may change between retries, recreating the callback).
+  createNewSessionRef.current = createNewSession;
 
   // Helper functions for session state updates
   const addMessageToSession = useCallback((sessionId, message) => {
@@ -5923,6 +5963,7 @@ export function useWebSocket() {
     cancelPrompt,
     forceReset,
     newSession,
+    isCreatingSession,
     switchSession,
     loadSession,
     loadMoreMessages,

@@ -1703,6 +1703,7 @@ function SessionList({
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
+  isCreatingSession = false, // True while a new-conversation request is in-flight or retrying
 }) {
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
@@ -2695,11 +2696,14 @@ function SessionList({
               (filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
                 <button
-                  onClick=${(e) => handleNewSessionInGroup(group.key, e)}
-                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                  title="New conversation in ${group.label}"
+                  onClick=${(e) => !isCreatingSession && handleNewSessionInGroup(group.key, e)}
+                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-gray-500" : "hover:bg-slate-600 text-gray-500 hover:text-white"}"
+                  title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${group.label}`}
+                  disabled=${isCreatingSession}
                 >
-                  <${PlusIcon} className="w-3.5 h-3.5" />
+                  ${isCreatingSession
+                    ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                    : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                 </button>
               `}
               <span class="text-xs text-gray-500">${sessionCount}</span>
@@ -2883,11 +2887,14 @@ function SessionList({
               ${(filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
                 <button
-                  onClick=${(e) => handleNewSessionInFolder(folder.workingDir, e)}
-                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                  title="New conversation in ${folder.label}"
+                  onClick=${(e) => !isCreatingSession && handleNewSessionInFolder(folder.workingDir, e)}
+                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-gray-500" : "hover:bg-slate-600 text-gray-500 hover:text-white"}"
+                  title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${folder.label}`}
+                  disabled=${isCreatingSession}
                 >
-                  <${PlusIcon} className="w-3.5 h-3.5" />
+                  ${isCreatingSession
+                    ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                    : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                 </button>
               `}
               <span class="text-xs text-gray-500">${totalSessions}</span>
@@ -3145,11 +3152,15 @@ function SessionList({
             ${getGroupingIcon()}
           </button>
           <button
-            onClick=${() => onNewSession(null, null, filterTab)}
-            class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-            title="New Conversation"
+            data-testid="new-conversation-btn"
+            onClick=${() => !isCreatingSession && onNewSession(null, null, filterTab)}
+            class="p-1.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60" : "hover:bg-slate-700"}"
+            title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
+            disabled=${isCreatingSession}
           >
-            <${PlusIcon} className="w-4 h-4" />
+            ${isCreatingSession
+              ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+              : html`<${PlusIcon} className="w-4 h-4" />`}
           </button>
           ${onClose &&
           html`
@@ -3380,6 +3391,7 @@ function App() {
     sendUIPromptAnswer,
     mcpTools,
     ensureResumed,
+    isCreatingSession,
   } = useWebSocket();
 
   const { showToast, dismissToast, toasts } = useToast();
@@ -5389,15 +5401,19 @@ function App() {
         if (result?.sessionId && isPeriodic) {
           await applyPeriodicConfig(result.sessionId);
         }
-        // If session creation failed due to no workspace configured, open settings
-        if (result?.errorCode === "session_creation_backoff") {
-          showToast({ style: "warning", title: result.error, duration: 5000 });
-        } else if (
-          result?.errorCode === "no_workspace_configured" &&
-          !configReadonly
-        ) {
+        // Handle creation result
+        if (result?.errorCode === "session_creation_timeout") {
+          // Agent is busy; auto-retry is in progress — toast already meaningful
+          showToast({
+            style: "warning",
+            title: result.retrying
+              ? "Agent is busy \u2014 retrying automatically\u2026"
+              : (result.error || "Agent is busy"),
+            duration: result.retrying ? 30000 : 5000,
+          });
+        } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
-        } else {
+        } else if (result?.sessionId) {
           // Switch away from the beads panel so the new conversation is shown.
           setMainView("conversation");
         }
@@ -5567,12 +5583,18 @@ function App() {
       if (result?.sessionId && isPeriodic) {
         await applyPeriodicConfig(result.sessionId);
       }
-      // If session creation failed due to no workspace configured, open settings
-      if (result?.errorCode === "session_creation_backoff") {
-        showToast({ style: "warning", title: result.error, duration: 5000 });
+      // Handle creation result
+      if (result?.errorCode === "session_creation_timeout") {
+        showToast({
+          style: "warning",
+          title: result.retrying
+            ? "Agent is busy \u2014 retrying automatically\u2026"
+            : (result.error || "Agent is busy"),
+          duration: result.retrying ? 30000 : 5000,
+        });
       } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
-      } else {
+      } else if (result?.sessionId) {
         // newSession activates the new conversation; switch away from the beads
         // panel so the new conversation is shown instead of the beads view.
         setMainView("conversation");
@@ -5601,11 +5623,17 @@ function App() {
         if (result?.sessionId && isPeriodic) {
           await applyPeriodicConfig(result.sessionId);
         }
-        if (result?.errorCode === "session_creation_backoff") {
-          showToast({ style: "warning", title: result.error, duration: 5000 });
+        if (result?.errorCode === "session_creation_timeout") {
+          showToast({
+            style: "warning",
+            title: result.retrying
+              ? "Agent is busy \u2014 retrying automatically\u2026"
+              : (result.error || "Agent is busy"),
+            duration: result.retrying ? 30000 : 5000,
+          });
         } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
-        } else {
+        } else if (result?.sessionId) {
           // Switch away from the beads panel so the new conversation is shown.
           setMainView("conversation");
           setTimeout(() => {
@@ -5644,12 +5672,18 @@ function App() {
       if (result?.sessionId && isPeriodic) {
         await applyPeriodicConfig(result.sessionId);
       }
-      // If session creation failed due to no workspace configured, open settings
-      if (result?.errorCode === "session_creation_backoff") {
-        showToast({ style: "warning", title: result.error, duration: 5000 });
+      // Handle creation result
+      if (result?.errorCode === "session_creation_timeout") {
+        showToast({
+          style: "warning",
+          title: result.retrying
+            ? "Agent is busy \u2014 retrying automatically\u2026"
+            : (result.error || "Agent is busy"),
+          duration: result.retrying ? 30000 : 5000,
+        });
       } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
-      } else {
+      } else if (result?.sessionId) {
         // Switch away from the beads panel so the new conversation is shown.
         setMainView("conversation");
         // Focus the input after creating new session
@@ -5673,12 +5707,18 @@ function App() {
     if (result?.sessionId && isPeriodic) {
       await applyPeriodicConfig(result.sessionId);
     }
-    // If session creation failed due to no workspace configured, open settings (unless config is read-only)
-    if (result?.errorCode === "session_creation_backoff") {
-      showToast({ style: "warning", title: result.error, duration: 5000 });
+    // Handle creation result
+    if (result?.errorCode === "session_creation_timeout") {
+      showToast({
+        style: "warning",
+        title: result.retrying
+          ? "Agent is busy \u2014 retrying automatically\u2026"
+          : (result.error || "Agent is busy"),
+        duration: result.retrying ? 30000 : 5000,
+      });
     } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
       setSettingsDialog({ isOpen: true, forceOpen: true });
-    } else {
+    } else if (result?.sessionId) {
       // Switch away from the beads panel so the new conversation is shown.
       setMainView("conversation");
       // Focus the input after creating new session
@@ -6530,6 +6570,7 @@ function App() {
           queueLength=${queueLength}
           onFetchConversationPrompts=${fetchConversationPromptsForSession}
           onSendPromptToConversation=${handleSendPromptToConversation}
+          isCreatingSession=${isCreatingSession}
         />
         <!-- Resize handle on right edge -->
         <div
@@ -6575,6 +6616,7 @@ function App() {
               queueLength=${queueLength}
               onFetchConversationPrompts=${fetchConversationPromptsForSession}
               onSendPromptToConversation=${handleSendPromptToConversation}
+              isCreatingSession=${isCreatingSession}
             />
           </div>
           <div
