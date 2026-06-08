@@ -1,6 +1,6 @@
 ---
 icon: "beads"
-name: "Update dependencies"
+name: "Recalculate dependencies"
 menus: beadsIssues
 requires: parameters
 description: "Map and wire this bead's relationships: what blocks it, what it blocks, related beads, and its parent"
