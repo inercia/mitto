@@ -12,13 +12,13 @@ const __dirname = path.dirname(__filename);
  *  1. A hamburger (☰) button in the Beads header (md:hidden) that opens the
  *     conversations sidebar overlay, so users are not trapped in the Beads view
  *     on small screens.
- *  2. The issue table can scroll horizontally instead of clipping long titles
- *     and right-hand columns on narrow viewports.
+ *  2. The issue list uses two-line rows so long titles wrap onto their own
+ *     line instead of forcing the content to overflow horizontally on narrow
+ *     viewports.
  *
  * The Beads backend shells out to the external `bd` binary, which is not
- * guaranteed in CI. To keep the table deterministic, /api/beads/list is mocked
- * with a fixed set of issues — including one with a very long title to force
- * horizontal overflow.
+ * guaranteed in CI. To keep the list deterministic, /api/beads/list is mocked
+ * with a fixed set of issues — including one with a very long title.
  */
 
 const projectRoot = path.resolve(__dirname, "../../..");
@@ -66,7 +66,8 @@ const MOBILE_VIEWPORT = { width: 390, height: 844 };
 // The detail panel carries the shared `properties-panel` class; no other panel
 // using it is mounted while the Beads view is active, so it is unambiguous.
 const DETAIL_PANEL = "div.properties-panel";
-// The dimming backdrop rendered to the panel's left; clicking it closes the panel.
+// The full-window dimming backdrop (fixed inset-0, like SessionPanel); clicking
+// anywhere on it outside the panel closes the panel.
 const PANEL_BACKDROP = "div.properties-backdrop";
 
 // Opens the Beads view from the project-alpha folder header (desktop sidebar)
@@ -135,34 +136,25 @@ testWithCleanup.describe("Beads view - mobile", () => {
   );
 
   testWithCleanup(
-    "issue table scrolls horizontally instead of clipping on mobile",
+    "issue list wraps long titles instead of overflowing horizontally on mobile",
     async ({ page, timeouts }) => {
       await openBeads(page, timeouts);
       await page.setViewportSize(MOBILE_VIEWPORT);
 
-      const container = page.locator(
-        "div.overflow-x-auto:has(table.min-w-full)",
-      );
+      const container = page.locator("div.beads-table-scroll");
       await expect(container).toBeVisible({ timeout: timeouts.shortAction });
 
-      // The scroll container carries the visible-scrollbar class so the
-      // horizontal scrollbar is discoverable on macOS (WKWebView / Safari),
-      // where overlay scrollbars are otherwise hidden.
-      await expect(container).toHaveClass(/beads-table-scroll/);
+      // The long title is shown in full (it wraps onto its own line rather than
+      // being clipped behind a horizontal scroll).
+      await expect(page.getByText(LONG_TITLE).first()).toBeVisible();
 
-      // The content is wider than the container: it overflows rather than clips.
+      // The two-line layout keeps content within the viewport width: there is
+      // no horizontal overflow (allow a 1px rounding tolerance).
       const metrics = await container.evaluate((el) => ({
         scrollWidth: el.scrollWidth,
         clientWidth: el.clientWidth,
       }));
-      expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
-
-      // And the overflow is actually reachable by horizontal scrolling.
-      await container.evaluate((el) => {
-        el.scrollLeft = el.scrollWidth;
-      });
-      const scrollLeft = await container.evaluate((el) => el.scrollLeft);
-      expect(scrollLeft).toBeGreaterThan(0);
+      expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
     },
   );
 
@@ -181,9 +173,11 @@ testWithCleanup.describe("Beads view - mobile", () => {
 /**
  * Beads detail panel behavior tests (desktop).
  *
- * The detail panel is a fixed overlay (fixed inset-0 z-50) that slides over the
- * content with a dimming backdrop, unified with the conversation SessionPanel.
- * Clicking the backdrop (anywhere outside the panel) dismisses it.
+ * The detail panel uses two stacked layers: a full-window `fixed inset-0`
+ * dimming backdrop (like SessionPanel, so the conversations sidebar is dimmed
+ * too) and a `pointer-events-none` panel layer scoped to the beads view area so
+ * `expand` fills only that area and never covers the sidebar. Clicking the
+ * backdrop (anywhere outside the panel) dismisses it.
  *
  * These run on the default desktop viewport.
  */
@@ -220,14 +214,17 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Open the panel for the short issue.
       await page
-        .locator('tr[data-has-context-menu]:has-text("Short issue")')
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
         .first()
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(panel.getByText("mitto-bbb")).toBeVisible();
 
-      // Clicking the dimming backdrop (outside the panel) dismisses it.
-      await page.locator(PANEL_BACKDROP).click();
+      // Clicking the dimming backdrop (outside the panel) dismisses it. The
+      // backdrop now spans the whole window and the panel sits above it on the
+      // right, so click near the top-left (over the sidebar region) to land on
+      // the backdrop rather than the panel.
+      await page.locator(PANEL_BACKDROP).click({ position: { x: 5, y: 5 } });
       await expect(panel).toBeHidden({ timeout: timeouts.shortAction });
     },
   );
@@ -240,25 +237,30 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Open the panel for the short issue.
       await page
-        .locator('tr[data-has-context-menu]:has-text("Short issue")')
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
         .first()
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Normal mode: fixed-width panel beside a dimming backdrop.
-      await expect(panel).toHaveClass(/w-80/);
+      // Normal mode (desktop): a doubled fixed-width panel (w-[40rem]) capped at
+      // 85% of the beads view so the dimming backdrop always retains room. The
+      // width is UA-driven (not a viewport breakpoint) so it also applies in a
+      // narrow native-app window; the desktop test UA yields the desktop layout.
+      await expect(panel).toHaveClass(/w-\[40rem\]/);
+      await expect(panel).toHaveClass(/max-w-\[85%\]/);
       await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
 
-      // Toggle fullscreen: the panel fills the width and the backdrop is gone.
+      // Toggle fullscreen: the panel fills the beads view width (w-full) and the
+      // backdrop is gone.
       await page.getByTitle("Fullscreen").click();
       await expect(panel).toHaveClass(/w-full/);
-      await expect(panel).not.toHaveClass(/w-80/);
+      await expect(panel).not.toHaveClass(/w-\[40rem\]/);
       await expect(page.locator(PANEL_BACKDROP)).toHaveCount(0);
 
-      // Toggle back: the panel returns to its fixed width and the backdrop
-      // reappears.
+      // Toggle back: the panel returns to its fixed doubled width and the
+      // backdrop reappears.
       await page.getByTitle("Exit fullscreen").click();
-      await expect(panel).toHaveClass(/w-80/);
+      await expect(panel).toHaveClass(/w-\[40rem\]/);
       await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
     },
   );
@@ -282,7 +284,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Open the panel for the short issue (mitto-bbb).
       await page
-        .locator('tr[data-has-context-menu]:has-text("Short issue")')
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
         .first()
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
@@ -322,7 +324,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       const panel = page.locator(DETAIL_PANEL);
 
       await page
-        .locator('tr[data-has-context-menu]:has-text("Short issue")')
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
         .first()
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });

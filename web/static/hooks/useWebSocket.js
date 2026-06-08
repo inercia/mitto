@@ -27,8 +27,9 @@ import {
 } from "../lib.js";
 
 import {
-  getLastActiveSessionId,
   setLastActiveSessionId,
+  getLastActiveSessionIdForTab,
+  setLastActiveSessionIdForTab,
   getLastSeenSeq,
   setLastSeenSeq,
   getSingleExpandedGroupMode,
@@ -38,6 +39,8 @@ import {
   getFilterTab,
   getFilterTabGrouping,
   FILTER_TAB,
+  tabScopedGroupKey,
+  getFilterTabForSession,
 } from "../utils/storage.js";
 
 import { playAgentCompletedSound } from "../utils/audio.js";
@@ -3576,77 +3579,86 @@ export function useWebSocket() {
   // In accordion mode, also collapses all other groups
   const expandGroupForSession = useCallback(
     (sessionId, workingDir, acpServer) => {
-      // Build the group key for this session based on current grouping mode
+      const storedSessions = storedSessionsRef.current || [];
+      const storedSession = storedSessions.find(
+        (s) => s.session_id === sessionId,
+      );
+
+      // Determine which tab this session belongs to and use that tab's grouping
+      // mode. Group keys are namespaced per tab (see tabScopedGroupKey in app.js),
+      // so expansion state must be scoped to the session's own tab.
+      const tab = getFilterTabForSession(storedSession);
+      const groupingMode = getFilterTabGrouping(tab);
+
+      // Build the raw group key for this session based on its grouping mode.
       // Must match the key format used by the sidebar rendering in app.js:
       // - server mode: acpServer || "Unknown"
       // - workspace mode: `${workingDir}|${acpServer}`
       // - folder mode: workingDir || "Unknown" (just the folder, no acp server)
-      const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-      let groupKey;
+      let rawGroupKey;
       if (groupingMode === "server") {
-        groupKey = acpServer || "Unknown";
+        rawGroupKey = acpServer || "Unknown";
       } else if (groupingMode === "workspace") {
-        groupKey = `${workingDir || ""}|${acpServer || ""}`;
+        rawGroupKey = `${workingDir || ""}|${acpServer || ""}`;
       } else if (groupingMode === "folder") {
-        groupKey = workingDir || "Unknown";
+        rawGroupKey = workingDir || "Unknown";
       }
 
       // In folder mode, also expand the parent session group if this is a child session.
       // Folder grouping uses both folder keys (working_dir) and parent keys
       // (`parent:<parent_session_id>`) for nested child sessions, so if a child
       // session is selected while its parent group is collapsed it would remain hidden.
-      if (groupingMode === "folder") {
-        const storedSessions = storedSessionsRef.current || [];
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === sessionId,
-        );
-        if (storedSession?.parent_session_id) {
-          const parentGroupKey = `parent:${storedSession.parent_session_id}`;
-          if (!isGroupExpanded(parentGroupKey)) {
-            setGroupExpanded(parentGroupKey, true);
-          }
+      if (groupingMode === "folder" && storedSession?.parent_session_id) {
+        const parentGroupKey = `parent:${storedSession.parent_session_id}`;
+        if (!isGroupExpanded(parentGroupKey)) {
+          setGroupExpanded(parentGroupKey, true);
+        }
 
-          // For cross-workspace children: resolve the root parent's working_dir so
-          // the folder group key matches where the child is actually displayed.
-          // app.js uses resolveRootParent() to group children under their root parent's
-          // folder, so we must use the root parent's working_dir for the groupKey
-          // rather than the child's own working_dir.
-          let rootParent = storedSessions.find(
-            (s) => s.session_id === storedSession.parent_session_id,
+        // For cross-workspace children: resolve the root parent's working_dir so
+        // the folder group key matches where the child is actually displayed.
+        // app.js uses resolveRootParent() to group children under their root parent's
+        // folder, so we must use the root parent's working_dir for the groupKey
+        // rather than the child's own working_dir.
+        let rootParent = storedSessions.find(
+          (s) => s.session_id === storedSession.parent_session_id,
+        );
+        let depth = 0;
+        while (rootParent?.parent_session_id && depth < 10) {
+          const next = storedSessions.find(
+            (s) => s.session_id === rootParent.parent_session_id,
           );
-          let depth = 0;
-          while (rootParent?.parent_session_id && depth < 10) {
-            const next = storedSessions.find(
-              (s) => s.session_id === rootParent.parent_session_id,
-            );
-            if (!next) break;
-            rootParent = next;
-            depth++;
-          }
-          if (rootParent) {
-            groupKey = rootParent.working_dir || "Unknown";
-          }
+          if (!next) break;
+          rootParent = next;
+          depth++;
+        }
+        if (rootParent) {
+          rawGroupKey = rootParent.working_dir || "Unknown";
         }
       }
 
       // Only expand if we have a valid group key and groups are being used
-      if (groupKey && groupingMode && groupingMode !== "none") {
+      if (rawGroupKey && groupingMode && groupingMode !== "none") {
+        const groupKey = tabScopedGroupKey(tab, rawGroupKey);
         // In accordion mode, collapse all other groups first
         if (getSingleExpandedGroupMode()) {
           // Compute all group keys from stored sessions so we can collapse groups
           // that were never explicitly toggled (which default to expanded).
           // getExpandedGroups() only contains explicitly-set groups, so groups that
           // default to expanded would be missed.
+          // Only consider sessions in the SAME tab so we never collapse groups
+          // that belong to a different tab's view.
           const allGroupKeys = new Set();
-          const storedSessions = storedSessionsRef.current || [];
           for (const s of storedSessions) {
+            if (getFilterTabForSession(s) !== tab) continue;
+            let rawKey;
             if (groupingMode === "server") {
-              allGroupKeys.add(s.acp_server || "Unknown");
+              rawKey = s.acp_server || "Unknown";
             } else if (groupingMode === "workspace") {
-              allGroupKeys.add(`${s.working_dir || ""}|${s.acp_server || ""}`);
+              rawKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
             } else if (groupingMode === "folder") {
-              allGroupKeys.add(s.working_dir || "Unknown");
+              rawKey = s.working_dir || "Unknown";
             }
+            if (rawKey) allGroupKeys.add(tabScopedGroupKey(tab, rawKey));
           }
           for (const key of allGroupKeys) {
             if (key !== groupKey && isGroupExpanded(key)) {
@@ -3860,10 +3872,12 @@ export function useWebSocket() {
           const parentKey = `parent:${msg.data.parent_session_id}`;
           setGroupExpanded(parentKey, true);
 
-          // Also expand the folder containing the parent session
-          // Folder key is just the working_dir (no prefix)
+          // Also expand the folder containing the parent session.
+          // Folder keys are namespaced by the filter tab the new session
+          // belongs to, matching the sidebar's tab-scoped keys.
           if (msg.data.working_dir) {
-            const folderKey = msg.data.working_dir;
+            const tab = getFilterTabForSession(msg.data);
+            const folderKey = tabScopedGroupKey(tab, msg.data.working_dir);
             setGroupExpanded(folderKey, true);
           }
         }
@@ -4384,9 +4398,22 @@ export function useWebSocket() {
         console.log("Refreshing session list after reconnect");
         fetchStoredSessions();
       } else {
-        // Initial connection: fetch stored sessions and resume last session
+        // Initial connection: fetch stored sessions and resume the
+        // conversation last viewed *in the persisted filter tab*. The active
+        // filter tab is persisted per-device (localStorage); restoring a
+        // session from a different tab would cause the effect in app.js to
+        // flip the tab away from the user's persisted choice. So the restore
+        // is tab-aware: prefer the persisted tab's last session, then fall
+        // back to the most recent session within that same tab.
         fetchStoredSessions().then((storedSessionsList) => {
-          const lastSessionId = getLastActiveSessionId();
+          const sessions = storedSessionsList || [];
+          const persistedTab = getFilterTab();
+
+          // Candidate: the session last focused in the persisted tab.
+          const lastTabSessionId = getLastActiveSessionIdForTab(persistedTab);
+          const lastTabSession =
+            lastTabSessionId &&
+            sessions.find((s) => s.session_id === lastTabSessionId);
 
           // Lazy-connect: only the active session opens a per-session WebSocket
           // at startup. Background sessions are NOT pre-connected — they connect
@@ -4394,33 +4421,31 @@ export function useWebSocket() {
           // prevents the "startup storm" where every non-archived session resumes
           // its ACP process simultaneously, spiking CPU and memory. Sidebar status
           // for background sessions stays live via the global events WebSocket.
-          if (lastSessionId) {
-            // Verify the stored session still exists before switching to it
-            const sessionExists =
-              storedSessionsList &&
-              storedSessionsList.some((s) => s.session_id === lastSessionId);
-            if (sessionExists) {
-              switchSession(lastSessionId);
-            } else {
-              // Session was deleted or no longer available — clear stale reference
+          if (
+            lastTabSession &&
+            getFilterTabForSession(lastTabSession) === persistedTab
+          ) {
+            switchSession(lastTabSession.session_id);
+          } else {
+            // Stale or missing per-tab session — clear the stale reference and
+            // fall back to the most recent session within the persisted tab.
+            if (lastTabSessionId) {
               console.log(
-                `Last active session ${lastSessionId} no longer exists, clearing localStorage`,
+                `Last active session ${lastTabSessionId} for tab "${persistedTab}" no longer exists, clearing localStorage`,
               );
-              setLastActiveSessionId(null);
-              // Fall back to the most recent session if any exist
-              if (storedSessionsList && storedSessionsList.length > 0) {
-                const mostRecentSession = storedSessionsList[0];
-                switchSession(mostRecentSession.session_id);
-              }
-              // Otherwise: no sessions — show empty state
+              setLastActiveSessionIdForTab(persistedTab, null);
             }
-          } else if (storedSessionsList && storedSessionsList.length > 0) {
-            // No last session in localStorage, but there are stored sessions
-            // Switch to the most recent one (first in the list, sorted by updated_at desc)
-            const mostRecentSession = storedSessionsList[0];
-            switchSession(mostRecentSession.session_id);
+            // sessions is sorted by updated_at desc, so the first match is the
+            // most recent session belonging to the persisted tab.
+            const mostRecentInTab = sessions.find(
+              (s) => getFilterTabForSession(s) === persistedTab,
+            );
+            if (mostRecentInTab) {
+              switchSession(mostRecentInTab.session_id);
+            }
+            // No session in the persisted tab — keep the tab selected and show
+            // the empty state; do NOT jump to a different tab's session.
           }
-          // No stored sessions - show empty state, let user create manually
         });
       }
     };

@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 
@@ -128,18 +128,37 @@ function labelValue(label, value) {
  *  - Create mode (`isCreating` is true): shows editable fields for a new issue
  *    plus a "Save" footer that POSTs to /api/beads/create.
  *
- * Its container mirrors the conversation SessionPanel: a full-screen
- * `fixed inset-0 z-50` layer with a dimming backdrop on the left and the panel
- * sliding in on the right. Clicking the backdrop closes the panel.
+ * The panel uses two stacked layers so it matches the conversation
+ * SessionPanel's dimming while still respecting the beads view bounds:
+ *  - A `fixed inset-0` dimming backdrop covering the WHOLE window (like
+ *    SessionPanel), so the conversations sidebar is dimmed too. It is hidden in
+ *    fullscreen, where the panel fills the whole beads view area.
+ *  - A transparent `absolute inset-0` layer scoped to the beads view that holds
+ *    the panel on the right. Keeping the panel scoped means `expand` fills only
+ *    the beads view area and the panel never covers the sidebar; the backdrop's
+ *    dim shows through the transparent layer on the panel's left.
+ * Clicking anywhere outside the panel closes it.
  */
 function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
-  // When true, the panel expands to the full content width (hiding the issue
-  // list behind it) so a single issue's details are easier to read. Reset to
-  // the normal width once the panel has fully closed.
+  // When true (desktop only), the panel expands to fill the beads view area
+  // (hiding the issue list behind it) so a single issue's details are easier to
+  // read. On mobile the panel is always full-width, so this has no effect there
+  // and the expand toggle is hidden.
   const [fullscreen, setFullscreen] = useState(false);
+  // Phone detection drives the panel width. We deliberately use the user agent
+  // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
+  // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
+  // window, and must still get the desktop layout (a doubled fixed-width panel
+  // with a dimming backdrop), not the full-width phone layout. A viewport-based
+  // rule would misclassify that narrow window as mobile and drop the backdrop.
+  const isMobile = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  }, []);
   const lastIssueRef = useRef(issue);
   const lastCreatingRef = useRef(isCreating);
   if (issue) lastIssueRef.current = issue;
@@ -665,20 +684,30 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
 
   return html`
     <${Fragment}>
-      <div
-        class="fixed inset-0 z-50 flex"
-        onClick=${(e) => { if (e.target === e.currentTarget) handleClose(); }}
-      >
-        <!-- Backdrop on the left (hidden in fullscreen, where the panel fills
-             the whole width) -->
-        ${!fullscreen && html`
-          <div
-            class="flex-1 bg-black/50 properties-backdrop ${isClosing ? "closing" : ""}"
-            onClick=${handleClose}
-          />
-        `}
-        <!-- Panel on the right; expands to full width in fullscreen mode -->
-        <div class="${fullscreen ? "w-full" : "w-80"} bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel ${isClosing ? "closing" : ""}">
+      <!-- Full-window dimming backdrop (like SessionPanel) so the conversations
+           sidebar is dimmed too. fixed escapes the beads view's overflow clip
+           and covers the whole window; z-50 matches SessionPanel. Hidden in
+           fullscreen, where the panel fills the whole beads view area. -->
+      ${!fullscreen && html`
+        <div
+          class="fixed inset-0 z-50 bg-black/50 properties-backdrop ${isClosing ? "closing" : ""}"
+          onClick=${handleClose}
+        />
+      `}
+      <!-- Panel layer scoped to the beads view area (absolute inset-0 within the
+           relative BeadsView root). It is transparent and pointer-events-none so
+           the backdrop's dim shows through on the panel's left and clicks on the
+           empty area fall through to the backdrop; only the panel is interactive
+           (pointer-events-auto). z-[60] keeps the panel above the z-50 backdrop.
+           Scoping the panel here means expand fills only the beads view area and
+           the panel never covers the sidebar.
+             Phone: panel is always full-width.
+             Desktop normal: a doubled fixed width (40rem), capped at 85% of the
+               beads view so the dim always shows on the panel's left and the
+               panel never exceeds the beads view width.
+             Desktop expanded: panel fills the whole beads view area. -->
+      <div class="absolute inset-0 z-[60] flex justify-end pointer-events-none">
+        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
@@ -709,7 +738,7 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
         </div>
         <button
           onClick=${() => setFullscreen(f => !f)}
-          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="${isMobile ? "hidden" : "block"} p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
           title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
         >
           ${fullscreen
@@ -1076,7 +1105,7 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                   </div>
                 `}
                 ${!promptsLoading && prompts.length === 0 && html`
-                  <div class="px-3 py-2 text-sm text-mitto-text-secondary">No beads prompts</div>
+                  <div class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</div>
                 `}
                 ${!promptsLoading && prompts.map(p => {
                   const PromptIcon = getPromptIconOrDefault(p.icon);
@@ -1356,6 +1385,17 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const allStatuses = useMemo(() => [...new Set(issues.map(i => i.status).filter(Boolean))], [issues]);
   const allTypes = useMemo(() => [...new Set(issues.map(i => i.issue_type).filter(Boolean))], [issues]);
 
+  // Map of issue id -> number of issues that name it as their parent. Computed
+  // from the full list (not the filtered view) so an epic's child count stays
+  // accurate even when its children are filtered out of view.
+  const childCountById = useMemo(() => {
+    const counts = {};
+    for (const i of issues) {
+      if (i.parent) counts[i.parent] = (counts[i.parent] || 0) + 1;
+    }
+    return counts;
+  }, [issues]);
+
   const closedCount = useMemo(() => issues.filter(i => i.status === "closed").length, [issues]);
 
   // Permanently delete every closed issue, then refresh the list. The confirm
@@ -1593,7 +1633,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   ];
 
   return html`
-    <div class="flex h-full overflow-hidden">
+    <div class="relative flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
         <button
@@ -1603,7 +1643,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         >
           <${MenuIcon} className="w-6 h-6" />
         </button>
-        <span class="font-semibold text-lg flex-1">Beads — ${workspaceLabel}</span>
+        <span class="font-semibold text-lg flex-1">Tasks — ${workspaceLabel}</span>
       </div>
 
       <div class="flex items-center gap-2 px-4 py-1.5 border-b border-mitto-border flex-shrink-0 flex-wrap">
@@ -1645,32 +1685,45 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary text-sm">No issues found</div>
         `}
         ${!loading && !error && filtered.length > 0 && html`
-          <table class="min-w-full text-sm text-left border-collapse">
-            <thead class="sticky top-0 bg-mitto-sidebar text-xs text-mitto-text-secondary uppercase tracking-wide">
-              <tr>
-                <th class="px-3 py-2 max-w-[7rem]">ID</th>
-                <th class="px-3 py-2">Type</th>
-                <th class="px-3 py-2">Status</th>
-                <th class="px-3 py-2">Title</th>
-                <th class="px-3 py-2">Assignee</th>
-                <th class="px-3 py-2">Priority</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${filtered.map(issue => {
-                // If a conversation is linked to this issue, render the ID as a
-                // link that opens that conversation. stopPropagation keeps the
-                // row's own click (which opens the detail panel) from firing.
-                const linkedSessionId = issueSessionMap[issue.id];
-                return html`
-                <tr
-                  key=${issue.id}
-                  data-has-context-menu
-                  class="border-t border-mitto-border hover:bg-mitto-input-box cursor-pointer select-none transition-colors ${selectedIssue && selectedIssue.id === issue.id ? "bg-mitto-input-box" : ""}"
-                  onClick=${() => selectIssue(issue)}
-                  onContextMenu=${(e) => handleRowContextMenu(e, issue)}
-                >
-                  <td class="px-3 py-2 font-mono text-xs max-w-[7rem] truncate" title=${issue.id}>
+          <div class="space-y-2 p-2">
+            ${filtered.map(issue => {
+              // If a conversation is linked to this issue, render the ID as a
+              // link that opens that conversation. stopPropagation keeps the
+              // card's own click (which opens the detail panel) from firing.
+              const linkedSessionId = issueSessionMap[issue.id];
+              const isSelected = selectedIssue && selectedIssue.id === issue.id;
+              // Treat an issue as an epic when it is typed as one or has at
+              // least one child issue, and give it a purple tint + left accent
+              // so it reads as a distinct container row. A selected card always
+              // wins on background/border.
+              //
+              // The hovered (non-selected) row gets a light translucent red tint
+              // (bg-red-500/20). It is kept light on purpose: the priority/status/
+              // type badges that are themselves red or orange (Critical, High,
+              // blocked, bug) are solid opaque pills, so they retain strong
+              // contrast against the light tint and never blend into the row.
+              const childCount = childCountById[issue.id] || 0;
+              const isEpic = issue.issue_type === "epic" || childCount > 0;
+              const bgTone = isSelected
+                ? "bg-slate-700/30"
+                : isEpic
+                  ? "bg-purple-500/5 hover:bg-red-500/20"
+                  : "bg-slate-700/20 hover:bg-red-500/20";
+              const borderTone = isSelected
+                ? "border-blue-500/60"
+                : isEpic
+                  ? "border-slate-600/50 border-l-4 border-l-purple-500"
+                  : "border-slate-600/50";
+              return html`
+              <div
+                key=${issue.id}
+                data-has-context-menu
+                class="p-3 rounded-lg border cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
+                onClick=${() => selectIssue(issue)}
+                onContextMenu=${(e) => handleRowContextMenu(e, issue)}
+              >
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-mono text-xs max-w-[10rem] truncate" title=${issue.id}>
                     ${linkedSessionId && onOpenConversation
                       ? html`<a
                           href="#"
@@ -1678,17 +1731,25 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                           onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
                         >${issue.id}</a>`
                       : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
-                  </td>
-                  <td class="px-3 py-2 whitespace-nowrap">${typeBadge(issue.issue_type)}</td>
-                  <td class="px-3 py-2 whitespace-nowrap">${statusBadge(issue.status)}</td>
-                  <td class="px-3 py-2 text-mitto-text whitespace-nowrap">${issue.title}</td>
-                  <td class="px-3 py-2 text-mitto-text-secondary text-xs whitespace-nowrap">${issue.owner || ""}</td>
-                  <td class="px-3 py-2 whitespace-nowrap">${priorityBadge(issue.priority)}</td>
-                </tr>
-              `;
-              })}
-            </tbody>
-          </table>
+                  </span>
+                  ${typeBadge(issue.issue_type)}
+                  ${statusBadge(issue.status)}
+                  ${priorityBadge(issue.priority)}
+                  ${childCount > 0 ? html`
+                    <span
+                      class="inline-flex items-center gap-1 text-xs text-purple-300"
+                      title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+                    >
+                      <${LayersIcon} className="w-3.5 h-3.5" />
+                      ${childCount}
+                    </span>
+                  ` : null}
+                </div>
+                <div class="text-sm text-mitto-text mt-1 break-words">${issue.title}</div>
+              </div>
+            `;
+            })}
+          </div>
         `}
       </div>
 
@@ -1717,7 +1778,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 </div>
               `}
               ${!listPromptsLoading && listPrompts.length === 0 && html`
-                <div class="px-3 py-2 text-sm text-mitto-text-secondary">No beads prompts</div>
+                <div class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</div>
               `}
               ${!listPromptsLoading && listPrompts.map(p => {
                 const PromptIcon = getPromptIconOrDefault(p.icon);
@@ -1794,7 +1855,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <button
             onClick=${() => onOpenConfig()}
             class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text ml-2"
-            title="Beads configuration"
+            title="Tasks configuration"
           >
             <${SettingsIcon} className="w-4 h-4" />
           </button>

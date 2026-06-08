@@ -228,6 +228,38 @@ export function setLastActiveSessionId(sessionId) {
   }
 }
 
+/**
+ * Get the last active session ID for a specific filter tab from localStorage.
+ * Each tab (conversations, periodic, archived) remembers its own last-focused
+ * conversation so switching tabs restores the conversation last viewed there.
+ * @param {string} tab - The filter tab (conversations, periodic, archived)
+ * @returns {string|null} The last active session ID for that tab, or null
+ */
+export function getLastActiveSessionIdForTab(tab) {
+  try {
+    return localStorage.getItem(`mitto_last_session_id_${tab}`) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Save the last active session ID for a specific filter tab to localStorage.
+ * @param {string} tab - The filter tab (conversations, periodic, archived)
+ * @param {string|null} sessionId - The session ID to save, or null to clear
+ */
+export function setLastActiveSessionIdForTab(tab, sessionId) {
+  try {
+    if (sessionId) {
+      localStorage.setItem(`mitto_last_session_id_${tab}`, sessionId);
+    } else {
+      localStorage.removeItem(`mitto_last_session_id_${tab}`);
+    }
+  } catch (e) {
+    console.warn("Failed to save per-tab last session ID to localStorage:", e);
+  }
+}
+
 // =============================================================================
 // Queue Dropdown Height Persistence (localStorage)
 // =============================================================================
@@ -743,6 +775,57 @@ export function setFilterTab(tab) {
   } catch (e) {
     console.warn("Failed to save filter tab to localStorage:", e);
   }
+}
+
+// Separator used to prefix a group key with its filter tab. A control
+// character is used so it can never collide with real key content such as
+// filesystem paths, ACP server names, or the "|" workspace-key delimiter.
+const TAB_SCOPE_SEP = "\u0001";
+
+/**
+ * Prefix a raw group key with the filter tab it belongs to so that expand/
+ * collapse state is isolated per tab. Without this, tabs that share group
+ * identifiers (e.g. the same folder path) would interfere with each other —
+ * notably in accordion mode, where switching tabs would collapse groups in
+ * the previously viewed tab.
+ *
+ * Session-scoped keys ("parent:<id>") and the special "__archived__" key are
+ * globally unique and are returned unchanged.
+ * @param {string} tab - The filter tab (conversations, periodic, archived)
+ * @param {string} rawKey - The raw group key (folder path, server, workspace key)
+ * @returns {string} The tab-scoped group key
+ */
+export function tabScopedGroupKey(tab, rawKey) {
+  if (!rawKey) return rawKey;
+  if (rawKey === "__archived__" || rawKey.startsWith("parent:")) return rawKey;
+  return `${tab}${TAB_SCOPE_SEP}${rawKey}`;
+}
+
+/**
+ * Remove the filter-tab prefix from a tab-scoped group key, returning the raw
+ * key. Keys without a prefix (special/session-scoped) are returned unchanged.
+ * @param {string} scopedKey - A key produced by tabScopedGroupKey
+ * @returns {string} The raw group key
+ */
+export function stripTabScope(scopedKey) {
+  if (!scopedKey) return scopedKey;
+  const idx = scopedKey.indexOf(TAB_SCOPE_SEP);
+  if (idx === -1) return scopedKey;
+  return scopedKey.slice(idx + 1);
+}
+
+/**
+ * Derive which filter tab a session belongs to from its state. Mirrors the
+ * tab-filtering logic used throughout the app (archived → archived,
+ * periodic_enabled → periodic, otherwise → conversations).
+ * @param {Object} session - A session object (archived, periodic_enabled flags)
+ * @returns {string} The filter tab for the session
+ */
+export function getFilterTabForSession(session) {
+  if (!session) return FILTER_TAB.CONVERSATIONS;
+  if (session.archived) return FILTER_TAB.ARCHIVED;
+  if (session.periodic_enabled) return FILTER_TAB.PERIODIC;
+  return FILTER_TAB.CONVERSATIONS;
 }
 
 // =============================================================================

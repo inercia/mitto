@@ -2011,3 +2011,55 @@ mitto-action {
     backdrop-filter: none;
   }
 }
+
+
+/* Child session items */
+.session-item--child > div {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+  border-bottom: none !important;
+}
+
+.session-item--child .text-sm {
+  font-size: 0.8125rem;
+}
+
+/* Ensure no borders leak between child sessions */
+.session-item--child {
+  border: none !important;
+}
+
+.session-item--child .session-item-container {
+  border: none !important;
+}
+
+
+
+/* Spawned indicator styling */
+.spawned-indicator {
+  color: #9ca3af;
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+/* Session children container animation */
+.session-children {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.2s ease-out, opacity 0.15s ease-out;
+}
+
+.session-children--expanded {
+  max-height: 500px;
+  opacity: 1;
+}
+
+/* Child count badge */
+.child-count-badge {
+  font-size: 0.6875rem;
+  padding: 0 0.25rem;
+  border-radius: 0.25rem;
+  background-color: rgb(51 65 85 / 0.5);
+  color: #9ca3af;
+}

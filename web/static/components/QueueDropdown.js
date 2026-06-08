@@ -280,9 +280,9 @@ export function QueueDropdown({
                     </span>
                     <span
                       class="queue-item-text flex-1 text-sm text-gray-200 truncate"
-                      title=${msg.message}
+                      title=${msg.prompt_name || msg.message}
                     >
-                      ${msg.title || truncateText(msg.message)}
+                      ${msg.prompt_name || msg.title || truncateText(msg.message)}
                     </span>
                     ${msg.scheduled_time
                       ? html`

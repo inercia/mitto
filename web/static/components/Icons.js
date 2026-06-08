@@ -426,6 +426,28 @@ export function RobotIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Link/chain icon (for linked items and auto-created child conversations)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function LinkIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Person icon for human-created child conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */

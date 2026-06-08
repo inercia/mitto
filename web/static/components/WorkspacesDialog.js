@@ -8,6 +8,7 @@ import {
   pickFolder,
   fetchConfig,
   invalidateConfigCache,
+  openExternalURL,
 } from "../utils/index.js";
 
 import {
@@ -1200,7 +1201,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
   const folderTabs = [
     { id: "general", label: "General" },
     { id: "metadata", label: "Metadata" },
-    { id: "beads", label: "Beads" },
+    { id: "beads", label: "Tasks" },
     { id: "prompts", label: "Prompts" },
     { id: "processors", label: "Processors" },
     { id: "children", label: "Children" },
@@ -1584,12 +1585,24 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                       <!-- Folder Beads tab -->
                       ${activeTab === "beads" && html`
                         <div class="space-y-4">
+                          <p class="text-sm text-gray-400">
+                            Mitto uses${" "}
+                            <a
+                              href="https://github.com/steveyegge/beads"
+                              onClick=${(e) => {
+                                e.preventDefault();
+                                openExternalURL("https://github.com/steveyegge/beads");
+                              }}
+                              class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                              >beads</a
+                            >${" "}(the <code>bd</code> tool) for managing tasks.
+                          </p>
                           <!-- Upstream task system selector (persisted in folders.json) -->
                           <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">Upstream tasks management</label>
                             <p class="text-xs text-gray-500 mb-2">
                               Select the external task system beads syncs with. When set, Pull/Push/Sync
-                              actions appear in the Beads view for this folder.
+                              actions appear in the Tasks view for this folder.
                             </p>
                             <select
                               value=${beadsUpstream}
@@ -1680,39 +1693,39 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge, init
                                           ><${TrashIcon} className="w-4 h-4" /></button>
                                         </div>
                                       `)}
-                                  </div>
 
-                                  <!-- Add a new key -->
-                                  <div class="flex gap-2 items-center pt-2">
-                                    <input
-                                      type="text"
-                                      value=${newBeadsKey}
-                                      onInput=${(e) => setNewBeadsKey(e.target.value)}
-                                      placeholder="jira.url"
-                                      class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                                      style="width: 38%; height: 38px; box-sizing: border-box"
-                                    />
-                                    <input
-                                      type="text"
-                                      value=${newBeadsValue}
-                                      onInput=${(e) => setNewBeadsValue(e.target.value)}
-                                      placeholder="value"
-                                      class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                                      style="height: 38px; box-sizing: border-box"
-                                    />
-                                    <button
-                                      onClick=${async () => {
-                                        const key = newBeadsKey.trim();
-                                        if (!key) return;
-                                        await setBeadsConfigKey(key, newBeadsValue);
-                                        setNewBeadsKey("");
-                                        setNewBeadsValue("");
-                                      }}
-                                      disabled=${beadsConfigSaving || !newBeadsKey.trim()}
-                                      class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
-                                      title="Add key"
-                                      style="height: 38px; box-sizing: border-box"
-                                    ><${PlusIcon} className="w-4 h-4" /></button>
+                                    <!-- Add a new key -->
+                                    <div class="flex gap-2 items-center">
+                                      <input
+                                        type="text"
+                                        value=${newBeadsKey}
+                                        onInput=${(e) => setNewBeadsKey(e.target.value)}
+                                        placeholder="jira.url"
+                                        class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                        style="width: 38%; height: 38px; box-sizing: border-box"
+                                      />
+                                      <input
+                                        type="text"
+                                        value=${newBeadsValue}
+                                        onInput=${(e) => setNewBeadsValue(e.target.value)}
+                                        placeholder="value"
+                                        class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                        style="height: 38px; box-sizing: border-box"
+                                      />
+                                      <button
+                                        onClick=${async () => {
+                                          const key = newBeadsKey.trim();
+                                          if (!key) return;
+                                          await setBeadsConfigKey(key, newBeadsValue);
+                                          setNewBeadsKey("");
+                                          setNewBeadsValue("");
+                                        }}
+                                        disabled=${beadsConfigSaving || !newBeadsKey.trim()}
+                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
+                                        title="Add key"
+                                        style="height: 38px; box-sizing: border-box"
+                                      ><${PlusIcon} className="w-4 h-4" /></button>
+                                    </div>
                                   </div>
 
                                   ${system.length > 0 && html`
