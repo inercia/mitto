@@ -319,6 +319,16 @@
   will-change: opacity, transform;
 }
 
+/* Keep the sidebar filter-tab bar (Conversations) and the Tasks panel toolbar
+   at the same height so the horizontal divider lines between the two
+   side-by-side panels align. Both panel headers already share p-4 + text-lg, so
+   giving these "second rows" an equal explicit height aligns the lower dividers
+   too. Contents are vertically centered within the fixed height. */
+.filter-tab-bar,
+.beads-toolbar {
+  height: 2.5rem;
+}
+
 /* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
 .filter-tab-streaming {
   position: relative;

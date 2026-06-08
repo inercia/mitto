@@ -1604,7 +1604,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
   const contextMenuItems = [
     ...(promptSubmenuItems.length > 0
-      ? [{ label: "New", icon: html`<${PlusIcon} />`, submenu: promptSubmenuItems }]
+      ? [{ label: "Task", icon: html`<${PlusIcon} />`, submenu: promptSubmenuItems }]
       : []),
     ...(otherIssues.length > 0
       ? [
@@ -1646,7 +1646,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <span class="font-semibold text-lg flex-1">Tasks — ${workspaceLabel}</span>
       </div>
 
-      <div class="flex items-center gap-2 px-4 py-1.5 border-b border-mitto-border flex-shrink-0 flex-wrap">
+      <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border flex-shrink-0">
         <select
           class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text"
           value=${statusFilter}
@@ -1697,18 +1697,19 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               // so it reads as a distinct container row. A selected card always
               // wins on background/border.
               //
-              // The hovered (non-selected) row gets a light translucent red tint
-              // (bg-red-500/20). It is kept light on purpose: the priority/status/
-              // type badges that are themselves red or orange (Critical, High,
-              // blocked, bug) are solid opaque pills, so they retain strong
-              // contrast against the light tint and never blend into the row.
+              // The hovered (non-selected) row gets a translucent tint of Mitto's
+              // brand red (bg-red-600/40 — the same red used for delete buttons and
+              // swipe-to-delete). It stays translucent on purpose: the priority/
+              // status/type badges that are themselves red or orange (Critical,
+              // High, blocked, bug) are solid opaque pills, so they retain strong
+              // contrast against the tint and never blend into the row.
               const childCount = childCountById[issue.id] || 0;
               const isEpic = issue.issue_type === "epic" || childCount > 0;
               const bgTone = isSelected
                 ? "bg-slate-700/30"
                 : isEpic
-                  ? "bg-purple-500/5 hover:bg-red-500/20"
-                  : "bg-slate-700/20 hover:bg-red-500/20";
+                  ? "bg-purple-500/5 hover:bg-red-600/40"
+                  : "bg-slate-700/20 hover:bg-red-600/40";
               const borderTone = isSelected
                 ? "border-blue-500/60"
                 : isEpic
