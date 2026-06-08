@@ -59,6 +59,8 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("session.parentId", cel.StringType),
 		cel.Variable("session.isPeriodic", cel.BoolType),
 		cel.Variable("session.isPeriodicConversation", cel.BoolType),
+		cel.Variable("session.hasBeadsIssue", cel.BoolType),
+		cel.Variable("session.beadsIssue", cel.StringType),
 
 		// Parent variables
 		cel.Variable("parent.exists", cel.BoolType),
@@ -319,6 +321,8 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"session.parentId":               ctx.Session.ParentID,
 		"session.isPeriodic":             ctx.Session.IsPeriodic,
 		"session.isPeriodicConversation": ctx.Session.IsPeriodicConversation,
+		"session.hasBeadsIssue":          ctx.Session.HasBeadsIssue,
+		"session.beadsIssue":             ctx.Session.BeadsIssue,
 
 		"parent.exists":    ctx.Parent.Exists,
 		"parent.name":      ctx.Parent.Name,
