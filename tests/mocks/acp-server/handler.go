@@ -348,6 +348,14 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 		s.executeAction(action)
 	}
 
+	// If an rpc_error action fired, send an error response instead of end_turn.
+	if s.pendingRPCError != "" {
+		errMsg := s.pendingRPCError
+		s.pendingRPCError = ""
+		s.log("Returning RPC error: %s", errMsg)
+		return s.sendError(req.ID, -32000, errMsg, nil)
+	}
+
 	// Return proper PromptResponse with stopReason (matches SDK's PromptResponse type)
 	return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
 }
@@ -432,7 +440,16 @@ func (s *MockACPServer) executeAction(action Action) {
 		time.Sleep(time.Duration(action.DelayMs) * time.Millisecond)
 
 	case "error":
-		s.log("Simulating error: %s", action.Message)
+		s.log("Simulating error (no-op log only): %s", action.Message)
+
+	case "rpc_error":
+		// Set the pending RPC error; handlePrompt will send an error response after all actions.
+		msg := action.Message
+		if msg == "" {
+			msg = "Simulated error for testing"
+		}
+		s.pendingRPCError = msg
+		s.log("Queued RPC error response: %s", msg)
 
 	case "replay":
 		s.executeReplay(action.File, delay)

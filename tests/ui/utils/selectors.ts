@@ -59,6 +59,10 @@ export const selectors = {
   newSessionButton: 'button[title="New Conversation"]',
   sessionItem: (name: string) =>
     `.session-item-container:has-text("${name}")`,
+  // Active session: the clickable inner div gets border-l-blue-500 when isActive
+  activeSessionItem: '[data-session-id][class*="border-l-blue-500"]',
+  activeSessionItemById: (id: string) =>
+    `[data-session-id="${id}"][class*="border-l-blue-500"]`,
 
   // Dialogs
   settingsDialog: '[role="dialog"]',
@@ -84,6 +88,19 @@ export const selectors = {
   // Scroll to bottom button
   scrollToBottomWrapper: '.scroll-to-bottom-wrapper',
   scrollToBottomButton: '.scroll-to-bottom-btn',
+
+  // Message list — empty state
+  // Shown when messages.length === 0 (no active session or brand-new session)
+  emptyStateFavicon: 'img[alt="Mitto"]',
+  emptyStateHeading: 'p.text-2xl',
+
+  // Message list — date separator
+  // Appears between messages of different calendar days (or at the oldest message)
+  dateSeparator: '.date-separator',
+
+  // Message list — error bubble and retry button
+  errorMessageBubble: '.error-message-bubble',
+  retryButton: 'button[title="Retry — resend the last prompt"]',
 } as const;
 
 /**

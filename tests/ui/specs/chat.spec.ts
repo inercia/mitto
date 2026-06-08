@@ -439,6 +439,169 @@ test.describe("Message Send Error Handling", () => {
   });
 });
 
+test.describe("Message List Rendering", () => {
+  /**
+   * Empty State
+   * Verifies the welcome/empty-state placeholder (favicon + "Welcome to Mitto"
+   * heading) is rendered when there are no messages, and disappears once a
+   * conversation has content.
+   *
+   * Strategy: intercept the /api/sessions list to return an empty array so the
+   * app has no sessions to auto-select.  This forces activeSessionId to null and
+   * messages to [], which is the condition that renders the empty state.
+   * We then remove the intercept, create a new session, and confirm the empty
+   * state disappears.
+   */
+  test("empty state shows when no session is selected and hides after session starts", async ({
+    page,
+    selectors,
+    timeouts,
+    apiUrl,
+  }) => {
+    // Clear per-tab session-ID keys so the app starts with no remembered session.
+    await page.addInitScript(() => {
+      localStorage.removeItem("mitto_last_session_id");
+      localStorage.removeItem("mitto_last_session_id_conversations");
+      localStorage.removeItem("mitto_last_session_id_periodic");
+      localStorage.removeItem("mitto_last_session_id_archived");
+      localStorage.removeItem("mitto_conversation_filter_tab");
+    });
+
+    // Intercept the sessions list endpoint so the app sees zero sessions and
+    // cannot auto-select any existing session.
+    await page.route(`**${apiUrl("/api/sessions")}`, async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "[]",
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.goto("/");
+
+    // Wait for the messages container to be rendered
+    await expect(
+      page.locator(selectors.messagesContainer).first(),
+    ).toBeVisible({ timeout: timeouts.appReady });
+
+    // The empty state must be visible: favicon img + "Welcome to Mitto" heading
+    const faviconImg = page.locator(selectors.emptyStateFavicon).first();
+    await expect(faviconImg).toBeVisible({ timeout: timeouts.appReady });
+
+    const heading = page.locator(selectors.emptyStateHeading).first();
+    await expect(heading).toContainText("Welcome to Mitto", {
+      timeout: timeouts.appReady,
+    });
+
+    // Remove the intercept so session creation works normally.
+    await page.unroute(`**${apiUrl("/api/sessions")}`);
+
+    // Ensure the Conversations tab is selected, then create a new session.
+    // A new session adds a system message, which makes messages.length > 0
+    // and hides the empty-state placeholder.
+    const conversationsTab = page.getByRole("tab", { name: "Conversations" });
+    if (await conversationsTab.isVisible()) {
+      const isSelected = await conversationsTab.getAttribute("aria-selected");
+      if (isSelected !== "true") await conversationsTab.click();
+    }
+    await page.locator(selectors.newSessionButton).click();
+
+    // Wait for the session chat input to appear (session is now active)
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
+      timeout: timeouts.appReady,
+    });
+
+    // The empty-state heading must now be gone
+    await expect(heading).not.toBeVisible({ timeout: timeouts.shortAction });
+  });
+
+  /**
+   * Date Separator — "Today"
+   * After sending a message, at least one `.date-separator` with label "Today"
+   * must appear in the message list.  The separator is rendered for same-day
+   * messages, so one "Today" separator is the minimum expected count.
+   *
+   * We always start from a fresh session (zero previous messages) so the
+   * separator is guaranteed to be at the very top of the (short) message list
+   * and never scrolled out of view by a long pre-existing history.
+   */
+  test("date separator 'Today' appears after sending a message", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    await helpers.navigateAndWait(page);
+    await helpers.createFreshSession(page);
+
+    const testMessage = helpers.uniqueMessage("DateSep");
+
+    await helpers.sendMessage(page, testMessage);
+    await helpers.waitForUserMessage(page, testMessage);
+    await helpers.waitForAgentResponse(page);
+
+    // At least one "Today" date separator must be visible
+    const separator = page
+      .locator(selectors.dateSeparator)
+      .filter({ hasText: "Today" })
+      .first();
+    await expect(separator).toBeVisible({ timeout: timeouts.shortAction });
+  });
+
+  /**
+   * Retry Button — error messages expose a retry control
+   * Trigger an RPC error from the mock ACP server (via the "trigger error"
+   * keyword pattern in error-response.json), verify the error bubble and
+   * retry button appear, click retry, and confirm a new user-message prompt
+   * is sent (the retry text appears in the chat).
+   *
+   * Error messages are not persisted to the session store, so this test
+   * must complete its assertions before any WebSocket reconnect can occur
+   * (which would clear non-persisted messages).  The mock ACP server returns
+   * the error synchronously, so the bubble appears within milliseconds of
+   * the user message being visible.
+   */
+  test("retry button appears on error message and re-sends the prompt", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    await helpers.navigateAndEnsureSession(page);
+
+    // Send a message that matches the mock ACP server's error trigger pattern.
+    // The mock server returns an RPC error instead of a normal response,
+    // which the backend formats into an "error" role message in the UI.
+    const triggerText = helpers.uniqueMessage("trigger error");
+    await helpers.sendMessage(page, triggerText);
+
+    // Wait for the user message to appear first
+    await helpers.waitForUserMessage(page, triggerText);
+
+    // The error bubble appears almost immediately after the user message
+    // (the mock server replies synchronously with no delay).
+    const errorBubble = page.locator(selectors.errorMessageBubble).first();
+    await expect(errorBubble).toBeVisible({ timeout: timeouts.shortAction });
+
+    // The retry button must be present next to the error bubble
+    const retryBtn = page.locator(selectors.retryButton).first();
+    await expect(retryBtn).toBeVisible({ timeout: timeouts.shortAction });
+
+    // Click retry — this re-sends the original user message
+    await retryBtn.click();
+
+    // The original user-message text must appear again (as a new user message).
+    // Count == 2 confirms the original send and the retry both created user messages.
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: triggerText }),
+    ).toHaveCount(2, { timeout: timeouts.shortAction });
+  });
+});
+
 test.describe("Scroll to Bottom Button", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndEnsureSession(page);

@@ -9,7 +9,7 @@
       },
       "actions": [
         {
-          "type": "error",
+          "type": "rpc_error",
           "message": "Simulated error for testing purposes"
         }
       ]

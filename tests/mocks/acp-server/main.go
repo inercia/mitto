@@ -59,18 +59,19 @@ type SessionState struct {
 
 // MockACPServer implements a mock ACP server
 type MockACPServer struct {
-	mu           sync.Mutex // Protects sessions map
-	sessions     map[string]*SessionState
-	scenarios    map[string]*Scenario
-	scenarioDir  string
-	defaultDelay time.Duration
-	verbose      bool
-	sessionID    string
-	initialized  bool
-	currentMode  string // Current session mode ID
-	currentModel string // Current session model ID
-	reader       *bufio.Reader
-	writer       io.Writer
+	mu              sync.Mutex // Protects sessions map
+	sessions        map[string]*SessionState
+	scenarios       map[string]*Scenario
+	scenarioDir     string
+	defaultDelay    time.Duration
+	verbose         bool
+	sessionID       string
+	initialized     bool
+	currentMode     string // Current session mode ID
+	currentModel    string // Current session model ID
+	pendingRPCError string // Set by rpc_error action; causes handlePrompt to return an error response
+	reader          *bufio.Reader
+	writer          io.Writer
 }
 
 // Default modes provided by the mock server
