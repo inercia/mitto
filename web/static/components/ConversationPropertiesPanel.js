@@ -689,7 +689,7 @@ export function ConversationPropertiesPanel({
         />
         <!-- Panel on the right -->
         <div
-          class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
+          class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
             ? "closing"
             : ""}"
         >
@@ -714,7 +714,7 @@ export function ConversationPropertiesPanel({
     return html`
       <!-- Header -->
       <div
-        class="p-4 border-b border-slate-700 flex items-center justify-between flex-shrink-0"
+        class="p-4 border-b border-slate-700 flex items-center justify-between shrink-0"
       >
         <h2 class="font-semibold text-lg">Properties</h2>
         <button
@@ -959,7 +959,7 @@ export function ConversationPropertiesPanel({
             Workspace
           </label>
           <div class="flex items-center gap-2 text-sm text-slate-300">
-            <${FolderIcon} className="w-4 h-4 flex-shrink-0 text-slate-500" />
+            <${FolderIcon} className="w-4 h-4 shrink-0 text-slate-500" />
             ${canRevealInFinder() && sessionInfo?.working_dir
               ? html`
                   <button
@@ -1005,7 +1005,7 @@ export function ConversationPropertiesPanel({
               html`
                 <div class="flex items-center justify-between">
                   <button
-                    class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
+                    class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
                     "true"
                       ? "bg-blue-600"
                       : "bg-slate-600"}"
@@ -1070,7 +1070,7 @@ export function ConversationPropertiesPanel({
             </label>
             <div class="flex items-center gap-2 text-sm text-slate-300">
               <${PeriodicFilledIcon}
-                className="w-4 h-4 flex-shrink-0 text-blue-400"
+                className="w-4 h-4 shrink-0 text-blue-400"
               />
               <span>${formatFrequency(periodicConfig.frequency)}</span>
             </div>
@@ -1098,7 +1098,7 @@ export function ConversationPropertiesPanel({
                 id="properties-fresh-context-checkbox-${sessionId}"
                 checked=${!!periodicConfig.fresh_context}
                 onInput=${handleFreshContextChange}
-                class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0"
+                class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
                 data-testid="properties-fresh-context-checkbox"
               />
               <label

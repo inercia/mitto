@@ -10,7 +10,12 @@
           "layer",
           "screen",
           "variants",
-          "responsive"
+          "responsive",
+          "source",
+          "config",
+          "custom-variant",
+          "theme",
+          "plugin"
         ]
       }
     ],

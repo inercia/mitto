@@ -116,7 +116,7 @@ function renderMarkdown(text) {
 function commentBody(text) {
   const m = renderMarkdown(text);
   if (m) return html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: m }} />`;
-  return html`<pre class="whitespace-pre-wrap break-words text-sm text-mitto-text">${text || ""}</pre>`;
+  return html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${text || ""}</pre>`;
 }
 
 // ---- Detail side panel ------------------------------------------------------
@@ -128,7 +128,7 @@ function labelValue(label, value) {
   return html`
     <div>
       <div class="text-xs text-mitto-text-secondary mb-0.5">${label}</div>
-      <div class="text-sm text-mitto-text break-words">${value}</div>
+      <div class="text-sm text-mitto-text wrap-break-word">${value}</div>
     </div>
   `;
 }
@@ -837,7 +837,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
            relative BeadsView root). It is transparent and pointer-events-none so
            the backdrop's dim shows through on the panel's left and clicks on the
            empty area fall through to the backdrop; only the panel is interactive
-           (pointer-events-auto). z-[60] keeps the panel above the z-50 backdrop.
+           (pointer-events-auto). z-60 keeps the panel above the z-50 backdrop.
            Scoping the panel here means expand fills only the beads view area and
            the panel never covers the sidebar.
              Phone: panel is always full-width.
@@ -845,9 +845,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                beads view so the dim always shows on the panel's left and the
                panel never exceeds the beads view width.
              Desktop expanded: panel fills the whole beads view area. -->
-      <div class="absolute inset-0 z-[60] flex justify-end pointer-events-none">
-        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
+      <div class="absolute inset-0 z-60 flex justify-end pointer-events-none">
+        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
+      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
             ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>`
@@ -868,7 +868,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 `
                 : html`
                   <h2
-                    class="font-semibold text-base text-mitto-text break-words cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
+                    class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
                     onClick=${startEditTitle}
                     title="Click to edit"
                   >${data.title}</h2>
@@ -877,7 +877,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </div>
         <button
           onClick=${() => setFullscreen(f => !f)}
-          class="${isMobile ? "hidden" : "block"} p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="${isMobile ? "hidden" : "block"} p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text shrink-0"
           title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
         >
           ${fullscreen
@@ -886,7 +886,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </button>
         <button
           onClick=${handleClose}
-          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text shrink-0"
           title="Close"
         >
           <${CloseIcon} className="w-5 h-5" />
@@ -1005,11 +1005,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   `
                   : html`
                     <div
-                      class="text-sm text-mitto-text break-words cursor-text hover:text-mitto-text-secondary transition-colors flex items-center gap-2"
+                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-secondary transition-colors flex items-center gap-2"
                       onClick=${startEditAssignee}
                       title="Click to edit"
                     >
-                      ${savingAssignee && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin text-mitto-text-secondary flex-shrink-0" />`}
+                      ${savingAssignee && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin text-mitto-text-secondary shrink-0" />`}
                       ${data.assignee
                         ? html`<span>${data.assignee}</span>`
                         : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
@@ -1049,7 +1049,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     ${data.description
                       ? (md
                           ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                          : html`<pre class="whitespace-pre-wrap break-words text-sm text-mitto-text">${data.description}</pre>`)
+                          : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${data.description}</pre>`)
                       : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
                     }
                   </div>
@@ -1118,7 +1118,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                           type="button"
                           onClick=${() => mutateDep("remove", d.id)}
                           disabled=${depsBusy}
-                          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
                           title="Remove dependency"
                         >
                           <${CloseIcon} className="w-3.5 h-3.5" />
@@ -1149,7 +1149,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         type="button"
                         onClick=${handleAddDep}
                         disabled=${depsBusy || !newDepId.trim()}
-                        class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                        class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
                         title="Add dependency"
                       >
                         ${depsBusy
@@ -1258,7 +1258,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       </div>
 
       ${creating && html`
-        <div class="flex justify-end gap-3 p-3 border-t border-mitto-border flex-shrink-0">
+        <div class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0">
           <button
             type="button"
             onClick=${handleClose}
@@ -1280,7 +1280,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       `}
 
       ${!creating && data && html`
-        <div class="flex items-center gap-1 p-4 border-t border-mitto-border flex-shrink-0 relative">
+        <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0 relative">
           <div class="relative" ref=${promptsRef}>
             <button
               type="button"
@@ -1310,7 +1310,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     title=${p.description || p.name}
                     class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
                   >
-                    <${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-70" />
+                    <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
                     <span class="truncate flex-1">${p.name}</span>
                   </button>
                 `;
@@ -1959,10 +1959,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   return html`
     <div class="relative flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
+      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
-          class="md:hidden p-2 -ml-2 rounded-lg hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="md:hidden p-2 -ml-2 rounded-lg hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text shrink-0"
           title="Show conversations"
         >
           <${MenuIcon} className="w-6 h-6" />
@@ -1970,8 +1970,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <span class="font-semibold text-lg flex-1">Tasks — ${workspaceLabel}</span>
       </div>
 
-      <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border flex-shrink-0">
-        <div class="inline-flex rounded border border-mitto-border overflow-hidden flex-shrink-0" role="group" aria-label="Filter by status">
+      <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
+        <div class="inline-flex rounded border border-mitto-border overflow-hidden shrink-0" role="group" aria-label="Filter by status">
           ${BEADS_STATUS_TOGGLES.map((t, i) => html`
             <button
               type="button"
@@ -2051,7 +2051,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 onContextMenu=${(e) => handleRowContextMenu(e, issue)}
               >
                 <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-mono text-xs max-w-[10rem] truncate" title=${issue.id}>
+                  <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
                     ${linkedSessionId && onOpenConversation
                       ? html`<a
                           href="#"
@@ -2073,7 +2073,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                     </span>
                   ` : null}
                 </div>
-                <div class="text-sm text-mitto-text mt-1 break-words">${issue.title}</div>
+                <div class="text-sm text-mitto-text mt-1 wrap-break-word">${issue.title}</div>
               </div>
             `;
             })}
@@ -2081,7 +2081,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         `}
       </div>
 
-      <div class="flex items-center gap-1 p-4 border-t border-mitto-border flex-shrink-0">
+      <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
         <button
           onClick=${openCreate}
           class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
@@ -2118,7 +2118,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                   title=${p.description || p.name}
                   class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
                 >
-                  <${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-70" />
+                  <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
                   <span class="truncate flex-1">${p.name}</span>
                 </button>
               `;

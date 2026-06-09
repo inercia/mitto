@@ -1853,7 +1853,7 @@ export function ChatInput({
       onDrop=${handleDrop}
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
-      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
+      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-slate-700 shrink-0 relative ${isDragOver
         ? "ring-2 ring-blue-500 ring-inset"
         : ""}"
     >
@@ -1953,7 +1953,7 @@ export function ChatInput({
                     >
                       <!-- Resize handle at top edge -->
                       <div
-                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
+                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
                           ? "bg-slate-600/50"
                           : ""}"
                         ...${promptHandleProps}
@@ -1963,7 +1963,7 @@ export function ChatInput({
                       </div>
 
                       <!-- Title -->
-                      <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                      <div class="px-4 pt-2 pb-2 shrink-0">
                         <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                           ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
                         </p>
@@ -1989,7 +1989,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                       <!-- Counter + Buttons on same row -->
                       <div
-                        class="flex items-center justify-between px-4 pt-2 pb-3 flex-shrink-0"
+                        class="flex items-center justify-between px-4 pt-2 pb-3 shrink-0"
                       >
                         <span
                           class="text-xs ${textboxValue.length > 15000
@@ -2039,7 +2039,7 @@ ${activeUIPrompt.text || ""}</textarea
                       >
                         <!-- Resize handle at top edge -->
                         <div
-                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
                             ? "bg-slate-600/50"
                             : ""}"
                           ...${promptHandleProps}
@@ -2049,7 +2049,7 @@ ${activeUIPrompt.text || ""}</textarea
                         </div>
 
                         <!-- Title -->
-                        <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                        <div class="px-4 pt-2 pb-2 shrink-0">
                           <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                             ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
                           </p>
@@ -2072,7 +2072,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Submit / Cancel / Toggle buttons -->
                         <div
-                          class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 flex-shrink-0"
+                          class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 shrink-0"
                         >
                           <div class="flex gap-2 items-center">
                             <${PromptCollapseToggle}
@@ -2135,7 +2135,7 @@ ${activeUIPrompt.text || ""}</textarea
                       >
                         <!-- Resize handle at top edge -->
                         <div
-                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
                             ? "bg-slate-600/50"
                             : ""}"
                           ...${promptHandleProps}
@@ -2145,7 +2145,7 @@ ${activeUIPrompt.text || ""}</textarea
                         </div>
 
                         <!-- Question -->
-                        <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                        <div class="px-4 pt-2 pb-2 shrink-0">
                           <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                             ${activeUIPrompt.question?.replace(/\\n/g, '\n')}
                           </p>
@@ -2165,7 +2165,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 class="w-full text-left px-4 py-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3 group"
                               >
                                 <span
-                                  class="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
+                                  class="shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
                                   0
                                     ? "bg-blue-600 text-white"
                                     : "bg-slate-600/80 text-gray-300 group-hover:bg-slate-500"} transition-colors"
@@ -2218,7 +2218,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Toggle button to show/hide chat input -->
                         <div
-                          class="flex items-center justify-end px-4 pt-2 pb-3 flex-shrink-0"
+                          class="flex items-center justify-end px-4 pt-2 pb-3 shrink-0"
                         >
                           <${PromptCollapseToggle}
                             collapsed=${isPromptCollapsed}
@@ -2268,7 +2268,7 @@ ${activeUIPrompt.text || ""}</textarea
             class="bg-amber-900/40 border border-amber-700/50 text-amber-200 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2"
           >
             <svg
-              class="w-4 h-4 animate-spin flex-shrink-0"
+              class="w-4 h-4 animate-spin shrink-0"
               fill="none"
               viewBox="0 0 24 24"
             >
@@ -2309,7 +2309,7 @@ ${activeUIPrompt.text || ""}</textarea
                   title=${btn.response}
                 >
                   <svg
-                    class="w-3.5 h-3.5 flex-shrink-0"
+                    class="w-3.5 h-3.5 shrink-0"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -2335,7 +2335,7 @@ ${activeUIPrompt.text || ""}</textarea
             class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
             <svg
-              class="w-4 h-4 flex-shrink-0"
+              class="w-4 h-4 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2377,7 +2377,7 @@ ${activeUIPrompt.text || ""}</textarea
             class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
             <svg
-              class="w-4 h-4 flex-shrink-0"
+              class="w-4 h-4 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2419,7 +2419,7 @@ ${activeUIPrompt.text || ""}</textarea
             class="bg-orange-900/50 border border-orange-700 text-orange-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
             <svg
-              class="w-4 h-4 flex-shrink-0"
+              class="w-4 h-4 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2586,7 +2586,7 @@ ${activeUIPrompt.text || ""}</textarea
                   ${pendingFiles.map(
                     (file) => html`
                       <div key=${file.id} class="relative group flex items-center gap-2 bg-slate-700 rounded-lg px-3 py-2 border border-slate-600">
-                        <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
                         <span class="text-sm text-gray-300 max-w-[150px] truncate" title=${file.name}>${file.name}</span>
@@ -2772,7 +2772,7 @@ ${activeUIPrompt.text || ""}</textarea
                         style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
                         <!-- Filter input -->
-                        <div class="px-2 pt-2 pb-1 flex-shrink-0">
+                        <div class="px-2 pt-2 pb-1 shrink-0">
                           <input
                             ref=${promptFilterInputRef}
                             type="text"
@@ -2913,15 +2913,15 @@ ${activeUIPrompt.text || ""}</textarea
                                 >
                                   ${(() => {
                                     if (shiftHeld) {
-                                      return html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      return html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                                       </svg>`;
                                     }
                                     const PromptIcon = getPromptIcon(prompt.icon);
                                     if (PromptIcon) {
-                                      return html`<${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-60" />`;
+                                      return html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`;
                                     }
-                                    return html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    return html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                                       </svg>`;
                                   })()}
@@ -2929,7 +2929,7 @@ ${activeUIPrompt.text || ""}</textarea
                                   <span
                                     class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
                                       prompt.source,
-                                    ).bgColor} text-white/90 flex-shrink-0"
+                                    ).bgColor} text-white/90 shrink-0"
                                     title=${getBadgeInfo(prompt.source).title}
                                   >
                                     ${getBadgeInfo(prompt.source).label}
@@ -2977,7 +2977,7 @@ ${activeUIPrompt.text || ""}</textarea
                             `;
                           })()}
                         </div>
-                        <div class="px-3 py-1.5 border-t border-slate-700 flex-shrink-0">
+                        <div class="px-3 py-1.5 border-t border-slate-700 shrink-0">
                           <span class="text-[10px] ${shiftHeld ? 'text-blue-400' : 'text-gray-500'}">
                             ${shiftHeld ? '✏️ Will insert into editor' : '⇧ Hold Shift to edit before sending'}
                           </span>

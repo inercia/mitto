@@ -58,7 +58,7 @@ export function ToastContainer({ toasts, onDismiss }) {
               </div>
               ${toast.message &&
               html`
-                <div class="text-xs opacity-90 ml-7 break-words">
+                <div class="text-xs opacity-90 ml-7 wrap-break-word">
                   ${toast.message}
                 </div>
               `}

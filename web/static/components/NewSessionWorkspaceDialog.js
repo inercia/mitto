@@ -282,7 +282,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                               : ""}"
                           >
                             <div
-                              class="w-8 h-8 flex-shrink-0 ${currentIndex <
+                              class="w-8 h-8 shrink-0 ${currentIndex <
                               WORKSPACE_FILTER_THRESHOLD
                                 ? "flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm"
                                 : ""}"

@@ -841,8 +841,8 @@ export function SessionList({
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
               ${groupingMode === "server"
-                ? html`<${ServerIcon} className="w-4 h-4 flex-shrink-0" />`
-                : html`<${LayersIcon} className="w-4 h-4 flex-shrink-0" />`}
+                ? html`<${ServerIcon} className="w-4 h-4 shrink-0" />`
+                : html`<${LayersIcon} className="w-4 h-4 shrink-0" />`}
               <span class="text-left truncate">${group.label}</span>
               ${groupingMode === "workspace" &&
               group.workingDir &&
@@ -853,7 +853,7 @@ export function SessionList({
                   customCode=${workspace?.code}
                   customName=${workspace?.name}
                   acpServer=${group.acpServer}
-                  className="flex-shrink-0"
+                  className="shrink-0"
                   hideAbbreviation=${true}
                 />
               `}
@@ -862,7 +862,7 @@ export function SessionList({
               hasStreamingSession &&
               html`
                 <span
-                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                  class="w-2 h-2 bg-blue-400 rounded-full shrink-0 streaming-indicator"
                   title="Agent responding in this group"
                 ></span>
               `}
@@ -1046,7 +1046,7 @@ export function SessionList({
               >
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
-              <${FolderIcon} className="w-4 h-4 flex-shrink-0" />
+              <${FolderIcon} className="w-4 h-4 shrink-0" />
               <span class="text-left truncate" title=${folder.workingDir}>
                 ${folder.label}
               </span>
@@ -1055,7 +1055,7 @@ export function SessionList({
               hasFolderStreaming &&
               html`
                 <span
-                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                  class="w-2 h-2 bg-blue-400 rounded-full shrink-0 streaming-indicator"
                   title="Agent responding in this folder"
                 ></span>
               `}

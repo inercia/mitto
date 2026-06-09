@@ -612,10 +612,10 @@ export function SessionPanel({
         />
         <!-- Panel -->
         <div
-          class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel ${isClosing ? "closing" : ""}"
+          class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel ${isClosing ? "closing" : ""}"
         >
           <!-- Header -->
-          <div class="p-4 border-b border-slate-700 flex items-center justify-between flex-shrink-0">
+          <div class="p-4 border-b border-slate-700 flex items-center justify-between shrink-0">
             <h2 class="font-semibold text-lg">Conversation</h2>
             <button
               class="p-1 hover:bg-slate-700 rounded transition-colors"
@@ -627,7 +627,7 @@ export function SessionPanel({
           </div>
 
           <!-- Tab switcher -->
-          <div class="flex border-b border-slate-700 flex-shrink-0">
+          <div class="flex border-b border-slate-700 shrink-0">
             <button
               class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "properties" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
               onClick=${() => handleTabChange("properties")}
@@ -815,12 +815,12 @@ export function SessionPanel({
                       title=${file.old_path ? file.old_path + " → " + file.path : file.path}
                     >
                       <span
-                        class="flex-shrink-0 w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${statusColors[file.status] || "bg-slate-600 text-white"}"
+                        class="shrink-0 w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${statusColors[file.status] || "bg-slate-600 text-white"}"
                       >${file.status}</span>
                       <span class="flex-1 text-sm truncate ${file.status === '?' ? 'text-slate-400 italic' : 'text-slate-300'} group-hover:text-slate-100">${file.path}</span>
                       ${(file.additions > 0 || file.deletions > 0) &&
                       html`
-                        <span class="flex-shrink-0 text-xs font-mono whitespace-nowrap">
+                        <span class="shrink-0 text-xs font-mono whitespace-nowrap">
                           ${file.additions > 0 && html`<span class="text-green-400">+${file.additions}</span>`}
                           ${file.additions > 0 && file.deletions > 0 && html`<span class="text-slate-600">/</span>`}
                           ${file.deletions > 0 && html`<span class="text-red-400">-${file.deletions}</span>`}
@@ -958,7 +958,7 @@ export function SessionPanel({
         <div>
           <label class="block text-sm font-medium text-slate-400 mb-2">Workspace</label>
           <div class="flex items-center gap-2 text-sm text-slate-300">
-            <${FolderIcon} className="w-4 h-4 flex-shrink-0 text-slate-500" />
+            <${FolderIcon} className="w-4 h-4 shrink-0 text-slate-500" />
             ${canRevealInFinder() && sessionInfo?.working_dir
               ? html`<button type="button" class="truncate text-left hover:text-blue-400 hover:underline transition-colors cursor-pointer" title="Open in Finder: ${sessionInfo.working_dir}" onClick=${() => revealInFinder(sessionInfo.working_dir)}>${sessionInfo.working_dir}</button>`
               : html`<span class="truncate" title=${sessionInfo?.working_dir || ""}>${sessionInfo?.working_dir || "Unknown"}</span>`}
@@ -987,7 +987,7 @@ export function SessionPanel({
           <div>
             <label class="block text-sm font-medium text-slate-400 mb-2">Periodic Prompts</label>
             <div class="flex items-center gap-2 text-sm text-slate-300">
-              <${PeriodicFilledIcon} className="w-4 h-4 flex-shrink-0 text-blue-400" />
+              <${PeriodicFilledIcon} className="w-4 h-4 shrink-0 text-blue-400" />
               <span>${formatFrequency(periodicConfig.frequency)}</span>
             </div>
             ${periodicConfig.last_sent_at && html`<p class="mt-1 text-xs text-slate-500">Last run: ${new Date(periodicConfig.last_sent_at).toLocaleString()}</p>`}
@@ -1119,7 +1119,7 @@ export function SessionPanel({
             ${configOption.type === "toggle" && html`
               <div class="flex items-center justify-between">
                 <button
-                  class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${configOption.current_value === "true" ? "bg-blue-600" : "bg-slate-600"}"
+                  class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${configOption.current_value === "true" ? "bg-blue-600" : "bg-slate-600"}"
                   role="switch"
                   aria-checked=${configOption.current_value === "true"}
                   onClick=${() => onSetConfigOption?.(configOption.id, configOption.current_value === "true" ? "false" : "true")}

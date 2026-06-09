@@ -1734,7 +1734,7 @@ function App() {
 
       <!-- Sidebar (hidden on mobile by default) -->
       <div
-        class="hidden md:block bg-mitto-sidebar border-r border-slate-700 flex-shrink-0 relative"
+        class="hidden md:block bg-mitto-sidebar border-r border-slate-700 shrink-0 relative"
         style="width: ${sidebarWidth}px;"
       >
         <${SessionList}
@@ -1781,7 +1781,7 @@ function App() {
       ${showSidebar &&
       html`
         <div class="md:hidden fixed inset-0 z-40 flex">
-          <div class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl">
+          <div class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl">
             <${SessionList}
               activeSessions=${activeSessions}
               storedSessions=${storedSessions}
@@ -1851,7 +1851,7 @@ function App() {
       >
         <!-- Header -->
         <div
-          class="relative p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 flex-shrink-0"
+          class="relative p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 shrink-0"
         >
           <button
             class="md:hidden p-2 hover:bg-slate-700 rounded-lg transition-colors"
@@ -1873,7 +1873,7 @@ function App() {
           <div class="ml-auto flex items-center gap-2">
             <!-- Status indicator dot (matches session list style) -->
             <span
-              class="w-2 h-2 rounded-full flex-shrink-0 ${isStreaming ? "bg-blue-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
+              class="w-2 h-2 rounded-full shrink-0 ${isStreaming ? "bg-blue-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
               title=${isStreaming ? "Streaming" : connected ? "Connected" : "Not connected"}
             ></span>
             <!-- Unified side panel toggle -->
@@ -1974,7 +1974,7 @@ function App() {
         `}
 
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
-        <div class="relative flex-shrink-0">
+        <div class="relative shrink-0">
           <!-- Queue Dropdown (floating overlay above input) -->
           <${QueueDropdown}
             isOpen=${showQueueDropdown}

@@ -61,7 +61,7 @@ function NamedPromptPill({ message }) {
         class="named-prompt-pill flex items-center gap-2 px-4 py-2 rounded-full"
       >
         <svg
-          class="w-4 h-4 flex-shrink-0"
+          class="w-4 h-4 shrink-0"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -126,7 +126,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
           onClick=${isCollapsible ? () => setIsCollapsed(!isCollapsed) : undefined}
         >
           <span
-            class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 flex-shrink-0"
+            class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 shrink-0"
             >${isModelError ? "⚠️" : "💭"}</span>
           <div class="min-w-0">
             <span
@@ -330,7 +330,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           ${onRetry &&
           html`<button
             type="button"
-            class="flex-shrink-0 p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
+            class="shrink-0 p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
             onClick=${onRetry}
             title="Retry — resend the last prompt"
           >

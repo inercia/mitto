@@ -3,7 +3,29 @@
  * Run: npm run tailwind
  */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@source "../static";
+@config "../../tailwind.config.js";
+
+/* Re-implement v3 darkMode:"class" strategy for v4.
+ * v1 theme: :root is dark, .light overrides to light.
+ * v2 theme: .dark is dark, :not(.dark) is light.
+ * Both strategies are preserved as-is (unification is Phase 1).
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* v3 Preflight compat: restore gray-200 as the default border color.
+ * In v4, preflight changed the default border color from gray-200 to currentColor.
+ * The app has a handful of bare `border` classes (no explicit border-{color}) in ChatInput
+ * that relied on the v3 default. This reset preserves identical visual output.
+ */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
 

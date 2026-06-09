@@ -134,12 +134,12 @@ export function PeriodicPromptSelector({
           ? "bg-blue-600/20 text-white"
           : "text-gray-200 hover:bg-slate-600/50"}"
       >
-        <svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
         <span class="truncate flex-1">${prompt.name}</span>
         ${isSelected && html`
-          <svg class="w-4 h-4 flex-shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+          <svg class="w-4 h-4 shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
           </svg>
         `}
@@ -157,7 +157,7 @@ export function PeriodicPromptSelector({
     >
       <div class="h-full px-4 flex items-center gap-3 text-sm">
         <!-- Label -->
-        <span class="text-slate-600 dark:text-gray-300 flex-shrink-0 font-medium">Prompt:</span>
+        <span class="text-slate-600 dark:text-gray-300 shrink-0 font-medium">Prompt:</span>
 
         <!-- Dropdown trigger button -->
         <button
@@ -172,7 +172,7 @@ export function PeriodicPromptSelector({
           data-testid="periodic-prompt-selector-button"
         >
           <span class="truncate flex-1 ${selectedPromptName ? "text-slate-900 dark:text-white" : "text-slate-400 dark:text-gray-500"}">${displayName}</span>
-          <svg class="w-4 h-4 flex-shrink-0 text-slate-400 transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-4 h-4 shrink-0 text-slate-400 transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
         </button>
@@ -182,7 +182,7 @@ export function PeriodicPromptSelector({
           <button
             type="button"
             onClick=${onTogglePromptArea}
-            class="flex-shrink-0 p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-slate-600"
+            class="shrink-0 p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-slate-600"
             title=${isPromptAreaVisible
               ? "Hide message input"
               : "Show message input"}

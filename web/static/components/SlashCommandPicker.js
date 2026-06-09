@@ -140,7 +140,7 @@ export function SlashCommandPicker({
               onMouseEnter=${() => handleMouseEnter(index)}
             >
               <span
-                class="slash-command-name font-mono text-sm text-blue-300 flex-shrink-0"
+                class="slash-command-name font-mono text-sm text-blue-300 shrink-0"
               >
                 /${cmd.name}
               </span>

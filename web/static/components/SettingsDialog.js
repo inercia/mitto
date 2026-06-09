@@ -734,7 +734,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                         placeholder="value"
                         onInput=${(e) =>
                           updateEnvVar(idx, "value", e.target.value)}
-                        class="flex-[2] px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        class="flex-2 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
                       <button
                         type="button"
@@ -2052,7 +2052,7 @@ export function SettingsDialog({
         <div class="flex flex-1 min-h-0 overflow-hidden">
           <!-- Sidebar Navigation -->
           <nav
-            class="w-44 flex-shrink-0 border-r border-slate-700 py-2 overflow-y-auto"
+            class="w-44 shrink-0 border-r border-slate-700 py-2 overflow-y-auto"
           >
             ${navItems.map(
               (item) => html`
@@ -2064,7 +2064,7 @@ export function SettingsDialog({
                     ? "text-blue-400 bg-blue-500/10 border-l-2 border-blue-400"
                     : "text-gray-400 hover:text-white hover:bg-slate-700/50 border-l-2 border-transparent"}"
                 >
-                  <${item.icon} className="w-4 h-4 flex-shrink-0" />
+                  <${item.icon} className="w-4 h-4 shrink-0" />
                   <span class="truncate">${item.label}</span>
                 </button>
               `,
@@ -2252,7 +2252,7 @@ export function SettingsDialog({
                                     >
                                       ${!isRCFile && html`
                                         <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
-                                          className="w-4 h-4 text-gray-400 flex-shrink-0"
+                                          className="w-4 h-4 text-gray-400 shrink-0"
                                         />
                                       `}
                                       <div class="flex-1 min-w-0">

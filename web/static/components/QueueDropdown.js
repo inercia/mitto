@@ -274,7 +274,7 @@ export function QueueDropdown({
                     class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0 group"
                   >
                     <span
-                      class="queue-item-number text-xs text-gray-500 font-mono w-4 flex-shrink-0"
+                      class="queue-item-number text-xs text-gray-500 font-mono w-4 shrink-0"
                     >
                       ${index + 1}
                     </span>
@@ -287,7 +287,7 @@ export function QueueDropdown({
                     ${msg.scheduled_time
                       ? html`
                           <span
-                            class="text-xs text-amber-400 flex-shrink-0 font-mono"
+                            class="text-xs text-amber-400 shrink-0 font-mono"
                             title=${new Date(
                               msg.scheduled_time,
                             ).toLocaleString()}
@@ -297,7 +297,7 @@ export function QueueDropdown({
                         `
                       : null}
                     <div
-                      class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                     >
                       <button
                         type="button"

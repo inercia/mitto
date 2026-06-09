@@ -400,7 +400,7 @@ export function PeriodicFrequencyPanel({
                 type="button"
                 onClick=${handleIconClick}
                 disabled=${isTriggering || isStreaming}
-                class="flex-shrink-0 p-1.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-colors ${isTriggering ||
+                class="shrink-0 p-1.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-colors ${isTriggering ||
                 isStreaming
                   ? "opacity-50 cursor-not-allowed"
                   : "cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700"}"
@@ -437,11 +437,11 @@ export function PeriodicFrequencyPanel({
               </button>
             `
           : html`<${PeriodicFilledIcon}
-              className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0"
+              className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0"
             />`}
 
         <!-- Run every label -->
-        <span class="text-slate-600 dark:text-gray-300 flex-shrink-0"
+        <span class="text-slate-600 dark:text-gray-300 shrink-0"
           >Run every</span
         >
 
@@ -476,7 +476,7 @@ export function PeriodicFrequencyPanel({
         <!-- Time picker (only shown for daily schedules) -->
         ${localUnit === "days" &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 flex-shrink-0"
+          <span class="text-slate-600 dark:text-gray-300 shrink-0"
             >at</span
           >
           <input
@@ -498,7 +498,7 @@ export function PeriodicFrequencyPanel({
         <!-- Next run time -->
         ${nextTimeDisplay &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 text-xs flex-shrink-0">
+          <span class="text-slate-600 dark:text-gray-300 text-xs shrink-0">
             Next: ${nextTimeDisplay}
           </span>
         `}
@@ -537,7 +537,7 @@ export function PeriodicFrequencyPanel({
             id="fresh-context-checkbox-${sessionId}"
             checked=${freshContext}
             onInput=${handleFreshContextChange}
-            class="w-4 h-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0"
+            class="w-4 h-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
             data-testid="fresh-context-checkbox"
           />
           <label

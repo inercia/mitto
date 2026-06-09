@@ -475,7 +475,7 @@ export function SessionItem({
                   ${isSpawned
                     ? html`
                           <span
-                            class="spawned-indicator flex-shrink-0"
+                            class="spawned-indicator shrink-0"
                             title="Spawned from another conversation"
                             >↳</span
                           >
@@ -487,33 +487,33 @@ export function SessionItem({
                   >
                   ${session.child_origin === "auto"
                     ? html`
-                        <span class="flex-shrink-0 text-amber-400" title="Auto-created child">
+                        <span class="shrink-0 text-amber-400" title="Auto-created child">
                           <${LightningIcon} className="w-4 h-4" />
                         </span>
                       `
                     : session.child_origin === "mcp"
                       ? html`
-                          <span class="flex-shrink-0 text-blue-400" title="Created by agent">
+                          <span class="shrink-0 text-blue-400" title="Created by agent">
                             <${RobotIcon} className="w-4 h-4" />
                           </span>
                         `
                       : session.child_origin === "human"
                         ? html`
-                            <span class="flex-shrink-0 text-green-400" title="Manually created child">
+                            <span class="shrink-0 text-green-400" title="Manually created child">
                               <${PersonIcon} className="w-4 h-4" />
                             </span>
                           `
                         : null}
                   ${session.isWaitingForChildren
                     ? html`
-                        <span class="flex-shrink-0 text-yellow-400 animate-pulse" title="Waiting for child conversations">
+                        <span class="shrink-0 text-yellow-400 animate-pulse" title="Waiting for child conversations">
                           <${HourglassIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}
                   ${session.isWaitingForUserInput
                     ? html`
-                        <span class="flex-shrink-0 text-purple-400 animate-pulse" title="Waiting for user input">
+                        <span class="shrink-0 text-purple-400 animate-pulse" title="Waiting for user input">
                           <${QuestionMarkIcon} className="w-4 h-4" />
                         </span>
                       `
@@ -523,7 +523,7 @@ export function SessionItem({
               ${isStreaming || hasChildStreaming
                 ? html`
                     <span
-                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
+                      class="w-2 h-2 bg-blue-400 rounded-full shrink-0 ${hasChildStreaming
                         ? "child-streaming-indicator"
                         : "streaming-indicator"}"
                       title=${hasChildStreaming
@@ -534,14 +534,14 @@ export function SessionItem({
                 : isActiveSession
                   ? html`
                       <span
-                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                        class="w-2 h-2 bg-green-400 rounded-full shrink-0"
                         title="Active"
                       ></span>
                     `
                   : !isArchived
                     ? html`
                         <span
-                          class="w-2 h-2 bg-amber-400 rounded-full flex-shrink-0"
+                          class="w-2 h-2 bg-amber-400 rounded-full shrink-0"
                           title="Not connected"
                         ></span>
                       `
@@ -587,7 +587,7 @@ export function SessionItem({
               <div
                 class="flex items-center gap-1 ${showActions
                   ? "opacity-100"
-                  : "opacity-0"} transition-opacity flex-shrink-0"
+                  : "opacity-0"} transition-opacity shrink-0"
               >
                 ${isSpawned
                   ? html`<button

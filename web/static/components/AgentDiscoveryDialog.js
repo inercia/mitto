@@ -234,13 +234,13 @@ export function AgentDiscoveryDialog({
                       onClick=${() => !alreadyConfigured && toggleAgent(agent.dir_name)}
                     >
                       ${alreadyConfigured
-                        ? html`<div class="mt-0.5 w-4 h-4 flex-shrink-0"></div>`
+                        ? html`<div class="mt-0.5 w-4 h-4 shrink-0"></div>`
                         : html`<input
                             type="checkbox"
                             checked=${selected.has(agent.dir_name)}
                             onChange=${() => toggleAgent(agent.dir_name)}
                             onClick=${(e) => e.stopPropagation()}
-                            class="mt-0.5 accent-blue-500 flex-shrink-0"
+                            class="mt-0.5 accent-blue-500 shrink-0"
                           />`
                       }
                       <div class="flex-1 min-w-0">

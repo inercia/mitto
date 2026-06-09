@@ -208,7 +208,7 @@ export function AgentPlanPanel({
                     class="agent-plan-item flex items-start gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0"
                   >
                     <span
-                      class="flex-shrink-0 mt-0.5 ${statusDisplay.colorClass}"
+                      class="shrink-0 mt-0.5 ${statusDisplay.colorClass}"
                     >
                       ${statusDisplay.icon}
                     </span>
@@ -219,7 +219,7 @@ export function AgentPlanPanel({
                     entry.priority !== "medium" &&
                     html`
                       <span
-                        class="flex-shrink-0 text-xs px-1.5 py-0.5 rounded border ${getPriorityBadge(
+                        class="shrink-0 text-xs px-1.5 py-0.5 rounded border ${getPriorityBadge(
                           entry.priority,
                         )}"
                       >
