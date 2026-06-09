@@ -319,10 +319,10 @@ func (s *Server) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // beadsUpdateRequest is the JSON body for POST /api/beads/update.
-// Description, Title, Priority and Assignee are pointers so an omitted field
-// (nil) is distinguishable from an intentional value (an empty description or
-// assignee clears the field; an empty title is rejected; priority 0 is a valid
-// "Critical" value).
+// Description, Title, Priority, Assignee and Notes are pointers so an omitted
+// field (nil) is distinguishable from an intentional value (an empty
+// description, assignee or notes clears the field; an empty title is rejected;
+// priority 0 is a valid "Critical" value).
 type beadsUpdateRequest struct {
 	WorkingDir  string  `json:"working_dir"`
 	ID          string  `json:"id"`
@@ -330,14 +330,16 @@ type beadsUpdateRequest struct {
 	Title       *string `json:"title,omitempty"`
 	Priority    *int    `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
 	Assignee    *string `json:"assignee,omitempty"` // pointer so an empty string (clear assignee) is distinguishable from absent
+	Notes       *string `json:"notes,omitempty"`    // pointer so an empty string (clear notes) is distinguishable from absent
 }
 
 // handleBeadsUpdate handles POST /api/beads/update.
-// Runs "bd update <id> [--title <title>] [-d <description>] [--priority N] [-a <assignee>]"
-// in the workspace directory. At least one of title, description, priority or
-// assignee must be supplied. When the description is an empty string, the
-// --allow-empty-description flag is added so the description can be cleared; an
-// empty title is rejected; an empty assignee clears the assignee.
+// Runs "bd update <id> [--title <title>] [-d <description>] [--priority N] [-a <assignee>] [--notes <notes>]"
+// in the workspace directory. At least one of title, description, priority,
+// assignee or notes must be supplied. When the description is an empty string,
+// the --allow-empty-description flag is added so the description can be cleared;
+// an empty title is rejected; an empty assignee clears the assignee; an empty
+// notes value clears the notes.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -363,8 +365,8 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	if req.Description == nil && req.Title == nil && req.Priority == nil && req.Assignee == nil {
-		http.Error(w, "title, description, priority or assignee is required", http.StatusBadRequest)
+	if req.Description == nil && req.Title == nil && req.Priority == nil && req.Assignee == nil && req.Notes == nil {
+		http.Error(w, "title, description, priority, assignee or notes is required", http.StatusBadRequest)
 		return
 	}
 	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
@@ -386,7 +388,60 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Priority:    req.Priority,
 		Assignee:    req.Assignee,
+		Notes:       req.Notes,
 	}); err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		return
+	}
+
+	writeJSONOK(w, beadsActionResponse{OK: true})
+}
+
+// beadsCommentRequest is the JSON body for POST /api/beads/comment.
+type beadsCommentRequest struct {
+	WorkingDir string `json:"working_dir"`
+	ID         string `json:"id"`
+	Text       string `json:"text"`
+}
+
+// handleBeadsComment handles POST /api/beads/comment.
+// Runs "bd comment <id> -- <text>" in the workspace directory, adding a comment
+// to the issue. The text must be non-empty.
+// Requires authentication via the standard auth middleware (same as other API endpoints).
+func (s *Server) handleBeadsComment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var req beadsCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.WorkingDir == "" {
+		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		return
+	}
+	if !filepath.IsAbs(req.WorkingDir) {
+		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "text must not be empty", http.StatusBadRequest)
+		return
+	}
+	if !s.isKnownWorkspaceDir(req.WorkingDir) {
+		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.beadsClient().Comment(r.Context(), req.WorkingDir, req.ID, req.Text); err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}

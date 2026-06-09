@@ -48,6 +48,7 @@ type UpdateParams struct {
 	Description *string
 	Priority    *int
 	Assignee    *string
+	Notes       *string
 }
 
 // DepParams carries the fields for Client.Dep.
@@ -69,6 +70,7 @@ type Client interface {
 	Cleanup(ctx context.Context, dir string) (int, error)
 	SetStatus(ctx context.Context, dir, id, action string) error
 	Update(ctx context.Context, dir string, p UpdateParams) error
+	Comment(ctx context.Context, dir, id, text string) error
 	Dep(ctx context.Context, dir string, p DepParams) error
 	ConfigShow(ctx context.Context, dir string) (map[string]string, error)
 	ConfigSet(ctx context.Context, dir, key, value string) error

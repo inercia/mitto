@@ -163,7 +163,18 @@ func (c *cliClient) Update(ctx context.Context, dir string, p UpdateParams) erro
 	if p.Assignee != nil {
 		args = append(args, "-a", *p.Assignee)
 	}
+	if p.Notes != nil {
+		args = append(args, "--notes", *p.Notes)
+	}
 	_, err := c.runRaw(ctx, defaultTimeout, dir, args...)
+	return err
+}
+
+// Comment adds a comment to an issue: "bd comment <id> -- <text>". The "--"
+// terminator stops flag parsing so comment text beginning with a dash is
+// treated as positional text rather than a flag.
+func (c *cliClient) Comment(ctx context.Context, dir, id, text string) error {
+	_, err := c.runRaw(ctx, defaultTimeout, dir, "comment", id, "--", text)
 	return err
 }
 

@@ -743,6 +743,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.handleBeadsDelete)
 	mux.HandleFunc(apiPrefix+"/api/beads/status", s.handleBeadsStatus)
 	mux.HandleFunc(apiPrefix+"/api/beads/update", s.handleBeadsUpdate)
+	mux.HandleFunc(apiPrefix+"/api/beads/comment", s.handleBeadsComment)
 	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.handleBeadsDep)
 	mux.HandleFunc(apiPrefix+"/api/beads/config", s.handleBeadsConfig)
 	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.handleBeadsUpstream)
