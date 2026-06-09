@@ -1578,6 +1578,11 @@ func (a *sessionManagerAdapter) GetWorkspace(workingDir string) *configPkg.Works
 	return a.sm.GetWorkspace(workingDir)
 }
 
+// InvalidateWorkspaceRC clears the cached .mittorc for a workspace dir.
+func (a *sessionManagerAdapter) InvalidateWorkspaceRC(workingDir string) {
+	a.sm.InvalidateWorkspaceRC(workingDir)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================

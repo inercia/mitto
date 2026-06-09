@@ -889,6 +889,7 @@ func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.
 	return time.Time{}
 }
 func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings { return nil }
+func (m *mockSessionManager) InvalidateWorkspaceRC(workingDir string)                  {}
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -3100,6 +3101,7 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceRCLastModified(workingDir 
 func (m *mockSessionManagerForWorkspaces) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForWorkspaces) InvalidateWorkspaceRC(workingDir string) {}
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -3390,6 +3392,280 @@ func TestListWorkspaces_FilterInvalid(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Workspace Update Tests
+// =============================================================================
+
+// mockSessionManagerForWorkspaceUpdate extends mockSessionManagerForWorkspaces with
+// GetWorkspaceByUUID support and InvalidateWorkspaceRC tracking.
+type mockSessionManagerForWorkspaceUpdate struct {
+	workspaces       []config.WorkspaceSettings
+	invalidateCalled []string
+}
+
+func (m *mockSessionManagerForWorkspaceUpdate) GetSession(sessionID string) BackgroundSession {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForWorkspaceUpdate) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForWorkspaceUpdate) CloseSession(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) ResumeSession(string, string, string) (BackgroundSession, error) {
+	return nil, nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionCreated(string, string, string, string, string, string) {
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerForWorkspaceUpdate) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaces() []config.WorkspaceSettings {
+	return m.workspaces
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
+	for i := range m.workspaces {
+		if m.workspaces[i].UUID == uuid {
+			return &m.workspaces[i]
+		}
+	}
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspacePrompts(string) []config.WebPrompt {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspacePromptsDirs(string) []string { return nil }
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceRCLastModified(string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspace(string) *config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) InvalidateWorkspaceRC(workingDir string) {
+	m.invalidateCalled = append(m.invalidateCalled, workingDir)
+}
+
+// setupWorkspaceUpdateServer creates a server + store with a registered session for workspace-update tests.
+// Returns the server, store, session ID, and workspace dir.
+func setupWorkspaceUpdateServer(t *testing.T, wsDir string) (*Server, *session.Store, string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	callerID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller",
+		ACPServer:  "test-server",
+		WorkingDir: wsDir,
+	}); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	mockSM := &mockSessionManagerForWorkspaceUpdate{
+		workspaces: []config.WorkspaceSettings{
+			{UUID: "ws-1", Name: "Test WS", WorkingDir: wsDir, ACPServer: "test-server"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession failed: %v", err)
+	}
+
+	return srv, store, callerID
+}
+
+func TestWorkspaceUpdate_MetadataOnly(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	desc := "My project"
+	grp := "Engineering"
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID:      callerID,
+		Description: &desc,
+		Group:       &grp,
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUpdate returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error: %s", output.Error)
+	}
+
+	// Verify written to disk.
+	rc, err := config.LoadWorkspaceRC(wsDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil || rc.Metadata == nil {
+		t.Fatal("expected non-nil metadata")
+	}
+	if rc.Metadata.Description != desc {
+		t.Errorf("description: got %q, want %q", rc.Metadata.Description, desc)
+	}
+	if rc.Metadata.Group != grp {
+		t.Errorf("group: got %q, want %q", rc.Metadata.Group, grp)
+	}
+	if output.WorkingDir != wsDir {
+		t.Errorf("working_dir: got %q, want %q", output.WorkingDir, wsDir)
+	}
+
+	// Verify invalidate was called.
+	mockSM := srv.sessionManager.(*mockSessionManagerForWorkspaceUpdate)
+	if len(mockSM.invalidateCalled) == 0 {
+		t.Error("expected InvalidateWorkspaceRC to be called")
+	}
+}
+
+func TestWorkspaceUpdate_UserDataSchema(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+		UserDataSchema: []WorkspaceUserDataField{
+			{Name: "Ticket", Description: "JIRA ticket", Type: "url"},
+			{Name: "Sprint", Type: "string"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUpdate returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error: %s", output.Error)
+	}
+
+	rc, err := config.LoadWorkspaceRC(wsDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil || rc.Metadata == nil || rc.Metadata.UserDataSchema == nil {
+		t.Fatal("expected non-nil user_data schema")
+	}
+	fields := rc.Metadata.UserDataSchema.Fields
+	if len(fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(fields))
+	}
+	if fields[0].Name != "Ticket" || fields[0].Type != "url" {
+		t.Errorf("field[0]: got {%s %s}, want {Ticket url}", fields[0].Name, fields[0].Type)
+	}
+	if fields[1].Name != "Sprint" || fields[1].Type != "string" {
+		t.Errorf("field[1]: got {%s %s}, want {Sprint string}", fields[1].Name, fields[1].Type)
+	}
+}
+
+func TestWorkspaceUpdate_SchemaMerge(t *testing.T) {
+	wsDir := t.TempDir()
+	// Write initial .mittorc with one field.
+	if err := os.WriteFile(wsDir+"/.mittorc", []byte("metadata:\n  user_data:\n    - name: Sprint\n      type: string\n"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+		UserDataSchema: []WorkspaceUserDataField{
+			{Name: "Ticket", Type: "url"},
+		},
+		// merge=true by default
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUpdate returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error: %s", output.Error)
+	}
+
+	rc, _ := config.LoadWorkspaceRC(wsDir)
+	if rc == nil || rc.Metadata == nil || rc.Metadata.UserDataSchema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	// Should have Sprint (existing) + Ticket (new).
+	names := make(map[string]bool)
+	for _, f := range rc.Metadata.UserDataSchema.Fields {
+		names[f.Name] = true
+	}
+	if !names["Sprint"] || !names["Ticket"] {
+		t.Errorf("expected both Sprint and Ticket, got fields: %v", rc.Metadata.UserDataSchema.Fields)
+	}
+}
+
+func TestWorkspaceUpdate_InvalidType(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+		UserDataSchema: []WorkspaceUserDataField{
+			{Name: "Field", Type: "badtype"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure for invalid type, got success")
+	}
+	if output.Error == "" {
+		t.Error("expected non-empty error message")
+	}
+}
+
+func TestWorkspaceUpdate_NoFieldsProvided(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure when no fields provided, got success")
+	}
+}
+
+func TestWorkspaceUpdate_MissingSelfID(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, _ := setupWorkspaceUpdateServer(t, wsDir)
+
+	desc := "x"
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		Description: &desc,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure for missing self_id")
+	}
+	if output.Error != "self_id is required" {
+		t.Errorf("expected 'self_id is required', got %q", output.Error)
+	}
+}
+
 func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 	// Create parent1 with a child, then try to delete child from parent2
 	srv, store, _, childIDs := setupParentChildSessions(t, 1)
@@ -3503,6 +3779,7 @@ func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebProm
 func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string             { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
 func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
+func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -4198,6 +4475,7 @@ func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.
 	return time.Time{}
 }
 func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings { return nil }
+func (m *mockSessionManagerForChildren) InvalidateWorkspaceRC(string)                  {}
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -4398,6 +4676,7 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceRCLastModified(string
 func (m *mockSessionManagerForChildrenMutable) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForChildrenMutable) InvalidateWorkspaceRC(string) {}
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -4703,6 +4982,7 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaceRCLastModified(string) tim
 func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -6180,6 +6460,7 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceRCLastModified(string) ti
 func (m *mockSessionManagerCrossWorkspace) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerCrossWorkspace) InvalidateWorkspaceRC(string) {}
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.

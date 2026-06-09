@@ -173,6 +173,8 @@ type SessionManager interface {
 	GetWorkspaceRCLastModified(workingDir string) time.Time
 	// GetWorkspace returns the first workspace matching the working directory.
 	GetWorkspace(workingDir string) *config.WorkspaceSettings
+	// InvalidateWorkspaceRC clears the cached .mittorc for a workspace dir.
+	InvalidateWorkspaceRC(workingDir string)
 }
 
 // PeriodicRunner interface for triggering immediate periodic prompt delivery.
@@ -1027,6 +1029,22 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 			"'archived' returns only workspaces where all conversations are archived (excludes workspaces with zero conversations). " +
 			"Omit filter to return all workspaces. Always available.",
 	}, s.createListWorkspacesHandler())
+
+	// mitto_workspace_update tool - always available
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_workspace_update",
+		Description: "Update a workspace's .mittorc configuration: the descriptive metadata (description, url, group) " +
+			"and/or the user_data schema (the field definitions for per-conversation user data). " +
+			"Supports partial updates — only provided fields change. For description/url/group, omit a field to leave it unchanged, " +
+			"or pass an empty string to clear it. " +
+			"user_data_schema is a list of {name, description, type} where type is one of 'string' (default), 'url', or 'filename'. " +
+			"Set user_data_schema_merge to true (default) to merge fields by name with the existing schema, " +
+			"or false to replace the whole schema (an empty list clears it). " +
+			"By default targets the caller's own workspace; specify 'workspace' (a UUID from mitto_workspace_list) " +
+			"to target another workspace (requires the 'Can interact with other workspaces' flag and user confirmation). " +
+			"Note: .mittorc is a version-controlled file in the workspace root. " +
+			selfIDNote,
+	}, s.handleWorkspaceUpdate)
 }
 
 // selfIDNote is the standard note about self_id for tools that require session identification.
@@ -1311,6 +1329,36 @@ type WorkspaceListOutput struct {
 	Workspaces []WorkspaceInfo `json:"workspaces"`
 }
 
+// WorkspaceUserDataField is a single field definition for the user_data schema.
+type WorkspaceUserDataField struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"` // "string" (default), "url", or "filename"
+}
+
+// WorkspaceUpdateInput is the input for the mitto_workspace_update tool.
+// UserDataSchema uses a plain slice: nil means absent (leave schema untouched);
+// a non-nil empty slice (JSON []) means "provided but empty" (clears schema when merge=false).
+type WorkspaceUpdateInput struct {
+	SelfID              string                   `json:"self_id"`
+	Workspace           string                   `json:"workspace,omitempty"`
+	Description         *string                  `json:"description,omitempty"`
+	URL                 *string                  `json:"url,omitempty"`
+	Group               *string                  `json:"group,omitempty"`
+	UserDataSchema      []WorkspaceUserDataField `json:"user_data_schema,omitempty"`
+	UserDataSchemaMerge *bool                    `json:"user_data_schema_merge,omitempty"`
+}
+
+// WorkspaceUpdateOutput is the output for the mitto_workspace_update tool.
+type WorkspaceUpdateOutput struct {
+	Success       bool                      `json:"success"`
+	Error         string                    `json:"error,omitempty"`
+	WorkspaceUUID string                    `json:"workspace_uuid,omitempty"`
+	WorkingDir    string                    `json:"working_dir,omitempty"`
+	Updated       []string                  `json:"updated,omitempty"`
+	Metadata      *config.WorkspaceMetadata `json:"metadata,omitempty"`
+}
+
 // createListWorkspacesHandler creates the handler for mitto_workspace_list tool.
 func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListInput, WorkspaceListOutput] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input WorkspaceListInput) (*mcp.CallToolResult, WorkspaceListOutput, error) {
@@ -1395,6 +1443,205 @@ func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListI
 
 		return nil, WorkspaceListOutput{Workspaces: infos}, nil
 	}
+}
+
+func (s *Server) handleWorkspaceUpdate(ctx context.Context, req *mcp.CallToolRequest, input WorkspaceUpdateInput) (*mcp.CallToolResult, WorkspaceUpdateOutput, error) {
+	if input.SelfID == "" {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "self_id is required"}, nil
+	}
+
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
+		}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	sm := s.sessionManager
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "session store not available"}, nil
+	}
+	if sm == nil {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "session manager not available"}, nil
+	}
+
+	callerMeta, err := store.GetMetadata(realSessionID)
+	if err != nil {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("failed to get caller session metadata: %v", err),
+		}, nil
+	}
+
+	// Resolve target workspace directory and UUID.
+	var targetDir, targetUUID string
+	if input.Workspace != "" {
+		targetWS := sm.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, WorkspaceUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("workspace not found: %s", input.Workspace),
+			}, nil
+		}
+		targetDir = targetWS.WorkingDir
+		targetUUID = targetWS.UUID
+		if targetWS.WorkingDir != callerMeta.WorkingDir {
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, WorkspaceUpdateOutput{
+					Success: false,
+					Error: fmt.Sprintf("cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+						session.FlagCanInteractOtherWorkspaces),
+				}, nil
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "modify workspace configuration", targetWS); err != nil {
+				return nil, WorkspaceUpdateOutput{Success: false, Error: err.Error()}, nil
+			}
+		}
+	} else {
+		targetDir = callerMeta.WorkingDir
+		for _, ws := range sm.GetWorkspaces() {
+			if ws.WorkingDir == targetDir {
+				targetUUID = ws.UUID
+				break
+			}
+		}
+	}
+
+	if targetDir == "" {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "target workspace has no working directory"}, nil
+	}
+
+	// Load current state.
+	curRC, _ := config.LoadWorkspaceRC(targetDir)
+	var curDesc, curURL, curGroup string
+	var curFields []config.UserDataSchemaField
+	if curRC != nil && curRC.Metadata != nil {
+		curDesc = curRC.Metadata.Description
+		curURL = curRC.Metadata.URL
+		curGroup = curRC.Metadata.Group
+		if curRC.Metadata.UserDataSchema != nil {
+			curFields = curRC.Metadata.UserDataSchema.Fields
+		}
+	}
+
+	var updated []string
+
+	// Update metadata fields if any pointer is non-nil.
+	if input.Description != nil || input.URL != nil || input.Group != nil {
+		desc := curDesc
+		if input.Description != nil {
+			desc = *input.Description
+		}
+		u := curURL
+		if input.URL != nil {
+			u = *input.URL
+		}
+		grp := curGroup
+		if input.Group != nil {
+			grp = *input.Group
+		}
+		if err := config.SaveWorkspaceMetadata(targetDir, desc, u, grp); err != nil {
+			return nil, WorkspaceUpdateOutput{Success: false, Error: fmt.Sprintf("failed to save metadata: %v", err)}, nil
+		}
+		if input.Description != nil {
+			updated = append(updated, "description")
+		}
+		if input.URL != nil {
+			updated = append(updated, "url")
+		}
+		if input.Group != nil {
+			updated = append(updated, "group")
+		}
+	}
+
+	// Update schema if user_data_schema was present in the input (nil = absent).
+	if input.UserDataSchema != nil {
+		merge := input.UserDataSchemaMerge == nil || *input.UserDataSchemaMerge
+
+		// Convert and validate provided fields.
+		newFields := make([]config.UserDataSchemaField, 0, len(input.UserDataSchema))
+		for _, f := range input.UserDataSchema {
+			t := config.UserDataAttributeType(f.Type).DefaultType()
+			if !t.IsValid() {
+				return nil, WorkspaceUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("invalid user_data field type %q for field %q (allowed: string, url, filename)", f.Type, f.Name),
+				}, nil
+			}
+			newFields = append(newFields, config.UserDataSchemaField{
+				Name:        f.Name,
+				Description: f.Description,
+				Type:        t,
+			})
+		}
+
+		var finalFields []config.UserDataSchemaField
+		if merge {
+			// Start from existing fields; replace by name or append.
+			finalFields = make([]config.UserDataSchemaField, len(curFields))
+			copy(finalFields, curFields)
+			for _, nf := range newFields {
+				replaced := false
+				for i, ef := range finalFields {
+					if ef.Name == nf.Name {
+						finalFields[i] = nf
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					finalFields = append(finalFields, nf)
+				}
+			}
+		} else {
+			finalFields = newFields
+		}
+
+		if err := config.SaveWorkspaceUserDataSchema(targetDir, finalFields); err != nil {
+			return nil, WorkspaceUpdateOutput{Success: false, Error: fmt.Sprintf("failed to save user_data schema: %v", err)}, nil
+		}
+		updated = append(updated, "user_data_schema")
+	}
+
+	if len(updated) == 0 {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   "no properties to update: specify at least one of 'description', 'url', 'group', or 'user_data_schema'",
+		}, nil
+	}
+
+	sm.InvalidateWorkspaceRC(targetDir)
+
+	var outMeta *config.WorkspaceMetadata
+	if newRC, _ := config.LoadWorkspaceRC(targetDir); newRC != nil {
+		outMeta = newRC.Metadata
+	}
+
+	s.logger.Info("Workspace updated via MCP",
+		"source_session", realSessionID,
+		"target_dir", targetDir,
+		"updated", updated)
+
+	return nil, WorkspaceUpdateOutput{
+		Success:       true,
+		WorkspaceUUID: targetUUID,
+		WorkingDir:    targetDir,
+		Updated:       updated,
+		Metadata:      outMeta,
+	}, nil
 }
 
 // createListConversationsHandler creates the handler for list_conversations tool.
