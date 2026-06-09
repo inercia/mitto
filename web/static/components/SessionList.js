@@ -14,6 +14,7 @@ import {
   setGroupExpanded,
   getSingleExpandedGroupMode,
   onUIPreferencesLoaded,
+  tabScopedGroupKey,
 } from "../utils/index.js";
 import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
@@ -285,16 +286,29 @@ export function SessionList({
   // to avoid stale reads in WKWebView (macOS native app).
   const isSidebarGroupExpanded = useCallback(
     (groupKey) => {
-      if (groupKey in sidebarExpandedGroups) return sidebarExpandedGroups[groupKey];
-      if (groupKey === "__archived__") return false;
+      // Tab-scope folder/server/workspace keys so each filter tab tracks its own
+      // expansion state. Special keys (parent:*, __archived__) pass through unchanged.
+      const key = tabScopedGroupKey(filterTab, groupKey);
+      if (key in sidebarExpandedGroups) return sidebarExpandedGroups[key];
+      if (key === "__archived__") return false;
       return true;
     },
-    [sidebarExpandedGroups],
+    [sidebarExpandedGroups, filterTab],
   );
 
   // Handle group expand/collapse toggle
   const handleToggleGroup = useCallback(
-    (groupKey, allGroupKeys = []) => {
+    (rawGroupKey, rawAllGroupKeys = []) => {
+      // Tab-scope folder/server/workspace keys so each filter tab remembers its
+      // own expanded group independently. Special keys (parent:*, __archived__)
+      // are returned unchanged by tabScopedGroupKey.
+      const groupKey = tabScopedGroupKey(filterTab, rawGroupKey);
+      const allGroupKeys = rawAllGroupKeys.map((k) =>
+        tabScopedGroupKey(filterTab, k),
+      );
+      // Parent-child groups always behave as an accordion regardless of the setting.
+      const isParentGroup = rawGroupKey.startsWith("parent:");
+
       // Update React state (source of truth for sidebar rendering)
       setSidebarExpandedGroups((prev) => {
         const currentlyExpanded =
@@ -305,8 +319,6 @@ export function SessionList({
               : true;
         const willExpand = !currentlyExpanded;
         const next = { ...prev, [groupKey]: willExpand };
-        // Always enforce accordion mode for parent-child groups (only one expanded at a time)
-        const isParentGroup = groupKey.startsWith("parent:");
         if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
           for (const key of allGroupKeys) {
             if (key !== groupKey) next[key] = false;
@@ -318,8 +330,6 @@ export function SessionList({
       // Persist to localStorage (for cross-session persistence)
       const currentlyExpanded = isGroupExpanded(groupKey);
       const willExpand = !currentlyExpanded;
-      // Always enforce accordion mode for parent-child groups (only one expanded at a time)
-      const isParentGroup = groupKey.startsWith("parent:");
       if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
         for (const key of allGroupKeys) {
           if (key !== groupKey && isGroupExpanded(key)) {
@@ -330,7 +340,7 @@ export function SessionList({
       setGroupExpanded(groupKey, willExpand);
       // Note: setSidebarExpandedGroups already triggers a re-render, no version bump needed
     },
-    [sidebarExpandedGroups],
+    [sidebarExpandedGroups, filterTab],
   );
 
 
@@ -573,39 +583,68 @@ export function SessionList({
   );
 
   // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
-  // If multiple groups are expanded and accordion mode is enabled, collapse all but the first.
+  // If multiple groups are expanded and accordion mode is enabled, collapse all but
+  // one. The group kept expanded is the one containing the active conversation (so
+  // switching filter tabs never collapses the user's focused group); when the active
+  // conversation isn't in this tab, the first expanded group is kept.
   useEffect(() => {
     if (!groupedSessions || !getSingleExpandedGroupMode()) {
       return;
     }
 
-    // Find all currently expanded groups in the current view (use React state, not localStorage)
-    const expandedKeys = groupedSessions
+    // Raw keys of groups currently shown as expanded in this tab's view.
+    // isSidebarGroupExpanded tab-scopes internally for the read.
+    const expandedRawKeys = groupedSessions
       .filter((g) => isSidebarGroupExpanded(g.key))
       .map((g) => g.key);
 
-    // If more than one group is expanded, collapse all but the first
-    if (expandedKeys.length > 1) {
-      const [keepExpanded, ...toCollapse] = expandedKeys;
+    if (expandedRawKeys.length > 1) {
+      // Prefer keeping the group that contains the active conversation.
+      let keepRawKey = null;
+      if (activeSessionId) {
+        const activeGroup = groupedSessions.find((g) =>
+          g.sessions.some(
+            (s) =>
+              s.session_id === activeSessionId ||
+              (s.children &&
+                s.children.some((c) => c.session_id === activeSessionId)),
+          ),
+        );
+        if (activeGroup && expandedRawKeys.includes(activeGroup.key)) {
+          keepRawKey = activeGroup.key;
+        }
+      }
+      if (!keepRawKey) keepRawKey = expandedRawKeys[0];
+
+      const toCollapseRaw = expandedRawKeys.filter((k) => k !== keepRawKey);
+      const toCollapseScoped = toCollapseRaw.map((k) =>
+        tabScopedGroupKey(filterTab, k),
+      );
       console.debug(
         "[Mitto] Accordion mode: collapsing groups on tab/mode change. Keeping:",
-        keepExpanded,
+        keepRawKey,
         "Collapsing:",
-        toCollapse,
+        toCollapseRaw,
       );
-      // Update React state and localStorage for collapsed groups
+      // Update React state and localStorage for collapsed groups (tab-scoped keys)
       setSidebarExpandedGroups((prev) => {
         const next = { ...prev };
-        for (const key of toCollapse) {
+        for (const key of toCollapseScoped) {
           next[key] = false;
         }
         return next;
       });
-      for (const key of toCollapse) {
+      for (const key of toCollapseScoped) {
         setGroupExpanded(key, false);
       }
     }
-  }, [groupedSessions, filterTab, groupingMode, sidebarExpandedGroups]);
+  }, [
+    groupedSessions,
+    filterTab,
+    groupingMode,
+    sidebarExpandedGroups,
+    activeSessionId,
+  ]);
 
   // Render a single session item
   // hideBadge: if true, hides the entire badge
