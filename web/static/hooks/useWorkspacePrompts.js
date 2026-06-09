@@ -153,7 +153,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId }) {
     if (workingDir === workspacePromptsDir) {
       fetchWorkspacePrompts(workingDir, true); // Force to bypass conditional request (304)
     }
-  }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeSessionId]); // intentionally omit workingDir/workspacePromptsDir/fetchWorkspacePrompts from deps
 
   // Periodic refresh of workspace prompts (every 30 seconds)
   // Uses conditional requests to avoid unnecessary data transfer
