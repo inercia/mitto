@@ -2300,6 +2300,362 @@ func writeYAML(t *testing.T, dir, filename, content string) {
 	}
 }
 
+// TestLoaderMultiDoc_TwoValidProcessors verifies that a single YAML file with
+// two `---`-separated valid processor documents loads both processors.
+func TestLoaderMultiDoc_TwoValidProcessors(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "multi.yaml", `
+name: proc-one
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: proc-two
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(procs) != 2 {
+		t.Fatalf("expected 2 processors, got %d", len(procs))
+	}
+	names := map[string]bool{}
+	for _, p := range procs {
+		names[p.Name] = true
+	}
+	if !names["proc-one"] {
+		t.Error("missing proc-one")
+	}
+	if !names["proc-two"] {
+		t.Error("missing proc-two")
+	}
+}
+
+// TestLoaderMultiDoc_ValidPlusInvalid verifies that a file containing one valid
+// and one invalid document loads only the valid one and does not error.
+func TestLoaderMultiDoc_ValidPlusInvalid(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "mixed.yaml", `
+name: good-proc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: bad-proc
+when:
+  on: userPrompt
+  match: all
+# missing command/text/prompt — should be skipped
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() should not error (bad docs are skipped), got: %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+	if procs[0].Name != "good-proc" {
+		t.Errorf("expected good-proc, got %q", procs[0].Name)
+	}
+}
+
+// TestLoaderMultiDoc_EmptyDocumentsSkipped verifies that empty or comment-only
+// documents between `---` separators are silently skipped.
+func TestLoaderMultiDoc_EmptyDocumentsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "gaps.yaml", `
+---
+# just a comment — no fields
+---
+name: real-proc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+	if procs[0].Name != "real-proc" {
+		t.Errorf("expected real-proc, got %q", procs[0].Name)
+	}
+}
+
+// TestLoaderMultiDoc_LoadFileAll_ReturnsAll verifies that LoadFileAll returns
+// all valid documents from a multi-document file.
+func TestLoaderMultiDoc_LoadFileAll_ReturnsAll(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "two.yaml")
+	content := `name: alpha
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: beta
+when:
+  on: userPrompt
+  match: first
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.LoadFileAll(path)
+	if err != nil {
+		t.Fatalf("LoadFileAll() error = %v", err)
+	}
+	if len(procs) != 2 {
+		t.Fatalf("expected 2, got %d", len(procs))
+	}
+	if procs[0].Name != "alpha" || procs[1].Name != "beta" {
+		t.Errorf("unexpected names: %q, %q", procs[0].Name, procs[1].Name)
+	}
+}
+
+// TestLoaderMultiDoc_LoadFile_ReturnsFirst verifies backward-compatible
+// LoadFile behaviour: only the first document is returned.
+func TestLoaderMultiDoc_LoadFile_ReturnsFirst(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "two.yaml")
+	content := `name: first-doc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: second-doc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loader := NewLoader(dir, nil)
+	proc, err := loader.LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if proc == nil {
+		t.Fatal("LoadFile() returned nil, want a processor")
+	}
+	if proc.Name != "first-doc" {
+		t.Errorf("LoadFile() name = %q, want %q", proc.Name, "first-doc")
+	}
+}
+
+// TestLoaderMultiDoc_FilePath verifies that FilePath and HookDir are set on
+// every processor loaded from a multi-document file.
+func TestLoaderMultiDoc_FilePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "two.yaml")
+	content := `name: p1
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: p2
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.LoadFileAll(path)
+	if err != nil {
+		t.Fatalf("LoadFileAll() error = %v", err)
+	}
+	for _, p := range procs {
+		if p.FilePath != path {
+			t.Errorf("processor %q FilePath = %q, want %q", p.Name, p.FilePath, path)
+		}
+		if p.HookDir != dir {
+			t.Errorf("processor %q HookDir = %q, want %q", p.Name, p.HookDir, dir)
+		}
+	}
+}
+
+// TestIsMultiDocFile verifies the IsMultiDocFile helper.
+func TestIsMultiDocFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "single doc → false",
+			content: `name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`,
+			want: false,
+		},
+		{
+			name: "two docs → true",
+			content: `name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: proc-b
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`,
+			want: true,
+		},
+		{
+			name: "empty/comment-only docs only → false",
+			content: `---
+# just a comment
+---
+`,
+			want: false,
+		},
+		{
+			name: "empty doc then one real doc → false",
+			content: `---
+# comment
+---
+name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`,
+			want: false,
+		},
+		{
+			name:    "YAML syntax error → error",
+			content: "invalid: yaml: content:",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "*.yaml")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			if _, err := f.WriteString(tt.content); err != nil {
+				t.Fatalf("WriteString: %v", err)
+			}
+			f.Close()
+
+			got, err := IsMultiDocFile(f.Name())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("IsMultiDocFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("IsMultiDocFile() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateProcessorFileEnabled_SingleDoc verifies that a single-document file
+// is updated in-place (existing behavior).
+func TestUpdateProcessorFileEnabled_SingleDoc(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proc.yaml")
+	original := `name: my-proc
+enabled: true
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := UpdateProcessorFileEnabled(path, false); err != nil {
+		t.Fatalf("UpdateProcessorFileEnabled() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "enabled: false") {
+		t.Errorf("expected 'enabled: false' in file, got:\n%s", string(data))
+	}
+}
+
+// TestUpdateProcessorFileEnabled_MultiDoc verifies that calling
+// UpdateProcessorFileEnabled on a multi-document file returns an error and
+// does NOT modify the file.
+func TestUpdateProcessorFileEnabled_MultiDoc(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.yaml")
+	original := `name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: proc-b
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := UpdateProcessorFileEnabled(path, false)
+	if err == nil {
+		t.Fatal("UpdateProcessorFileEnabled() should return error for multi-doc file, got nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to edit multi-document") {
+		t.Errorf("error message should mention 'refusing to edit multi-document', got: %v", err)
+	}
+
+	// File must be byte-identical to original.
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile after error: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("file was modified despite error:\ngot:\n%s\nwant:\n%s", string(data), original)
+	}
+}
+
 // makeAfterInput returns a minimal AfterProcessorInput for tests.
 // SessionDir is set to a stable key so the MemoryStateStore injected by
 // makeAfterManager shares state across successive calls within the same test.
@@ -3230,12 +3586,15 @@ func TestCadenceConfig_Validation(t *testing.T) {
 			f.WriteString(yamlContent)
 			f.Close()
 			loader := NewLoader(tmpDir, nil)
-			_, err := loader.LoadFile(f.Name())
-			if err == nil {
-				t.Fatalf("expected validation error for %q, got nil", tt.name)
+			// The loader now skips invalid documents (lenient behavior) instead
+			// of returning an error. A bad cadence config should cause the
+			// document to be skipped, so LoadFile returns nil, nil.
+			proc, err := loader.LoadFile(f.Name())
+			if err != nil {
+				t.Fatalf("LoadFile() returned unexpected error: %v", err)
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			if proc != nil {
+				t.Fatalf("expected invalid cadence config %q to be skipped (nil proc), but got processor %q", tt.name, proc.Name)
 			}
 		})
 	}

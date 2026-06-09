@@ -1,7 +1,10 @@
 package processors
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -92,13 +95,13 @@ func (l *Loader) Load() ([]*Processor, error) {
 			return nil
 		}
 
-		proc, err := l.loadProcessorFile(path)
+		list, err := l.loadProcessorFile(path)
 		if err != nil {
 			l.logger.Warn("failed to load processor file", "path", path, "error", err)
 			return nil // Continue with other files
 		}
 
-		if proc != nil {
+		for _, proc := range list {
 			procs = append(procs, proc)
 			l.logger.Debug("loaded processor", "name", proc.Name, "path", path)
 		}
@@ -119,64 +122,167 @@ func (l *Loader) Load() ([]*Processor, error) {
 	return procs, nil
 }
 
-// LoadFile loads and validates a single processor from a YAML file.
+// LoadFile loads the first processor from a YAML file and returns it.
 // Exported for use in tests that need to validate individual processor definitions.
+// For files with multiple `---`-separated documents, only the first valid document
+// is returned. Use LoadFileAll to retrieve all documents.
 func (l *Loader) LoadFile(path string) (*Processor, error) {
+	list, err := l.loadProcessorFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, nil
+	}
+	return list[0], nil
+}
+
+// LoadFileAll loads all processors from a YAML file (one per `---`-separated document).
+// Exported for use in tests and callers that need all documents from a file.
+func (l *Loader) LoadFileAll(path string) ([]*Processor, error) {
 	return l.loadProcessorFile(path)
 }
 
-// loadProcessorFile loads a single processor from a YAML file.
-func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
+// IsMultiDocFile reports whether the YAML file at path contains more than one
+// non-empty processor document (i.e. documents that are not purely comment or
+// whitespace). Uses the same empty-document definition as loadProcessorFile:
+// a document is considered empty when Name, Command, Text, and Prompt are all
+// the zero string.
+//
+// Returns (false, err) on file-read or YAML-parse errors. Callers can treat
+// a parse error as non-multi-doc when deciding on the toggle path.
+func IsMultiDocFile(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("failed to read file: %w", err)
+	}
+	count, err := countNonEmptyDocs(data)
+	if err != nil {
+		return false, err
+	}
+	return count > 1, nil
+}
+
+// countNonEmptyDocs decodes all YAML documents from data and returns how many
+// are non-empty (have at least one of Name / Command / Text / Prompt set).
+func countNonEmptyDocs(data []byte) (int, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	count := 0
+	for {
+		var proc Processor
+		if err := dec.Decode(&proc); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return 0, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+		if proc.Name != "" || proc.Command != "" || proc.Text != "" || proc.Prompt != "" {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// loadProcessorFile loads all processors from a YAML file.
+// The file may contain multiple YAML documents separated by `---`.
+// Each non-empty document is validated individually; invalid documents are
+// skipped with a warning (matching the lenient "skip bad file" behavior for
+// the single-document case). A YAML syntax error on reading aborts the whole
+// file (also matching existing behavior).
+func (l *Loader) loadProcessorFile(path string) ([]*Processor, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	var proc Processor
-	if err := yaml.Unmarshal(data, &proc); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var procs []*Processor
+	docIndex := 0
+
+	for {
+		var proc Processor
+		if err := dec.Decode(&proc); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			// YAML syntax error — skip the whole file (preserve existing behavior).
+			return nil, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+
+		// Skip truly empty documents (e.g. "---\n---" or comment-only docs).
+		// An empty document has no Name and no command/text/prompt.
+		if proc.Name == "" && proc.Command == "" && proc.Text == "" && proc.Prompt == "" {
+			docIndex++
+			continue
+		}
+
+		if err := validateProcessor(&proc, path, docIndex); err != nil {
+			l.logger.Warn("skipping invalid processor document",
+				"path", path,
+				"doc_index", docIndex,
+				"error", err,
+			)
+			docIndex++
+			continue
+		}
+
+		// Set internal fields on each valid processor.
+		proc.FilePath = path
+		proc.HookDir = filepath.Dir(path)
+		procs = append(procs, &proc)
+		docIndex++
+	}
+
+	return procs, nil
+}
+
+// validateProcessor validates a single decoded Processor and returns an error
+// if it is invalid. path and docIndex are used only for error message context.
+func validateProcessor(proc *Processor, path string, docIndex int) error {
+	errorf := func(format string, args ...any) error {
+		return fmt.Errorf("document %d: "+format, append([]any{docIndex}, args...)...)
 	}
 
 	// Validate required fields
 	if proc.Name == "" {
-		return nil, fmt.Errorf("processor name is required")
+		return errorf("processor name is required")
 	}
 	// A processor must have either a command (command-mode), text (text-mode), or prompt (prompt-mode).
 	if proc.Command == "" && proc.Text == "" && proc.Prompt == "" {
-		return nil, fmt.Errorf("processor must specify either 'command', 'text', or 'prompt'")
+		return errorf("processor must specify either 'command', 'text', or 'prompt'")
 	}
 	// Prompt-mode: Command and Text must be empty when Prompt is set.
 	if proc.Prompt != "" && (proc.Command != "" || proc.Text != "") {
-		return nil, fmt.Errorf("processor with 'prompt' must not specify 'command' or 'text'")
+		return errorf("processor with 'prompt' must not specify 'command' or 'text'")
 	}
 
 	// Validate outputFormat
 	if proc.OutputFormat != "" && proc.OutputFormat != OutputFormatRaw && proc.OutputFormat != OutputFormatJSON {
-		return nil, fmt.Errorf("processor 'outputFormat' has invalid value %q; must be 'raw' or 'json'", proc.OutputFormat)
+		return errorf("processor 'outputFormat' has invalid value %q; must be 'raw' or 'json'", proc.OutputFormat)
 	}
 	if proc.OutputFormat != "" && proc.Command == "" {
-		return nil, fmt.Errorf("processor 'outputFormat' is only valid for command-mode processors")
+		return errorf("processor 'outputFormat' is only valid for command-mode processors")
 	}
 
 	// Validate when.on
 	if proc.When.On == "" {
-		return nil, fmt.Errorf("processor 'when.on' is required (must be 'userPrompt', 'agentResponded', or 'agentIdle')")
+		return errorf("processor 'when.on' is required (must be 'userPrompt', 'agentResponded', or 'agentIdle')")
 	}
 	if proc.When.On != PhaseUserPrompt && proc.When.On != PhaseAgentResponded && proc.When.On != PhaseAgentIdle {
-		return nil, fmt.Errorf("processor 'when.on' has invalid value %q; must be 'userPrompt', 'agentResponded', or 'agentIdle'", proc.When.On)
+		return errorf("processor 'when.on' has invalid value %q; must be 'userPrompt', 'agentResponded', or 'agentIdle'", proc.When.On)
 	}
 
 	// Validate when.match
 	if proc.When.Match == "" {
-		return nil, fmt.Errorf("processor 'when.match' is required (must be 'first', 'all', or 'allExceptFirst')")
+		return errorf("processor 'when.match' is required (must be 'first', 'all', or 'allExceptFirst')")
 	}
 	switch proc.When.Match {
 	case MatchFirst, MatchAll, MatchAllExceptFirst:
 		// valid
 	case "all-except-first":
-		return nil, fmt.Errorf("processor 'when.match' value %q is no longer accepted; use 'allExceptFirst' (camelCase) — kebab-case is no longer accepted", proc.When.Match)
+		return errorf("processor 'when.match' value %q is no longer accepted; use 'allExceptFirst' (camelCase) — kebab-case is no longer accepted", proc.When.Match)
 	default:
-		return nil, fmt.Errorf("processor 'when.match' has invalid value %q; must be 'first', 'all', or 'allExceptFirst'", proc.When.Match)
+		return errorf("processor 'when.match' has invalid value %q; must be 'first', 'all', or 'allExceptFirst'", proc.When.Match)
 	}
 
 	// Phase-specific validation
@@ -186,19 +292,19 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 		// firing point differs (agentIdle additionally waits for the queue to drain).
 		// Text mode forbidden for after-phase processors
 		if proc.Text != "" {
-			return nil, fmt.Errorf("processor 'text' is not allowed for 'when.on: %s' (use command or prompt mode)", proc.When.On)
+			return errorf("processor 'text' is not allowed for 'when.on: %s' (use command or prompt mode)", proc.When.On)
 		}
 		// mutate forbidden for after-phase processors
 		if proc.Mutate != "" {
-			return nil, fmt.Errorf("processor 'mutate' is not allowed for 'when.on: %s'", proc.When.On)
+			return errorf("processor 'mutate' is not allowed for 'when.on: %s'", proc.When.On)
 		}
 		// rerun forbidden for after-phase processors
 		if proc.When.Rerun != nil {
-			return nil, fmt.Errorf("processor 'when.rerun' is not allowed for 'when.on: %s'", proc.When.On)
+			return errorf("processor 'when.rerun' is not allowed for 'when.on: %s'", proc.When.On)
 		}
 		// output transform/prepend/append forbidden for after-phase processors
 		if proc.Output == OutputTransform || proc.Output == OutputPrepend || proc.Output == OutputAppend {
-			return nil, fmt.Errorf("processor 'output: %s' is not allowed for 'when.on: %s'; use 'discard', 'notify', 'actionButtons', or 'userData'", proc.Output, proc.When.On)
+			return errorf("processor 'output: %s' is not allowed for 'when.on: %s'; use 'discard', 'notify', 'actionButtons', or 'userData'", proc.Output, proc.When.On)
 		}
 		// Default stopReasons to ["end_turn"] if not specified.
 		// These match the ACP SDK StopReason constants (snake_case).
@@ -210,52 +316,48 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 			c := proc.When.Cadence
 			// Rule 12: cadence + match:first is disallowed (first-response semantics are implicit)
 			if proc.When.Match == MatchFirst {
-				return nil, fmt.Errorf("processor 'when.cadence' is not allowed with 'when.match: first' (first-response semantics are already built-in)")
+				return errorf("processor 'when.cadence' is not allowed with 'when.match: first' (first-response semantics are already built-in)")
 			}
 			// Rule 13: at least one threshold must be specified
 			if c.EveryNTurns == 0 && c.EveryNTokens == 0 && c.AfterInterval == "" {
-				return nil, fmt.Errorf("processor 'when.cadence' must specify at least one of: everyNTurns, everyNTokens, afterInterval")
+				return errorf("processor 'when.cadence' must specify at least one of: everyNTurns, everyNTokens, afterInterval")
 			}
 			// Rule 14: EveryNTurns must be ≥ 1 when specified
 			if c.EveryNTurns < 0 {
-				return nil, fmt.Errorf("processor 'when.cadence.everyNTurns' must be ≥ 1, got %d", c.EveryNTurns)
+				return errorf("processor 'when.cadence.everyNTurns' must be ≥ 1, got %d", c.EveryNTurns)
 			}
 			// Rule 15: EveryNTokens must be ≥ 1 when specified
 			if c.EveryNTokens < 0 {
-				return nil, fmt.Errorf("processor 'when.cadence.everyNTokens' must be ≥ 1, got %d", c.EveryNTokens)
+				return errorf("processor 'when.cadence.everyNTokens' must be ≥ 1, got %d", c.EveryNTokens)
 			}
 			// Rule 16: AfterInterval must be a valid Go duration string
 			if c.AfterInterval != "" && c.GetAfterIntervalDuration() == 0 {
-				return nil, fmt.Errorf("processor 'when.cadence.afterInterval' has invalid duration %q (use Go duration syntax, e.g. '5m', '1h')", c.AfterInterval)
+				return errorf("processor 'when.cadence.afterInterval' has invalid duration %q (use Go duration syntax, e.g. '5m', '1h')", c.AfterInterval)
 			}
 		}
 
 	case PhaseUserPrompt:
 		// stopReasons and excludeOrigins are only for agentResponded
 		if len(proc.When.StopReasons) > 0 {
-			return nil, fmt.Errorf("processor 'when.stopReasons' is only valid for 'when.on: agentResponded'")
+			return errorf("processor 'when.stopReasons' is only valid for 'when.on: agentResponded'")
 		}
 		if len(proc.When.ExcludeOrigins) > 0 {
-			return nil, fmt.Errorf("processor 'when.excludeOrigins' is only valid for 'when.on: agentResponded'")
+			return errorf("processor 'when.excludeOrigins' is only valid for 'when.on: agentResponded'")
 		}
 		// rerun only valid with match:first
 		if proc.When.Rerun != nil {
 			if proc.When.Match != MatchFirst {
-				return nil, fmt.Errorf("'when.rerun' is only supported with 'when.match: first', got 'when.match: %s'", proc.When.Match)
+				return errorf("'when.rerun' is only supported with 'when.match: first', got 'when.match: %s'", proc.When.Match)
 			}
 			if err := proc.When.Rerun.Validate(); err != nil {
-				return nil, fmt.Errorf("invalid rerun config: %w", err)
+				return errorf("invalid rerun config: %w", err)
 			}
 		}
 		// Text mode requires mutate
 		if proc.IsTextMode() && proc.Mutate == "" {
-			return nil, fmt.Errorf("text-mode processor requires 'mutate: prepend' or 'mutate: append'")
+			return errorf("text-mode processor requires 'mutate: prepend' or 'mutate: append'")
 		}
 	}
 
-	// Set internal fields
-	proc.FilePath = path
-	proc.HookDir = filepath.Dir(path)
-
-	return &proc, nil
+	return nil
 }
