@@ -174,6 +174,37 @@ Lists all configured workspaces with settings and metadata from `.mittorc` files
 | `acp_server`  | ACP server name                                                          |
 | `metadata`    | Optional `.mittorc` metadata (description, URL, group, user data schema) |
 
+#### `mitto_workspace_update`
+
+Updates a workspace's `.mittorc` configuration: descriptive metadata and/or the user_data schema. Supports partial updates — only provided fields change.
+
+**Parameters:**
+
+| Parameter               | Type    | Description                                                                                       |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `self_id`               | string  | Required. Identifies the calling session.                                                         |
+| `workspace`             | string  | Target workspace UUID (from `mitto_workspace_list`). Omit to target the caller's own workspace.  |
+| `description`           | string  | Workspace description. Omit to leave unchanged; pass `""` to clear.                              |
+| `url`                   | string  | Associated URL (e.g. repo URL). Omit to leave unchanged; pass `""` to clear.                     |
+| `group`                 | string  | Grouping label. Omit to leave unchanged; pass `""` to clear.                                     |
+| `user_data_schema`      | array   | List of `{name, description, type}` field definitions. `type` is `"string"` (default), `"url"`, or `"filename"`. Nil/absent = leave schema untouched. |
+| `user_data_schema_merge`| boolean | If `true` (default), merge fields by name with the existing schema. If `false`, replace the whole schema (an empty list clears it). |
+
+**Returns:**
+
+| Field            | Description                                        |
+| ---------------- | -------------------------------------------------- |
+| `success`        | Whether the update succeeded                       |
+| `error`          | Error message (only on failure)                    |
+| `workspace_uuid` | UUID of the updated workspace                      |
+| `working_dir`    | Working directory of the updated workspace         |
+| `updated`        | List of field names that were changed              |
+| `metadata`       | The workspace's new `.mittorc` metadata after update |
+
+**Cross-workspace access:** Targeting another workspace requires the `Can interact with other workspaces` flag and an interactive user confirmation dialog.
+
+**Note:** `.mittorc` is a version-controlled file in the workspace root. Changes take effect immediately but should be committed.
+
 ### Session-Scoped Tools (Require session_id parameter)
 
 These tools operate on a specific conversation and require a `session_id` parameter:

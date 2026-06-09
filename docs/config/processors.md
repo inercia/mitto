@@ -75,6 +75,47 @@ version overrides the global one. All processors are sorted by priority after me
 Use `mitto processors list --dir .mitto/processors` to preview how workspace processors
 merge with global ones.
 
+### Multiple Processors per File (Multi-Document YAML)
+
+A single `.yaml` or `.yml` file can contain **multiple processor definitions** separated
+by the YAML document separator `---`. Each document is treated as an independent
+processor.
+
+```yaml
+# .mitto/processors/project-hooks.yaml
+name: inject-context
+description: "Prepend project context to the first message"
+when:
+  on: userPrompt
+  match: first
+mutate: prepend
+text: |
+  [Project] This is the Acme API — Go + PostgreSQL.
+  Run tests: make test
+  ---
+---
+name: post-response-check
+description: "Run a background check after each agent response"
+when:
+  on: agentResponded
+  match: all
+command: ./check.sh
+output: discard
+```
+
+**Key points:**
+
+- Each document is **validated independently**. An invalid or empty document is skipped
+  with a warning and does not prevent the other documents from loading.
+- Blank or comment-only documents (no `name`, `command`, `text`, or `prompt`) between
+  `---` separators are silently ignored.
+- The **processor `name` is independent of the filename** — the file is just a container.
+  Multiple processors in one file may have any names.
+- **Enable/disable caveat:** for processors in a multi-document file, the per-workspace
+  enable toggle is recorded in the `.mittorc` `processors:` override list rather than
+  editing the file in place — this preserves `---` separators and comments. Single-document
+  workspace files continue to be edited in place as before.
+
 ### Inline Processors in `.mittorc`
 
 For simple text-mode processors, you can define them inline in your `.mittorc` file instead of creating separate YAML files:
@@ -125,7 +166,7 @@ processors:
 
 This mirrors the same `{name, enabled}` pattern used by the `prompts` section. When re-enabling a processor that is enabled by default, you can remove the entry entirely — missing entries use the processor's default state.
 
-For workspace-local processors (from `.mitto/processors/`), the toggle updates the `enabled` field directly in the processor's YAML file.
+For workspace-local processors (from `.mitto/processors/`), the toggle updates the `enabled` field directly in the processor's YAML file — **unless** the file contains multiple `---`-separated processor documents, in which case the override is recorded in `.mittorc` instead (to avoid corrupting the separators and comments). See [Multiple Processors per File](#multiple-processors-per-file-multi-document-yaml).
 
 > **Backward compatibility:** The legacy `disabled_processors` list format is still read and automatically migrated to the new `processors` format when saving.
 
@@ -376,8 +417,9 @@ prompt: |
 
 ## Full Configuration Schema
 
-Each YAML file in the processors directory defines one processor. Use **either** `text` (text-mode),
-`command` (command-mode), or `prompt` (prompt-mode) — not more than one.
+Each YAML document in the processors directory defines one processor. A file may contain
+multiple processors separated by `---` (see [Multiple Processors per File](#multiple-processors-per-file-multi-document-yaml)).
+Use **either** `text` (text-mode), `command` (command-mode), or `prompt` (prompt-mode) per document — not more than one.
 
 ```yaml
 # Required fields
