@@ -308,6 +308,67 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   );
 
   testWithCleanup(
+    "delete confirmation dialog renders above the open detail panel",
+    async ({ page, timeouts }) => {
+      await page.route("**/api/beads/delete", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+
+      await openBeads(page, timeouts);
+      const panel = page.locator(DETAIL_PANEL);
+
+      // Open the panel for the short issue (mitto-bbb).
+      await page
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
+        .first()
+        .click();
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Trigger delete from inside the panel footer.
+      await panel.locator('button[title="Delete issue"]').click();
+
+      const dialog = page.locator('[data-testid="confirm-dialog"]');
+      await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Ground truth: the element painted at the dialog's center must belong to
+      // the dialog, not the detail panel. This catches z-index/stacking-context
+      // regressions where the panel covers the confirmation dialog.
+      const hit = await dialog.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        return {
+          insideDialog: !!top && el.contains(top),
+          topTestId: top ? top.getAttribute("data-testid") : null,
+          topClass: top ? String(top.className) : null,
+        };
+      });
+      expect(
+        hit.insideDialog,
+        `Dialog center is covered by: testid=${hit.topTestId} class=${hit.topClass}`,
+      ).toBe(true);
+
+      // The Delete button inside the dialog must also be the topmost element at
+      // its own center (i.e. actually clickable, not obscured by the panel).
+      const delBtn = dialog.getByRole("button", { name: "Delete" });
+      const btnClickable = await delBtn.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const top = document.elementFromPoint(
+          r.left + r.width / 2,
+          r.top + r.height / 2,
+        );
+        return !!top && (el === top || el.contains(top));
+      });
+      expect(btnClickable).toBe(true);
+    },
+  );
+
+  testWithCleanup(
     "pressing Escape cancels the title edit without saving",
     async ({ page, timeouts }) => {
       let updateCalled = false;
@@ -341,6 +402,269 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         panel.locator('h2:has-text("Short issue")'),
       ).toBeVisible({ timeout: timeouts.shortAction });
       expect(updateCalled).toBe(false);
+    },
+  );
+});
+
+/**
+ * Beads epic deletion tests (desktop).
+ *
+ * When deleting an epic (an issue with descendants), the confirmation dialog
+ * offers a radio group controlling what happens to the whole descendant subtree
+ * (recursive): leave them unchanged (default), close the open ones via
+ * /api/beads/status (action "close"), or permanently delete all of them via
+ * /api/beads/delete. The epic itself is always deleted last.
+ *
+ * The mock tree is:
+ *   mitto-epic (epic, open)
+ *   ├── mitto-c1 (open)        ── has a grandchild, to verify recursion
+ *   │   └── mitto-g1 (open)    ── grandchild
+ *   ├── mitto-c2 (in_progress)
+ *   └── mitto-c3 (closed)
+ *
+ * So the epic has 4 descendants total and 3 OPEN descendants (c1, c2, g1).
+ */
+const EPIC_TITLE = "Parent epic";
+const EPIC_ISSUES = [
+  {
+    id: "mitto-epic",
+    title: EPIC_TITLE,
+    description: "An epic with children.",
+    status: "open",
+    priority: 1,
+    issue_type: "epic",
+    assignee: "Alice Example",
+    owner: "alice@example.com",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+  {
+    id: "mitto-c1",
+    title: "Child one",
+    description: "",
+    status: "open",
+    priority: 2,
+    issue_type: "task",
+    parent: "mitto-epic",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+  {
+    id: "mitto-g1",
+    title: "Grandchild one",
+    description: "",
+    status: "open",
+    priority: 2,
+    issue_type: "task",
+    parent: "mitto-c1",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+  {
+    id: "mitto-c2",
+    title: "Child two",
+    description: "",
+    status: "in_progress",
+    priority: 2,
+    issue_type: "task",
+    parent: "mitto-epic",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+  {
+    id: "mitto-c3",
+    title: "Child closed",
+    description: "",
+    status: "closed",
+    priority: 3,
+    issue_type: "task",
+    parent: "mitto-epic",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+];
+
+testWithCleanup.describe("Beads view - epic deletion", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+    // Mock the beads list with an epic + children so the table renders without
+    // the external `bd` binary.
+    await page.route("**/api/beads/list**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(EPIC_ISSUES),
+      });
+    });
+
+    // Ensure the project-alpha workspace exists so its folder group renders.
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+
+    // Seed a conversation so the folder header (with its Beads button) appears.
+    const createResp = await request.post(apiUrl("/api/sessions"), {
+      data: { name: `Beads Seed ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    await helpers.navigateAndWait(page);
+  });
+
+  // Open the Beads view and the epic's detail panel, then click Delete so the
+  // confirmation dialog is showing. Returns the dialog locator.
+  async function openEpicDeleteDialog(page, timeouts) {
+    const folderHeader = page
+      .locator('div.sticky.top-0[data-has-context-menu="true"]')
+      .filter({ hasText: "project-alpha" })
+      .first();
+    await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });
+    await folderHeader.locator('button[title^="Beads issues:"]').first().click();
+    await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+      timeout: timeouts.appReady,
+    });
+
+    const panel = page.locator(DETAIL_PANEL);
+    await page
+      .locator(`div[data-has-context-menu]:has-text("${EPIC_TITLE}")`)
+      .first()
+      .click();
+    await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+    await expect(panel.getByText("mitto-epic")).toBeVisible();
+
+    await panel.locator('button[title="Delete issue"]').click();
+    const dialog = page.locator('[data-testid="confirm-dialog"]');
+    await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
+    return dialog;
+  }
+
+  testWithCleanup(
+    "choosing 'close children' closes the whole open subtree, not the closed one",
+    async ({ page, timeouts }) => {
+      // Capture the close (status) and delete calls the frontend makes.
+      const closedIds: string[] = [];
+      await page.route("**/api/beads/status", async (route) => {
+        const body = route.request().postDataJSON();
+        if (body && body.action === "close") closedIds.push(body.id);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+      let deletedId: string | null = null;
+      await page.route("**/api/beads/delete", async (route) => {
+        const body = route.request().postDataJSON();
+        deletedId = body && body.id;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+
+      const dialog = await openEpicDeleteDialog(page, timeouts);
+
+      // The dialog announces the epic and offers the recursive radio group. The
+      // "close" option counts the 3 OPEN descendants (c1, c2, g1); the closed
+      // c3 is excluded. The default selection leaves children unchanged.
+      await expect(dialog.locator("h3")).toHaveText("Delete epic");
+      await expect(dialog).toContainText("This epic has 4 descendant issues.");
+      await expect(dialog).toContainText("Close the 3 open child issues");
+      await expect(dialog).toContainText("Delete all 4 child issues (permanent)");
+
+      const noneRadio = dialog.locator('input[type="radio"][value="none"]');
+      const closeRadio = dialog.locator('input[type="radio"][value="close"]');
+      await expect(noneRadio).toBeChecked();
+      await expect(closeRadio).not.toBeChecked();
+
+      // Choose "close children", then confirm the deletion.
+      await closeRadio.check();
+      await expect(closeRadio).toBeChecked();
+      await dialog.getByRole("button", { name: "Delete" }).click();
+
+      // The epic is deleted and exactly the three open descendants are closed
+      // (recursively, including the grandchild); the closed child is untouched.
+      await expect
+        .poll(() => deletedId, { timeout: timeouts.shortAction })
+        .toBe("mitto-epic");
+      expect([...closedIds].sort()).toEqual(["mitto-c1", "mitto-c2", "mitto-g1"]);
+    },
+  );
+
+  testWithCleanup(
+    "choosing 'delete children' permanently deletes the whole subtree",
+    async ({ page, timeouts }) => {
+      let statusCalled = false;
+      await page.route("**/api/beads/status", async (route) => {
+        statusCalled = true;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+      const deletedIds: string[] = [];
+      await page.route("**/api/beads/delete", async (route) => {
+        const body = route.request().postDataJSON();
+        if (body && body.id) deletedIds.push(body.id);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+
+      const dialog = await openEpicDeleteDialog(page, timeouts);
+
+      // Choose "delete children" and confirm.
+      const deleteRadio = dialog.locator('input[type="radio"][value="delete"]');
+      await deleteRadio.check();
+      await expect(deleteRadio).toBeChecked();
+      await dialog.getByRole("button", { name: "Delete" }).click();
+
+      // Every descendant is deleted (including the closed child and the
+      // grandchild) plus the epic itself; no child is merely closed.
+      await expect
+        .poll(() => [...deletedIds].sort(), { timeout: timeouts.shortAction })
+        .toEqual(["mitto-c1", "mitto-c2", "mitto-c3", "mitto-epic", "mitto-g1"]);
+      // The epic is deleted last (deepest-first child order precedes it).
+      expect(deletedIds[deletedIds.length - 1]).toBe("mitto-epic");
+      expect(statusCalled).toBe(false);
+    },
+  );
+
+  testWithCleanup(
+    "the default 'leave unchanged' option leaves the subtree untouched",
+    async ({ page, timeouts }) => {
+      let statusCalled = false;
+      await page.route("**/api/beads/status", async (route) => {
+        statusCalled = true;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+      const deletedIds: string[] = [];
+      await page.route("**/api/beads/delete", async (route) => {
+        const body = route.request().postDataJSON();
+        if (body && body.id) deletedIds.push(body.id);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+
+      const dialog = await openEpicDeleteDialog(page, timeouts);
+
+      // Leave the default ("none") selection and confirm: only the epic is
+      // deleted; no child is closed and no child is deleted.
+      await dialog.getByRole("button", { name: "Delete" }).click();
+      await expect
+        .poll(() => deletedIds, { timeout: timeouts.shortAction })
+        .toEqual(["mitto-epic"]);
+      expect(statusCalled).toBe(false);
     },
   );
 });
