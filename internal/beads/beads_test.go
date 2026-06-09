@@ -43,6 +43,23 @@ func (r *recordingRunner) Run(_ context.Context, dir string, args ...string) ([]
 
 func newClient(r *recordingRunner) *cliClient { return &cliClient{runner: r} }
 
+// initializedDir returns a temp dir that already contains .beads/config.yaml so
+// isInitialized(dir) reports true and EnsureInitialized is a no-op. Use this for
+// tests that exercise commands which auto-initialize (List, Create) but want to
+// observe the underlying bd call rather than an init.
+func initializedDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("database: beads\n"), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	return dir
+}
+
 // ---------------------------------------------------------------------------
 // CmdError / StderrOf
 // ---------------------------------------------------------------------------
@@ -120,7 +137,7 @@ func TestIsValidDepType(t *testing.T) {
 func TestClient_Create_ArgsMinimal(t *testing.T) {
 	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(`{}`)}}}
 	c := newClient(r)
-	_, _ = c.Create(context.Background(), "/dir", CreateParams{Title: "My title"})
+	_, _ = c.Create(context.Background(), initializedDir(t), CreateParams{Title: "My title"})
 	if len(r.calls) == 0 {
 		t.Fatal("expected a runner call")
 	}
@@ -137,7 +154,7 @@ func TestClient_Create_ArgsWithTypeAndPriority(t *testing.T) {
 	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(`{}`)}}}
 	c := newClient(r)
 	prio := 2
-	_, _ = c.Create(context.Background(), "/dir", CreateParams{
+	_, _ = c.Create(context.Background(), initializedDir(t), CreateParams{
 		Title:       "T",
 		Type:        "bug",
 		Priority:    &prio,
@@ -149,6 +166,48 @@ func TestClient_Create_ArgsWithTypeAndPriority(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args %v missing %q", args, want)
 		}
+	}
+}
+
+// TestClient_List_NotInitialized_ReturnsEmpty verifies that listing an
+// uninitialized folder returns an empty JSON array without invoking bd (so the
+// Tasks view shows "No issues found" instead of an error, and viewing does not
+// create a .beads database).
+func TestClient_List_NotInitialized_ReturnsEmpty(t *testing.T) {
+	r := &recordingRunner{}
+	c := newClient(r)
+	out, err := c.List(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if string(out) != "[]" {
+		t.Errorf("List() = %q, want %q", out, "[]")
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected 0 runner calls (not initialized), got %d", len(r.calls))
+	}
+}
+
+// TestClient_Create_NotInitialized_RunsInitThenCreate verifies that creating a
+// task in an uninitialized folder first runs "bd init" and then "bd create".
+func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte("")},   // init
+		{stdout: []byte(`{}`)}, // create
+	}}
+	c := newClient(r)
+	_, err := c.Create(context.Background(), t.TempDir(), CreateParams{Title: "T"})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if len(r.calls) != 2 {
+		t.Fatalf("expected 2 runner calls (init + create), got %d: %v", len(r.calls), r.calls)
+	}
+	if r.calls[0].args[0] != "init" {
+		t.Errorf("first call = %v, want init", r.calls[0].args)
+	}
+	if r.calls[1].args[0] != "create" {
+		t.Errorf("second call = %v, want create", r.calls[1].args)
 	}
 }
 
@@ -380,7 +439,7 @@ func TestClient_RunnerError_WrappedAsCmdError(t *testing.T) {
 		{stderr: "some stderr", err: errors.New("bd exited with non-zero status")},
 	}}
 	c := newClient(r)
-	_, err := c.List(context.Background(), "/dir")
+	_, err := c.List(context.Background(), initializedDir(t))
 	if err == nil {
 		t.Fatal("expected error")
 	}

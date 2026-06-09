@@ -77,6 +77,12 @@ func (c *cliClient) runJSON(ctx context.Context, dir string, args ...string) ([]
 }
 
 func (c *cliClient) List(ctx context.Context, dir string) ([]byte, error) {
+	// An uninitialized folder has no issues yet. Return an empty list rather
+	// than letting bd fail, so simply opening the Tasks view does not surface an
+	// error (and does not create a .beads database just by viewing).
+	if !isInitialized(dir) {
+		return []byte("[]"), nil
+	}
 	return c.runJSON(ctx, dir, "list", "--json", "--all", "-n", "0")
 }
 
@@ -85,6 +91,12 @@ func (c *cliClient) Show(ctx context.Context, dir, id string) ([]byte, error) {
 }
 
 func (c *cliClient) Create(ctx context.Context, dir string, p CreateParams) ([]byte, error) {
+	// Transparently initialize the beads database on first task creation so the
+	// user does not have to run "bd init" manually for a new folder.
+	if err := c.EnsureInitialized(ctx, dir); err != nil {
+		return nil, err
+	}
+
 	args := []string{"create", p.Title, "--json"}
 	if p.Type != "" {
 		args = append(args, "--type", p.Type)

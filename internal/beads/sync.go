@@ -7,19 +7,24 @@ import (
 	"path/filepath"
 )
 
-// EnsureInitialized makes "bd config set" usable in workingDir by running a
-// minimal "bd init" when the folder has not yet been initialized. The
-// uninitialized state is detected by the absence of .beads/config.yaml — the
-// exact file bd complains about when "run 'bd init' first" is required.
-// It is a no-op when that file already exists.
+// isInitialized reports whether dir already has a beads database. It is
+// detected by the presence of .beads/config.yaml — the exact file bd complains
+// about when "run 'bd init' first" is required.
+func isInitialized(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".beads", "config.yaml"))
+	return err == nil
+}
+
+// EnsureInitialized makes bd commands usable in workingDir by running a minimal
+// "bd init" when the folder has not yet been initialized. It is a no-op when the
+// folder is already initialized.
 //
 // The init is intentionally conservative: --skip-agents and --skip-hooks avoid
 // writing AGENTS.md or installing git hooks, while --non-interactive and --quiet
 // keep it prompt-free and silent. A longer timeout is used because the first
 // Dolt database creation can be slow.
 func (c *cliClient) EnsureInitialized(ctx context.Context, dir string) error {
-	configPath := filepath.Join(dir, ".beads", "config.yaml")
-	if _, err := os.Stat(configPath); err == nil {
+	if isInitialized(dir) {
 		return nil // already initialized
 	}
 
