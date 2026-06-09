@@ -49,6 +49,30 @@ func ParseScheduleTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid schedule_time %q: must be an RFC 3339 timestamp (e.g., 2024-01-15T10:30:00Z) or a relative duration (e.g., 5m, 1h, 2h30m)", s)
 }
 
+// ParseHistoryTime parses a time-filter string used for querying past history.
+// It accepts the same two formats as ParseScheduleTime, but a relative duration
+// is interpreted as "ago" (i.e., now minus the duration) rather than a future time:
+//   - An absolute RFC 3339 / ISO 8601 timestamp (e.g., "2024-01-15T10:30:00Z")
+//   - A relative duration using Go duration syntax meaning "ago" (e.g., "3m", "1h", "2h30m")
+//
+// Returns the resolved absolute time, or an error if the string is not a valid format.
+func ParseHistoryTime(s string) (time.Time, error) {
+	// Try RFC 3339 first
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+
+	// Try Go duration format, interpreted as "ago" (e.g., "3m", "1h", "2h30m")
+	if d, err := time.ParseDuration(s); err == nil {
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("duration must be positive, got %s", s)
+		}
+		return time.Now().Add(-d), nil
+	}
+
+	return time.Time{}, fmt.Errorf("invalid time %q: must be an RFC 3339 timestamp (e.g., 2024-01-15T10:30:00Z) or a relative duration ago (e.g., 3m, 1h, 2h30m)", s)
+}
+
 // QueuedMessage represents a message waiting to be sent to the agent.
 type QueuedMessage struct {
 	// ID is the unique identifier for this queued message (auto-assigned).

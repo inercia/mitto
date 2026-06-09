@@ -1275,6 +1275,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Returns events (user prompts, agent messages, tool calls, etc.) with powerful filtering. " +
 			"Useful for recalling past decisions, finding specific tool calls, searching for errors, " +
 			"or reviewing what happened in a conversation. " +
+			"Filter by time range with 'since' and 'until': both accept an absolute RFC 3339 timestamp " +
+			"(e.g., '2024-01-15T10:30:00Z') or a relative duration meaning ago (e.g., '3m', '1h', '2h30m'). " +
 			"Defaults to your own conversation if conversation_id is omitted. " +
 			selfIDNote,
 	}, s.handleConversationHistory)
@@ -4744,8 +4746,27 @@ func (s *Server) handleConversationHistory(ctx context.Context, req *mcp.CallToo
 
 	totalEvents := len(allEvents)
 
+	// Parse optional time-range filters (RFC 3339 absolute, or relative duration "ago").
+	var since, until time.Time
+	if input.Since != "" {
+		t, err := session.ParseHistoryTime(input.Since)
+		if err != nil {
+			emptyOut.Error = fmt.Sprintf("invalid since: %v", err)
+			return nil, emptyOut, nil
+		}
+		since = t
+	}
+	if input.Until != "" {
+		t, err := session.ParseHistoryTime(input.Until)
+		if err != nil {
+			emptyOut.Error = fmt.Sprintf("invalid until: %v", err)
+			return nil, emptyOut, nil
+		}
+		until = t
+	}
+
 	// Apply filters.
-	filtered := historyFilterEvents(allEvents, input)
+	filtered := historyFilterEvents(allEvents, input, since, until)
 
 	// Apply pagination: last_n and offset.
 	// "last_n" means we return the most recent N events.
@@ -4798,7 +4819,9 @@ func (s *Server) handleConversationHistory(ctx context.Context, req *mcp.CallToo
 }
 
 // historyFilterEvents applies all configured filters to the event list.
-func historyFilterEvents(events []session.Event, input ConversationHistoryInput) []session.Event {
+// since and until are optional time-range bounds (zero value means unset):
+// events before `since` or after `until` are excluded.
+func historyFilterEvents(events []session.Event, input ConversationHistoryInput, since, until time.Time) []session.Event {
 	// Build event type set for O(1) lookup.
 	var typeSet map[string]bool
 	if len(input.EventTypes) > 0 {
@@ -4819,6 +4842,14 @@ func historyFilterEvents(events []session.Event, input ConversationHistoryInput)
 			continue
 		}
 		if input.BeforeSeq > 0 && e.Seq >= input.BeforeSeq {
+			continue
+		}
+
+		// Time range filters.
+		if !since.IsZero() && e.Timestamp.Before(since) {
+			continue
+		}
+		if !until.IsZero() && e.Timestamp.After(until) {
 			continue
 		}
 

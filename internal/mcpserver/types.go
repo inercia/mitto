@@ -766,6 +766,8 @@ type ConversationHistoryInput struct {
 	TextExcludes   string   `json:"text_excludes,omitempty"`   // Exclude events with text matching this (case-insensitive)
 	AfterSeq       int64    `json:"after_seq,omitempty"`       // Only events with seq > this
 	BeforeSeq      int64    `json:"before_seq,omitempty"`      // Only events with seq < this
+	Since          string   `json:"since,omitempty"`           // Only events at/after this time (RFC 3339 timestamp or relative duration "ago", e.g. "3m", "1h")
+	Until          string   `json:"until,omitempty"`           // Only events at/before this time (RFC 3339 timestamp or relative duration "ago", e.g. "3m", "1h")
 	LastN          int      `json:"last_n,omitempty"`          // Return last N matching events (default: 50, max: 200)
 	Offset         int      `json:"offset,omitempty"`          // Skip this many from the end (for pagination backward)
 	IncludeData    *bool    `json:"include_data,omitempty"`    // Include full event data (default: true)
