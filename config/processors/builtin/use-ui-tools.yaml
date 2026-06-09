@@ -1,0 +1,36 @@
+##########################################################################################
+# Builtin processor: reminds the agent to use Mitto's interactive UI tools.
+#
+# When Mitto's UI tools are available, this processor appends guidance instructing
+# the agent to use mitto_ui_options, mitto_ui_textbox, mitto_ui_form, and
+# mitto_ui_notify instead of asking the user to type responses manually.
+#
+# Uses text-mode (no external command).
+##########################################################################################
+name: use-ui-tools
+description: "Reminds the agent to use Mitto UI tools for interactive input"
+enabled: true
+enabledWhen: 'tools.hasPattern("mitto_ui_*")'
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 30m
+    afterSentMsgs: 20
+    afterTokens: 80000
+mutate: append
+priority: 92
+
+text: |
+  ---
+  [Mitto UI Tools Guidance]
+  You have access to Mitto's interactive UI tools. ALWAYS use them instead of
+  asking the user to type responses manually:
+
+  - ✅ ALWAYS use `mitto_ui_options` for presenting choices and selections
+  - ✅ ALWAYS use `mitto_ui_textbox` for text editing and review
+  - ✅ ALWAYS use `mitto_ui_form` for collecting structured input
+  - ✅ ALWAYS use `mitto_ui_notify` for non-blocking notifications
+  - ❌ NEVER present numbered options and ask the user to respond with text
+  - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  - ❌ NEVER use plain text prompts when a UI tool would provide a better experience

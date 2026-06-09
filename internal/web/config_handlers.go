@@ -25,14 +25,15 @@ import (
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
-		Name        string                     `json:"name"`
-		Command     string                     `json:"command"`
-		Type        string                     `json:"type,omitempty"` // Optional type for prompt matching
-		Env         map[string]string          `json:"env,omitempty"`  // Environment variables
-		Prompts     []configPkg.WebPrompt      `json:"prompts,omitempty"`
-		Source      configPkg.ConfigItemSource `json:"source,omitempty"`       // Source of the server (rcfile, settings)
-		AutoApprove bool                       `json:"auto_approve,omitempty"` // Auto-approve permission requests
-		Tags        []string                   `json:"tags,omitempty"`         // Optional categorization tags
+		Name        string                                    `json:"name"`
+		Command     string                                    `json:"command"`
+		Type        string                                    `json:"type,omitempty"` // Optional type for prompt matching
+		Env         map[string]string                         `json:"env,omitempty"`  // Environment variables
+		Prompts     []configPkg.WebPrompt                     `json:"prompts,omitempty"`
+		Source      configPkg.ConfigItemSource                `json:"source,omitempty"`       // Source of the server (rcfile, settings)
+		AutoApprove bool                                      `json:"auto_approve,omitempty"` // Auto-approve permission requests
+		Tags        []string                                  `json:"tags,omitempty"`         // Optional categorization tags
+		Constraints map[string]*configPkg.ACPServerConstraint `json:"constraints,omitempty"`  // Config option auto-selection rules
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
@@ -56,6 +57,11 @@ type ConfigSaveRequest struct {
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 	Permissions   *configPkg.PermissionsConfig   `json:"permissions,omitempty"`
+	// ServerRenames maps old ACP server names to their new names. The UI sends
+	// this when a server is renamed in place so the backend can migrate the
+	// stored ACPServer of existing conversations (otherwise they would be
+	// orphaned and fail to resume with "empty command").
+	ServerRenames map[string]string `json:"server_renames,omitempty"`
 }
 
 // sensitiveEnvKeyPatterns contains lowercase substrings that flag an env var key as sensitive.
@@ -149,6 +155,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		// sending to the client.  Even authenticated users must not receive the password
 		// because it could be exfiltrated through XSS, dev-tools inspection, or screen-sharing.
 		response["web"] = sanitizeWebConfig(s.config.MittoConfig.Web)
+		// Indicate to the frontend whether a password already exists (in keychain or settings).
+		// The frontend uses this to distinguish "user left the field empty intentionally"
+		// from "field is empty because there was never a password" — without exposing the password itself.
+		response["has_auth_password"] = s.hasExistingSimpleAuth()
 		response["ui"] = s.config.MittoConfig.UI
 		response["session"] = s.config.MittoConfig.Session
 		response["conversations"] = s.config.MittoConfig.Conversations
@@ -191,6 +201,11 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				// SECURITY: mask values of keys that look like API keys / tokens / secrets.
 				"env":  sanitizeEnvVars(srv.Env),
 				"tags": srv.Tags, // Include categorization tags
+			}
+
+			// Include constraints if present
+			if srv.Constraints != nil {
+				acpServers[i]["constraints"] = srv.Constraints
 			}
 
 			// Include type if specified (for prompt matching)
@@ -265,6 +280,12 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeConfigError(w, conflictErr)
 		return
 	}
+
+	// Enforce a single default workspace per folder. The UI already clears
+	// is_default on sibling workspaces when one is set, but normalize here as a
+	// safety net so direct API callers (or pre-existing data) cannot persist
+	// multiple defaults for the same folder.
+	configPkg.NormalizeDefaultWorkspaces(req.Workspaces)
 
 	// Validate restricted_runner field for all workspaces and check platform support
 	for i, ws := range req.Workspaces {
@@ -442,6 +463,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			Source:      configPkg.SourceSettings, // Mark as settings-sourced
 			AutoApprove: srv.AutoApprove,          // Auto-approve permission requests
 			Tags:        srv.Tags,                 // Categorization tags
+			Constraints: srv.Constraints,          // Config option auto-selection rules
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
 		}
@@ -649,32 +671,45 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 
 		// Update session manager's global conversations config so new sessions use the updated settings
 		s.sessionManager.SetGlobalConversations(settings.Conversations)
-	}
 
-	// Update workspaces - need to resolve ACP commands and environment variables
-	acpCommandMap := make(map[string]string)
-	acpEnvMap := make(map[string]map[string]string)
-	for _, srv := range newACPServers {
-		acpCommandMap[srv.Name] = srv.Command
-		if len(srv.Env) > 0 {
-			acpEnvMap[srv.Name] = srv.Env
+		// Update GC periodic suspend threshold at runtime if session config changed
+		if settings.Session != nil && s.acpProcessManager != nil {
+			if d, enabled := settings.Session.ParsePeriodicSuspendTimeout(); enabled {
+				s.acpProcessManager.UpdatePeriodicSuspendThreshold(d)
+			} else {
+				s.acpProcessManager.UpdatePeriodicSuspendThreshold(0)
+			}
+			if bytes, enabled := settings.Session.ParseMemoryRecycleThreshold(); enabled {
+				s.acpProcessManager.UpdateMemoryRecycleThreshold(bytes)
+			} else {
+				s.acpProcessManager.UpdateMemoryRecycleThreshold(0)
+			}
 		}
 	}
 
+	// ACP command/cwd/env are resolved from global config at runtime and are never
+	// stored on the workspace. Just copy the workspace as-is from the request.
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
-	for i, ws := range req.Workspaces {
-		// Copy the full workspace from the request and resolve the ACP command
-		// from the server map (since the frontend may not have the latest command).
-		newWorkspaces[i] = ws
-		newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
-		newWorkspaces[i].ACPEnv = acpEnvMap[ws.ACPServer]
-		// Apply user-provided command override if set
-		if ws.ACPCommandOverride != "" {
-			newWorkspaces[i].ACPCommand = ws.ACPCommandOverride
-		}
-	}
+	copy(newWorkspaces, req.Workspaces)
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
+
+	// Migrate conversations that reference renamed ACP servers. This runs after
+	// the updated ACP servers and workspaces are applied above, so resumed
+	// sessions resolve the new server. Without this, in-place renames would
+	// orphan existing conversations (resume fails with "empty command").
+	if len(req.ServerRenames) > 0 {
+		if result, err := s.sessionManager.ApplyACPServerRenames(req.ServerRenames); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Failed to apply ACP server renames to conversations",
+					"error", err)
+			}
+		} else if result != nil && s.logger != nil {
+			s.logger.Info("Applied ACP server renames to conversations",
+				"updated", len(result.UpdatedSessionIDs),
+				"restarted", len(result.RestartedSessionIDs))
+		}
+	}
 
 	// Update external port setting on the server (before applying auth changes)
 	// If the new setting is 0 (random) and we already have a running external listener,
@@ -904,6 +939,16 @@ func (s *Server) handleSupportedRunners(w http.ResponseWriter, r *http.Request) 
 	writeJSONOK(w, runners)
 }
 
+// handleRunnerDefaults handles GET /api/runner-defaults.
+// Returns default runner configuration values. Currently a stub returning an empty object.
+func (s *Server) handleRunnerDefaults(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSONOK(w, map[string]interface{}{})
+}
+
 // handleAdvancedFlags handles GET /api/advanced-flags.
 // Returns the list of available advanced setting flags that can be configured per-session,
 // along with the configured default values from the config file.
@@ -994,9 +1039,10 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 	agentsDir, err := appdir.AgentsDir()
 	if err != nil {
 		writeJSONOK(w, map[string]interface{}{
-			"servers":    []interface{}{},
-			"error":      "Failed to get agents directory: " + err.Error(),
-			"agent_name": "",
+			"servers":        []interface{}{},
+			"error":          "Failed to get agents directory: " + err.Error(),
+			"agent_name":     "",
+			"has_mcp_remove": false,
 		})
 		return
 	}
@@ -1007,9 +1053,10 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		// No matching agent found - not an error, just no MCP tools
 		writeJSONOK(w, map[string]interface{}{
-			"servers":    []interface{}{},
-			"agent_name": "",
-			"message":    fmt.Sprintf("No agent definition found for ACP type %q", acpType),
+			"servers":        []interface{}{},
+			"agent_name":     "",
+			"message":        fmt.Sprintf("No agent definition found for ACP type %q", acpType),
+			"has_mcp_remove": false,
 		})
 		return
 	}
@@ -1028,6 +1075,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 			"message":         "Agent does not support MCP listing",
 			"mcp_scopes":      mcpScopes,
 			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+			"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 		})
 		return
 	}
@@ -1046,6 +1094,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 			"error":           "Failed to list MCP servers: " + err.Error(),
 			"mcp_scopes":      mcpScopes,
 			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+			"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 		})
 		return
 	}
@@ -1055,6 +1104,101 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 		"agent_name":      agent.Metadata.DisplayName,
 		"mcp_scopes":      mcpScopes,
 		"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
+		"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
+	})
+}
+
+// handleWorkspaceMCPRemove handles POST /api/workspace-mcp-remove
+// Removes an MCP server from a workspace's ACP agent by running mcp-remove.sh.
+func (s *Server) handleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	type mcpRemoveRequest struct {
+		ACPServer string `json:"acp_server"`
+		Dir       string `json:"dir"`
+		Scope     string `json:"scope"`
+		Name      string `json:"name"`
+	}
+
+	var req mcpRemoveRequest
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	if req.ACPServer == "" {
+		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve ACP server type from config
+	var acpType string
+	if s.config.MittoConfig != nil {
+		acpType = s.config.MittoConfig.GetServerType(req.ACPServer)
+	}
+	if acpType == "" {
+		acpType = req.ACPServer
+	}
+
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		http.Error(w, "Failed to get agents directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	mgr := agents.NewManager(agentsDir, s.logger)
+	agent, err := mgr.GetAgentByACPId(acpType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("No agent definition found for ACP type %q", acpType), http.StatusBadRequest)
+		return
+	}
+
+	if !agent.HasCommand(agents.CommandMCPRemove) {
+		http.Error(w, fmt.Sprintf("Agent %q does not support MCP removal", agent.Metadata.DisplayName), http.StatusBadRequest)
+		return
+	}
+
+	// Validate scope if agent declares supported scopes
+	if agent.Metadata.MCP != nil && len(agent.Metadata.MCP.Scopes) > 0 && req.Scope != "" {
+		validScope := false
+		for _, sc := range agent.Metadata.MCP.Scopes {
+			if sc == req.Scope {
+				validScope = true
+				break
+			}
+		}
+		if !validScope {
+			http.Error(w, fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			return
+		}
+	}
+
+	input := &agents.MCPRemoveInput{
+		Name:  req.Name,
+		Scope: req.Scope,
+		Path:  req.Dir,
+	}
+
+	output, err := mgr.RemoveMCPServer(r.Context(), agent.DirName, input)
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{
+			"success": false,
+			"message": err.Error(),
+			"name":    req.Name,
+		})
+		return
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"success": output.Success,
+		"message": output.Message,
+		"name":    output.Name,
 	})
 }
 

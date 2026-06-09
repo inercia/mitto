@@ -722,11 +722,26 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 					"name", proc.Name, "error", err)
 				continue
 			}
-			result.Message = output.Message
+			switch proc.GetOutput() {
+			case OutputTransform:
+				if output.Message != "" {
+					result.Message = output.Message
+				}
+			case OutputPrepend:
+				if output.Text != "" {
+					result.Message = output.Text + result.Message
+				}
+			case OutputAppend:
+				if output.Text != "" {
+					result.Message += output.Text
+				}
+			case OutputDiscard:
+				// Do nothing with output
+			}
 			if len(output.Attachments) > 0 {
 				result.Attachments = append(result.Attachments, output.Attachments...)
 			}
-			input.Message = output.Message
+			input.Message = result.Message
 		}
 
 		// Record run for rerun tracking
@@ -809,9 +824,12 @@ func (m *Manager) AccumulateTokenUsage(totalTokens int) {
 	}
 }
 
-// ApplyAfter runs all agentResponded processors against the completed agent turn.
-// It applies stop-reason, origin, match, and cadence filters in declaration order,
-// executes each processor (command or prompt mode), and accumulates side-effects.
+// ApplyAfter runs all after-phase processors (agentResponded and agentIdle) against
+// the completed agent turn. It applies stop-reason, origin, match, and cadence filters
+// in declaration order, executes each processor (command or prompt mode), and accumulates
+// side-effects. agentIdle processors are additionally gated on input.SessionIdle, so they
+// fire only once the queue has drained — their cadence counters still accumulate across a
+// burst of queued turns.
 //
 // Persistence: the session's AgentResponseCount and per-processor cadence state are
 // loaded from input.SessionDir at the start and saved atomically after all processors
@@ -846,6 +864,9 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 	applied := 0
 	skipped := 0
 
+	// Collect prompt-mode processors for batched dispatch after the loop.
+	var pendingPrompts []pendingPromptDispatch
+
 	m.logger.Info("after-phase processor pipeline starting",
 		"total_processors", len(m.processors),
 		"is_first_agent_response", isFirstAgentResponse,
@@ -855,8 +876,9 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 	)
 
 	for _, proc := range m.processors {
-		// Phase filter: only agentResponded processors fire here.
-		if proc.When.On != PhaseAgentResponded {
+		// Phase filter: only after-phase processors fire here (agentResponded and
+		// agentIdle). agentIdle processors are additionally gated on SessionIdle below.
+		if proc.When.On != PhaseAgentResponded && proc.When.On != PhaseAgentIdle {
 			continue
 		}
 
@@ -983,23 +1005,68 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			}
 		}
 
+		// agentIdle gate: only fire once the agent has drained its queue and gone idle.
+		// This is checked AFTER the cadence pre-increment above so that a burst of queued
+		// turns still accumulates toward the cadence threshold; the processor then fires
+		// once, at the idle breakpoint, with the full exchange counted. Cadence counters
+		// are intentionally NOT reset here — they persist until the processor actually fires.
+		if proc.When.On == PhaseAgentIdle && !input.SessionIdle {
+			skipped++
+			m.logger.Debug("after-phase processor skipped",
+				"name", proc.Name, "reason", "agentIdle_session_busy")
+			continue
+		}
+
 		applied++
 		m.logger.Info("applying after-phase processor",
 			"name", proc.Name,
 			"match", proc.When.Match,
 			"output", proc.GetOutput(),
+			"mode", map[bool]string{true: "prompt", false: "command"}[proc.IsPromptMode()],
 		)
 
-		// Execute the processor and collect stdout.
-		var stdout string
-		var execErr error
-
 		if proc.IsPromptMode() {
-			stdout, execErr = executeAfterPrompt(proc, input)
-		} else {
-			// Command mode (text mode is forbidden for agentResponded by the loader).
-			stdout, execErr = executeAfterCommand(ctx, proc, m.processorsDir, input, m.logger)
+			// Prompt-mode: collect for batched fire-and-forget dispatch.
+			// The output: field is ignored for prompt-mode — these are dispatched to
+			// an auxiliary session and are not parsed as stdout.
+			if m.promptFunc == nil {
+				m.logger.Warn("after-phase prompt-mode processor skipped: no PromptFunc configured",
+					"name", proc.Name,
+				)
+				skipped++
+				applied-- // undo the applied++ above
+				continue
+			}
+
+			assembledPrompt := substituteAfterVariables(proc.Prompt, input)
+			procTimeout := proc.GetTimeout().Duration()
+			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
+				name:    proc.Name,
+				prompt:  assembledPrompt,
+				timeout: procTimeout,
+			})
+
+			// Reset cadence counters after successful collection.
+			if proc.When.Cadence != nil && proc.Name != "" {
+				cs := state.Processors[proc.Name]
+				if cs == nil {
+					cs = &ProcessorCadenceState{}
+					state.Processors[proc.Name] = cs
+				}
+				cs.TurnsSinceLastFire = 0
+				cs.TokensSinceLastFire = 0
+				cs.LastFiredAt = now
+			}
+
+			m.logger.Info("after-phase prompt-mode processor collected for dispatch",
+				"name", proc.Name,
+				"prompt_len", len(assembledPrompt),
+			)
+			continue
 		}
+
+		// Command mode (text mode is forbidden for agentResponded by the loader).
+		stdout, execErr := executeAfterCommand(ctx, proc, m.processorsDir, input, m.logger)
 
 		if execErr != nil {
 			m.logger.Warn("after-phase processor execution failed",
@@ -1083,6 +1150,11 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 
 		m.logger.Info("after-phase processor applied",
 			"name", proc.Name, "output_type", outputType)
+	}
+
+	// Dispatch collected prompt-mode processors (fire-and-forget).
+	if len(pendingPrompts) > 0 {
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
 	}
 
 	// --- Update and save persisted state ---

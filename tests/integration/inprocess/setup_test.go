@@ -42,13 +42,6 @@ func SetupTestServer(t *testing.T) *TestServer {
 	// Find mock ACP server binary
 	mockACPCmd := findMockACPServer(t)
 
-	// Create session store
-	store, err := session.NewStore(filepath.Join(tmpDir, "sessions"))
-	if err != nil {
-		t.Fatalf("Failed to create session store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
-
 	// Create workspace directory
 	workspaceDir := filepath.Join(tmpDir, "workspace")
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
@@ -70,7 +63,6 @@ func SetupTestServer(t *testing.T) *TestServer {
 		Workspaces: []config.WorkspaceSettings{
 			{
 				ACPServer:  "mock-acp",
-				ACPCommand: mockACPCmd,
 				WorkingDir: workspaceDir,
 			},
 		},
@@ -90,6 +82,16 @@ func SetupTestServer(t *testing.T) *TestServer {
 	if err != nil {
 		t.Fatalf("Failed to create web server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Shutdown() })
+
+	// Share the server's own session store. The server creates its store via
+	// session.DefaultStore() over MITTO_DIR/sessions; constructing a second
+	// session.Store over the same directory would give it an independent mutex,
+	// so concurrent metadata writes (test event injection vs. the server's
+	// background session) would race on metadata.json — corrupting EventCount
+	// and producing duplicate sequence numbers. Sharing one Store instance
+	// serializes all reads/writes through a single lock.
+	store := srv.Store()
 
 	// Create test HTTP server
 	httpServer := httptest.NewServer(srv.Handler())

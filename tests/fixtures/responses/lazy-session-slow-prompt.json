@@ -1,0 +1,31 @@
+{
+  "scenario": "lazy-session-slow-prompt",
+  "description": "A slow prompt response (3s delay) used to test lazy ACP session creation. While session A's prompt is running, session B should be created instantly without waiting.",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "LAZY_SESSION_SLOW_PROMPT"
+      },
+      "delay_ms": 3000,
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": ["Slow prompt response complete."]
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "LAZY_SESSION_FIRST_PROMPT"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": ["First prompt on deferred session succeeded."]
+        }
+      ]
+    }
+  ]
+}

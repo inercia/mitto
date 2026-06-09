@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -38,6 +37,9 @@ const (
 
 // SharedACPProcessConfig holds configuration for creating a SharedACPProcess.
 type SharedACPProcessConfig struct {
+	// WorkspaceUUID is the unique identifier for the workspace this process belongs to.
+	// Used for PID file tracking to detect orphaned processes on startup.
+	WorkspaceUUID string
 	// ACPCommand is the shell command to start the ACP server process.
 	ACPCommand string
 	// ACPCwd is the working directory for the ACP server process itself.
@@ -55,6 +57,12 @@ type SharedACPProcessConfig struct {
 	Runner *runner.Runner
 	// Logger for process-level logging.
 	Logger *slog.Logger
+	// CanRestartGlobal is an optional callback that checks the global (cross-workspace)
+	// restart rate limiter. When set, Restart() checks this before proceeding.
+	// Returns true if restart is globally allowed, false to block.
+	CanRestartGlobal func() bool
+	// RecordRestart is an optional callback to record a restart in the global tracker.
+	RecordRestart func()
 }
 
 // SessionHandle is returned when creating a new session on a SharedACPProcess.
@@ -281,6 +289,12 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		})
 	}
 
+	// Startup watchdog: warn/error if no stderr activity and no Initialize completion
+	// within the configured windows. Cancelled when doStartProcess returns.
+	watchdogCtx, watchdogCancel := context.WithCancel(p.ctx)
+	defer watchdogCancel()
+	var signalStartupActivity func()
+
 	if p.config.Runner != nil {
 		if acpCwd != "" && p.logger != nil {
 			p.logger.Warn("cwd is not supported with restricted runners, ignoring",
@@ -297,14 +311,30 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		var runCtx context.Context
 		runCtx, runCancel = context.WithCancel(p.ctx)
 
-		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], nil)
+		// Build env using the same layering as the direct-exec branch below so that
+		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
+		// are propagated to the restricted-runner-spawned process.
+		runnerEnv := buildACPProcessEnv(p.config.Env, mittoEnv)
+		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
 			return "", fmt.Errorf("failed to start with runner: %w", err)
 		}
 		p.cancel = runCancel
 
-		startStderrMonitor(stderr, stderrCollector, onCrashDetected)
+		if p.logger != nil && len(p.config.Env) > 0 {
+			envKeys := make([]string, 0, len(p.config.Env))
+			for k := range p.config.Env {
+				envKeys = append(envKeys, k)
+			}
+			p.logger.Info("Applied server-specific environment variables to runner-spawned process",
+				"env_keys", envKeys,
+				"acp_server", p.config.ACPServer)
+		}
+
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
+
+		startStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -331,18 +361,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			return "", fmt.Errorf("stderr pipe: %w", err)
 		}
 
-		// Set environment variables for the ACP subprocess:
-		// 1. Start with current process environment
-		// 2. Add server-specific env vars (from ACP server definition in settings.json)
-		// 3. Add MITTO_* env vars (these take final precedence)
-		processEnv := os.Environ()
-		for k, v := range p.config.Env {
-			processEnv = append(processEnv, k+"="+v)
-		}
-		for k, v := range mittoEnv {
-			processEnv = append(processEnv, k+"="+v)
-		}
-		cmd.Env = processEnv
+		// Set environment variables for the ACP subprocess. Same layering as the
+		// runner branch (os.Environ + server-specific Env + MITTO_*).
+		cmd.Env = buildACPProcessEnv(p.config.Env, mittoEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))
@@ -358,7 +379,23 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			return "", fmt.Errorf("failed to start ACP server: %w", err)
 		}
 
-		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
+		// Track process PID for orphan detection on restart
+		if p.config.WorkspaceUUID != "" {
+			if pidErr := writeACPPIDFile(p.config.WorkspaceUUID, cmd.Process.Pid, false); pidErr != nil {
+				if p.logger != nil {
+					p.logger.Warn("Failed to write ACP PID file", "error", pidErr,
+						"workspace_uuid", p.config.WorkspaceUUID)
+				}
+			}
+		}
+
+		pid := -1
+		if cmd.Process != nil {
+			pid = cmd.Process.Pid
+		}
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
+
+		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -451,7 +488,11 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, p.logger)
 
-	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout)
+	// Use a larger notification queue for shared processes since all sessions
+	// multiplex over the same connection. The default 1024 can overflow when
+	// many sessions stream concurrently, killing the connection.
+	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout,
+		acp.WithMaxQueuedNotifications(8192))
 	if p.logger != nil {
 		p.conn.SetLogger(logging.DowngradeACPSDKErrors(p.logger))
 	}
@@ -609,6 +650,12 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		cwd = "."
 	}
 
+	ctxRemainingMs := int64(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		ctxRemainingMs = time.Until(dl).Milliseconds()
+	}
+	ctxAlreadyExpired := ctx.Err() != nil
+
 	rpcStart := time.Now()
 	sessResp, err := conn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
@@ -620,6 +667,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		if p.logger != nil {
 			p.logger.Warn("SharedACPProcess.NewSession failed",
 				"rpc_ms", rpcDuration.Milliseconds(),
+				"ctx_remaining_ms", ctxRemainingMs,
+				"ctx_already_expired", ctxAlreadyExpired,
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to create session: %w", err)
@@ -683,6 +732,12 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		cwd = "."
 	}
 
+	ctxRemainingMs := int64(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		ctxRemainingMs = time.Until(dl).Milliseconds()
+	}
+	ctxAlreadyExpired := ctx.Err() != nil
+
 	rpcStart := time.Now()
 	loadResp, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
@@ -696,6 +751,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 			p.logger.Info("SharedACPProcess.LoadSession failed",
 				"acp_session_id", acpSessionID,
 				"rpc_ms", rpcDuration.Milliseconds(),
+				"ctx_remaining_ms", ctxRemainingMs,
+				"ctx_already_expired", ctxAlreadyExpired,
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to load session: %w", err)
@@ -837,6 +894,22 @@ func (p *SharedACPProcess) ActiveRPCs() int32 {
 	return p.activeRPCs.Load()
 }
 
+// RSSBytes returns the resident set size in bytes summed over this process's
+// tree (the ACP agent process plus all of its descendants). Used by the GC's
+// memory-recycle tier to decide whether an idle process has grown bloated
+// enough to be reclaimed.
+func (p *SharedACPProcess) RSSBytes() (uint64, error) {
+	p.mu.RLock()
+	if p.cmd == nil || p.cmd.Process == nil {
+		p.mu.RUnlock()
+		return 0, fmt.Errorf("shared ACP process is not running")
+	}
+	pid := p.cmd.Process.Pid
+	p.mu.RUnlock()
+
+	return processTreeRSS(pid)
+}
+
 // Cancel cancels the current operation for a specific session.
 func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID acp.SessionId) error {
 	p.mu.RLock()
@@ -877,10 +950,28 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		return fmt.Errorf("shared ACP process is not running")
 	}
 
+	ctxRemainingMs := int64(-1)
+	if dl, ok := ctx.Deadline(); ok {
+		ctxRemainingMs = time.Until(dl).Milliseconds()
+	}
+	ctxAlreadyExpired := ctx.Err() != nil
+
+	rpcStart := time.Now()
 	_, err := conn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
 		SessionId: sessionID,
 		ModelId:   acp.UnstableModelId(modelID),
 	})
+	rpcDuration := time.Since(rpcStart)
+
+	if err != nil && p.logger != nil {
+		p.logger.Warn("SharedACPProcess.SetSessionModel failed",
+			"session_id", sessionID,
+			"model_id", modelID,
+			"rpc_ms", rpcDuration.Milliseconds(),
+			"ctx_remaining_ms", ctxRemainingMs,
+			"ctx_already_expired", ctxAlreadyExpired,
+			"error", err)
+	}
 	return err
 }
 
@@ -947,7 +1038,15 @@ func (p *SharedACPProcess) killProcess() {
 	}
 
 	if p.cmd != nil && p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		// Kill the entire process group to ensure all child processes are terminated.
+		// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
+		// survive and become orphans.
+		mittoAcp.KillProcessGroup(p.cmd.Process.Pid)
+	}
+
+	// Remove PID tracking file
+	if p.config.WorkspaceUUID != "" {
+		_ = removeACPPIDFile(p.config.WorkspaceUUID, false)
 	}
 
 	if p.wait != nil {
@@ -992,6 +1091,11 @@ func (p *SharedACPProcess) Restart() error {
 		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", MaxACPRestarts, ACPRestartWindow)
 	}
 
+	// Check global (cross-workspace) restart rate limiter before proceeding.
+	if p.config.CanRestartGlobal != nil && !p.config.CanRestartGlobal() {
+		return fmt.Errorf("global restart limit exceeded (cross-workspace cooldown active)")
+	}
+
 	// Apply backoff based on how many recent restarts have occurred.
 	p.restartMu.Lock()
 	recentCount := len(p.restartTimes)
@@ -1027,6 +1131,11 @@ func (p *SharedACPProcess) Restart() error {
 	p.mu.Unlock()
 
 	p.recordRestart()
+
+	// Record in the global restart tracker (cross-workspace rate limiter).
+	if p.config.RecordRestart != nil {
+		p.config.RecordRestart()
+	}
 
 	if err := p.startProcess(); err != nil {
 		if p.logger != nil {

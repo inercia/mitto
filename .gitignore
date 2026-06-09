@@ -178,5 +178,7 @@ test-results/
 .dolt/
 *.db
 .beads-credential-key
+# Holds the GitHub token (github.token) — must never be committed.
+.beads/config.yaml
 .augment/settings.local.json
 tests/ui/test-results-auth/

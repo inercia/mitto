@@ -49,6 +49,9 @@ type WebClient struct {
 	onMittoToolCall func(selfID string)
 	// onContextUsageUpdate is called when the agent sends a context window usage update.
 	onContextUsageUpdate func(size, used int)
+	// onActivity is called on every streamed update from the agent (pre-buffering)
+	// to signal liveness for the prompt inactivity watchdog.
+	onActivity func()
 
 	// Stream buffer for all streaming events (markdown, thoughts, tool calls, etc.)
 	// This ensures correct ordering even when markdown content is buffered.
@@ -144,6 +147,10 @@ type WebClientConfig struct {
 	OnMittoToolCall func(selfID string)
 	// OnContextUsageUpdate is called when the agent sends context window usage data.
 	OnContextUsageUpdate func(size, used int)
+	// OnActivity is called on every streamed update received from the agent, before
+	// any buffering. It signals that the agent is still alive and producing output,
+	// used by the prompt inactivity watchdog to detect a live-but-unresponsive agent.
+	OnActivity func()
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
@@ -162,6 +169,7 @@ func NewWebClient(config WebClientConfig) *WebClient {
 		onCurrentModeChanged: config.OnCurrentModeChanged,
 		onMittoToolCall:      config.OnMittoToolCall,
 		onContextUsageUpdate: config.OnContextUsageUpdate,
+		onActivity:           config.OnActivity,
 	}
 
 	// Create stream buffer that handles all streaming events.
@@ -208,6 +216,12 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 	// has them persisted in events.jsonl.
 	if c.isLoadingSession.Load() {
 		return nil
+	}
+
+	// Signal liveness to the prompt inactivity watchdog: any streamed update from
+	// the agent (message, thought, tool call, plan, etc.) means it is still working.
+	if c.onActivity != nil {
+		c.onActivity()
 	}
 
 	// Log event arrival time from ACP SDK (DEBUG level only).

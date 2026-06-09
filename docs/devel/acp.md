@@ -354,11 +354,14 @@ process. Without cleanup, these processes live until server exit, wasting resour
 3. **Brief UI visits** — Opening a conversation starts a process permanently
 4. **Auxiliary pre-warming** — 4 auxiliary sessions are eagerly spawned on process creation
 
-### Solution: Two-Tier Periodic Garbage Collection
+### Solution: Multi-Tier Periodic Garbage Collection
 
 Instead of reference counting (error-prone, requires wiring into every lifecycle path),
 use a periodic GC loop that is self-healing: even if something goes wrong, the next
-cycle cleans up.
+cycle cleans up. `RunGCOnce()` executes the tiers below in order each cycle.
+
+> The tier numbers reflect the order they were added, not their execution order. The
+> actual run order in `RunGCOnce()` is: **Tier 1 → Tier 2 → Tier 4 → Tier 3**.
 
 ### Tier 1 — Idle Session Cleanup
 
@@ -379,6 +382,22 @@ When a session is idle, the GC calls `CloseSession()`, which:
 next scheduled delivery is within 2× the GC interval. This avoids the overhead of
 repeatedly closing and re-creating sessions that will be needed again shortly.
 
+#### Periodic Suspend (within Tier 1)
+
+Tier 1 also **suspends idle periodic conversations** to save memory. A periodic
+session whose next prompt is farther away than `PeriodicSuspendThreshold` is eligible
+for suspension **even if it has active WebSocket observers** (i.e. the user has it open
+in the sidebar). When suspended, its ACP connection is closed but the session is **not
+archived** — it stays visible and resumes transparently via `ensure_resumed` (on user
+focus) or the `PeriodicRunner` (when the prompt is due). A generous
+`PeriodicSuspendGracePeriod` protects sessions that recently finished a turn from being
+suspended too aggressively (using the most recent of `LastResponseCompleteAt` and
+`LastActivityAt`). Before closing, the session is marked `MarkGCSuspended` so the
+WebSocket auto-resume handler skips it and avoids a suspend/resume thrash loop.
+
+Defaults: `PeriodicSuspendThreshold` = 30m (configurable; 0/negative disables),
+`PeriodicSuspendGracePeriod` = 10m.
+
 ### Tier 2 — Idle Process Cleanup
 
 After tier 1 runs, check each shared process in `ACPProcessManager.processes`:
@@ -389,7 +408,55 @@ After tier 1 runs, check each shared process in `ACPProcessManager.processes`:
 
 The grace period (default: 60 seconds) prevents process thrashing when quickly
 switching between conversations. A `lastSessionSeen` timestamp per workspace
-tracks when sessions were last present.
+tracks when sessions were last present. If the process has **in-flight RPCs**
+(`p.ActiveRPCs() > 0`, e.g. a slow `LoadSession`/`NewSession`), the stop is deferred
+and the grace clock reset, since killing the pipe mid-RPC hard-fails the affected
+sessions.
+
+### Tier 4 — Memory-Bloat Recycling
+
+Runs after Tier 2 (re-querying sessions so newly closed ones are excluded). This tier
+addresses agent processes that grow unbounded over a long lifetime (the root cause of
+the original "stuck conversation" incident, where a shared agent had bloated to ~5.9 GB
+RSS and was thrashing). It is **opt-in and disabled by default** — it does nothing
+unless `MemoryRecycleThreshold > 0`.
+
+For each shared process, the tier samples the **RSS summed over the entire process
+tree** (root + all descendants, e.g. `node` → `claude`) via
+`SharedACPProcess.RSSBytes()`, which uses the cross-platform, cgo-free
+[`github.com/shirou/gopsutil/v4`](https://github.com/shirou/gopsutil) library
+(implemented in `internal/web/acp_process_memory.go`). A process is recycled **only when
+it is fully idle** — all of the following must hold:
+
+- `p.ActiveRPCs() == 0` (no in-flight RPCs)
+- No session is `IsPrompting`
+- All sessions have empty queues (`QueueLength == 0`)
+- No session has a periodic prompt due within 2× the GC interval
+
+When a bloated process passes every safety gate, each of its sessions is marked
+`MarkGCSuspended` (to prevent the WebSocket reconnect/resume thrash loop), closed via
+`sessionClose`, and the now-sessionless process is stopped with `StopProcess`. Affected
+conversations **resume transparently** on next focus via `LoadSession` history replay,
+making the recycle invisible to the user. The recycle is logged at `Info` with
+`rss_bytes` and `threshold_bytes`; every skip reason is logged at `Debug`.
+
+After a recycle, the GC invokes the `onMemoryRecycled` callback (wired in `server.go`),
+which resolves a friendly workspace name and calls `Server.BroadcastMemoryRecycled`. That
+broadcasts a `memory_recycled` event on the `/api/events` channel to all connected clients;
+the frontend (`useWebSocket.js` → `mitto:memory_recycled` → `app.js`) surfaces an **info
+toast** noting the workspace, the RSS vs. threshold (in MB), and the number of conversations
+that will resume automatically. The payload carries `workspace_uuid`, `workspace_name`,
+`working_dir`, `rss_bytes`, `threshold_bytes`, and `session_count`.
+
+This reuses the exact idle-safety and anti-thrash machinery already proven in Tier 1's
+periodic-suspend path. The threshold is configurable per the
+[Configuration](#configuration) section below.
+
+### Tier 3 — Auxiliary Session Cleanup
+
+Cleans up auxiliary sessions (title-gen, follow-ups, prompt improvement) idle longer
+than `AuxIdleTimeout` (default 10m) via `CleanupStaleAuxiliarySessions`. Cleaned-up
+sessions are lazily re-created on next use.
 
 ### Avoiding Unnecessary Process Creation
 
@@ -431,162 +498,11 @@ Change `GetOrCreateProcess()` to accept a `prewarm bool` parameter:
 Alternatively, keep pre-warming always-on and let the GC clean up the process
 shortly after — simpler but wastes ~5 seconds of Claude startup for no reason.
 
-## Implementation Plan
+## Implementation Details
 
-### 1. Add GC Loop to `ACPProcessManager`
+> The multi-tier GC described above is implemented in `internal/web/acp_process_gc.go`.
 
-```go
-// GCConfig configures the garbage collection loop.
-type GCConfig struct {
-    Interval    time.Duration // How often to run GC (default: 30s)
-    GracePeriod time.Duration // How long a process must be sessionless before stopping (default: 60s)
-}
-```
-
-New fields on `ACPProcessManager`:
-
-- `lastSessionSeen map[string]time.Time` — per workspace, when sessions were last present
-- `gcStop chan struct{}` / `gcDone chan struct{}` — lifecycle management
-
-New methods:
-
-- `StartGC(config GCConfig, sessionQuery SessionQueryFunc)` — starts the GC goroutine
-- `StopGC()` — stops the GC goroutine
-- `RunGCOnce(sessionQuery SessionQueryFunc)` — single GC iteration (exported for testing)
-
-The `SessionQueryFunc` is a callback to query `SessionManager` without creating a
-circular dependency:
-
-```go
-// SessionQueryFunc returns running sessions grouped by workspace UUID.
-// Used by the GC to determine which processes still have active sessions.
-type SessionQueryFunc func() map[string][]SessionInfo
-
-// SessionInfo contains the minimum information the GC needs about a session.
-type SessionInfo struct {
-    SessionID    string
-    IsPrompting  bool
-    HasObservers bool
-    QueueLength  int
-    // NextPeriodicAt is when the next periodic prompt is due (nil = no periodic config)
-    NextPeriodicAt *time.Time
-}
-```
-
-### 2. Provide Session Info from `SessionManager`
-
-Add a method to `SessionManager` that the GC can call:
-
-```go
-// GetSessionInfoByWorkspace returns session info grouped by workspace UUID.
-// Used by the ACP process GC to determine which processes are still needed.
-func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
-    sm.mu.RLock()
-    defer sm.mu.RUnlock()
-
-    result := make(map[string][]SessionInfo)
-    for _, bs := range sm.sessions {
-        uuid := bs.GetWorkspaceUUID()
-        if uuid == "" {
-            continue
-        }
-
-        var nextPeriodic *time.Time
-        if sm.store != nil {
-            if p, err := sm.store.Periodic(bs.GetSessionID()).Get(); err == nil && p.Enabled {
-                nextPeriodic = p.NextScheduledAt
-            }
-        }
-
-        var queueLen int
-        if sm.store != nil {
-            queueLen, _ = sm.store.Queue(bs.GetSessionID()).Len()
-        }
-
-        result[uuid] = append(result[uuid], SessionInfo{
-            SessionID:      bs.GetSessionID(),
-            IsPrompting:    bs.IsPrompting(),
-            HasObservers:   bs.HasObservers(),
-            QueueLength:    queueLen,
-            NextPeriodicAt: nextPeriodic,
-        })
-    }
-    return result
-}
-```
-
-### 3. Wire Up in `server.go`
-
-After creating the `ACPProcessManager` and `SessionManager`:
-
-```go
-acpProcessMgr.StartGC(GCConfig{
-    Interval:    30 * time.Second,
-    GracePeriod: 60 * time.Second,
-}, func() map[string][]SessionInfo {
-    return sessionMgr.GetSessionInfoByWorkspace()
-})
-```
-
-Add `acpProcessMgr.StopGC()` to the server shutdown path.
-
-### 4. Defer Auxiliary Pre-warming (Optional Enhancement)
-
-Modify `GetOrCreateProcess()` signature:
-
-```go
-func (m *ACPProcessManager) GetOrCreateProcess(
-    workspace *config.WorkspaceSettings,
-    r *runner.Runner,
-    prewarm bool,  // New parameter
-) (*SharedACPProcess, error) {
-    // ... existing logic ...
-    if !m.DisableAuxiliary && prewarm {
-        go m.prewarmAuxiliarySessions(workspace.UUID, processLogger)
-    }
-}
-```
-
-Update callers:
-
-- `SessionManager.getSharedProcess()` → pass `true` (user conversations)
-- `SessionManager.EnsureWorkspaceAuxiliary()` → pass `false`
-- Any transient/background path → pass `false`
-
-## GC Algorithm (Pseudocode)
-
-```
-every Interval:
-    sessionsByWorkspace = sessionQuery()
-
-    // Tier 1: Close idle sessions
-    for each workspace, sessions in sessionsByWorkspace:
-        for each session in sessions:
-            if session.IsPrompting:
-                continue  // Active work
-            if session.HasObservers:
-                continue  // UI connected
-            if session.QueueLength > 0:
-                continue  // Pending work
-            if session.NextPeriodicAt != nil &&
-               session.NextPeriodicAt < now + 2*Interval:
-                continue  // Periodic prompt due soon
-            sessionManager.CloseSession(session.SessionID, "gc_idle")
-
-    // Tier 2: Stop idle processes
-    for each workspaceUUID, process in acpProcessManager.processes:
-        runningSessions = sessionQuery()[workspaceUUID]
-        if len(runningSessions) > 0:
-            lastSessionSeen[workspaceUUID] = now
-            continue
-        if lastSessionSeen[workspaceUUID] is zero:
-            lastSessionSeen[workspaceUUID] = now  // First time seeing it empty
-            continue
-        if now - lastSessionSeen[workspaceUUID] < GracePeriod:
-            continue  // Within grace period
-        acpProcessManager.StopProcess(workspaceUUID)
-        delete(lastSessionSeen, workspaceUUID)
-```
+The implementation follows the design described above. See `internal/web/acp_process_gc.go` for the GC loop, `GCConfig`, `SessionQueryFunc`, and `SessionInfo` types, and `internal/web/acp_process_gc_test.go` for unit and integration tests.
 
 ## Edge Cases
 
@@ -636,23 +552,66 @@ path handles killing all processes. The GC does not interfere.
 
 ## Configuration
 
-The GC intervals could be made configurable via `config.yaml` under a new section:
+Most GC intervals (`Interval`, `GracePeriod`, `IdleTimeout`, etc.) use hardcoded
+defaults from `defaultGCConfig()`. Two user-facing knobs are exposed via settings
+(`internal/config/settings.go`, `SessionConfig`) and the Settings dialog under
+**Conversations**:
 
-```yaml
-process:
-  gc_interval: 30s # How often to check for idle processes
-  gc_grace_period: 60s # How long to wait before stopping an idle process
-```
+| Setting (JSON key)         | Valid values                          | Default        | Effect                                                                 |
+| -------------------------- | ------------------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `periodic_suspend_timeout` | `""`, `disabled`, `15m`, `30m`, `1h`, `2h` | `""` → 30m | Tier 1 periodic-suspend threshold. `disabled` turns the heuristic off. |
+| `memory_recycle_threshold` | `""`, `disabled`, `3g`, `4g`, `6g`, `8g`   | `""` → disabled (opt-in) | Tier 4 RSS threshold above which an idle bloated process is recycled.  |
 
-For the initial implementation, hardcoded defaults are sufficient.
+Parsing lives in `ParsePeriodicSuspendTimeout()` and `ParseMemoryRecycleThreshold()`
+(both return `(value, enabled)`). At startup, `server.go` reads these into `GCConfig`
+when calling `StartGC`. Both can also be updated live on the running GC without a
+restart via `UpdatePeriodicSuspendThreshold()` and `UpdateMemoryRecycleThreshold()`
+(wired from `config_handlers.go` when settings change). A threshold of `0` disables the
+corresponding tier.
+
+## Prompt Inactivity Watchdog
+
+The GC tiers handle processes that are dead, sessionless, or bloated. A separate
+mechanism handles the case where an agent is **alive with an open connection but stops
+streaming any updates** during a prompt — the "stuck, still responding" state the user
+sees in the UI (e.g. wedged during MCP init, or GC-thrashing under memory pressure).
+The process-death and connection-EOF monitors do not catch this because the process is
+still running and the pipe is still open.
+
+`BackgroundSession.startPromptInactivityWatchdog()` (in `background_session.go`) launches
+a per-prompt goroutine that watches `lastAgentActivityAt`, a timestamp bumped by
+`signalAgentActivity()` on **every** streamed ACP `SessionUpdate`. On each tick it:
+
+- Returns when the prompt context is done (prompt completed or cancelled elsewhere).
+- **Pauses** (resets the idle baseline) while a UI prompt is active — permission dialogs
+  and MCP tool questions legitimately block the agent on user input.
+- Emits a **WARN** log once idle time crosses `promptInactivityWatchdogWarnDelay`.
+- Cancels the in-flight prompt once idle time crosses `promptInactivityWatchdogTimeout`
+  (unblocking the RPC so `is_prompting` clears and the session recovers).
+
+**Defaults (WARN-only):** `promptInactivityWatchdogWarnDelay = 2m`, and
+`promptInactivityWatchdogTimeout = 0`. A timeout of `0` **disables automatic
+cancellation** — out of the box the watchdog only warns. This is intentional: it avoids
+ever cancelling a legitimate long-running tool call that produces no intermediate
+streamed output (e.g. a multi-minute build). Setting the timeout to a positive duration
+opts in to automatic cancellation. Both values are package vars (overridable in tests);
+there is currently no settings/UI exposure.
+
+When the timeout fires, the prompt error path treats it as a **recoverable** error: it
+emits an `OnError` to the user and skips the auto-restart / queue-advance logic, so the
+session simply returns to idle rather than churning the process.
 
 ## Impact Summary
 
 | Component                  | Change                                                                  |
 | -------------------------- | ----------------------------------------------------------------------- |
-| `ACPProcessManager`        | New GC loop, `lastSessionSeen` tracking, `StartGC`/`StopGC`/`RunGCOnce` |
-| `SessionManager`           | New `GetSessionInfoByWorkspace()` method                                |
-| `server.go`                | Wire up GC start/stop                                                   |
-| `GetOrCreateProcess`       | Optional: add `prewarm` parameter                                       |
-| Existing session lifecycle | **No changes** — GC is purely additive                                  |
-| Tests                      | New unit tests for GC; existing tests unaffected                        |
+| `ACPProcessManager`        | GC loop, `lastSessionSeen` tracking, `StartGC`/`StopGC`/`RunGCOnce`; Tier 4 memory recycle + live `UpdateMemoryRecycleThreshold`/`UpdatePeriodicSuspendThreshold` |
+| `acp_process_memory.go`    | New — cross-platform process-tree RSS sampling via `gopsutil/v4`        |
+| `SharedACPProcess`         | New `RSSBytes()` (process-tree RSS for the recycle tier)                |
+| `BackgroundSession`        | Prompt inactivity watchdog (`startPromptInactivityWatchdog`, `signalAgentActivity`, `lastAgentActivityAt`) |
+| `SessionManager`           | `GetSessionInfoByWorkspace()` method                                    |
+| `server.go`                | Wire up GC start/stop; read `periodic_suspend_timeout` + `memory_recycle_threshold` into `GCConfig` |
+| `config_handlers.go`       | Live-update GC thresholds when settings change                          |
+| `SettingsDialog.js`        | UI controls for Suspend Settings + Memory recycling                     |
+| Existing session lifecycle | **No changes** — GC and watchdog are purely additive                    |
+| Tests                      | New unit tests for GC tiers, RSS parsing, and the watchdog              |

@@ -1,7 +1,9 @@
 ---
+icon: "globe"
 name: "GitHub: babysit my PRs"
+menus: prompts
 description: "Periodically check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments"
-group: "CI"
+group: "GitHub"
 backgroundColor: "#BBDEFB"
 tags: ["periodic", "github"]
 enabledWhen: 'fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh"))'

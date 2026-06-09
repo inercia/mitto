@@ -37,6 +37,18 @@ const (
 	// This prevents rapid crash loops that burn resources without letting the underlying
 	// condition (e.g., client backpressure) resolve.
 	ACPRestartMaxDelay = 30 * time.Second
+
+	// MaxGlobalRestarts is the maximum number of ACP process restarts across ALL workspaces
+	// within GlobalRestartWindow. When exceeded, ALL restarts are paused for GlobalCooldownDuration.
+	// This prevents cross-workspace restart cascades under systemic memory pressure.
+	MaxGlobalRestarts = 5
+
+	// GlobalRestartWindow is the time window for counting global restarts across all workspaces.
+	GlobalRestartWindow = 2 * time.Minute
+
+	// GlobalCooldownDuration is how long ALL restarts are paused after the global restart
+	// limit is exceeded. This gives the system time to recover from memory pressure.
+	GlobalCooldownDuration = 60 * time.Second
 )
 
 // RestartReason represents the reason why an ACP process was restarted.

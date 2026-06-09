@@ -144,20 +144,20 @@ func TestUserData_Validate_NoSchema(t *testing.T) {
 	}
 
 	// With nil schema, attributes should be rejected
-	err := userData.Validate(nil)
+	err := userData.Validate(nil, "")
 	if err == nil {
 		t.Error("Expected error with nil schema, got nil")
 	}
 
 	// With empty schema, attributes should be rejected
-	err = userData.Validate(&config.UserDataSchema{})
+	err = userData.Validate(&config.UserDataSchema{}, "")
 	if err == nil {
 		t.Error("Expected error with empty schema, got nil")
 	}
 
 	// Empty user data should always be valid (even with no schema)
 	emptyUserData := &UserData{Attributes: []UserDataAttribute{}}
-	err = emptyUserData.Validate(nil)
+	err = emptyUserData.Validate(nil, "")
 	if err != nil {
 		t.Errorf("Expected nil error for empty user data, got %v", err)
 	}

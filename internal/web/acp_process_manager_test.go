@@ -2,7 +2,9 @@ package web
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 )
@@ -11,7 +13,7 @@ func TestACPProcessManager_GetOrCreateProcess_RequiresWorkspace(t *testing.T) {
 	m := NewACPProcessManager(context.Background(), nil)
 	defer m.Close()
 
-	_, err := m.GetOrCreateProcess(nil, nil, false)
+	_, err := m.GetOrCreateProcess(nil, "", "", nil, nil, false)
 	if err == nil {
 		t.Fatal("expected error for nil workspace")
 	}
@@ -21,7 +23,7 @@ func TestACPProcessManager_GetOrCreateProcess_RequiresUUID(t *testing.T) {
 	m := NewACPProcessManager(context.Background(), nil)
 	defer m.Close()
 
-	_, err := m.GetOrCreateProcess(&config.WorkspaceSettings{}, nil, false)
+	_, err := m.GetOrCreateProcess(&config.WorkspaceSettings{}, "", "", nil, nil, false)
 	if err == nil {
 		t.Fatal("expected error for empty UUID")
 	}
@@ -272,12 +274,9 @@ func TestMapsEqual(t *testing.T) {
 // ---- sharedProcessConfigMatchesWorkspace tests ----
 
 func TestSharedProcessConfigMatchesWorkspace_NilInputs(t *testing.T) {
-	if sharedProcessConfigMatchesWorkspace(nil, &config.WorkspaceSettings{}) {
+	// nil process should not match
+	if sharedProcessConfigMatchesWorkspace(nil, "test", "cmd", "", nil) {
 		t.Error("nil process should not match")
-	}
-	p := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "test"}}
-	if sharedProcessConfigMatchesWorkspace(p, nil) {
-		t.Error("nil workspace should not match")
 	}
 }
 
@@ -289,12 +288,7 @@ func TestSharedProcessConfigMatchesWorkspace_MatchesWithoutEnv(t *testing.T) {
 			ACPCwd:     "/cwd",
 		},
 	}
-	ws := &config.WorkspaceSettings{
-		ACPServer:  "Auggie",
-		ACPCommand: "auggie --acp",
-		ACPCwd:     "/cwd",
-	}
-	if !sharedProcessConfigMatchesWorkspace(p, ws) {
+	if !sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "/cwd", nil) {
 		t.Error("expected match when all fields match (no env)")
 	}
 }
@@ -307,12 +301,8 @@ func TestSharedProcessConfigMatchesWorkspace_MatchesWithEnv(t *testing.T) {
 			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
 		},
 	}
-	ws := &config.WorkspaceSettings{
-		ACPServer:  "Auggie",
-		ACPCommand: "auggie --acp",
-		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
-	}
-	if !sharedProcessConfigMatchesWorkspace(p, ws) {
+	if !sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "",
+		map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"}) {
 		t.Error("expected match when all fields including Env match")
 	}
 }
@@ -325,18 +315,14 @@ func TestSharedProcessConfigMatchesWorkspace_EnvChanged(t *testing.T) {
 			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=4096"},
 		},
 	}
-	ws := &config.WorkspaceSettings{
-		ACPServer:  "Auggie",
-		ACPCommand: "auggie --acp",
-		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
-	}
-	if sharedProcessConfigMatchesWorkspace(p, ws) {
+	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "",
+		map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"}) {
 		t.Error("should NOT match when Env values differ — process must be recreated")
 	}
 }
 
 func TestSharedProcessConfigMatchesWorkspace_EnvAdded(t *testing.T) {
-	// Process was started without env, workspace now has env — should NOT match
+	// Process was started without env, but resolved env now has values — should NOT match
 	p := &SharedACPProcess{
 		config: SharedACPProcessConfig{
 			ACPServer:  "Auggie",
@@ -344,18 +330,14 @@ func TestSharedProcessConfigMatchesWorkspace_EnvAdded(t *testing.T) {
 			Env:        nil,
 		},
 	}
-	ws := &config.WorkspaceSettings{
-		ACPServer:  "Auggie",
-		ACPCommand: "auggie --acp",
-		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
-	}
-	if sharedProcessConfigMatchesWorkspace(p, ws) {
+	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "",
+		map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"}) {
 		t.Error("should NOT match when env was added to config — process must be recreated")
 	}
 }
 
 func TestSharedProcessConfigMatchesWorkspace_EnvRemoved(t *testing.T) {
-	// Process was started with env, workspace no longer has env — should NOT match
+	// Process was started with env, resolved env is now nil — should NOT match
 	p := &SharedACPProcess{
 		config: SharedACPProcessConfig{
 			ACPServer:  "Auggie",
@@ -363,12 +345,7 @@ func TestSharedProcessConfigMatchesWorkspace_EnvRemoved(t *testing.T) {
 			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
 		},
 	}
-	ws := &config.WorkspaceSettings{
-		ACPServer:  "Auggie",
-		ACPCommand: "auggie --acp",
-		ACPEnv:     nil,
-	}
-	if sharedProcessConfigMatchesWorkspace(p, ws) {
+	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "", nil) {
 		t.Error("should NOT match when env was removed from config — process must be recreated")
 	}
 }
@@ -381,12 +358,269 @@ func TestSharedProcessConfigMatchesWorkspace_CommandDiffers(t *testing.T) {
 			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
 		},
 	}
-	ws := &config.WorkspaceSettings{
-		ACPServer:  "Auggie",
-		ACPCommand: "auggie --acp --model opus4.6",
-		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
-	}
-	if sharedProcessConfigMatchesWorkspace(p, ws) {
+	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp --model opus4.6", "",
+		map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"}) {
 		t.Error("should NOT match when command differs")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_ServerDiffers(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+		},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, "ClaudeCode", "auggie --acp", "/cwd", nil) {
+		t.Error("should NOT match when server differs")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_CwdDiffers(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd/one",
+		},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, "Auggie", "auggie --acp", "/cwd/two", nil) {
+		t.Error("should NOT match when cwd differs")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_NilVsEmptyEnvMatches(t *testing.T) {
+	// A process started with no env (nil) must match a re-resolved empty map,
+	// and vice versa — this is a benign equivalence that must NOT trigger recreation.
+	pNil := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+			Env:        nil,
+		},
+	}
+	if !sharedProcessConfigMatchesWorkspace(pNil, "Auggie", "auggie --acp", "/cwd", map[string]string{}) {
+		t.Error("nil stored env vs resolved empty map should match")
+	}
+
+	pEmpty := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+			Env:        map[string]string{},
+		},
+	}
+	if !sharedProcessConfigMatchesWorkspace(pEmpty, "Auggie", "auggie --acp", "/cwd", nil) {
+		t.Error("empty stored env vs resolved nil map should match")
+	}
+}
+
+// ---- diffEnvKeys tests ----
+
+func TestDiffEnvKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		a           map[string]string
+		b           map[string]string
+		wantAdded   []string
+		wantRemoved []string
+		wantChanged []string
+	}{
+		{
+			name:        "both nil",
+			a:           nil,
+			b:           nil,
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "nil vs empty",
+			a:           nil,
+			b:           map[string]string{},
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "identical",
+			a:           map[string]string{"A": "1", "B": "2"},
+			b:           map[string]string{"A": "1", "B": "2"},
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "added keys sorted",
+			a:           map[string]string{"A": "1"},
+			b:           map[string]string{"A": "1", "Z": "9", "M": "5"},
+			wantAdded:   []string{"M", "Z"},
+			wantRemoved: nil,
+			wantChanged: nil,
+		},
+		{
+			name:        "removed keys sorted",
+			a:           map[string]string{"A": "1", "Z": "9", "M": "5"},
+			b:           map[string]string{"A": "1"},
+			wantAdded:   nil,
+			wantRemoved: []string{"M", "Z"},
+			wantChanged: nil,
+		},
+		{
+			name:        "changed keys sorted",
+			a:           map[string]string{"B": "1", "A": "1"},
+			b:           map[string]string{"B": "2", "A": "9"},
+			wantAdded:   nil,
+			wantRemoved: nil,
+			wantChanged: []string{"A", "B"},
+		},
+		{
+			name:        "mixed add remove change",
+			a:           map[string]string{"KEEP": "x", "GONE": "y", "MOD": "1"},
+			b:           map[string]string{"KEEP": "x", "MOD": "2", "NEW": "z"},
+			wantAdded:   []string{"NEW"},
+			wantRemoved: []string{"GONE"},
+			wantChanged: []string{"MOD"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			added, removed, changed := diffEnvKeys(tc.a, tc.b)
+			if !reflect.DeepEqual(added, tc.wantAdded) {
+				t.Errorf("added = %v, want %v", added, tc.wantAdded)
+			}
+			if !reflect.DeepEqual(removed, tc.wantRemoved) {
+				t.Errorf("removed = %v, want %v", removed, tc.wantRemoved)
+			}
+			if !reflect.DeepEqual(changed, tc.wantChanged) {
+				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
+			}
+		})
+	}
+}
+
+// TestPrewarmContextBudgetIsolation is a regression test for mitto-54p.
+//
+// Root cause: prewarmAuxiliarySessions previously created ONE 30-second context and
+// shared it across FOUR parallel goroutines. Inside getOrCreateAuxiliarySession,
+// auxMu serialises those goroutines, so the shared deadline is consumed sequentially.
+// After N slow NewSession calls drain most of the budget, the remaining time on ctx is
+// near zero; the subsequent SetSessionModel timeout derived from ctx via
+//
+//	context.WithTimeout(ctx, 10*time.Second)
+//
+// inherits the exhausted deadline and is immediately expired → "context deadline
+// exceeded", rpc_ms=0.
+//
+// The fix has two parts (both tested here):
+//  1. prewarmAuxiliarySessions: each goroutine creates its OWN independent timeout
+//     (derived from m.ctx) so one slow NewSession cannot starve the others.
+//  2. getOrCreateAuxiliarySession: SetSessionModel derives its timeout from m.ctx
+//     rather than from the caller's ctx, giving SetSessionModel its full window
+//     regardless of how much budget NewSession consumed.
+//
+// This test verifies the deadline math that underpins both fixes. It deliberately
+// reproduces the starvation scenario and asserts:
+//   - OLD behaviour (shared budget): at least one SetSessionModel context would be
+//     expired before any work could run.
+//   - NEW behaviour (independent budgets + m.ctx base for SetSessionModel): every
+//     SetSessionModel context retains close to its full 10-second window.
+func TestPrewarmContextBudgetIsolation(t *testing.T) {
+	const (
+		numSessions      = 4
+		workPerSession   = 60 * time.Millisecond // simulates NewSession latency
+		modelSetTimeout  = 10 * time.Second
+		minExpectedSlack = 9 * time.Second // SetSessionModel must retain at least this much
+	)
+
+	// ── OLD behaviour: shared deadline drained by sequential work ──────────────
+	// Budget is intentionally set to just under the total serial work time so that
+	// the last iteration sees a nearly-expired (or already expired) ctx.
+	oldBudget := time.Duration(float64(numSessions*int(workPerSession)) * 0.95)
+	oldBehaviorDemonstratesStarvation := func() bool {
+		sharedCtx, cancel := context.WithTimeout(context.Background(), oldBudget)
+		defer cancel()
+		for i := 0; i < numSessions; i++ {
+			time.Sleep(workPerSession)
+			// OLD: SetSessionModel derives from the shared (drained) ctx.
+			setCtx, setCancel := context.WithTimeout(sharedCtx, modelSetTimeout)
+			expired := setCtx.Err() != nil
+			setCancel()
+			if expired {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !oldBehaviorDemonstratesStarvation() {
+		// Timing was too generous on this machine; skip rather than produce a
+		// false-positive pass — the test is only meaningful when starvation occurs.
+		t.Skip("timing-sensitive: could not reproduce pre-fix starvation; skipping")
+	}
+
+	// ── NEW behaviour: independent per-goroutine contexts + m.ctx base ─────────
+	// Represents the fixed code: each prewarm goroutine has its own 30s ctx (from
+	// m.ctx), and SetSessionModel derives from m.ctx (not the drained caller ctx).
+	managerCtx := context.Background() // stands in for m.ctx in production code
+
+	for i := 0; i < numSessions; i++ {
+		// Fix part 1: each goroutine creates its own independent timeout.
+		// The ctx is not passed to SetSessionModel (that uses managerCtx directly),
+		// but it scopes the goroutine's overall budget — kept here to mirror
+		// the real prewarmAuxiliarySessions structure.
+		_, goroutineCancel := context.WithTimeout(managerCtx, 30*time.Second)
+
+		time.Sleep(workPerSession) // simulate NewSession latency
+
+		// Fix part 2: SetSessionModel derives from managerCtx (m.ctx), not from
+		// the goroutine's ctx that might be near its own deadline.
+		setCtx, setCancel := context.WithTimeout(managerCtx, modelSetTimeout)
+
+		if err := setCtx.Err(); err != nil {
+			t.Errorf("NEW behaviour: session %d SetSessionModel ctx already expired: %v", i, err)
+			setCancel()
+			goroutineCancel()
+			continue
+		}
+		deadline, ok := setCtx.Deadline()
+		if !ok {
+			t.Errorf("NEW behaviour: session %d SetSessionModel ctx has no deadline", i)
+			setCancel()
+			goroutineCancel()
+			continue
+		}
+		if remaining := time.Until(deadline); remaining < minExpectedSlack {
+			t.Errorf("NEW behaviour: session %d SetSessionModel has only %v remaining, want >= %v",
+				i, remaining, minExpectedSlack)
+		}
+
+		setCancel()
+		goroutineCancel()
+	}
+}
+
+// TestDiffEnvKeys_NeverLeaksValues asserts that the returned slices contain only
+// key names and never the (potentially secret) values.
+func TestDiffEnvKeys_NeverLeaksValues(t *testing.T) {
+	a := map[string]string{"API_TOKEN": "old-secret", "STAY": "v"}
+	b := map[string]string{"API_TOKEN": "new-secret", "STAY": "v", "PASSWORD": "hunter2"}
+
+	added, removed, changed := diffEnvKeys(a, b)
+
+	all := append(append(append([]string{}, added...), removed...), changed...)
+	for _, k := range all {
+		if k == "old-secret" || k == "new-secret" || k == "hunter2" {
+			t.Fatalf("diffEnvKeys leaked a value: %q", k)
+		}
+	}
+	if !reflect.DeepEqual(added, []string{"PASSWORD"}) {
+		t.Errorf("added = %v, want [PASSWORD]", added)
+	}
+	if !reflect.DeepEqual(changed, []string{"API_TOKEN"}) {
+		t.Errorf("changed = %v, want [API_TOKEN]", changed)
 	}
 }

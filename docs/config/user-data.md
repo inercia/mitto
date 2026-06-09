@@ -13,7 +13,7 @@ User data schema is defined in the **Workspaces → Metadata** tab, under **User
 From this tab you can:
 
 - **Add fields** with the **+ Add Field** button
-- Set each field's **name**, **type** (string or URL), and **description**
+- Set each field's **name**, **type** (string, URL, or filename), and **description**
 - Remove fields you no longer need
 
 Once a schema is defined, users can set values on individual conversations via the conversation properties panel.
@@ -56,10 +56,18 @@ metadata:
 
 ### Supported Types
 
-| Type     | Description          | Validation                      |
-| -------- | -------------------- | ------------------------------- |
-| `string` | Plain text (default) | Any value accepted              |
-| `url`    | A URL                | Must be a valid URL with scheme |
+| Type       | Description                    | Validation                                                      |
+| ---------- | ------------------------------ | --------------------------------------------------------------- |
+| `string`   | Plain text (default)           | Any value accepted                                              |
+| `url`      | A URL                          | Must be a valid URL with scheme                                 |
+| `filename` | A workspace-relative file path | Must point to an existing, readable file (not a directory)      |
+
+`filename` values are rendered as clickable links in the UI. Clicking opens the file in Mitto's internal viewer.
+
+A `filename` value may be an absolute path or a path relative to the conversation's
+working directory. When saving, the file must exist, be readable by the Mitto
+server process, and not be a directory; otherwise the save is rejected. An empty
+value is allowed (the field is unset).
 
 ## Examples
 
@@ -177,6 +185,9 @@ User data is stored per-conversation and persists across sessions.
 - **Schema defined**: Only attributes listed in the schema are allowed
 - **Empty values**: Always allowed (you can clear any attribute)
 - **Type validation**: Applied when saving (e.g., URLs must be valid)
+- **Filename validation**: A `filename` value must resolve (absolute, or relative
+  to the conversation's working directory) to an existing, readable file that is
+  not a directory
 
 If you try to set an attribute that isn't in the schema, or provide an invalid
 value for the type, the save will fail with a validation error.

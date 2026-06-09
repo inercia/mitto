@@ -316,7 +316,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled)
+	err := ps.Update(nil, nil, nil, &enabled, nil)
 	if err != ErrPeriodicNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrPeriodicNotFound", err)
 	}
@@ -333,7 +333,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled); err != nil {
+	if err := ps.Update(nil, nil, nil, &disabled, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -347,7 +347,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -358,7 +358,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil); err != nil {
+	if err := ps.Update(nil, nil, &newFreq, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestPeriodicStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil)
+	err := ps.Update(nil, nil, &invalidFreq, nil, nil)
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -493,7 +493,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled)
+	ps.Update(nil, nil, nil, &enabled, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -502,7 +502,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled)
+	ps.Update(nil, nil, nil, &disabled, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {

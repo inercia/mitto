@@ -63,6 +63,16 @@ type SessionContext struct {
 	ParentID string
 	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
 	IsPeriodic bool
+	// IsPeriodicConversation indicates whether the conversation is configured as a
+	// periodic conversation (it has a periodic prompt configuration). Unlike
+	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
+	// was triggered by the scheduler. Populated in the prompt-menu evaluation context.
+	IsPeriodicConversation bool
+	// HasBeadsIssue indicates whether the conversation has a beads issue associated
+	// (the session metadata BeadsIssue field is non-empty).
+	HasBeadsIssue bool
+	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
+	BeadsIssue string
 }
 
 // ParentContext holds parent session context for CEL evaluation.
@@ -88,6 +98,10 @@ type ChildrenContext struct {
 	Names []string
 	// ACPServers contains the ACP server names of child sessions
 	ACPServers []string
+	// PromptingCount is the number of child sessions where the agent is currently responding
+	PromptingCount int
+	// IdleCount is the number of child sessions NOT currently prompting (Count - PromptingCount)
+	IdleCount int
 }
 
 // ToolsContext holds MCP tools context for CEL evaluation.

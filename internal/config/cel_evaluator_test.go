@@ -387,9 +387,9 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	ctx := &PromptEnabledContext{
 		ACP:       ACPContext{Name: "test", Type: "mytype", Tags: []string{"t1"}, AutoApprove: true},
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
-		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid"},
+		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
-		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}},
+		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
 		Permissions: PermissionsContext{
 			CanDoIntrospection:         true,
@@ -414,6 +414,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`session.isChild`,
 		`!session.isAutoChild`,
 		`session.parentId == "pid"`,
+		`session.isPeriodicConversation`,
 		`parent.exists`,
 		`parent.name == "pname"`,
 		`parent.acpServer == "pacp"`,
@@ -422,6 +423,8 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`children.mcp_count == 2`,
 		`"c1" in children.names`,
 		`"a1" in children.acpServers`,
+		`children.promptingCount == 1`,
+		`children.idleCount == 2`,
 		`tools.available`,
 		`"tool_a" in tools.names`,
 		`tools.hasPattern("tool_*")`,
@@ -442,5 +445,25 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 				t.Errorf("expected true for %q", expr)
 			}
 		})
+	}
+}
+
+// TestCELEvaluator_SessionIsPeriodicConversation validates the session.isPeriodicConversation variable.
+func TestCELEvaluator_SessionIsPeriodicConversation(t *testing.T) {
+	e := newTestEvaluator(t)
+	ce := compile(t, e, "session.isPeriodicConversation")
+
+	trueCtx := &PromptEnabledContext{
+		Session: SessionContext{IsPeriodicConversation: true},
+	}
+	if got := evaluate(t, e, ce, trueCtx); !got {
+		t.Error("expected true when IsPeriodicConversation=true")
+	}
+
+	falseCtx := &PromptEnabledContext{
+		Session: SessionContext{IsPeriodicConversation: false},
+	}
+	if got := evaluate(t, e, ce, falseCtx); got {
+		t.Error("expected false when IsPeriodicConversation=false")
 	}
 }

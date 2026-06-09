@@ -1,5 +1,7 @@
 ---
+icon: "list"
 name: "Create spec"
+menus: prompts
 description: "Interactively build a developer-ready specification through guided questions"
 group: "Planning"
 backgroundColor: "#FFECB3"

@@ -1,0 +1,106 @@
+##########################################################################################
+# Builtin processor: updates Claude Code memory files from ongoing conversation insights.
+#
+# Companion to claude-manage-memory.yaml (which handles initial generation).
+# This processor fires once the agent goes idle (its message queue is drained), throttled
+# by cadence (every 6 turns or 15K tokens or 5 minutes), to review recent conversation
+# history and update the CLAUDE.md / .claude/ files with new patterns, conventions, and
+# lessons learned. Firing on idle ensures the auxiliary agent sees the full exchange rather
+# than a partial mid-burst turn.
+#
+# Only activates when memory files already exist (initial generation already done).
+#
+# Fire-and-forget: the auxiliary agent works in the background while the main
+# conversation continues normally.
+#
+# Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
+# Only activates when the ACP server is Claude Code.
+##########################################################################################
+name: claude-update-memory
+description: "Update Claude Code memory files based on conversation insights and lessons learned"
+enabled: true
+when:
+  on: agentIdle
+  match: all
+  stopReasons: [end_turn]
+  cadence:
+    everyNTurns: 6
+    everyNTokens: 15000
+    afterInterval: 5m
+priority: 200
+timeout: 300s
+on_error: skip
+
+# Only for Claude Code sessions, skip periodic prompts, and only when memory files already exist
+enabledWhen: 'acp.matchesServerType("claude-code") && !session.isPeriodic && (fileExists("CLAUDE.md") || dirExists(".claude"))'
+
+prompt: |
+  You update Claude Code memory files for this workspace based on recent conversation insights.
+
+  Working directory: @mitto:working_dir
+
+  ## Memory File Locations
+
+  - `./CLAUDE.md` or `./.claude/CLAUDE.md` - Project memory (shared)
+  - `./.claude/rules/*.md` - Modular project rules
+  - `./CLAUDE.local.md` - Personal preferences (not committed)
+
+  Review the recent conversation messages below and update memory files based on
+  insights and lessons learned:
+
+  1. Add new architectural patterns or components introduced
+  2. Document new conventions, best practices, or anti-patterns discovered
+  3. Update outdated or incomplete sections
+  4. Add sections for uncovered areas
+  5. Ensure examples reflect current codebase
+
+  If no meaningful updates are needed, do nothing — do NOT modify any files.
+
+  ## Size and Scope Control
+
+  Memory files are loaded into every AI conversation, so bloated files waste context
+  and degrade quality. Keep them lean.
+
+  - **Hard limit**: Each individual file MUST stay under 150 lines. If a file grows
+    beyond this, split it or aggressively trim.
+  - **Total budget**: Aim for a single `CLAUDE.md` under 200 lines for small projects,
+    or no more than ~10 files under `.claude/rules/` for large projects.
+  - **Prune ruthlessly**: On every update, actively look for content to remove:
+    - Outdated patterns that no longer match the codebase
+    - Redundant entries that repeat information already in other files
+    - Obvious guidance that any competent AI would follow without being told
+    - Verbose examples that could be shortened without losing clarity
+  - **Never duplicate docs**: If the project has its own documentation, reference it
+    by path instead of copying content into memory files.
+  - **Prefer bullet points and tables** over prose paragraphs.
+
+  ## Content Guidelines
+
+  - Be specific: "Use 2-space indentation" not "Format properly"
+  - Show SHORT code examples demonstrating correct usage. Prefer snippets.
+  - Use bullet points, group with headings
+  - Include commands, examples, rationale
+  - Include anti-pattern examples
+  - Reference existing repo docs rather than duplicating
+
+  === Recent Conversation ===
+
+  Use the `mitto_conversation_history` MCP tool to retrieve the recent conversation.
+  Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "@mitto:session_id"
+  - `event_types`: ["user_prompt", "agent_message"]
+  - `last_n`: 30
+
+  Review these messages for patterns, conventions, and lessons learned.
+
+  ## Notification
+
+  After completing your work, if you updated any memory files, call
+  `mitto_ui_notify` with:
+  - `self_id`: "@mitto:session_id"
+  - `title`: "🧠 Memory Updated"
+  - `message`: a brief summary, e.g. "Updated 2 memory files with new patterns"
+  - `style`: "success"
+
+  If no changes were needed, do NOT send any notification — stay completely silent.

@@ -11,6 +11,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ACPServerConstraint defines a pattern-matching rule for auto-selecting config option values.
+// Used by the constraints system to automatically configure sessions on startup.
+type ACPServerConstraint struct {
+	// MatchMode determines how Pattern is matched against option names.
+	// Valid values: "contains", "exact", "startsWith", "regex", "lookAlike"
+	MatchMode string `json:"matchMode"`
+	// Pattern is the text to match against option names (e.g., "Opus 4.6").
+	Pattern string `json:"pattern"`
+}
+
 // ACPServer represents a single ACP server configuration.
 type ACPServer struct {
 	// Name is the identifier for this ACP server
@@ -40,6 +50,10 @@ type ACPServer struct {
 	// Tags is an optional list of categorization tags for this ACP server.
 	// Tags are single words or hyphenated-words (e.g., "coding", "fast-model").
 	Tags []string
+	// Constraints is an optional map of config option auto-selection rules.
+	// The key is the config option category (e.g., "model", "mode").
+	// When a session starts, matching constraints auto-select the appropriate option value.
+	Constraints map[string]*ACPServerConstraint
 }
 
 // GetType returns the type identifier for prompt matching.
@@ -74,12 +88,24 @@ type WebPrompt struct {
 	Prompt string `json:"prompt"`
 	// BackgroundColor is an optional hex color string for the prompt button (e.g., "#E8F5E9")
 	BackgroundColor string `json:"backgroundColor,omitempty"`
+	// Icon is an optional icon name (from the frontend icon registry) shown next to
+	// the prompt in menus, e.g. "beads", "search", "settings".
+	Icon string `json:"icon,omitempty"`
 	// Description is an optional description shown as tooltip in the UI
 	Description string `json:"description,omitempty"`
 	// Group is an optional group name for organizing prompts in the UI.
 	// Prompts with the same group will be displayed together under a group header.
 	// If empty, the prompt will appear in an "Other" section.
 	Group string `json:"group,omitempty"`
+	// Menus is a comma-separated list of UI menus this prompt should appear in
+	// (beyond the default ChatInput "Insert predefined prompt" dropup). For
+	// example, "conversation" makes the prompt available in the per-conversation
+	// context menu. Multiple values may be combined, e.g. "conversation,group".
+	Menus string `json:"menus,omitempty"`
+	// Requires is a comma-separated list of capability names this prompt needs
+	// (parsed like Menus). A menu only shows the prompt if the menu provides every
+	// capability the prompt requires. Empty means no requirements.
+	Requires string `json:"requires,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
@@ -264,6 +290,36 @@ func (c *BadgeClickActionConfig) GetCommand() string {
 	return c.Command
 }
 
+// TerminalActionConfig configures the terminal open behavior in the conversation list.
+// When enabled, the terminal button in group headers executes a shell command to open a terminal.
+type TerminalActionConfig struct {
+	// Enabled controls whether the terminal button appears in group headers.
+	// Default: true (enabled by default)
+	Enabled *bool `json:"enabled,omitempty"`
+	// Command is the shell command to execute to open a terminal.
+	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
+	// Default: "open -a Terminal ${MITTO_WORKING_DIR}" (opens Terminal.app on macOS)
+	Command string `json:"command,omitempty"`
+}
+
+// GetEnabled returns whether terminal action is enabled.
+// Defaults to true if not explicitly set.
+func (c *TerminalActionConfig) GetEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// GetCommand returns the command to execute.
+// Defaults to "open -a Terminal ${MITTO_WORKING_DIR}" if not set.
+func (c *TerminalActionConfig) GetCommand() string {
+	if c == nil || c.Command == "" {
+		return "open -a Terminal ${MITTO_WORKING_DIR}"
+	}
+	return c.Command
+}
+
 // MacUIConfig represents macOS-specific UI configuration.
 type MacUIConfig struct {
 	// Hotkeys contains hotkey configuration for macOS
@@ -278,10 +334,14 @@ type MacUIConfig struct {
 	// This uses macOS SMAppService API (requires macOS 13+).
 	// (default: false)
 	StartAtLogin bool `json:"start_at_login,omitempty"`
-	// BadgeClickAction configures the workspace badge click behavior.
-	// When enabled, clicking a workspace badge in the conversation list
-	// executes a shell command (e.g., opening the folder in Finder).
+	// BadgeClickAction configures the "open folder" action for workspace badges and folder buttons.
+	// When enabled, clicking a workspace badge or the folder icon button in group headers
+	// executes a shell command to open the workspace folder (e.g., in Finder or a file manager).
 	BadgeClickAction *BadgeClickActionConfig `json:"badge_click_action,omitempty"`
+	// TerminalAction configures the terminal open button behavior in group headers.
+	// When enabled, a terminal icon button appears in conversation list group headers,
+	// executing a shell command to open a terminal at the workspace directory.
+	TerminalAction *TerminalActionConfig `json:"terminal_action,omitempty"`
 }
 
 // ConfirmationsConfig represents confirmation dialog settings.
@@ -309,6 +369,10 @@ type WebUIConfig struct {
 	// or specific fonts: "menlo", "monaco", "consolas", "courier-new",
 	// "jetbrains-mono", "sf-mono", "cascadia-code"
 	InputFontFamily string `json:"input_font_family,omitempty"`
+
+	// InputFontSize is the font size for the compose/input box.
+	// Options: "default" (14px), "small" (12px), "medium" (16px), "large" (18px), "xl" (20px)
+	InputFontSize string `json:"input_font_size,omitempty"`
 
 	// ConversationCyclingMode controls which conversations are included when cycling
 	// with keyboard shortcuts (Cmd+Ctrl+Up/Down) or mobile swipe gestures.
@@ -1054,8 +1118,11 @@ type rawACPServerConfig struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
+		Requires        string `yaml:"requires"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1070,8 +1137,11 @@ type rawConfig struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
+		Requires        string `yaml:"requires"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1124,6 +1194,7 @@ type rawConfig struct {
 		} `yaml:"confirmations"`
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
+			InputFontSize           string `yaml:"input_font_size"`
 			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
 			SingleExpandedGroup     bool   `yaml:"single_expanded_group"`
 		} `yaml:"web"`
@@ -1146,6 +1217,10 @@ type rawConfig struct {
 				Enabled *bool  `yaml:"enabled"`
 				Command string `yaml:"command"`
 			} `yaml:"badge_click_action"`
+			TerminalAction *struct {
+				Enabled *bool  `yaml:"enabled"`
+				Command string `yaml:"command"`
+			} `yaml:"terminal_action"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 	Conversations *struct {
@@ -1180,11 +1255,14 @@ type rawConfig struct {
 	} `yaml:"permissions"`
 	// Session is the session storage/startup configuration
 	Session *struct {
-		MaxMessagesPerSession    int    `yaml:"max_messages_per_session"`
-		MaxSessionSizeBytes      int64  `yaml:"max_session_size_bytes"`
-		ArchiveRetentionPeriod   string `yaml:"archive_retention_period"`
-		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
-		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
+		MaxMessagesPerSession       int    `yaml:"max_messages_per_session"`
+		MaxSessionSizeBytes         int64  `yaml:"max_session_size_bytes"`
+		ArchiveRetentionPeriod      string `yaml:"archive_retention_period"`
+		AutoArchiveInactiveAfter    string `yaml:"auto_archive_inactive_after"`
+		StartupStaggerMs            int    `yaml:"startup_stagger_ms"`
+		StartupPeriodicDelaySeconds int    `yaml:"startup_periodic_delay_seconds"`
+		PeriodicSuspendTimeout      string `yaml:"periodic_suspend_timeout"`
+		MemoryRecycleThreshold      string `yaml:"memory_recycle_threshold"`
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1262,8 +1340,11 @@ func Parse(data []byte) (*Config, error) {
 					Name:            p.Name,
 					Prompt:          p.Prompt,
 					BackgroundColor: p.BackgroundColor,
+					Icon:            p.Icon,
 					Description:     p.Description,
 					Group:           p.Group,
+					Menus:           p.Menus,
+					Requires:        p.Requires,
 					EnabledWhen:     p.EnabledWhen,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1287,8 +1368,11 @@ func Parse(data []byte) (*Config, error) {
 			Name:            p.Name,
 			Prompt:          p.Prompt,
 			BackgroundColor: p.BackgroundColor,
+			Icon:            p.Icon,
 			Description:     p.Description,
 			Group:           p.Group,
+			Menus:           p.Menus,
+			Requires:        p.Requires,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 		}
@@ -1359,6 +1443,7 @@ func Parse(data []byte) (*Config, error) {
 		if raw.UI.Web != nil {
 			cfg.UI.Web = &WebUIConfig{
 				InputFontFamily:         raw.UI.Web.InputFontFamily,
+				InputFontSize:           raw.UI.Web.InputFontSize,
 				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
 				SingleExpandedGroup:     raw.UI.Web.SingleExpandedGroup,
 			}
@@ -1402,6 +1487,14 @@ func Parse(data []byte) (*Config, error) {
 				cfg.UI.Mac.BadgeClickAction = &BadgeClickActionConfig{
 					Enabled: raw.UI.Mac.BadgeClickAction.Enabled,
 					Command: raw.UI.Mac.BadgeClickAction.Command,
+				}
+			}
+
+			// Populate terminal action setting
+			if raw.UI.Mac.TerminalAction != nil {
+				cfg.UI.Mac.TerminalAction = &TerminalActionConfig{
+					Enabled: raw.UI.Mac.TerminalAction.Enabled,
+					Command: raw.UI.Mac.TerminalAction.Command,
 				}
 			}
 		}
@@ -1484,11 +1577,14 @@ func Parse(data []byte) (*Config, error) {
 	// Parse session config
 	if raw.Session != nil {
 		cfg.Session = &SessionConfig{
-			MaxMessagesPerSession:    raw.Session.MaxMessagesPerSession,
-			MaxSessionSizeBytes:      raw.Session.MaxSessionSizeBytes,
-			ArchiveRetentionPeriod:   raw.Session.ArchiveRetentionPeriod,
-			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
-			StartupStaggerMs:         raw.Session.StartupStaggerMs,
+			MaxMessagesPerSession:       raw.Session.MaxMessagesPerSession,
+			MaxSessionSizeBytes:         raw.Session.MaxSessionSizeBytes,
+			ArchiveRetentionPeriod:      raw.Session.ArchiveRetentionPeriod,
+			AutoArchiveInactiveAfter:    raw.Session.AutoArchiveInactiveAfter,
+			StartupStaggerMs:            raw.Session.StartupStaggerMs,
+			StartupPeriodicDelaySeconds: raw.Session.StartupPeriodicDelaySeconds,
+			PeriodicSuspendTimeout:      raw.Session.PeriodicSuspendTimeout,
+			MemoryRecycleThreshold:      raw.Session.MemoryRecycleThreshold,
 		}
 	}
 

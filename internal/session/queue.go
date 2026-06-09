@@ -27,6 +27,28 @@ var (
 	ErrQueueFull = errors.New("queue is full")
 )
 
+// ParseScheduleTime parses a schedule time string that can be either:
+//   - An absolute RFC 3339 / ISO 8601 timestamp (e.g., "2024-01-15T10:30:00Z")
+//   - A relative duration from now using Go duration syntax (e.g., "2m", "1h", "30s", "1h30m")
+//
+// Returns the resolved absolute time, or an error if the string is not a valid format.
+func ParseScheduleTime(s string) (time.Time, error) {
+	// Try RFC 3339 first
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+
+	// Try Go duration format (e.g., "2m", "1h", "30s", "1h30m")
+	if d, err := time.ParseDuration(s); err == nil {
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("duration must be positive, got %s", s)
+		}
+		return time.Now().Add(d), nil
+	}
+
+	return time.Time{}, fmt.Errorf("invalid schedule_time %q: must be an RFC 3339 timestamp (e.g., 2024-01-15T10:30:00Z) or a relative duration (e.g., 5m, 1h, 2h30m)", s)
+}
+
 // QueuedMessage represents a message waiting to be sent to the agent.
 type QueuedMessage struct {
 	// ID is the unique identifier for this queued message (auto-assigned).
@@ -43,6 +65,14 @@ type QueuedMessage struct {
 	ClientID string `json:"client_id,omitempty"`
 	// Title is an optional short title for the message (auto-generated asynchronously).
 	Title string `json:"title,omitempty"`
+	// ScheduledTime is when this message should be delivered. If nil, deliver immediately.
+	ScheduledTime *time.Time `json:"scheduled_time,omitempty"`
+	// Arguments are optional ${VAR}/${VAR:-default} substitution values applied to
+	// the message text when it is sent. Empty/nil means no substitution.
+	Arguments map[string]string `json:"arguments,omitempty"`
+	// PromptName is the name of the workspace prompt to send by name (resolved to
+	// full text at dispatch). Empty for ad-hoc messages.
+	PromptName string `json:"prompt_name,omitempty"`
 }
 
 // QueueFile represents the persisted queue state.
@@ -113,7 +143,12 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 // Add adds a message to the queue and returns the assigned message.
 // If maxSize > 0 and the queue already has maxSize messages, ErrQueueFull is returned.
 // If maxSize <= 0, no size limit is enforced.
-func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, maxSize int) (QueuedMessage, error) {
+// If scheduledTime is non-nil, the message will only be delivered after that time.
+// If arguments is non-empty, ${VAR}/${VAR:-default} substitution is applied to the
+// message text when it is sent to the agent.
+// If promptName is non-empty, the message is stored by name and resolved to full text
+// at dispatch via PromptWithMeta (message should be empty in this case).
+func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int, arguments map[string]string, promptName string) (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -128,12 +163,15 @@ func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string,
 	}
 
 	msg := QueuedMessage{
-		ID:       generateMessageID(),
-		Message:  message,
-		ImageIDs: imageIDs,
-		FileIDs:  fileIDs,
-		QueuedAt: time.Now(),
-		ClientID: clientID,
+		ID:            generateMessageID(),
+		Message:       message,
+		ImageIDs:      imageIDs,
+		FileIDs:       fileIDs,
+		QueuedAt:      time.Now(),
+		ClientID:      clientID,
+		ScheduledTime: scheduledTime,
+		Arguments:     arguments,
+		PromptName:    promptName,
 	}
 
 	qf.Messages = append(qf.Messages, msg)
@@ -244,8 +282,11 @@ func (q *Queue) Clear() error {
 	return q.writeQueue(qf)
 }
 
-// Pop removes and returns the first message in the queue.
-// Returns ErrQueueEmpty if the queue is empty.
+// Pop removes and returns the next ready message from the queue.
+// A message is "ready" if it has no ScheduledTime, or if its ScheduledTime <= now.
+// Among ready messages, non-scheduled (immediate) messages are returned first (FIFO),
+// then scheduled messages ordered by their ScheduledTime (earliest first).
+// Returns ErrQueueEmpty if the queue is empty or no messages are ready.
 func (q *Queue) Pop() (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -259,8 +300,36 @@ func (q *Queue) Pop() (QueuedMessage, error) {
 		return QueuedMessage{}, ErrQueueEmpty
 	}
 
-	msg := qf.Messages[0]
-	qf.Messages = qf.Messages[1:]
+	now := time.Now()
+	readyIdx := -1
+
+	// First pass: find the first non-scheduled (immediate) message
+	for i, msg := range qf.Messages {
+		if msg.ScheduledTime == nil {
+			readyIdx = i
+			break
+		}
+	}
+
+	// Second pass: if no immediate message, find the earliest due scheduled message
+	if readyIdx == -1 {
+		var earliestTime time.Time
+		for i, msg := range qf.Messages {
+			if msg.ScheduledTime != nil && !msg.ScheduledTime.After(now) {
+				if readyIdx == -1 || msg.ScheduledTime.Before(earliestTime) {
+					readyIdx = i
+					earliestTime = *msg.ScheduledTime
+				}
+			}
+		}
+	}
+
+	if readyIdx == -1 {
+		return QueuedMessage{}, ErrQueueEmpty
+	}
+
+	msg := qf.Messages[readyIdx]
+	qf.Messages = append(qf.Messages[:readyIdx], qf.Messages[readyIdx+1:]...)
 
 	if err := q.writeQueue(qf); err != nil {
 		return QueuedMessage{}, err
@@ -350,6 +419,48 @@ func (q *Queue) Move(id, direction string) ([]QueuedMessage, error) {
 	result := make([]QueuedMessage, len(qf.Messages))
 	copy(result, qf.Messages)
 	return result, nil
+}
+
+// HasScheduledMessages returns true if there are any scheduled messages in the queue
+// (regardless of whether they are due or not).
+func (q *Queue) HasScheduledMessages() (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	qf, err := q.readQueue()
+	if err != nil {
+		return false, err
+	}
+
+	for _, msg := range qf.Messages {
+		if msg.ScheduledTime != nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// NextScheduledTime returns the earliest scheduled time of any pending scheduled message.
+// Returns nil if there are no scheduled messages.
+func (q *Queue) NextScheduledTime() (*time.Time, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	qf, err := q.readQueue()
+	if err != nil {
+		return nil, err
+	}
+
+	var earliest *time.Time
+	for _, msg := range qf.Messages {
+		if msg.ScheduledTime != nil {
+			if earliest == nil || msg.ScheduledTime.Before(*earliest) {
+				t := *msg.ScheduledTime
+				earliest = &t
+			}
+		}
+	}
+	return earliest, nil
 }
 
 // Delete removes the queue file from disk.

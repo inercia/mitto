@@ -1,0 +1,275 @@
+---
+icon: "tag"
+name: "JIRA: sync tasks"
+menus: prompts
+description: "Periodically pull JIRA tickets matching the project's saved query into local beads issues"
+backgroundColor: "#D1C4E9"
+group: "JIRA"
+tags: ["periodic", "jira"]
+enabledWhen: 'tools.hasPattern("jira_*") && commandExists("bd")'
+---
+
+Pull JIRA tickets matching this project's saved query into local beads issues,
+keeping the beads copy in sync with changes made in JIRA (description, comments,
+priority, status). This is a **one-way pull** (JIRA → beads) for now; two-way
+sync may be added later. Run it **on demand** in a regular conversation, or
+schedule it to run periodically via `mitto_conversation_set_periodic` — it
+adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+Project user data (JSON):
+@mitto:user_data
+
+## Interaction Mode
+
+This prompt runs in two modes. Check these variables to decide which applies:
+
+- `@mitto:periodic` = is this a scheduled periodic execution?
+- `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+
+**Interactive mode — a regular conversation** (`@mitto:periodic` = "false") **or a force-triggered periodic run** (`@mitto:periodic_forced` = "true"):
+- The user is present. Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+
+**Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+- Use **only** `mitto_ui_notify` — non-blocking notifications only.
+- Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. The user is not watching.
+
+## Step 1 — Get the "Jira Tasks" query
+
+Inspect the **Project user data** JSON above (an array of `{"name", "value"}` objects). Find the attribute whose `name` is **"Jira Tasks"** (case-insensitive). Its `value` is the **JQL query** that selects the tickets to mirror.
+
+- If a non-empty **"Jira Tasks"** value exists: use it as the JQL query and continue to Step 2.
+
+- If **no** "Jira Tasks" attribute exists, or its value is empty:
+
+  - **Silent mode** (scheduled periodic run): the query cannot be requested unattended. Send one `mitto_ui_notify` explaining the project has no "Jira Tasks" query configured, then **stop**.
+
+  - **Interactive mode**: ask the user for the JQL query with `mitto_ui_form` (a single text field for the query, e.g. `project = ABC AND statusCategory != Done`). Once you have a non-empty value, persist it to the conversation's user data so future runs (including scheduled ones) reuse it:
+
+    ```
+    mitto_conversation_update(self_id: "@mitto:session_id",
+      conversation_id: "@mitto:session_id",
+      user_data: [{"name": "Jira Tasks", "value": "<the JQL the user provided>"}])
+    ```
+
+    **Ensure the schema allows the attribute first.** User data is validated against the workspace's user-data **schema** (in `.mittorc`). If that schema does not define a **"Jira Tasks"** field, the `mitto_conversation_update` above will be **rejected** (e.g. `unknown attribute "Jira Tasks": not defined in schema`, or `no user data schema defined for this workspace`). The **Project user data** JSON above only shows *values*, not the schema, so you cannot tell from it whether the field is defined — be ready to handle a rejection.
+
+    To make the save succeed, add the field to the schema with `mitto_workspace_update` (this edits the workspace `.mittorc`), then retry the conversation update:
+
+    ```
+    mitto_workspace_update(self_id: "@mitto:session_id",
+      user_data_schema: [{"name": "Jira Tasks",
+                          "description": "JQL query selecting the JIRA tickets to mirror into beads",
+                          "type": "string"}],
+      user_data_schema_merge: true)
+    ```
+
+    `user_data_schema_merge: true` (the default) merges this field into the existing schema by name, so it **adds** "Jira Tasks" without disturbing other defined fields. Practically: attempt the `mitto_conversation_update` first; if it fails with a schema/unknown-attribute error, call `mitto_workspace_update` to register the field, then repeat the `mitto_conversation_update`. (Proactively calling `mitto_workspace_update` before the first save is also fine, since the merge is idempotent.)
+
+    Then use that JQL query for this run and continue to Step 2.
+
+## Step 2 — Ensure beads is ready
+
+```bash
+ls -d .beads 2>/dev/null
+```
+
+- If `.beads` exists: continue.
+- If it does **not** exist: in interactive mode, run `bd init --non-interactive`; in periodic mode, notify and **stop** (do not initialise unattended).
+
+## Step 3 — Fetch matching JIRA tickets
+
+Run the saved JQL with `jira_search_jira`, requesting `fields="*all"` and `expand="renderedFields"`. Page through all results (use `startAt`/`maxResults`) — do not truncate. For each ticket capture: key, summary, status (the **status name**, so you can spot a *Blocked* status), priority, issue type, labels, assignee, the `updated` timestamp, the **issue links** (`fields.issuelinks` — for each, the link type name plus the inward/outward issue key, used for blocking relationships), and every comment (id, author, created, body).
+
+For the **description** and each **comment body**, capture the **raw** field value (e.g. `fields.description`, `comment.body`) — on JIRA Server/Data Center this is **JIRA wiki markup** (headers like `h1.`, code blocks like `{code}`, etc.), which Step 5 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle.
+
+## Step 4 — Load existing synced beads
+
+Synced beads are tagged with the label `jira-sync` and carry `external_ref = "jira-<KEY>"` (lowercase key). Load them in one query:
+
+```bash
+bd list --all --label jira-sync --json
+```
+
+Build a map from JIRA key → bead using each bead's `external_ref`. For each bead also note its `metadata` (`jira_updated`, `jira_synced_comments`), `priority`, `status`, `issue_type`, `title`, and `description`.
+
+## Step 5 — Pull each ticket (create or update)
+
+### Step 5.0 — JIRA wiki markup → Markdown helper
+
+JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
+
+```python
+#!/usr/bin/env python3
+# jira2md.py — good-enough JIRA wiki markup -> Markdown (reads stdin, writes stdout)
+import re, sys
+
+def convert(s):
+    if not s:
+        return ""
+    fence = chr(96) * 3
+    s = s.replace("\r\n", "\n")
+    # Headers: h1. .. h6.  ->  #..######
+    s = re.sub(r"(?m)^h([1-6])\.\s*", lambda m: "#" * int(m.group(1)) + " ", s)
+    # Block quotes: bq.
+    s = re.sub(r"(?m)^bq\.\s*", "> ", s)
+    # Code / noformat blocks -> fenced code (toggle open/close)
+    parts = re.split(r"(\{code(?::[^}]*)?\}|\{noformat\})", s)
+    res, in_code = [], False
+    for p in parts:
+        if p == "{noformat}" or re.match(r"\{code(?::[^}]*)?\}$", p):
+            if not in_code:
+                lang = ""
+                m = re.match(r"\{code:([^}]*)\}$", p)
+                if m and "title=" not in m.group(1):
+                    lm = re.search(r"(?:language=)?([A-Za-z0-9+#]+)", m.group(1))
+                    if lm:
+                        lang = lm.group(1)
+                res.append("\n" + fence + lang + "\n"); in_code = True
+            else:
+                res.append("\n" + fence + "\n"); in_code = False
+        else:
+            res.append(p)
+    s = "".join(res)
+    if in_code:
+        s += "\n" + fence + "\n"
+    # Inline monospace {{...}} -> `...`
+    s = re.sub(r"\{\{(.+?)\}\}", lambda m: chr(96) + m.group(1) + chr(96), s)
+    # Links [text|url] -> [text](url)
+    s = re.sub(r"\[([^|\]]+)\|([^\]]+)\]", r"[\1](\2)", s)
+    # Bold *text* -> **text**
+    s = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"**\1**", s)
+    # Italic _text_ -> *text*
+    s = re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"*\1*", s)
+    # Strip color/panel wrappers, keep inner text
+    s = re.sub(r"\{color[^}]*\}", "", s)
+    s = re.sub(r"\{panel[^}]*\}", "", s)
+    s = s.replace("{quote}", "")
+    return s
+
+if __name__ == "__main__":
+    sys.stdout.write(convert(sys.stdin.read()))
+```
+
+Use it by piping the raw text through it, e.g. `python3 /tmp/jira2md.py < /tmp/jira-<key>.raw > /tmp/jira-<key>.desc.md`. If `python3` is unavailable, fall back to the `renderedFields` HTML or the raw text unchanged — never block the sync on conversion.
+
+Use these mappings:
+
+- **Priority** (JIRA → beads): Highest→0, High→1, Medium→2, Low→3, Lowest→4 (default 2).
+- **Type** (JIRA → beads): Bug→bug, Story→feature, Epic→epic, Task/Sub-task/other→task.
+
+Compose a canonical bead **body** for every ticket. Run the ticket description through the Step 5.0 converter first, then wrap the JIRA-managed content between sync markers so local additions can be preserved (see B). Write it to a temp file and pass via `--body-file` to preserve Markdown:
+
+```
+<!-- jira-sync:begin (managed by JIRA sync — content here is overwritten on each run) -->
+**JIRA:** <KEY> — <status> · <issue type> · assignee: <assignee>
+**Link:** https://<jira-instance>/browse/<KEY>
+
+<the converted ticket description (Markdown)>
+<!-- jira-sync:end -->
+```
+
+Anything a human adds **below** the `jira-sync:end` marker is local content and must survive future syncs.
+
+For each ticket from Step 3:
+
+**A. No matching bead exists** → create it:
+
+```bash
+bd create "[<KEY>] <summary>" \
+  --type <mapped-type> --priority <mapped-priority> \
+  --labels "jira-sync" --external-ref "jira-<key-lower>" \
+  --body-file /tmp/jira-<key>.md
+```
+
+Capture the new bead ID, then record sync state and mirror all comments (see C):
+
+```bash
+bd update <id> --set-metadata jira_updated="<ticket.updated>" --set-metadata jira_synced_comments="<csv of comment ids>"
+```
+
+**B. A matching bead exists** → detect changes and update:
+
+- If the bead's `metadata.jira_updated` **equals** the ticket's `updated` timestamp **and** no new comments exist: **skip** (no change since last sync).
+- Otherwise update only what changed. **Preserve local body edits**: take the bead's existing `description` (loaded in Step 4), keep everything **after** the `<!-- jira-sync:end -->` marker verbatim, and replace only the `jira-sync:begin`…`jira-sync:end` region with the freshly converted JIRA content. If the existing body has no markers (an older bead), treat its entire current text as local content and append it **below** the new managed block so nothing is lost. Write the spliced result to the temp file, then:
+
+```bash
+bd update <id> --title "[<KEY>] <summary>" \
+  --priority <mapped-priority> --type <mapped-type> \
+  --body-file /tmp/jira-<key>.md \
+  --set-metadata jira_updated="<ticket.updated>"
+```
+
+- **Status reflection**: if the JIRA ticket is Done/Closed and the bead is still open, close it: `bd close <id> --reason "Closed in JIRA (<status>)"`. (In interactive mode you may confirm first.)
+
+**C. Mirror new comments** (both create and update paths):
+
+For each JIRA comment whose id is **not** in `metadata.jira_synced_comments`, convert its body with the Step 5.0 helper, then append it to the bead with a `[jira]` marker so it is never duplicated, and extend the metadata list:
+
+```bash
+bd comment <id> "[jira] <author> @ <created>: <converted comment body>"
+bd update <id> --set-metadata jira_synced_comments="<previous ids + new ids>"
+```
+
+**Preserve local comments/notes.** Only ever **append** comments, and only for JIRA comment ids not already synced. Never edit or delete existing comments. Beads comments that do **not** start with `[jira]` were added locally — leave them untouched. The `jira_synced_comments` metadata is what prevents re-mirroring, so a local comment can never be mistaken for a JIRA one.
+
+## Step 6 — Mirror blocking relationships (dependencies)
+
+Beads has no "blocked" *status*; instead an issue is blocked when it has an open **dependency** (`bd dep`), and `bd ready` automatically hides issues that still have open blockers. Translate JIRA blocking **after** every bead from Step 5 exists (dependencies need both endpoints).
+
+**A. "Blocks" issue links** (the precise case). In each ticket's `fields.issuelinks`, find entries whose link type is **Blocks** (`type.name == "Blocks"`):
+
+- an entry with an `inwardIssue` means **this ticket is blocked by** `inwardIssue.key`;
+- an entry with an `outwardIssue` means **this ticket blocks** `outwardIssue.key`.
+
+Resolve both keys to beads via the Step 4 map. When **both** endpoints are synced beads, wire the dependency (the blocked bead **depends on** the blocker bead):
+
+```bash
+bd dep add <blocked-bead-id> <blocker-bead-id>
+```
+
+(Equivalently `bd dep <blocker-bead-id> --blocks <blocked-bead-id>`.) Process only the **inward** ("is blocked by") direction so each link is wired exactly once; the outward side is covered when the other ticket is processed.
+
+**B. Blocker outside the sync set** — the blocking key is not in the Step 4 map (it lives in another project, or is filtered out by the JQL). You cannot create a local dependency, so mark the blocked bead with a **`blocked`** label and note the external blocker key in the run summary:
+
+```bash
+bd update <blocked-bead-id> --add-label blocked
+```
+
+**C. Bare *Blocked* status** — the ticket's status is *Blocked* but no "Blocks" link names a blocker: just add the **`blocked`** label (there is nothing concrete to depend on).
+
+**Idempotent and current.** Before adding, read existing dependencies with `bd dep list <id> --json` and add only missing ones. If a dependency you previously mirrored **no longer** exists in JIRA (the ticket was unblocked), remove it with `bd dep remove <blocked-bead-id> <blocker-bead-id>`, and drop a now-stale label with `bd update <id> --remove-label blocked` once nothing blocks it anymore. After bulk wiring, run `bd dep cycles` to confirm no cycle was introduced.
+
+## Step 7 — Remove beads that no longer match the query
+
+Build the **live set** of JIRA keys returned in Step 3. Any synced bead from Step 4 whose JIRA key is **not** in the live set is **stale** — its ticket no longer matches the JQL (resolved-and-filtered-out, relabelled, moved, or deleted in JIRA). Ignore beads that are already closed.
+
+- **Interactive mode**: list the stale beads (bead ID, JIRA key, title) and ask with `mitto_ui_options` whether to delete them, with **deletion as the default/recommended choice**. Suggested options: *"Delete all stale beads (recommended)"*, *"Keep them all"*, and (with `allow_free_text: true`) let the user name specific keys to keep. Delete the confirmed ones in one batch:
+
+  ```bash
+  bd delete <id> [<id> ...] --force
+  ```
+
+  If a stale bead has local-only comments/notes (comments without the `[jira]` prefix), call that out in the list so the user does not discard local work unknowingly.
+
+- **Silent mode** (scheduled periodic): **never delete unattended.** If there are stale beads, send a single `mitto_ui_notify` listing them so the user can review and remove them on the next interactive run; otherwise stay silent.
+
+## Step 8 — Summary
+
+Report counts: tickets matched, beads created, beads updated, comments mirrored, dependencies wired (blocking links), beads closed, beads deleted (stale), unchanged (skipped).
+
+- Silent mode (scheduled periodic): send a single `mitto_ui_notify` only if anything changed; stay silent otherwise.
+- Interactive mode: print the full summary.
+
+## Guidelines
+
+- **Pull-only**: never write back to JIRA (no status transitions, no comments, no edits in JIRA). Two-way sync is future work.
+- **Idempotent**: the `external_ref` (`jira-<key>`) is the join key; `metadata.jira_updated` skips unchanged tickets; `metadata.jira_synced_comments` prevents duplicate comments. Running twice in a row must produce no spurious changes.
+- Always `--body-file` for descriptions and `--file`/inline text for comments to avoid shell-quoting issues.
+- **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 5.0) — headers and code blocks are the priority; perfect fidelity is not a goal.
+- **Preserve local information**: local body edits (below the `jira-sync:end` marker) and local comments/notes (those without a `[jira]` prefix) must survive every sync. When unsure, keep the content rather than overwrite it.
+- **Stale beads**: tickets that drop out of the query are surfaced for deletion (default = delete) in interactive mode, and only reported — never deleted — in silent mode.
+- **Blocking**: JIRA "Blocks" links become beads dependencies (`bd dep`), so blocked issues drop out of `bd ready` until their blocker closes; a blocker outside the sync set (or a bare *Blocked* status with no named blocker) is marked with a `blocked` label instead. Dependencies are re-evaluated each run — added when newly blocked, removed when unblocked.

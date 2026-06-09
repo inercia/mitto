@@ -286,3 +286,62 @@ func TestRunnerFallback_IsRestricted(t *testing.T) {
 		}
 	}
 }
+
+// TestRunnerWithPipes_EnvPropagation verifies that env vars passed to RunWithPipes
+// reach the spawned process. This guards against the bug where the env arg was nil
+// in the runner branch of doStartACPProcess / doStartProcess, so server-specific env
+// (acp_servers[].env) and MITTO_* vars never reached the ACP subprocess.
+func TestRunnerWithPipes_EnvPropagation(t *testing.T) {
+	r, err := NewRunner(nil, nil, nil, "/tmp", nil)
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Use /bin/sh -c 'env' to print the environment. Pass our own env list including
+	// PATH (otherwise the runner spawns with whatever its underlying library defaults to).
+	env := []string{
+		"PATH=" + osPath(),
+		"MITTO_TEST_RUNNER_ENV=present",
+		"FOO_FROM_SERVER=bar-value",
+	}
+
+	stdin, stdout, stderr, wait, err := r.RunWithPipes(ctx, "/bin/sh", []string{"-c", "env"}, env)
+	if err != nil {
+		t.Fatalf("RunWithPipes failed: %v", err)
+	}
+	stdin.Close()
+
+	output, err := io.ReadAll(stdout)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if _, err := io.ReadAll(stderr); err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+
+	out := string(output)
+	if !strings.Contains(out, "MITTO_TEST_RUNNER_ENV=present") {
+		t.Errorf("expected MITTO_TEST_RUNNER_ENV=present in subprocess env, got:\n%s", out)
+	}
+	if !strings.Contains(out, "FOO_FROM_SERVER=bar-value") {
+		t.Errorf("expected FOO_FROM_SERVER=bar-value in subprocess env, got:\n%s", out)
+	}
+}
+
+// osPath returns the current PATH or a sensible default so /bin/sh can resolve `env`.
+func osPath() string {
+	if p, err := exec.LookPath("env"); err == nil {
+		// Strip /env suffix to get the dir; fall back to a safe default.
+		idx := strings.LastIndex(p, "/")
+		if idx > 0 {
+			return p[:idx] + ":/bin:/usr/bin"
+		}
+	}
+	return "/bin:/usr/bin"
+}

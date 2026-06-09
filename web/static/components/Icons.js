@@ -220,6 +220,24 @@ export function TrashIcon({ className = "w-5 h-5" }) {
 }
 
 /**
+ * Broom icon (used for "clean up" actions)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function BroomIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="M19.36 2.72l1.42 1.42-5.72 5.71c1.07 1.54 1.22 3.39.32 4.59L9.06 8.12c1.2-.9 3.05-.75 4.59.32l5.71-5.72M5.93 17.57c-2.01-2.01-3.24-4.41-3.58-6.65l4.88-2.09 7.44 7.44-2.09 4.88c-2.24-.34-4.64-1.57-6.65-3.58z"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Edit/pencil icon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
@@ -280,6 +298,24 @@ export function ArrowDownIcon({ className = "w-5 h-5" }) {
         stroke-linejoin="round"
         stroke-width="2"
         d="M19 14l-7 7m0 0l-7-7m7 7V3"
+      />
+    </svg>
+  `;
+}
+
+export function ArrowUpIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M5 10l7-7m0 0l7 7m-7-7v18"
       />
     </svg>
   `;
@@ -384,6 +420,28 @@ export function RobotIcon({ className = "w-4 h-4" }) {
         stroke-linejoin="round"
         stroke-width="2"
         d="M9 3v1m6-1v1M9 19v1m6-1v1M5 8h14a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2zM9 13h.01M15 13h.01"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Link/chain icon (for linked items and auto-created child conversations)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function LinkIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"
       />
     </svg>
   `;
@@ -1047,6 +1105,32 @@ export function SearchIcon({ className = "w-5 h-5" }) {
 }
 
 /**
+ * Refresh icon (arrow-path / Heroicons)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function RefreshIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class=${className}>
+      <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M21.015 4.356v4.992" />
+    </svg>
+  `;
+}
+
+/**
+ * Sync icon (bidirectional up/down arrows) — used for upstream sync to visually
+ * distinguish it from the circular RefreshIcon used to reload a list. The
+ * vertical arrows pair naturally with the pull (down) and push (up) buttons.
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function SyncIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class=${className}>
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5" />
+    </svg>
+  `;
+}
+
+/**
  * Tag icon (for user data / metadata)
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
@@ -1084,4 +1168,159 @@ export function SidePanelIcon({ className = "w-5 h-5" }) {
       <line x1="15" y1="3" x2="15" y2="21" />
     </svg>
   `;
+}
+
+/**
+ * Expand / enter-fullscreen icon (Heroicons arrows-pointing-out)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function ExpandIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+    </svg>
+  `;
+}
+
+/**
+ * Collapse / exit-fullscreen icon (Heroicons arrows-pointing-in)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function CollapseIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" />
+    </svg>
+  `;
+}
+
+
+/**
+ * Terminal/command prompt icon (Heroicons terminal-window)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function TerminalIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 17.25V6.75A2.25 2.25 0 0 0 18.75 4.5H5.25A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 20.25Z" />
+    </svg>
+  `;
+}
+
+/**
+ * Folder open icon (Heroicons folder-open) for opening workspace folder
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function FolderOpenIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6.228c0-1.168.895-2.128 2.033-2.216a48.394 48.394 0 0 1 5.274-.166c1.045.044 2.062.262 2.987.678l.724.33c.925.416 1.943.634 2.987.678a48.54 48.54 0 0 1 5.274.166 2.252 2.252 0 0 1 2.033 2.216v3.548" />
+    </svg>
+  `;
+}
+
+/**
+ * Beads issue tracker icon (rounded bead/bullet list shape)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function BeadsIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+    </svg>
+  `;
+}
+
+// PROMPT_ICONS maps the optional "icon" front-matter value of a prompt to an
+// icon component. Names are matched case-insensitively. Keep names stable and
+// kebab-case so they can be referenced from prompt markdown files.
+export const PROMPT_ICONS = {
+  beads: BeadsIcon,
+  settings: SettingsIcon,
+  sliders: SlidersIcon,
+  search: SearchIcon,
+  edit: EditIcon,
+  trash: TrashIcon,
+  broom: BroomIcon,
+  save: SaveIcon,
+  "magic-wand": MagicWandIcon,
+  lightning: LightningIcon,
+  robot: RobotIcon,
+  person: PersonIcon,
+  image: ImageIcon,
+  folder: FolderIcon,
+  "folder-open": FolderOpenIcon,
+  terminal: TerminalIcon,
+  server: ServerIcon,
+  globe: GlobeIcon,
+  "chat-bubble": ChatBubbleIcon,
+  shield: ShieldIcon,
+  layers: LayersIcon,
+  list: ListIcon,
+  tag: TagIcon,
+  check: CheckIcon,
+  question: QuestionMarkIcon,
+  error: ErrorIcon,
+  plus: PlusIcon,
+  hourglass: HourglassIcon,
+  refresh: RefreshIcon,
+  sync: SyncIcon,
+  keyboard: KeyboardIcon,
+  duplicate: DuplicateIcon,
+  pin: PinIcon,
+  archive: ArchiveIcon,
+  periodic: PeriodicIcon,
+  queue: QueueIcon,
+  play: PlayFilledIcon,
+};
+
+// getPromptIcon returns the icon component for a given prompt icon name, or
+// null if the name is empty or unknown. Matching is case-insensitive.
+export function getPromptIcon(name) {
+  if (!name || typeof name !== "string") return null;
+  return PROMPT_ICONS[name.trim().toLowerCase()] || null;
+}
+
+// getPromptIconOrDefault returns the icon component for a prompt's icon name,
+// falling back to the default lightning icon when the name is empty or unknown.
+// Use this in menus that always want to render an icon for every prompt.
+export function getPromptIconOrDefault(name) {
+  return getPromptIcon(name) || LightningIcon;
 }

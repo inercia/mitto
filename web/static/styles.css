@@ -319,6 +319,16 @@
   will-change: opacity, transform;
 }
 
+/* Keep the sidebar filter-tab bar (Conversations) and the Tasks panel toolbar
+   at the same height so the horizontal divider lines between the two
+   side-by-side panels align. Both panel headers already share p-4 + text-lg, so
+   giving these "second rows" an equal explicit height aligns the lower dividers
+   too. Contents are vertically centered within the fixed height. */
+.filter-tab-bar,
+.beads-toolbar {
+  height: 2.5rem;
+}
+
 /* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
 .filter-tab-streaming {
   position: relative;
@@ -944,52 +954,76 @@ a.mailto-link:hover {
    ============================================================================= */
 
 /* Font family stacks for each option */
-.input-font-system textarea.bg-mitto-input-box {
+.input-font-system textarea.chat-input-textarea {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 }
 
-.input-font-sans-serif textarea.bg-mitto-input-box {
+.input-font-sans-serif textarea.chat-input-textarea {
   font-family: sans-serif;
 }
 
-.input-font-serif textarea.bg-mitto-input-box {
+.input-font-serif textarea.chat-input-textarea {
   font-family: Georgia, "Times New Roman", Times, serif;
 }
 
-.input-font-monospace textarea.bg-mitto-input-box {
+.input-font-monospace textarea.chat-input-textarea {
   font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
 }
 
-.input-font-menlo textarea.bg-mitto-input-box {
+.input-font-menlo textarea.chat-input-textarea {
   font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     monospace;
 }
 
-.input-font-monaco textarea.bg-mitto-input-box {
+.input-font-monaco textarea.chat-input-textarea {
   font-family: Monaco, Menlo, Consolas, "Courier New", monospace;
 }
 
-.input-font-consolas textarea.bg-mitto-input-box {
+.input-font-consolas textarea.chat-input-textarea {
   font-family: Consolas, Monaco, Menlo, "Courier New", monospace;
 }
 
-.input-font-courier-new textarea.bg-mitto-input-box {
+.input-font-courier-new textarea.chat-input-textarea {
   font-family: "Courier New", Courier, monospace;
 }
 
-.input-font-jetbrains-mono textarea.bg-mitto-input-box {
+.input-font-jetbrains-mono textarea.chat-input-textarea {
   font-family: "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
 
-.input-font-sf-mono textarea.bg-mitto-input-box {
+.input-font-sf-mono textarea.chat-input-textarea {
   font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
 }
 
-.input-font-cascadia-code textarea.bg-mitto-input-box {
+.input-font-cascadia-code textarea.chat-input-textarea {
   font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New",
     monospace;
+}
+
+/* =============================================================================
+   Input Font Size Classes (applied to compose/input textarea)
+   ============================================================================= */
+
+.input-fontsize-small textarea.chat-input-textarea {
+  font-size: 12px;
+}
+
+.input-fontsize-default textarea.chat-input-textarea {
+  font-size: 14px;
+}
+
+.input-fontsize-medium textarea.chat-input-textarea {
+  font-size: 16px;
+}
+
+.input-fontsize-large textarea.chat-input-textarea {
+  font-size: 18px;
+}
+
+.input-fontsize-xl textarea.chat-input-textarea {
+  font-size: 20px;
 }
 
 /* =============================================================================
@@ -1298,6 +1332,51 @@ a.mailto-link:hover {
 }
 
 .light .queue-dropdown-list::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Beads table scroll container — force a visible, styled scrollbar so the
+   horizontal scroll is discoverable. macOS (WKWebView / Safari) uses overlay
+   scrollbars that stay hidden until scrolling, leaving no obvious way to reach
+   clipped right-hand columns with a mouse. */
+.beads-table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+  /* Re-enable horizontal scrolling. The global ".overflow-y-auto { overflow-x:
+     hidden }" rule above (which suppresses horizontal scroll in the conversation
+     area on mobile) otherwise wins over Tailwind's .overflow-x-auto by source
+     order. This rule is defined later, so it restores horizontal scrolling for
+     the Beads table. */
+  overflow-x: auto;
+}
+
+.beads-table-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.beads-table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.beads-table-scroll::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+.beads-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.light .beads-table-scroll {
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.light .beads-table-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.light .beads-table-scroll::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
 
@@ -1801,6 +1880,22 @@ mitto-action {
 }
 
 /* =============================================================================
+   Named Prompt Pill (periodic / by-name prompts)
+   ============================================================================= */
+
+.named-prompt-pill {
+  background: #dc2626;
+  border: 1px solid #ef4444;
+  color: #ffffff;
+}
+
+.light .named-prompt-pill {
+  background: #dc2626;
+  border: 1px solid #b91c1c;
+  color: #ffffff;
+}
+
+/* =============================================================================
    Error Message Bubble (dark theme default)
    ============================================================================= */
 
@@ -1925,4 +2020,63 @@ mitto-action {
   [class*="backdrop-blur"] {
     backdrop-filter: none;
   }
+}
+
+
+/* Child session items.
+   Apply the compact vertical padding to the inner padded block (the clickable
+   row content), NOT the .session-item-container wrapper. The wrapper sits
+   outside the element that carries the row background (active/hover/sidebar),
+   so padding there would expose the sidebar background as gaps above and below
+   the highlighted row. */
+.session-item--child > div {
+  border-bottom: none !important;
+}
+.session-item--child .session-item-container > div {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+.session-item--child .text-sm {
+  font-size: 0.8125rem;
+}
+
+/* Ensure no borders leak between child sessions */
+.session-item--child {
+  border: none !important;
+}
+
+.session-item--child .session-item-container {
+  border: none !important;
+}
+
+
+
+/* Spawned indicator styling */
+.spawned-indicator {
+  color: #9ca3af;
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+/* Session children container animation */
+.session-children {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.2s ease-out, opacity 0.15s ease-out;
+}
+
+.session-children--expanded {
+  max-height: 500px;
+  opacity: 1;
+}
+
+/* Child count badge */
+.child-count-badge {
+  font-size: 0.6875rem;
+  padding: 0 0.25rem;
+  border-radius: 0.25rem;
+  background-color: rgb(51 65 85 / 0.5);
+  color: #9ca3af;
 }

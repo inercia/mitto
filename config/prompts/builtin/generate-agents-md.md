@@ -1,0 +1,105 @@
+---
+icon: "robot"
+name: "Generate AGENTS.md"
+menus: prompts
+description: "Analyze project and generate an AGENTS.md file for AI coding agents"
+group: "Agents & Mitto"
+backgroundColor: "#B3E5FC"
+enabledWhen: '!session.isPeriodicConversation'
+---
+
+Analyze this project and generate an `AGENTS.md` file that gives AI coding agents
+(Claude Code, Augment, Cursor, etc.) the context they need to work effectively here.
+
+## Step 1: Analyze the project
+
+Read the following in parallel to understand the project:
+
+- Build files: `Makefile`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `build.gradle`, etc.
+- Entry points: `main.go`, `cmd/`, `src/`, `app/`, `index.*`
+- Test directories and CI configs: `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, `*_test.go`, `tests/`, `spec/`
+- Linting and formatting: `.golangci.yml`, `.eslintrc*`, `.prettierrc*`, `pyproject.toml`, `Makefile` lint targets
+- Dependency manifests: lock files, vendor directories
+- Existing guidance files: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `README.md` (for reference only — generate a fresh file)
+- Key config files: `.env.example`, `docker-compose.yml`, `Dockerfile`, `*.yaml`/`*.json` in the project root
+
+Focus on facts: actual commands, real directory names, concrete patterns found in the code.
+
+## Step 2: Generate AGENTS.md
+
+Produce an `AGENTS.md` with the following sections (omit any section that doesn't apply):
+
+```markdown
+# AGENTS.md
+
+Brief 1–2 sentence description of what this project is and does.
+
+## Quick Reference
+
+Commands the agent will use most often (build, test, lint, run). Use a code block.
+
+## Architecture Overview
+
+Package/module structure, entry points, key abstractions. Use a directory tree or bullet list.
+Describe the core data flow or request lifecycle in 3–5 sentences.
+
+## Build & Test
+
+How to build, run, and test the project. Separate subsections for unit, integration, and UI/E2E tests
+if they exist. Include any required setup steps (mock servers, env vars, build tags).
+
+## Coding Conventions
+
+- Naming conventions (files, functions, types, variables)
+- Error handling patterns
+- Logging approach
+- Import organization
+- Any project-specific idioms found in the code
+
+## Dependency Management
+
+Which tool to use (go mod, npm, pip, cargo, etc.) and any rules about how to add/update deps.
+
+## Key Files & Configuration
+
+Short table or list of important files and what they control.
+
+## Development Workflow
+
+Branch strategy, PR process, commit message conventions — only if detectable from the repo.
+
+## Common Gotchas
+
+Known pitfalls, non-obvious behaviors, or things that have caused confusion. Populate from
+comments in the code, existing docs, or patterns that suggest past pain points.
+```
+
+Keep the generated file concise and actionable — aim for 80–150 lines. Prefer specific
+commands and paths over generic descriptions.
+
+## Step 3: Review before saving
+
+### With Mitto UI
+
+Present the generated content for review before saving:
+
+```
+mitto_ui_textbox(self_id: "@mitto:session_id",
+  title: "Review AGENTS.md — edit before saving",
+  text: "<generated-agents-md>",
+  result: "edited_text")
+```
+
+- If `changed == true`: use the edited text as the final content.
+- If `changed == false`: use the original generated text.
+- If `aborted == true`: ask the user what they'd like to change, revise, and present again.
+
+### Without Mitto UI
+
+Show the generated `AGENTS.md` in the conversation and ask for confirmation or changes
+before writing it to disk.
+
+## Step 4: Save the file
+
+Save the final content to `AGENTS.md` at the project root, overwriting any existing file.
+Notify the user when done.

@@ -21,6 +21,8 @@ export {
 export {
   getLastActiveSessionId,
   setLastActiveSessionId,
+  getLastActiveSessionIdForTab,
+  setLastActiveSessionIdForTab,
   getQueueDropdownHeight,
   setQueueDropdownHeight,
   getQueueHeightConstraints,
@@ -40,6 +42,14 @@ export {
   getFilterTabGrouping,
   setFilterTabGrouping,
   cycleFilterTabGrouping,
+  tabScopedGroupKey,
+  stripTabScope,
+  getFilterTabForSession,
+  getSidebarWidth,
+  setSidebarWidth,
+  getSidebarWidthConstraints,
+  getBeadsFilters,
+  setBeadsFilters,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

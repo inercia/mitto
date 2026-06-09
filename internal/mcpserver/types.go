@@ -40,6 +40,7 @@ type ConversationInfo struct {
 	MessageCount      int       `json:"message_count"`
 	Status            string    `json:"status"`
 	Archived          bool      `json:"archived"`
+	ArchiveReason     string    `json:"archive_reason,omitempty"`
 	SessionFolder     string    `json:"session_folder"`
 
 	// Runtime status (only available when session is running)
@@ -50,6 +51,8 @@ type ConversationInfo struct {
 	LockClientType string `json:"lock_client_type,omitempty"`
 	LastSeq        int64  `json:"last_seq,omitempty"`
 	IsPeriodic     bool   `json:"is_periodic"`
+	ChildOrigin    string `json:"child_origin,omitempty"`
+	BeadsIssue     string `json:"beads_issue,omitempty"` // Linked beads issue ID (e.g. "mitto-123"), empty if none
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
@@ -60,6 +63,7 @@ type ConversationDetails struct {
 	SessionID         string `json:"session_id"`
 	Title             string `json:"title,omitempty"`
 	Description       string `json:"description,omitempty"`
+	BeadsIssue        string `json:"beads_issue,omitempty"` // Linked beads issue ID (e.g. "mitto-123"), empty if none
 	ACPServer         string `json:"acp_server,omitempty"`
 	WorkingDir        string `json:"working_dir,omitempty"`
 	CreatedAt         string `json:"created_at,omitempty"`           // ISO 8601 format
@@ -68,6 +72,7 @@ type ConversationDetails struct {
 	MessageCount      int    `json:"message_count"`
 	Status            string `json:"status,omitempty"`
 	Archived          bool   `json:"archived"`
+	ArchiveReason     string `json:"archive_reason,omitempty"`
 	SessionFolder     string `json:"session_folder,omitempty"`
 
 	// Runtime status (reflects current state if session is running)
@@ -80,10 +85,14 @@ type ConversationDetails struct {
 
 	// Parent/child relationship
 	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
+	ChildOrigin     string `json:"child_origin,omitempty"`      // How this child was created: "auto", "mcp", or "human" (empty for top-level)
 	IsPeriodic      bool   `json:"is_periodic"`                 // Whether the conversation has an active periodic prompt
 
 	// Available ACP servers that can be used when creating new conversations from this session
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
+
+	// Message queue
+	QueuedPrompts []QueuedPrompt `json:"queued_prompts,omitempty"` // Pending prompts in the queue
 }
 
 // AvailableACPServer describes an ACP server available for conversation creation.
@@ -92,6 +101,17 @@ type AvailableACPServer struct {
 	Type    string   `json:"type,omitempty"`    // Server type for prompt matching
 	Tags    []string `json:"tags,omitempty"`    // Optional categorization tags for this server
 	Current bool     `json:"current,omitempty"` // True if this is the current session's ACP server
+}
+
+// QueuedPrompt represents a queued prompt in the conversation details output.
+// Dates are formatted as ISO 8601 strings for consistent JSON output.
+type QueuedPrompt struct {
+	ID            string `json:"id"`                       // Unique message ID
+	Message       string `json:"message"`                  // Prompt text (truncated to 200 chars)
+	QueuedAt      string `json:"queued_at"`                // ISO 8601 format
+	ScheduledTime string `json:"scheduled_time,omitempty"` // ISO 8601 format, if scheduled for future delivery
+	ClientID      string `json:"client_id,omitempty"`      // Source client that queued this
+	Title         string `json:"title,omitempty"`          // Auto-generated title
 }
 
 // ConfigInfo contains the Mitto configuration info.
@@ -311,7 +331,7 @@ type SendPromptOutput struct {
 // DeleteConversationInput is the input for mitto_conversation_delete tool.
 type DeleteConversationInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the parent)
-	ConversationID string `json:"conversation_id"` // Child conversation to delete
+	ConversationID string `json:"conversation_id"` // Child conversation to delete, or "self"/your own ID to self-destruct
 }
 
 // DeleteConversationOutput is the output for mitto_conversation_delete tool.
@@ -327,7 +347,8 @@ type ConversationUpdateInput struct {
 	ConversationID string `json:"conversation_id"` // Target conversation to update
 
 	// Patchable properties — all optional, only non-nil fields are applied
-	Name *string `json:"name,omitempty"` // Update conversation title
+	Name       *string `json:"name,omitempty"`        // Update conversation title
+	BeadsIssue *string `json:"beads_issue,omitempty"` // Update linked beads issue ID (empty string clears)
 
 	// User data — optional, only applied if non-nil
 	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
@@ -339,6 +360,7 @@ type ConversationUpdateInput struct {
 	PeriodicFrequencyUnit  *string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
 	PeriodicFrequencyAt    *string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
 	PeriodicEnabled        *bool   `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
+	PeriodicFreshContext   *bool   `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.
@@ -351,15 +373,17 @@ type UserDataAttributeUpdate struct {
 type ConversationUpdateOutput struct {
 	Success        bool                      `json:"success"`
 	ConversationID string                    `json:"conversation_id,omitempty"`
-	Updated        []string                  `json:"updated,omitempty"`   // List of property names that were changed
-	Name           string                    `json:"name,omitempty"`      // Current name after update
-	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"` // Current user data after update
+	Updated        []string                  `json:"updated,omitempty"`     // List of property names that were changed
+	Name           string                    `json:"name,omitempty"`        // Current name after update
+	BeadsIssue     string                    `json:"beads_issue,omitempty"` // Current linked beads issue ID after update
+	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"`   // Current user data after update
 	// Periodic configuration (returned when periodic is configured)
 	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`
 	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"`
 	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`
 	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`
 	PeriodicEnabled        bool   `json:"periodic_enabled"`
+	PeriodicFreshContext   bool   `json:"periodic_fresh_context,omitempty"`
 	PeriodicNextRun        string `json:"periodic_next_run,omitempty"` // RFC3339 format
 	Error                  string `json:"error,omitempty"`
 }
@@ -721,10 +745,12 @@ type ConversationWaitInput struct {
 
 // ConversationWaitOutput is the output for mitto_conversation_wait tool.
 type ConversationWaitOutput struct {
-	Success  bool   `json:"success"`
-	What     string `json:"what"`                // The condition that was waited on
-	TimedOut bool   `json:"timed_out,omitempty"` // True if the wait timed out before the condition was met
-	Error    string `json:"error,omitempty"`
+	Success        bool   `json:"success"`
+	What           string `json:"what"`                      // The condition that was waited on
+	TimedOut       bool   `json:"timed_out,omitempty"`       // True if the wait timed out before the condition was met
+	StillPrompting bool   `json:"still_prompting,omitempty"` // True if the target agent is still responding (set on timeout)
+	Message        string `json:"message,omitempty"`         // Human-readable description of the wait outcome
+	Error          string `json:"error,omitempty"`
 }
 
 // =============================================================================
@@ -782,6 +808,7 @@ type PromptInfo struct {
 	Description     string `json:"description,omitempty"`
 	Group           string `json:"group,omitempty"`
 	BackgroundColor string `json:"background_color,omitempty"`
+	Icon            string `json:"icon,omitempty"`
 	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
 	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
 }
@@ -808,6 +835,7 @@ type PromptDetail struct {
 	Description     string `json:"description,omitempty"`
 	Group           string `json:"group,omitempty"`
 	BackgroundColor string `json:"background_color,omitempty"`
+	Icon            string `json:"icon,omitempty"`
 	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
 	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
 }

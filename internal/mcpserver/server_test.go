@@ -271,6 +271,129 @@ func TestConversationStartDuplicateTitle(t *testing.T) {
 	}
 }
 
+// setupDuplicateTitleStore creates a store with a parent session and an existing session titled "Test Title".
+// Returns (store, server, parentSessionID, existingSessionID).
+func setupDuplicateTitleStore(t *testing.T) (*session.Store, *Server, string, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	existingMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Test Title",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(existingMeta); err != nil {
+		t.Fatalf("Failed to create existing session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	return store, srv, parentMeta.SessionID, existingMeta.SessionID
+}
+
+func TestConversationStartDuplicateTitle_WithInitialPrompt(t *testing.T) {
+	_, srv, parentID, existingID := setupDuplicateTitleStore(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		Title:         "Test Title",
+		InitialPrompt: "Hello there",
+	})
+	if err == nil {
+		t.Fatal("Expected error for duplicate title, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "already exists") {
+		t.Errorf("Expected error to contain 'already exists', got: %v", err)
+	}
+	if !strings.Contains(errStr, "mitto_conversation_send_prompt") {
+		t.Errorf("Expected error to contain 'mitto_conversation_send_prompt', got: %v", err)
+	}
+	if !strings.Contains(errStr, existingID) {
+		t.Errorf("Expected error to contain existing session ID %q, got: %v", existingID, err)
+	}
+	if !strings.Contains(errStr, "Hello there") {
+		t.Errorf("Expected error to contain prompt text 'Hello there', got: %v", err)
+	}
+}
+
+func TestConversationStartDuplicateTitle_WithInitialPromptAndDelay(t *testing.T) {
+	_, srv, parentID, existingID := setupDuplicateTitleStore(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		Title:              "Test Title",
+		InitialPrompt:      "Hello there",
+		InitialPromptDelay: "5m",
+	})
+	if err == nil {
+		t.Fatal("Expected error for duplicate title, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "already exists") {
+		t.Errorf("Expected error to contain 'already exists', got: %v", err)
+	}
+	if !strings.Contains(errStr, "mitto_conversation_send_prompt") {
+		t.Errorf("Expected error to contain 'mitto_conversation_send_prompt', got: %v", err)
+	}
+	if !strings.Contains(errStr, existingID) {
+		t.Errorf("Expected error to contain existing session ID %q, got: %v", existingID, err)
+	}
+	if !strings.Contains(errStr, "schedule_time='5m'") {
+		t.Errorf("Expected error to contain \"schedule_time='5m'\", got: %v", err)
+	}
+}
+
+func TestConversationStartDuplicateTitle_NoPrompt(t *testing.T) {
+	_, srv, parentID, _ := setupDuplicateTitleStore(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Test Title",
+		// InitialPrompt intentionally omitted
+	})
+	if err == nil {
+		t.Fatal("Expected error for duplicate title, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "already exists") {
+		t.Errorf("Expected error to contain 'already exists', got: %v", err)
+	}
+	if strings.Contains(errStr, "mitto_conversation_send_prompt") {
+		t.Errorf("Expected error NOT to contain 'mitto_conversation_send_prompt' when no prompt given, got: %v", err)
+	}
+}
+
 func TestConversationStartUniqueTitleAllowed(t *testing.T) {
 	// Create a temporary store
 	tmpDir := t.TempDir()
@@ -362,6 +485,333 @@ func TestConversationStartUniqueTitleAllowed(t *testing.T) {
 	}
 }
 
+// setupConversationStartServer is a helper that creates a store, parent session, and server
+// for tests of handleConversationStart. Returns (store, server, parentSessionID).
+func setupConversationStartServer(t *testing.T) (*session.Store, *Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	return store, srv, parentMeta.SessionID
+}
+
+func TestConversationStart_InitialPromptDelay_RelativeDuration(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	before := time.Now()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "Delayed hello",
+		InitialPromptDelay: "5m",
+	})
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.Message != "Delayed hello" {
+		t.Errorf("Expected message text 'Delayed hello', got %q", msg.Message)
+	}
+	if msg.ScheduledTime == nil {
+		t.Fatal("Expected non-nil ScheduledTime for delayed message")
+	}
+
+	// Scheduled time should be approximately 5 minutes from now (within 10s tolerance)
+	expectedLow := before.Add(5 * time.Minute).Add(-10 * time.Second)
+	expectedHigh := after.Add(5 * time.Minute).Add(10 * time.Second)
+	if msg.ScheduledTime.Before(expectedLow) || msg.ScheduledTime.After(expectedHigh) {
+		t.Errorf("ScheduledTime %v not within expected range [%v, %v]", *msg.ScheduledTime, expectedLow, expectedHigh)
+	}
+}
+
+func TestConversationStart_InitialPromptDelay_AbsoluteTimestamp(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	targetTime := time.Now().Add(1 * time.Hour).UTC().Truncate(time.Second)
+	timestampStr := targetTime.Format(time.RFC3339)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "Absolute hello",
+		InitialPromptDelay: timestampStr,
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.ScheduledTime == nil {
+		t.Fatal("Expected non-nil ScheduledTime for delayed message")
+	}
+	// Should match the provided timestamp within 2 seconds
+	diff := msg.ScheduledTime.Sub(targetTime)
+	if diff < -2*time.Second || diff > 2*time.Second {
+		t.Errorf("ScheduledTime %v differs from expected %v by %v (want <= 2s)", *msg.ScheduledTime, targetTime, diff)
+	}
+}
+
+func TestConversationStart_InitialPromptDelay_WithoutInitialPrompt(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPromptDelay: "5m",
+		// InitialPrompt intentionally omitted
+	})
+	if err == nil {
+		t.Fatal("Expected error when initial_prompt_delay is set without initial_prompt")
+	}
+	if !strings.Contains(err.Error(), "initial_prompt_delay requires initial_prompt") {
+		t.Errorf("Expected error to contain 'initial_prompt_delay requires initial_prompt', got: %v", err)
+	}
+}
+
+func TestConversationStart_InitialPromptDelay_InvalidFormat(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "test",
+		InitialPromptDelay: "tomorrow",
+	})
+	if err == nil {
+		t.Fatal("Expected error for invalid initial_prompt_delay format")
+	}
+	if !strings.Contains(err.Error(), "invalid initial_prompt_delay") {
+		t.Errorf("Expected error to contain 'invalid initial_prompt_delay', got: %v", err)
+	}
+}
+
+func TestConversationStart_InitialPrompt_NoDelay_Immediate(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		InitialPrompt: "Immediate hello",
+		// InitialPromptDelay intentionally omitted
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.Message != "Immediate hello" {
+		t.Errorf("Expected message text 'Immediate hello', got %q", msg.Message)
+	}
+	if msg.ScheduledTime != nil {
+		t.Errorf("Expected nil ScheduledTime for immediate message, got %v", *msg.ScheduledTime)
+	}
+}
+
+func TestConversationStart_BeadsIssue(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		Title:      "Worker for bead",
+		BeadsIssue: "mitto-123",
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+	if output.BeadsIssue != "mitto-123" {
+		t.Errorf("Expected output BeadsIssue 'mitto-123', got %q", output.BeadsIssue)
+	}
+
+	meta, err := store.GetMetadata(output.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata() error: %v", err)
+	}
+	if meta.BeadsIssue != "mitto-123" {
+		t.Errorf("Expected persisted BeadsIssue 'mitto-123', got %q", meta.BeadsIssue)
+	}
+}
+
+// setupConversationStartServerWithPrompts is like setupConversationStartServer but
+// also injects a Config whose Prompts list contains the given named prompts, so that
+// findPromptByName (via loadMergedPrompts) can resolve them in prompt_name tests.
+func setupConversationStartServerWithPrompts(t *testing.T, prompts []config.WebPrompt) (*session.Store, *Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:  store,
+		Config: &config.Config{Prompts: prompts},
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	return store, srv, parentMeta.SessionID
+}
+
+func TestConversationStart_PromptName_ResolvesWithArguments(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "Work on ${ISSUE_ID} now"},
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "start WORK", // case-insensitive
+		Arguments:  map[string]string{"ISSUE_ID": "mitto-42"},
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	queue := store.Queue(output.SessionID)
+	msgs, err := queue.List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	msg := msgs[0]
+	// The named prompt text is queued verbatim; substitution happens at send time.
+	if msg.Message != "Work on ${ISSUE_ID} now" {
+		t.Errorf("Expected queued message to be the named prompt text, got %q", msg.Message)
+	}
+	if got := msg.Arguments["ISSUE_ID"]; got != "mitto-42" {
+		t.Errorf("Expected queued ISSUE_ID argument 'mitto-42', got %q", got)
+	}
+}
+
+func TestConversationStart_PromptName_AndInitialPrompt_Error(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "Work on ${ISSUE_ID}"},
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		PromptName:    "Start work",
+		InitialPrompt: "inline text",
+	})
+	if err == nil {
+		t.Fatal("Expected error when both prompt_name and initial_prompt are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") &&
+		!strings.Contains(err.Error(), "both") {
+		t.Errorf("Expected mutual-exclusivity error, got: %v", err)
+	}
+}
+
+func TestConversationStart_PromptName_NotFound(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "text"},
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Nonexistent prompt",
+	})
+	if err == nil {
+		t.Fatal("Expected error for nonexistent prompt_name")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Expected 'not found' error, got: %v", err)
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
@@ -424,7 +874,8 @@ func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer,
 	})
 }
 
-func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool)     {}
+func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+}
 func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                     {}
 func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {}
 func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
@@ -438,6 +889,7 @@ func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.
 	return time.Time{}
 }
 func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings { return nil }
+func (m *mockSessionManager) InvalidateWorkspaceRC(workingDir string)                  {}
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -2098,6 +2550,101 @@ func TestConversationDelete_NonExistent(t *testing.T) {
 	}
 }
 
+// setupSelfDestructServer creates a server whose calling session has a running
+// BackgroundSession registered with the SessionManager, enabling self-destruct tests.
+func setupSelfDestructServer(t *testing.T) (*Server, string, *mockBackgroundSessionForWait) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	callerID := session.GenerateSessionID()
+	callerMeta := session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(callerMeta); err != nil {
+		t.Fatalf("Failed to create caller session: %v", err)
+	}
+
+	callerBS := newMockBackgroundSessionForWait(true) // currently prompting
+	sm := &mockSessionManagerForWait{
+		sessions: map[string]BackgroundSession{
+			callerID: callerBS,
+		},
+	}
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{
+			Store:          store,
+			SessionManager: sm,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller session: %v", err)
+	}
+
+	return srv, callerID, callerBS
+}
+
+// TestConversationDelete_SelfDestruct_Keyword verifies that passing "self" as the
+// conversation_id marks the calling conversation for self-destruction (deferred
+// deletion) rather than attempting an immediate parent-scoped deletion.
+func TestConversationDelete_SelfDestruct_Keyword(t *testing.T) {
+	srv, callerID, callerBS := setupSelfDestructServer(t)
+	ctx := context.Background()
+
+	_, output, err := srv.handleDeleteConversation(ctx, nil, DeleteConversationInput{
+		SelfID:         callerID,
+		ConversationID: "self",
+	})
+	if err != nil {
+		t.Fatalf("handleDeleteConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if output.ConversationID != callerID {
+		t.Errorf("Expected conversation ID %s, got %s", callerID, output.ConversationID)
+	}
+	if !callerBS.selfDestructCalled.Load() {
+		t.Error("Expected RequestSelfDestruct to be called on the calling session")
+	}
+}
+
+// TestConversationDelete_SelfDestruct_OwnID verifies that passing the caller's own
+// conversation ID is treated as a self-destruct request.
+func TestConversationDelete_SelfDestruct_OwnID(t *testing.T) {
+	srv, callerID, callerBS := setupSelfDestructServer(t)
+	ctx := context.Background()
+
+	_, output, err := srv.handleDeleteConversation(ctx, nil, DeleteConversationInput{
+		SelfID:         callerID,
+		ConversationID: callerID,
+	})
+	if err != nil {
+		t.Fatalf("handleDeleteConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if !callerBS.selfDestructCalled.Load() {
+		t.Error("Expected RequestSelfDestruct to be called on the calling session")
+	}
+}
+
 func TestListConversationsFiltering(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -2525,8 +3072,9 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspacesForFolder(folder string) 
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
 }
-func (m *mockSessionManagerForWorkspaces) BroadcastSessionArchived(sessionID string, archived bool) {}
-func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID string)                 {}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID string) {}
 func (m *mockSessionManagerForWorkspaces) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
 }
 func (m *mockSessionManagerForWorkspaces) DeleteChildSessions(parentID string) {}
@@ -2553,6 +3101,7 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceRCLastModified(workingDir 
 func (m *mockSessionManagerForWorkspaces) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForWorkspaces) InvalidateWorkspaceRC(workingDir string) {}
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -2843,6 +3392,280 @@ func TestListWorkspaces_FilterInvalid(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Workspace Update Tests
+// =============================================================================
+
+// mockSessionManagerForWorkspaceUpdate extends mockSessionManagerForWorkspaces with
+// GetWorkspaceByUUID support and InvalidateWorkspaceRC tracking.
+type mockSessionManagerForWorkspaceUpdate struct {
+	workspaces       []config.WorkspaceSettings
+	invalidateCalled []string
+}
+
+func (m *mockSessionManagerForWorkspaceUpdate) GetSession(sessionID string) BackgroundSession {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForWorkspaceUpdate) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForWorkspaceUpdate) CloseSession(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) ResumeSession(string, string, string) (BackgroundSession, error) {
+	return nil, nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionCreated(string, string, string, string, string, string) {
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerForWorkspaceUpdate) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaces() []config.WorkspaceSettings {
+	return m.workspaces
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
+	for i := range m.workspaces {
+		if m.workspaces[i].UUID == uuid {
+			return &m.workspaces[i]
+		}
+	}
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspacePrompts(string) []config.WebPrompt {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspacePromptsDirs(string) []string { return nil }
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceRCLastModified(string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspace(string) *config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaceUpdate) InvalidateWorkspaceRC(workingDir string) {
+	m.invalidateCalled = append(m.invalidateCalled, workingDir)
+}
+
+// setupWorkspaceUpdateServer creates a server + store with a registered session for workspace-update tests.
+// Returns the server, store, session ID, and workspace dir.
+func setupWorkspaceUpdateServer(t *testing.T, wsDir string) (*Server, *session.Store, string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	callerID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller",
+		ACPServer:  "test-server",
+		WorkingDir: wsDir,
+	}); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	mockSM := &mockSessionManagerForWorkspaceUpdate{
+		workspaces: []config.WorkspaceSettings{
+			{UUID: "ws-1", Name: "Test WS", WorkingDir: wsDir, ACPServer: "test-server"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession failed: %v", err)
+	}
+
+	return srv, store, callerID
+}
+
+func TestWorkspaceUpdate_MetadataOnly(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	desc := "My project"
+	grp := "Engineering"
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID:      callerID,
+		Description: &desc,
+		Group:       &grp,
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUpdate returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error: %s", output.Error)
+	}
+
+	// Verify written to disk.
+	rc, err := config.LoadWorkspaceRC(wsDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil || rc.Metadata == nil {
+		t.Fatal("expected non-nil metadata")
+	}
+	if rc.Metadata.Description != desc {
+		t.Errorf("description: got %q, want %q", rc.Metadata.Description, desc)
+	}
+	if rc.Metadata.Group != grp {
+		t.Errorf("group: got %q, want %q", rc.Metadata.Group, grp)
+	}
+	if output.WorkingDir != wsDir {
+		t.Errorf("working_dir: got %q, want %q", output.WorkingDir, wsDir)
+	}
+
+	// Verify invalidate was called.
+	mockSM := srv.sessionManager.(*mockSessionManagerForWorkspaceUpdate)
+	if len(mockSM.invalidateCalled) == 0 {
+		t.Error("expected InvalidateWorkspaceRC to be called")
+	}
+}
+
+func TestWorkspaceUpdate_UserDataSchema(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+		UserDataSchema: []WorkspaceUserDataField{
+			{Name: "Ticket", Description: "JIRA ticket", Type: "url"},
+			{Name: "Sprint", Type: "string"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUpdate returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error: %s", output.Error)
+	}
+
+	rc, err := config.LoadWorkspaceRC(wsDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil || rc.Metadata == nil || rc.Metadata.UserDataSchema == nil {
+		t.Fatal("expected non-nil user_data schema")
+	}
+	fields := rc.Metadata.UserDataSchema.Fields
+	if len(fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(fields))
+	}
+	if fields[0].Name != "Ticket" || fields[0].Type != "url" {
+		t.Errorf("field[0]: got {%s %s}, want {Ticket url}", fields[0].Name, fields[0].Type)
+	}
+	if fields[1].Name != "Sprint" || fields[1].Type != "string" {
+		t.Errorf("field[1]: got {%s %s}, want {Sprint string}", fields[1].Name, fields[1].Type)
+	}
+}
+
+func TestWorkspaceUpdate_SchemaMerge(t *testing.T) {
+	wsDir := t.TempDir()
+	// Write initial .mittorc with one field.
+	if err := os.WriteFile(wsDir+"/.mittorc", []byte("metadata:\n  user_data:\n    - name: Sprint\n      type: string\n"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+		UserDataSchema: []WorkspaceUserDataField{
+			{Name: "Ticket", Type: "url"},
+		},
+		// merge=true by default
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceUpdate returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("expected success, got error: %s", output.Error)
+	}
+
+	rc, _ := config.LoadWorkspaceRC(wsDir)
+	if rc == nil || rc.Metadata == nil || rc.Metadata.UserDataSchema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	// Should have Sprint (existing) + Ticket (new).
+	names := make(map[string]bool)
+	for _, f := range rc.Metadata.UserDataSchema.Fields {
+		names[f.Name] = true
+	}
+	if !names["Sprint"] || !names["Ticket"] {
+		t.Errorf("expected both Sprint and Ticket, got fields: %v", rc.Metadata.UserDataSchema.Fields)
+	}
+}
+
+func TestWorkspaceUpdate_InvalidType(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+		UserDataSchema: []WorkspaceUserDataField{
+			{Name: "Field", Type: "badtype"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure for invalid type, got success")
+	}
+	if output.Error == "" {
+		t.Error("expected non-empty error message")
+	}
+}
+
+func TestWorkspaceUpdate_NoFieldsProvided(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, callerID := setupWorkspaceUpdateServer(t, wsDir)
+
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		SelfID: callerID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure when no fields provided, got success")
+	}
+}
+
+func TestWorkspaceUpdate_MissingSelfID(t *testing.T) {
+	wsDir := t.TempDir()
+	srv, _, _ := setupWorkspaceUpdateServer(t, wsDir)
+
+	desc := "x"
+	_, output, err := srv.handleWorkspaceUpdate(context.Background(), nil, WorkspaceUpdateInput{
+		Description: &desc,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("expected failure for missing self_id")
+	}
+	if output.Error != "self_id is required" {
+		t.Errorf("expected 'self_id is required', got %q", output.Error)
+	}
+}
+
 func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 	// Create parent1 with a child, then try to delete child from parent2
 	srv, store, _, childIDs := setupParentChildSessions(t, 1)
@@ -2886,8 +3709,9 @@ func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 
 // mockBackgroundSessionForWait implements BackgroundSession for testing the wait tool.
 type mockBackgroundSessionForWait struct {
-	prompting     atomic.Bool
-	waitCompleted chan struct{} // close to simulate prompt completion
+	prompting          atomic.Bool
+	waitCompleted      chan struct{} // close to simulate prompt completion
+	selfDestructCalled atomic.Bool   // records whether RequestSelfDestruct was called
 }
 
 func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWait {
@@ -2902,6 +3726,8 @@ func (m *mockBackgroundSessionForWait) IsPrompting() bool             { return m
 func (m *mockBackgroundSessionForWait) GetEventCount() int            { return 0 }
 func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64      { return 0 }
 func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool { return false }
+func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string) {}
+func (m *mockBackgroundSessionForWait) RequestSelfDestruct()          { m.selfDestructCalled.Store(true) }
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -2940,7 +3766,8 @@ func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.Work
 }
 func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)               {}
+func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
 func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
 func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
@@ -2952,6 +3779,7 @@ func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebProm
 func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string             { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
 func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
+func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -3117,6 +3945,12 @@ func TestConversationWait_AgentResponded_Timeout(t *testing.T) {
 	}
 	if !output.TimedOut {
 		t.Error("Expected timed_out=true")
+	}
+	if !output.StillPrompting {
+		t.Error("Expected still_prompting=true (mock was created with prompting=true and never finished)")
+	}
+	if output.Message == "" {
+		t.Error("Expected non-empty message on timeout")
 	}
 	if elapsed < 900*time.Millisecond {
 		t.Errorf("Expected to wait ~1s, but only waited %v", elapsed)
@@ -3624,7 +4458,8 @@ func (m *mockSessionManagerForChildren) GetWorkspacesForFolder(string) []config.
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool)     {}
+func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForChildren) DeleteChildSessions(string)                {}
@@ -3640,6 +4475,7 @@ func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.
 	return time.Time{}
 }
 func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings { return nil }
+func (m *mockSessionManagerForChildren) InvalidateWorkspaceRC(string)                  {}
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -3813,7 +4649,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []
 }
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)               {}
@@ -3839,6 +4676,7 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceRCLastModified(string
 func (m *mockSessionManagerForChildrenMutable) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForChildrenMutable) InvalidateWorkspaceRC(string) {}
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -4051,6 +4889,8 @@ func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                 
 func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                         { return 0 }
 func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                   { return 0 }
 func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool { return true }
+func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)              {}
+func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                       {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false
@@ -4117,7 +4957,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []confi
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool)     {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)                {}
@@ -4141,6 +4982,7 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaceRCLastModified(string) tim
 func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -5582,7 +6424,8 @@ func (m *mockSessionManagerCrossWorkspace) BroadcastSessionCreated(sessionID, na
 	})
 }
 
-func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
+}
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerCrossWorkspace) DeleteChildSessions(string)               {}
@@ -5617,6 +6460,7 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceRCLastModified(string) ti
 func (m *mockSessionManagerCrossWorkspace) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerCrossWorkspace) InvalidateWorkspaceRC(string) {}
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.
@@ -7328,5 +8172,227 @@ func TestHandleRunPeriodicNow_MissingConversationID(t *testing.T) {
 	}
 	if out.Success {
 		t.Error("Expected failure with empty conversation_id")
+	}
+}
+
+// =============================================================================
+// GetConversation Queue Tests
+// =============================================================================
+
+func TestGetConversation_QueuedPrompts_Empty(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Queue Test Empty",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+	_ = store // used by setupConversationStartServer
+
+	// Get conversation — queue should be empty/omitted
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 0 {
+		t.Errorf("Expected 0 queued prompts, got %d", len(output.QueuedPrompts))
+	}
+}
+
+func TestGetConversation_QueuedPrompts_Immediate(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation with an initial prompt
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		Title:         "Queue Test Immediate",
+		InitialPrompt: "Hello from queue",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+	_ = store
+
+	// Get conversation — should show the queued prompt
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 1 {
+		t.Fatalf("Expected 1 queued prompt, got %d", len(output.QueuedPrompts))
+	}
+	qp := output.QueuedPrompts[0]
+	if qp.ID == "" {
+		t.Error("Expected non-empty queue message ID")
+	}
+	if !strings.Contains(qp.Message, "Hello from queue") {
+		t.Errorf("Expected message to contain 'Hello from queue', got: %s", qp.Message)
+	}
+	if qp.QueuedAt == "" {
+		t.Error("Expected non-empty QueuedAt")
+	}
+	if qp.ScheduledTime != "" {
+		t.Errorf("Expected empty ScheduledTime for immediate prompt, got: %s", qp.ScheduledTime)
+	}
+}
+
+func TestGetConversation_QueuedPrompts_Scheduled(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation with a delayed initial prompt
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		Title:              "Queue Test Scheduled",
+		InitialPrompt:      "Delayed hello",
+		InitialPromptDelay: "10m",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+	_ = store
+
+	// Get conversation — should show the queued prompt with scheduled time
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 1 {
+		t.Fatalf("Expected 1 queued prompt, got %d", len(output.QueuedPrompts))
+	}
+	qp := output.QueuedPrompts[0]
+	if !strings.Contains(qp.Message, "Delayed hello") {
+		t.Errorf("Expected message to contain 'Delayed hello', got: %s", qp.Message)
+	}
+	if qp.ScheduledTime == "" {
+		t.Fatal("Expected non-empty ScheduledTime for delayed prompt")
+	}
+
+	// Parse and verify the scheduled time is approximately 10 minutes from now
+	scheduledTime, err := time.Parse("2006-01-02T15:04:05Z07:00", qp.ScheduledTime)
+	if err != nil {
+		t.Fatalf("Failed to parse ScheduledTime: %v", err)
+	}
+	expectedTime := time.Now().Add(10 * time.Minute)
+	diff := scheduledTime.Sub(expectedTime)
+	if diff < -10*time.Second || diff > 10*time.Second {
+		t.Errorf("ScheduledTime %v not within 10s of expected %v", scheduledTime, expectedTime)
+	}
+}
+
+func TestGetConversation_QueuedPrompts_Multiple(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Queue Test Multiple",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+
+	// Add multiple messages to the queue
+	queue := store.Queue(startOut.SessionID)
+	scheduledTime := time.Now().Add(30 * time.Minute)
+	if _, err := queue.Add("First message", nil, nil, "client-1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add first message: %v", err)
+	}
+	if _, err := queue.Add("Second message", nil, nil, "client-2", &scheduledTime, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add second message: %v", err)
+	}
+	if _, err := queue.Add("Third message", nil, nil, "client-1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add third message: %v", err)
+	}
+
+	// Get conversation — should show all queued prompts
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 3 {
+		t.Fatalf("Expected 3 queued prompts, got %d", len(output.QueuedPrompts))
+	}
+
+	// Verify first message (immediate)
+	if !strings.Contains(output.QueuedPrompts[0].Message, "First message") {
+		t.Errorf("First message mismatch: %s", output.QueuedPrompts[0].Message)
+	}
+	if output.QueuedPrompts[0].ScheduledTime != "" {
+		t.Errorf("First message should not have ScheduledTime")
+	}
+
+	// Verify second message (scheduled)
+	if !strings.Contains(output.QueuedPrompts[1].Message, "Second message") {
+		t.Errorf("Second message mismatch: %s", output.QueuedPrompts[1].Message)
+	}
+	if output.QueuedPrompts[1].ScheduledTime == "" {
+		t.Error("Second message should have ScheduledTime")
+	}
+	if output.QueuedPrompts[1].ClientID != "client-2" {
+		t.Errorf("Expected client_id 'client-2', got: %s", output.QueuedPrompts[1].ClientID)
+	}
+
+	// Verify third message (immediate)
+	if !strings.Contains(output.QueuedPrompts[2].Message, "Third message") {
+		t.Errorf("Third message mismatch: %s", output.QueuedPrompts[2].Message)
+	}
+}
+
+func TestGetConversation_QueuedPrompts_LongMessageTruncated(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	// Create a target conversation
+	ctx := context.Background()
+	_, startOut, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID: parentID,
+		Title:  "Queue Test Truncation",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart failed: %v", err)
+	}
+
+	// Add a very long message
+	longMsg := strings.Repeat("x", 500)
+	queue := store.Queue(startOut.SessionID)
+	if _, err := queue.Add(longMsg, nil, nil, "", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add message: %v", err)
+	}
+
+	// Get conversation — message should be truncated
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: startOut.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+	if len(output.QueuedPrompts) != 1 {
+		t.Fatalf("Expected 1 queued prompt, got %d", len(output.QueuedPrompts))
+	}
+	// 200 chars + "..." = 203
+	if len(output.QueuedPrompts[0].Message) > 210 {
+		t.Errorf("Expected message to be truncated to ~203 chars, got %d chars", len(output.QueuedPrompts[0].Message))
+	}
+	if !strings.HasSuffix(output.QueuedPrompts[0].Message, "...") {
+		t.Error("Expected truncated message to end with '...'")
 	}
 }

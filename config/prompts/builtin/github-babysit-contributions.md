@@ -1,7 +1,9 @@
 ---
+icon: "globe"
 name: "GitHub: babysit contributions"
+menus: prompts
 description: "Periodically check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs"
-group: "CI"
+group: "GitHub"
 backgroundColor: "#C8E6C9"
 tags: ["periodic", "github"]
 enabledWhen: 'fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh"))'

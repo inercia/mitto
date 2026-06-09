@@ -1,5 +1,7 @@
 ---
+icon: "chat-bubble"
 name: "Address PR Comments"
+menus: prompts
 description: "Systematically address all pull request review feedback"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"

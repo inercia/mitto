@@ -36,6 +36,50 @@ function isModelErrorThought(text) {
 }
 
 /**
+ * Format a Unix millisecond timestamp as a locale time string (e.g. "2:30 PM").
+ * Returns null if the timestamp is falsy.
+ */
+function formatMessageTime(timestamp) {
+  if (!timestamp) return null;
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
+ * Displayed right-aligned (like user messages) with an icon and the prompt name.
+ */
+function NamedPromptPill({ message }) {
+  const timeStr = formatMessageTime(message.timestamp);
+  return html`
+    <div class="message-enter flex justify-end items-center gap-2 mb-3">
+      ${timeStr &&
+      html`<span class="message-timestamp">${timeStr}</span>`}
+      <div
+        class="named-prompt-pill flex items-center gap-2 px-4 py-2 rounded-full"
+      >
+        <svg
+          class="w-4 h-4 flex-shrink-0"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+          />
+        </svg>
+        <span class="text-sm font-medium">${message.promptName}</span>
+      </div>
+    </div>
+  `;
+}
+
+/**
  * ThoughtBubble component - renders a thought message with collapsible support.
  * Extracted into its own component so hooks are always called unconditionally.
  */
@@ -106,8 +150,9 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
  * @param {Object} props.message - The message object
  * @param {boolean} props.isLast - Whether this is the last message
  * @param {boolean} props.isStreaming - Whether the session is currently streaming
+ * @param {Function} [props.onRetry] - Optional callback to retry (resend last prompt). Shown on error messages.
  */
-export function Message({ message, isLast, isStreaming }) {
+export function Message({ message, isLast, isStreaming, onRetry }) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
   const isThought = message.role === ROLE_THOUGHT;
@@ -273,16 +318,44 @@ export function Message({ message, isLast, isStreaming }) {
     );
     return html`
       <div class="message-enter flex justify-start mb-3">
-        <div
-          class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl error-message-bubble rounded-bl-sm"
-        >
-          <div class="flex items-start gap-2">
-            <span>❌</span>
-            <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
+        <div class="flex items-center gap-2">
+          <div
+            class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl error-message-bubble rounded-bl-sm"
+          >
+            <div class="flex items-start gap-2">
+              <span>❌</span>
+              <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
+            </div>
           </div>
+          ${onRetry &&
+          html`<button
+            type="button"
+            class="flex-shrink-0 p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
+            onClick=${onRetry}
+            title="Retry — resend the last prompt"
+          >
+            <svg
+              class="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.66v4.992"
+              />
+            </svg>
+          </button>`}
         </div>
       </div>
     `;
+  }
+
+  // Named prompt pill — rendered before regular user message logic
+  if (isUser && message.promptName) {
+    return html`<${NamedPromptPill} message=${message} />`;
   }
 
   // User message (Markdown or plain text with optional images)
@@ -324,6 +397,7 @@ export function Message({ message, isLast, isStreaming }) {
       }
     }, [renderedHtml, useMarkdown]);
 
+    const userTimeStr = formatMessageTime(message.timestamp);
     return html`
       <div class="message-enter flex justify-end mb-3">
         <div
@@ -356,6 +430,8 @@ export function Message({ message, isLast, isStreaming }) {
                 class="whitespace-pre-wrap font-sans text-sm m-0"
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
+          ${userTimeStr &&
+          html`<div class="message-timestamp text-right mt-1">${userTimeStr}</div>`}
         </div>
       </div>
     `;
@@ -401,6 +477,7 @@ export function Message({ message, isLast, isStreaming }) {
       }
     }, [message.html]);
 
+    const agentTimeStr = !isStreaming ? formatMessageTime(message.timestamp) : null;
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
@@ -413,6 +490,8 @@ export function Message({ message, isLast, isStreaming }) {
               : ""}"
             dangerouslySetInnerHTML=${{ __html: message.html || "" }}
           />
+          ${agentTimeStr &&
+          html`<div class="message-timestamp mt-1">${agentTimeStr}</div>`}
         </div>
       </div>
     `;

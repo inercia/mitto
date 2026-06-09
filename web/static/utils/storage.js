@@ -228,6 +228,38 @@ export function setLastActiveSessionId(sessionId) {
   }
 }
 
+/**
+ * Get the last active session ID for a specific filter tab from localStorage.
+ * Each tab (conversations, periodic, archived) remembers its own last-focused
+ * conversation so switching tabs restores the conversation last viewed there.
+ * @param {string} tab - The filter tab (conversations, periodic, archived)
+ * @returns {string|null} The last active session ID for that tab, or null
+ */
+export function getLastActiveSessionIdForTab(tab) {
+  try {
+    return localStorage.getItem(`mitto_last_session_id_${tab}`) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Save the last active session ID for a specific filter tab to localStorage.
+ * @param {string} tab - The filter tab (conversations, periodic, archived)
+ * @param {string|null} sessionId - The session ID to save, or null to clear
+ */
+export function setLastActiveSessionIdForTab(tab, sessionId) {
+  try {
+    if (sessionId) {
+      localStorage.setItem(`mitto_last_session_id_${tab}`, sessionId);
+    } else {
+      localStorage.removeItem(`mitto_last_session_id_${tab}`);
+    }
+  } catch (e) {
+    console.warn("Failed to save per-tab last session ID to localStorage:", e);
+  }
+}
+
 // =============================================================================
 // Queue Dropdown Height Persistence (localStorage)
 // =============================================================================
@@ -397,6 +429,121 @@ export function getUIPromptPanelHeightConstraints() {
     min: MIN_UI_PROMPT_HEIGHT,
     max: MAX_UI_PROMPT_HEIGHT,
     default: DEFAULT_UI_PROMPT_HEIGHT,
+  };
+}
+
+// =============================================================================
+// Sidebar Width Persistence (localStorage)
+// =============================================================================
+
+const SIDEBAR_WIDTH_KEY = "mitto_sidebar_width";
+const DEFAULT_SIDEBAR_WIDTH = 320; // w-80 = 320px (current default)
+const MIN_SIDEBAR_WIDTH = 320; // Cannot shrink below current default
+const MAX_SIDEBAR_WIDTH = 640; // 2× default
+
+/**
+ * Get the user's preferred sidebar width from localStorage
+ * @returns {number} The width in pixels, or default if not set
+ */
+export function getSidebarWidth() {
+  try {
+    const value = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (value) {
+      const width = parseInt(value, 10);
+      return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, width));
+    }
+    return DEFAULT_SIDEBAR_WIDTH;
+  } catch (e) {
+    console.warn("Failed to read sidebar width from localStorage:", e);
+    return DEFAULT_SIDEBAR_WIDTH;
+  }
+}
+
+/**
+ * Save the user's preferred sidebar width to localStorage
+ * @param {number} width - The width in pixels
+ */
+export function setSidebarWidth(width) {
+  try {
+    const clampedWidth = Math.max(
+      MIN_SIDEBAR_WIDTH,
+      Math.min(MAX_SIDEBAR_WIDTH, width),
+    );
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clampedWidth));
+  } catch (e) {
+    console.warn("Failed to save sidebar width to localStorage:", e);
+  }
+}
+
+/**
+ * Get the constraints for sidebar width
+ * @returns {{min: number, max: number, default: number}}
+ */
+export function getSidebarWidthConstraints() {
+  return {
+    min: MIN_SIDEBAR_WIDTH,
+    max: MAX_SIDEBAR_WIDTH,
+    default: DEFAULT_SIDEBAR_WIDTH,
+  };
+}
+
+// =============================================================================
+// Textarea Min Height Persistence (localStorage)
+// =============================================================================
+
+const TEXTAREA_MIN_HEIGHT_KEY = "mitto_textarea_min_height";
+const DEFAULT_TEXTAREA_MIN_HEIGHT = 80; // Current CSS min-height (rows="3")
+const MIN_TEXTAREA_MIN_HEIGHT = 80; // Cannot shrink below current default
+const MAX_TEXTAREA_MIN_HEIGHT = 400; // Allow generous resize range
+const TEXTAREA_HARD_MAX_HEIGHT = 500; // Hard cap for auto-grow
+
+/**
+ * Get the user's preferred textarea min height from localStorage
+ * @returns {number} The height in pixels, or default if not set
+ */
+export function getTextareaMinHeight() {
+  try {
+    const value = localStorage.getItem(TEXTAREA_MIN_HEIGHT_KEY);
+    if (value) {
+      const height = parseInt(value, 10);
+      return Math.max(
+        MIN_TEXTAREA_MIN_HEIGHT,
+        Math.min(MAX_TEXTAREA_MIN_HEIGHT, height),
+      );
+    }
+    return DEFAULT_TEXTAREA_MIN_HEIGHT;
+  } catch (e) {
+    console.warn("Failed to read textarea min height from localStorage:", e);
+    return DEFAULT_TEXTAREA_MIN_HEIGHT;
+  }
+}
+
+/**
+ * Save the user's preferred textarea min height to localStorage
+ * @param {number} height - The height in pixels
+ */
+export function setTextareaMinHeight(height) {
+  try {
+    const clampedHeight = Math.max(
+      MIN_TEXTAREA_MIN_HEIGHT,
+      Math.min(MAX_TEXTAREA_MIN_HEIGHT, height),
+    );
+    localStorage.setItem(TEXTAREA_MIN_HEIGHT_KEY, String(clampedHeight));
+  } catch (e) {
+    console.warn("Failed to save textarea min height to localStorage:", e);
+  }
+}
+
+/**
+ * Get the constraints for textarea min height
+ * @returns {{min: number, max: number, default: number, hardMax: number}}
+ */
+export function getTextareaMinHeightConstraints() {
+  return {
+    min: MIN_TEXTAREA_MIN_HEIGHT,
+    max: MAX_TEXTAREA_MIN_HEIGHT,
+    default: DEFAULT_TEXTAREA_MIN_HEIGHT,
+    hardMax: TEXTAREA_HARD_MAX_HEIGHT,
   };
 }
 
@@ -630,6 +777,57 @@ export function setFilterTab(tab) {
   }
 }
 
+// Separator used to prefix a group key with its filter tab. A control
+// character is used so it can never collide with real key content such as
+// filesystem paths, ACP server names, or the "|" workspace-key delimiter.
+const TAB_SCOPE_SEP = "\u0001";
+
+/**
+ * Prefix a raw group key with the filter tab it belongs to so that expand/
+ * collapse state is isolated per tab. Without this, tabs that share group
+ * identifiers (e.g. the same folder path) would interfere with each other —
+ * notably in accordion mode, where switching tabs would collapse groups in
+ * the previously viewed tab.
+ *
+ * Session-scoped keys ("parent:<id>") and the special "__archived__" key are
+ * globally unique and are returned unchanged.
+ * @param {string} tab - The filter tab (conversations, periodic, archived)
+ * @param {string} rawKey - The raw group key (folder path, server, workspace key)
+ * @returns {string} The tab-scoped group key
+ */
+export function tabScopedGroupKey(tab, rawKey) {
+  if (!rawKey) return rawKey;
+  if (rawKey === "__archived__" || rawKey.startsWith("parent:")) return rawKey;
+  return `${tab}${TAB_SCOPE_SEP}${rawKey}`;
+}
+
+/**
+ * Remove the filter-tab prefix from a tab-scoped group key, returning the raw
+ * key. Keys without a prefix (special/session-scoped) are returned unchanged.
+ * @param {string} scopedKey - A key produced by tabScopedGroupKey
+ * @returns {string} The raw group key
+ */
+export function stripTabScope(scopedKey) {
+  if (!scopedKey) return scopedKey;
+  const idx = scopedKey.indexOf(TAB_SCOPE_SEP);
+  if (idx === -1) return scopedKey;
+  return scopedKey.slice(idx + 1);
+}
+
+/**
+ * Derive which filter tab a session belongs to from its state. Mirrors the
+ * tab-filtering logic used throughout the app (archived → archived,
+ * periodic_enabled → periodic, otherwise → conversations).
+ * @param {Object} session - A session object (archived, periodic_enabled flags)
+ * @returns {string} The filter tab for the session
+ */
+export function getFilterTabForSession(session) {
+  if (!session) return FILTER_TAB.CONVERSATIONS;
+  if (session.archived) return FILTER_TAB.ARCHIVED;
+  if (session.periodic_enabled) return FILTER_TAB.PERIODIC;
+  return FILTER_TAB.CONVERSATIONS;
+}
+
 // =============================================================================
 // Per-Tab Grouping Persistence (localStorage)
 // =============================================================================
@@ -824,5 +1022,56 @@ export function setPromptSortMode(mode) {
     );
   } catch (e) {
     console.warn("[Mitto] Failed to set prompt sort mode:", e);
+  }
+}
+
+// =============================================================================
+// Beads View Filters
+// =============================================================================
+//
+// Persists the Beads view filter criteria (type, search text) in localStorage
+// so they are restored when the user navigates away from the Beads view and
+// returns within the same session. These do not need to survive app restarts,
+// so a simple localStorage-only approach is used (no server sync). The status
+// filter is intentionally not persisted here — it lives only in memory.
+
+const BEADS_FILTERS_KEY = "mitto_beads_filters";
+
+const DEFAULT_BEADS_FILTERS = { type: "all", search: "" };
+
+/**
+ * Get the persisted Beads view filters from localStorage.
+ * @returns {{type: string, search: string}} The filter state, falling back to
+ *          defaults ("all"/"") for any missing field.
+ */
+export function getBeadsFilters() {
+  try {
+    const value = localStorage.getItem(BEADS_FILTERS_KEY);
+    if (value) {
+      const parsed = JSON.parse(value);
+      return {
+        type: typeof parsed.type === "string" ? parsed.type : DEFAULT_BEADS_FILTERS.type,
+        search: typeof parsed.search === "string" ? parsed.search : DEFAULT_BEADS_FILTERS.search,
+      };
+    }
+  } catch (e) {
+    console.warn("Failed to read Beads filters from localStorage:", e);
+  }
+  return { ...DEFAULT_BEADS_FILTERS };
+}
+
+/**
+ * Persist the Beads view filters to localStorage.
+ * @param {{type?: string, search?: string}} filters - Filter state to save.
+ */
+export function setBeadsFilters(filters) {
+  try {
+    const toStore = {
+      type: filters?.type ?? DEFAULT_BEADS_FILTERS.type,
+      search: filters?.search ?? DEFAULT_BEADS_FILTERS.search,
+    };
+    localStorage.setItem(BEADS_FILTERS_KEY, JSON.stringify(toStore));
+  } catch (e) {
+    console.warn("Failed to save Beads filters to localStorage:", e);
   }
 }

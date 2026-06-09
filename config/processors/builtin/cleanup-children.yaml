@@ -1,20 +1,21 @@
 ##########################################################################################
 # Builtin processor: reminds the agent to clean up child conversations it no longer needs.
 #
-# When the current session has 2 or more MCP-created child conversations,
-# this processor appends a reminder suggesting the agent delete children
-# that are no longer needed.
+# When the current session has 2 or more MCP-created child conversations and all children
+# are currently idle (not responding to prompts), this processor appends a reminder
+# suggesting the agent delete children that are no longer needed.
 #
 # Activation conditions:
-#   1. At least 2 MCP-created child conversations exist (enabledWhen CEL)
-#   2. The mitto_conversation_delete_* MCP tool is available (tools.hasPattern CEL)
+#   1. At least 1 child conversation exists (enabledWhen CEL)
+#   2. All children are currently idle, i.e. none are prompting (children.promptingCount == 0)
+#   3. The mitto_conversation_delete_* MCP tool is available (tools.hasPattern CEL)
 #
 # Throttling:
 #   - Fires on the first message, then re-runs every 10 user messages or 15 minutes
 #   - This prevents spamming the reminder on every single message
 ##########################################################################################
 name: cleanup-children
-description: "Reminds the agent to clean up child conversations it no longer needs"
+description: "Reminds the agent to clean up idle child conversations it no longer needs"
 enabled: true
 when:
   on: userPrompt
@@ -25,14 +26,16 @@ when:
     afterTokens: 40000
 mutate: append
 priority: 95
-enabledWhen: 'children.mcpCount >= 2 && tools.hasPattern("mitto_conversation_delete_*")'
+enabledWhen: 'children.count > 0 && children.promptingCount == 0 && tools.hasPattern("mitto_conversation_delete_*")'
 text: |
   ---
   [Child Conversation Cleanup Reminder]
   You have @mitto:mcp_children_count active child conversations that were created
-  by you. Consider deleting child conversations you no longer need using
+  by you, and all of them are currently idle (not responding to any prompts).
+  Consider deleting child conversations you no longer need using
   `mitto_conversation_delete` to free up resources.
 
-  Your MCP-created children: @mitto:mcp_children
+  Your MCP-created children:
+  @mitto:mcp_children
 
   Use your session ID (@mitto:session_id) as self_id when calling the delete tool.

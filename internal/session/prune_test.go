@@ -126,11 +126,13 @@ func TestStore_PruneIfNeeded_MessageLimit(t *testing.T) {
 		t.Errorf("Expected 5 events after prune, got %d", len(events))
 	}
 
-	// Verify sequences are renumbered starting from 1
+	// Verify sequences are PRESERVED across pruning.
+	// Original seqs were 1-10; keeping the last 5 means seqs 6,7,8,9,10.
+	// Renumbering would break the WebSocket sync protocol (load_events after_seq).
 	for i, event := range events {
-		expectedSeq := int64(i + 1)
+		expectedSeq := int64(6 + i) // seqs 6,7,8,9,10
 		if event.Seq != expectedSeq {
-			t.Errorf("Event %d has Seq %d, want %d", i, event.Seq, expectedSeq)
+			t.Errorf("Event %d has Seq %d, want %d (seqs must be preserved, not renumbered)", i, event.Seq, expectedSeq)
 		}
 	}
 
@@ -650,9 +652,11 @@ func TestStore_PruneIfNeeded_ImageCleanup(t *testing.T) {
 	}
 }
 
-// TestPruneIfNeeded_ResetsMaxSeq verifies that MaxSeq is reset to match
-// renumbered events after pruning.
-func TestPruneIfNeeded_ResetsMaxSeq(t *testing.T) {
+// TestPruneIfNeeded_PreservesMaxSeq verifies that MaxSeq reflects the highest
+// seq among the remaining events after pruning (not the event count).
+// Seqs are monotonic identifiers stable across pruning — they must never be
+// renumbered so that WebSocket sync (load_events after_seq) remains correct.
+func TestPruneIfNeeded_PreservesMaxSeq(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
 	if err != nil {
@@ -717,12 +721,12 @@ func TestPruneIfNeeded_ResetsMaxSeq(t *testing.T) {
 		t.Errorf("EventCount after prune = %d, want 5", metaAfter.EventCount)
 	}
 
-	// Assert: meta.MaxSeq == 5 (reset to match renumbered events)
-	if metaAfter.MaxSeq != 5 {
-		t.Errorf("MaxSeq after prune = %d, want 5 (should be reset to match renumbered events)", metaAfter.MaxSeq)
+	// Assert: meta.MaxSeq == 10 (highest seq among the kept events 6-10)
+	if metaAfter.MaxSeq != 10 {
+		t.Errorf("MaxSeq after prune = %d, want 10 (highest seq among remaining events)", metaAfter.MaxSeq)
 	}
 
-	// Read events and verify they are renumbered 1..5
+	// Read events and verify they are PRESERVED as seqs 6..10 (not renumbered 1..5)
 	events, err := store.ReadEvents(sessionID)
 	if err != nil {
 		t.Fatalf("ReadEvents after prune failed: %v", err)
@@ -731,9 +735,9 @@ func TestPruneIfNeeded_ResetsMaxSeq(t *testing.T) {
 		t.Fatalf("Expected 5 events after prune, got %d", len(events))
 	}
 	for i, event := range events {
-		expectedSeq := int64(i + 1)
+		expectedSeq := int64(6 + i) // seqs 6,7,8,9,10
 		if event.Seq != expectedSeq {
-			t.Errorf("Event %d has Seq %d, want %d", i, event.Seq, expectedSeq)
+			t.Errorf("Event %d has Seq %d, want %d (seqs must be preserved, not renumbered)", i, event.Seq, expectedSeq)
 		}
 	}
 }
@@ -786,23 +790,23 @@ func TestPruneIfNeeded_RecordEventAfterPrune_NoMismatch(t *testing.T) {
 	if metaAfterPrune.EventCount != 5 {
 		t.Errorf("EventCount after prune = %d, want 5", metaAfterPrune.EventCount)
 	}
-	if metaAfterPrune.MaxSeq != 5 {
-		t.Errorf("MaxSeq after prune = %d, want 5", metaAfterPrune.MaxSeq)
+	// After preserving seqs: remaining events have seqs 6-10, so MaxSeq = 10
+	if metaAfterPrune.MaxSeq != 10 {
+		t.Errorf("MaxSeq after prune = %d, want 10 (highest seq among remaining events 6-10)", metaAfterPrune.MaxSeq)
 	}
 
-	// Record a new event via RecordEvent with seq = 6 (EventCount + 1 = 6 after prune)
+	// Record a new event via RecordEvent with seq = 11 (max(EventCount=5, MaxSeq=10)+1 = 11)
 	newEvent := Event{
-		Seq:       6,
+		Seq:       11,
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
 		Data:      UserPromptData{Message: "New message after prune"},
 	}
 	if err := store.RecordEvent(sessionID, newEvent); err != nil {
-		t.Fatalf("RecordEvent after prune failed: %v (this indicates MaxSeq was not reset correctly)", err)
+		t.Fatalf("RecordEvent after prune failed: %v (MaxSeq should be 10 after prune, so next seq is 11)", err)
 	}
 
-	// Assert: no error from RecordEvent
-	// Assert: meta.EventCount == 6, meta.MaxSeq == 6
+	// Assert: meta.EventCount == 6, meta.MaxSeq == 11
 	metaFinal, err := store.GetMetadata(sessionID)
 	if err != nil {
 		t.Fatalf("GetMetadata after new event failed: %v", err)
@@ -810,11 +814,11 @@ func TestPruneIfNeeded_RecordEventAfterPrune_NoMismatch(t *testing.T) {
 	if metaFinal.EventCount != 6 {
 		t.Errorf("EventCount after new event = %d, want 6", metaFinal.EventCount)
 	}
-	if metaFinal.MaxSeq != 6 {
-		t.Errorf("MaxSeq after new event = %d, want 6", metaFinal.MaxSeq)
+	if metaFinal.MaxSeq != 11 {
+		t.Errorf("MaxSeq after new event = %d, want 11", metaFinal.MaxSeq)
 	}
 
-	// Verify all events are correctly numbered 1..6
+	// Verify events are preserved seqs 6-10 plus new seq 11 (NOT renumbered 1-6)
 	events, err := store.ReadEvents(sessionID)
 	if err != nil {
 		t.Fatalf("ReadEvents after new event failed: %v", err)
@@ -822,18 +826,18 @@ func TestPruneIfNeeded_RecordEventAfterPrune_NoMismatch(t *testing.T) {
 	if len(events) != 6 {
 		t.Fatalf("Expected 6 events, got %d", len(events))
 	}
+	expectedSeqs := []int64{6, 7, 8, 9, 10, 11}
 	for i, event := range events {
-		expectedSeq := int64(i + 1)
-		if event.Seq != expectedSeq {
-			t.Errorf("Event %d has Seq %d, want %d", i, event.Seq, expectedSeq)
+		if event.Seq != expectedSeqs[i] {
+			t.Errorf("Event %d has Seq %d, want %d (seqs must be preserved)", i, event.Seq, expectedSeqs[i])
 		}
 	}
 }
 
-// TestPruneIfNeeded_MaxSeqMatchesKeptEvents verifies that MaxSeq is correctly
-// reset to match the renumbered events after pruning, regardless of how many
-// events are kept. The implementation currently keeps at least 1 event even
-// with MaxMessages: 0 (see TestStore_PruneIfNeeded_KeepsAtLeastOneEvent).
+// TestPruneIfNeeded_MaxSeqMatchesKeptEvents verifies that MaxSeq reflects the
+// highest seq among kept events after pruning. When only 1 event with seq=1
+// is kept, MaxSeq must be 1 (its preserved seq). The implementation currently
+// keeps at least 1 event even with MaxMessages: 0.
 func TestPruneIfNeeded_MaxSeqMatchesKeptEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
@@ -901,4 +905,105 @@ func TestPruneIfNeeded_MaxSeqMatchesKeptEvents(t *testing.T) {
 		t.Errorf("EventsRemoved = %d, want 0 (no events should be removed when already at minimum)", result.EventsRemoved)
 	}
 	t.Logf("Note: Implementation keeps at least 1 event even with MaxMessages: 0")
+}
+
+// TestStore_PruneIfNeeded_PreservesSeqs is the primary regression test for the
+// pruning-renumbering bug. It verifies that:
+//  1. After pruning events 1-10 to keep 5, the remaining seqs are 6-10 (not 1-5).
+//  2. A new event recorded after pruning gets seq=11 (not seq=6).
+//  3. ReadEventsFrom(5) returns the 5 preserved events with seqs 6-10.
+//
+// Before the fix, performPrune renumbered seqs starting from 1, which broke
+// the WebSocket sync protocol: load_events(after_seq=N) returned nothing because
+// the file's max_seq was lower than what the client expected.
+func TestStore_PruneIfNeeded_PreservesSeqs(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-preserves-seqs"
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 1: Record 10 events with seqs 1-10.
+	for i := 1; i <= 10; i++ {
+		event := Event{
+			Seq:       int64(i),
+			Type:      EventTypeUserPrompt,
+			Timestamp: time.Now(),
+			Data:      UserPromptData{Message: "Message " + string(rune('A'+i-1))},
+		}
+		if err := store.RecordEvent(sessionID, event); err != nil {
+			t.Fatalf("RecordEvent %d failed: %v", i, err)
+		}
+	}
+
+	// Step 2: Prune to keep only 5 events.
+	config := &PruneConfig{MaxMessages: 5}
+	result, err := store.PruneIfNeeded(sessionID, config)
+	if err != nil {
+		t.Fatalf("PruneIfNeeded failed: %v", err)
+	}
+	if result == nil || result.EventsRemoved != 5 {
+		t.Fatalf("Expected 5 events removed, got %v", result)
+	}
+
+	// Step 3: Verify remaining events have seqs [6, 7, 8, 9, 10] — NOT [1, 2, 3, 4, 5].
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents after prune failed: %v", err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("Expected 5 events after prune, got %d", len(events))
+	}
+	for i, ev := range events {
+		wantSeq := int64(6 + i)
+		if ev.Seq != wantSeq {
+			t.Errorf("Event[%d].Seq = %d, want %d (seqs must be preserved, not renumbered)", i, ev.Seq, wantSeq)
+		}
+	}
+	metaAfterPrune, _ := store.GetMetadata(sessionID)
+	if metaAfterPrune.MaxSeq != 10 {
+		t.Errorf("MaxSeq after prune = %d, want 10 (highest seq among remaining events)", metaAfterPrune.MaxSeq)
+	}
+	if metaAfterPrune.EventCount != 5 {
+		t.Errorf("EventCount after prune = %d, want 5", metaAfterPrune.EventCount)
+	}
+
+	// Step 4: Record another event and verify it gets seq=11 (NOT seq=6).
+	newEvent := Event{
+		Seq:       11,
+		Type:      EventTypeUserPrompt,
+		Timestamp: time.Now(),
+		Data:      UserPromptData{Message: "Post-prune event"},
+	}
+	if err := store.RecordEvent(sessionID, newEvent); err != nil {
+		t.Fatalf("RecordEvent after prune failed: %v (seq 11 should be valid since MaxSeq=10)", err)
+	}
+	metaAfterNew, _ := store.GetMetadata(sessionID)
+	if metaAfterNew.MaxSeq != 11 {
+		t.Errorf("MaxSeq after new event = %d, want 11", metaAfterNew.MaxSeq)
+	}
+
+	// Step 5: ReadEventsFrom(5) should return the 5 preserved events with seqs 6-10.
+	// (The new seq=11 event is excluded by the limit, but seqs 6-10 must be present.)
+	fromSix, err := store.ReadEventsFrom(sessionID, 5, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsFrom(5) failed: %v", err)
+	}
+	if len(fromSix) != 6 { // seqs 6,7,8,9,10,11
+		t.Errorf("ReadEventsFrom(5) returned %d events, want 6 (seqs 6-11)", len(fromSix))
+	}
+	if len(fromSix) >= 1 && fromSix[0].Seq != 6 {
+		t.Errorf("ReadEventsFrom(5)[0].Seq = %d, want 6", fromSix[0].Seq)
+	}
 }

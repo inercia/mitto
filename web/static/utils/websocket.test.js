@@ -13,6 +13,7 @@ import {
   isSeqDuplicate,
   markSeqSeen,
   calculateReconnectDelay,
+  calculateSessionCreationDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   checkSessionExists,
@@ -365,6 +366,68 @@ describe("calculateReconnectDelay", () => {
     let prevDelay = 0;
     for (let i = 0; i < 10; i++) {
       const delay = calculateReconnectDelay(i, { jitterFactor: 0 });
+      expect(delay).toBeGreaterThanOrEqual(prevDelay);
+      prevDelay = delay;
+    }
+  });
+});
+
+// =============================================================================
+// M2b: Session Creation Backoff Tests
+// =============================================================================
+
+describe("calculateSessionCreationDelay", () => {
+  test("returns base delay for attempt 0", () => {
+    const delay = calculateSessionCreationDelay(0, { jitterFactor: 0 });
+    expect(delay).toBe(WEBSOCKET_CONSTANTS.SESSION_CREATION_BASE_DELAY_MS);
+  });
+
+  test("doubles delay for each attempt", () => {
+    const baseDelay = WEBSOCKET_CONSTANTS.SESSION_CREATION_BASE_DELAY_MS;
+    expect(calculateSessionCreationDelay(0, { jitterFactor: 0 })).toBe(baseDelay);
+    expect(calculateSessionCreationDelay(1, { jitterFactor: 0 })).toBe(baseDelay * 2);
+    expect(calculateSessionCreationDelay(2, { jitterFactor: 0 })).toBe(baseDelay * 4);
+    expect(calculateSessionCreationDelay(3, { jitterFactor: 0 })).toBe(baseDelay * 8);
+  });
+
+  test("caps at SESSION_CREATION_MAX_DELAY_MS", () => {
+    const maxDelay = WEBSOCKET_CONSTANTS.SESSION_CREATION_MAX_DELAY_MS;
+    // Attempt 10 would be 2000 * 2^10 = 2048000, but should cap at 30000
+    expect(calculateSessionCreationDelay(10, { jitterFactor: 0 })).toBe(maxDelay);
+    expect(calculateSessionCreationDelay(20, { jitterFactor: 0 })).toBe(maxDelay);
+  });
+
+  test("base delay is 2x the reconnect base delay", () => {
+    // Session creation uses 2s base vs 1s for reconnect — intentional (each POST is heavier)
+    expect(WEBSOCKET_CONSTANTS.SESSION_CREATION_BASE_DELAY_MS).toBe(
+      WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS * 2,
+    );
+  });
+
+  test("adds jitter within expected range", () => {
+    const baseDelay = WEBSOCKET_CONSTANTS.SESSION_CREATION_BASE_DELAY_MS;
+    const jitterFactor = WEBSOCKET_CONSTANTS.SESSION_CREATION_JITTER_FACTOR;
+
+    // With random = 0, should be exactly base delay
+    const minDelay = calculateSessionCreationDelay(0, { random: () => 0 });
+    expect(minDelay).toBe(baseDelay);
+
+    // With random = 1, should be base + full jitter
+    const maxDelay = calculateSessionCreationDelay(0, { random: () => 1 });
+    expect(maxDelay).toBe(Math.floor(baseDelay * (1 + jitterFactor)));
+  });
+
+  test("returns integer values", () => {
+    for (let i = 0; i < 10; i++) {
+      const delay = calculateSessionCreationDelay(i);
+      expect(Number.isInteger(delay)).toBe(true);
+    }
+  });
+
+  test("delay sequence is monotonically increasing (without jitter)", () => {
+    let prevDelay = 0;
+    for (let i = 0; i < 10; i++) {
+      const delay = calculateSessionCreationDelay(i, { jitterFactor: 0 });
       expect(delay).toBeGreaterThanOrEqual(prevDelay);
       prevDelay = delay;
     }

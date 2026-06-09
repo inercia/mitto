@@ -1,5 +1,7 @@
 ---
+icon: "edit"
 name: "Document"
+menus: prompts
 description: "Update user-facing documentation for the changes we just made"
 group: "Documentation"
 backgroundColor: "#E1BEE7"

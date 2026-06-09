@@ -363,6 +363,15 @@ func goMenuActionCallback(action *C.char) {
 	case "close_conversation":
 		// Close the current conversation
 		js = "if (window.mittoCloseConversation) window.mittoCloseConversation();"
+	case "archive_conversation":
+		// Archive/unarchive the current conversation
+		js = "if (window.mittoArchiveConversation) window.mittoArchiveConversation();"
+	case "prev_conversation":
+		// Navigate to previous conversation
+		js = "if (window.mittoPrevConversation) window.mittoPrevConversation();"
+	case "next_conversation":
+		// Navigate to next conversation
+		js = "if (window.mittoNextConversation) window.mittoNextConversation();"
 	case "focus_input":
 		// Focus the chat input textarea
 		js = "if (window.mittoFocusInput) window.mittoFocusInput();"
@@ -751,6 +760,18 @@ func setupSwipeGesture() {
 	C.setupSwipeGestureRecognizer()
 }
 
+// setupKeyboardShortcutMonitor installs a local key event monitor that
+// intercepts Ctrl+Cmd+Arrow key events to prevent the macOS system beep.
+func setupKeyboardShortcutMonitor() {
+	C.setupKeyboardShortcutMonitor()
+}
+
+// suppressTextEditingBeeps swizzles NSWindow's noResponderFor: to suppress
+// the macOS system beep for text editing keys (Delete, etc.) in WKWebView.
+func suppressTextEditingBeeps() {
+	C.suppressTextEditingBeeps()
+}
+
 // openExternalURL opens a URL in the default browser.
 // This is exposed to JavaScript via webview.Bind.
 func openExternalURL(url string) {
@@ -1129,9 +1150,8 @@ func run() error {
 			if !exists {
 				workspaces = append(workspaces, config.WorkspaceSettings{
 					ACPServer:  server.Name,
-					ACPCommand: server.Command,
-					ACPEnv:     server.Env,
 					WorkingDir: absPath,
+					// ACP command/cwd/env are resolved from global config at runtime
 				})
 			}
 		}
@@ -1189,11 +1209,24 @@ func run() error {
 		autoApprove = cfg.Permissions.IsAutoApprove()
 	}
 
+	// Resolve static files directory for development/hot-reloading.
+	// Priority: MITTO_STATIC_DIR environment variable > config (web.static_dir).
+	// When set, static assets are served from this directory instead of the
+	// embedded assets, so editing files in web/static/ is reflected on refresh.
+	staticDir := os.Getenv("MITTO_STATIC_DIR")
+	if staticDir == "" && cfg != nil && cfg.Web.StaticDir != "" {
+		staticDir = cfg.Web.StaticDir
+	}
+	if staticDir != "" {
+		slog.Info("Serving static files from filesystem (development mode)", "dir", staticDir)
+	}
+
 	webConfig := web.Config{
 		Workspaces:       workspaces,
 		AutoApprove:      autoApprove,
 		Debug:            false,
 		MittoConfig:      cfg,
+		StaticDir:        staticDir,
 		FromCLI:          false, // macOS app always uses file-based persistence
 		OnWorkspaceSave:  onWorkspaceSave,
 		ConfigReadOnly:   configReadOnly,
@@ -1204,7 +1237,6 @@ func run() error {
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
-	webConfig.ACPCommand = server.Command
 	webConfig.ACPServer = server.Name
 
 	srv, err := web.NewServer(webConfig)
@@ -1376,6 +1408,15 @@ func run() error {
 	w.SetSize(windowMinWidth, windowMinHeight, webview.HintMin)
 	w.Navigate(url)
 
+	// Enable window frame autosave so the window size and position
+	// persist across app launches. Must be dispatched to run after
+	// the window is fully created. The SetSize calls above provide
+	// defaults for the very first launch only.
+	w.Dispatch(func() {
+		C.setWindowFrameAutosaveName()
+		slog.Info("Window frame autosave enabled")
+	})
+
 	// Configure window to show in all Spaces if enabled
 	// This is dispatched to run after the window is fully created
 	showInAllSpaces := false
@@ -1427,6 +1468,10 @@ func run() error {
 	w.Dispatch(func() {
 		setupSwipeGesture()
 		slog.Info("Two-finger swipe gesture enabled for conversation navigation")
+		setupKeyboardShortcutMonitor()
+		slog.Info("Keyboard shortcut monitor enabled for Ctrl+Cmd+Arrow navigation")
+		suppressTextEditingBeeps()
+		slog.Info("Text editing beep suppression enabled for WKWebView")
 	})
 
 	// Register screen sleep/wake observers so we can log events and trigger

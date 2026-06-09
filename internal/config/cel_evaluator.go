@@ -58,6 +58,9 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("session.isAutoChild", cel.BoolType),
 		cel.Variable("session.parentId", cel.StringType),
 		cel.Variable("session.isPeriodic", cel.BoolType),
+		cel.Variable("session.isPeriodicConversation", cel.BoolType),
+		cel.Variable("session.hasBeadsIssue", cel.BoolType),
+		cel.Variable("session.beadsIssue", cel.StringType),
 
 		// Parent variables
 		cel.Variable("parent.exists", cel.BoolType),
@@ -71,6 +74,8 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("children.mcp_count", cel.IntType), // deprecated alias for children.mcpCount
 		cel.Variable("children.names", cel.ListType(cel.StringType)),
 		cel.Variable("children.acpServers", cel.ListType(cel.StringType)),
+		cel.Variable("children.promptingCount", cel.IntType),
+		cel.Variable("children.idleCount", cel.IntType),
 
 		// Tools variables
 		cel.Variable("tools.available", cel.BoolType),
@@ -309,23 +314,28 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"workspace.hasMittoRC":             ctx.Workspace.HasMittoRC,
 		"workspace.hasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
-		"session.id":          ctx.Session.ID,
-		"session.name":        ctx.Session.Name,
-		"session.isChild":     ctx.Session.IsChild,
-		"session.isAutoChild": ctx.Session.IsAutoChild,
-		"session.parentId":    ctx.Session.ParentID,
-		"session.isPeriodic":  ctx.Session.IsPeriodic,
+		"session.id":                     ctx.Session.ID,
+		"session.name":                   ctx.Session.Name,
+		"session.isChild":                ctx.Session.IsChild,
+		"session.isAutoChild":            ctx.Session.IsAutoChild,
+		"session.parentId":               ctx.Session.ParentID,
+		"session.isPeriodic":             ctx.Session.IsPeriodic,
+		"session.isPeriodicConversation": ctx.Session.IsPeriodicConversation,
+		"session.hasBeadsIssue":          ctx.Session.HasBeadsIssue,
+		"session.beadsIssue":             ctx.Session.BeadsIssue,
 
 		"parent.exists":    ctx.Parent.Exists,
 		"parent.name":      ctx.Parent.Name,
 		"parent.acpServer": ctx.Parent.ACPServer,
 
-		"children.count":      int64(ctx.Children.Count),
-		"children.exists":     ctx.Children.Exists,
-		"children.mcpCount":   int64(ctx.Children.MCPCount),
-		"children.mcp_count":  int64(ctx.Children.MCPCount), // deprecated alias
-		"children.names":      ctx.Children.Names,
-		"children.acpServers": ctx.Children.ACPServers,
+		"children.count":          int64(ctx.Children.Count),
+		"children.exists":         ctx.Children.Exists,
+		"children.mcpCount":       int64(ctx.Children.MCPCount),
+		"children.mcp_count":      int64(ctx.Children.MCPCount), // deprecated alias
+		"children.names":          ctx.Children.Names,
+		"children.acpServers":     ctx.Children.ACPServers,
+		"children.promptingCount": int64(ctx.Children.PromptingCount),
+		"children.idleCount":      int64(ctx.Children.IdleCount),
 
 		"tools.available": ctx.Tools.Available,
 		"tools.names":     ctx.Tools.Names,

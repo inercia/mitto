@@ -223,16 +223,19 @@ func (s *Store) performPrune(
 		originalSize = originalInfo.Size()
 	}
 
-	// Rewrite events file with renumbered sequence numbers
+	// Rewrite events file preserving original sequence numbers.
+	// Seqs are monotonic global identifiers used by the WebSocket sync protocol
+	// (load_events after_seq). Renumbering breaks the invariant that seq values
+	// are stable identifiers — clients that have already seen seq N would never
+	// receive events between the pruned-away seq and the new file's max_seq.
 	tmpPath := eventsPath + ".tmp"
 	tmpFile, err := os.Create(tmpPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp events file: %w", err)
 	}
 
-	for i, event := range remainingEvents {
-		// Renumber sequence to be continuous starting from 1
-		event.Seq = int64(i + 1)
+	for _, event := range remainingEvents {
+		// Keep original seq — do NOT renumber.
 		data, err := json.Marshal(event)
 		if err != nil {
 			tmpFile.Close()
@@ -284,11 +287,14 @@ func (s *Store) performPrune(
 		return result, err
 	}
 	meta.EventCount = len(remainingEvents)
-	// Reset MaxSeq to match renumbered events (prevents stale MaxSeq after pruning).
-	// Note: remainingEvents slice still has original seq values (the renumbering loop
-	// at line 218-220 modifies local copies), so we use len() directly since
-	// renumbering always assigns seq = i+1, making the highest seq = len(remainingEvents).
-	meta.MaxSeq = int64(len(remainingEvents))
+	// Preserve MaxSeq as the highest seq among remaining events.
+	// Seqs are monotonic identifiers, not array positions, so MaxSeq must
+	// reflect the actual highest seq value in the file (not the event count).
+	if len(remainingEvents) > 0 {
+		meta.MaxSeq = remainingEvents[len(remainingEvents)-1].Seq
+	} else {
+		meta.MaxSeq = 0
+	}
 	if err := s.writeMetadata(meta); err != nil {
 		return result, err
 	}

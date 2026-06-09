@@ -1,15 +1,16 @@
 # Processors Configuration
 
-Mitto supports processors that can run at two points in the conversation lifecycle:
+Mitto supports processors that can run at three points in the conversation lifecycle:
 
 - **`on: userPrompt`** — Processors fire *before* the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
-- **`on: agentResponded`** — Processors fire *after* the agent finishes a turn. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response). Data-extraction processors that benefit from seeing the agent's reply (e.g., `identify-user-data`, `memorize-preferences`) run in this phase.
+- **`on: agentResponded`** — Processors fire *after* the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
+- **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the *complete* exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
 
 Within each phase, three execution modes are available:
 
 - **Text-mode** — Inject static text (with optional variable substitution) into the message. No external commands needed. Only valid for `on: userPrompt`.
-- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for both phases.
-- **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately. Valid for both phases.
+- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for all phases.
+- **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately. Valid for all phases.
 
 ## Configuration in the UI
 
@@ -74,6 +75,47 @@ version overrides the global one. All processors are sorted by priority after me
 Use `mitto processors list --dir .mitto/processors` to preview how workspace processors
 merge with global ones.
 
+### Multiple Processors per File (Multi-Document YAML)
+
+A single `.yaml` or `.yml` file can contain **multiple processor definitions** separated
+by the YAML document separator `---`. Each document is treated as an independent
+processor.
+
+```yaml
+# .mitto/processors/project-hooks.yaml
+name: inject-context
+description: "Prepend project context to the first message"
+when:
+  on: userPrompt
+  match: first
+mutate: prepend
+text: |
+  [Project] This is the Acme API — Go + PostgreSQL.
+  Run tests: make test
+  ---
+---
+name: post-response-check
+description: "Run a background check after each agent response"
+when:
+  on: agentResponded
+  match: all
+command: ./check.sh
+output: discard
+```
+
+**Key points:**
+
+- Each document is **validated independently**. An invalid or empty document is skipped
+  with a warning and does not prevent the other documents from loading.
+- Blank or comment-only documents (no `name`, `command`, `text`, or `prompt`) between
+  `---` separators are silently ignored.
+- The **processor `name` is independent of the filename** — the file is just a container.
+  Multiple processors in one file may have any names.
+- **Enable/disable caveat:** for processors in a multi-document file, the per-workspace
+  enable toggle is recorded in the `.mittorc` `processors:` override list rather than
+  editing the file in place — this preserves `---` separators and comments. Single-document
+  workspace files continue to be edited in place as before.
+
 ### Inline Processors in `.mittorc`
 
 For simple text-mode processors, you can define them inline in your `.mittorc` file instead of creating separate YAML files:
@@ -124,7 +166,7 @@ processors:
 
 This mirrors the same `{name, enabled}` pattern used by the `prompts` section. When re-enabling a processor that is enabled by default, you can remove the entry entirely — missing entries use the processor's default state.
 
-For workspace-local processors (from `.mitto/processors/`), the toggle updates the `enabled` field directly in the processor's YAML file.
+For workspace-local processors (from `.mitto/processors/`), the toggle updates the `enabled` field directly in the processor's YAML file — **unless** the file contains multiple `---`-separated processor documents, in which case the override is recorded in `.mittorc` instead (to avoid corrupting the separators and comments). See [Multiple Processors per File](#multiple-processors-per-file-multi-document-yaml).
 
 > **Backward compatibility:** The legacy `disabled_processors` list format is still read and automatically migrated to the new `processors` format when saving.
 
@@ -149,10 +191,15 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | userPrompt / first | text   | Yes (only activates for matching ACP servers)      |
 | `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | userPrompt / first | text   | Yes (requires smart model + `browser_*` MCP tools) |
 | `cleanup-children`    | Reminds the agent to clean up child conversations it no longer needs                                     | userPrompt / first | text   | Yes (requires ≥2 MCP-created children + delete tool) |
+| `use-ui-tools`        | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts | userPrompt / first | text   | Yes |
+| `beads-track-tasks`   | Reminds the agent to track tasks and knowledge in beads (`bd`) instead of markdown TODO lists | userPrompt / first | text   | Yes (requires `bd` command on PATH) |
+| `beads-ready-tasks`   | Reminds the agent to review available tasks (`bd ready`) when a beads database exists | userPrompt / first | text   | Yes (requires `bd` command + `.beads` directory) |
 | `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
-| `auggie-manage-rules` | Generates and maintains `.augment/rules/` from workspace analysis and conversations (every 15 messages)   | userPrompt / first | prompt | **Yes** (Auggie only; disable per workspace if unwanted) |
-| `claude-manage-memory`| Generates and maintains Claude Code memory files from workspace analysis and conversations (every 15 msgs)| userPrompt / first | prompt | **Yes** (Claude Code only; disable per workspace if unwanted) |
-| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 3 turns or 15k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
+| `auggie-manage-rules` | Generates initial `.augment/rules/` when none exist | userPrompt / first | prompt | **Yes** (Auggie only) |
+| `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
+| `claude-manage-memory`| Generates initial Claude Code memory files when none exist | userPrompt / first | prompt | **Yes** (Claude Code only) |
+| `claude-update-memory`| Updates Claude Code memory files from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Claude Code only) |
+| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 2 turns or 6k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
 | `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | userPrompt / first | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description) |
 
 ### Managing Builtin Processors
@@ -314,7 +361,7 @@ prompt: |
 - **No `mutate` or `output` fields** — prompt-mode processors don't modify the outgoing message
 - **Always asynchronous** — the pipeline never blocks waiting for the auxiliary agent
 - **Requires a workspace** — the auxiliary session is scoped to the workspace
-- **Requires an auxiliary ACP server** — configured in the workspace settings
+- **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional *Auxiliary Model Selection* (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
 - **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
 
 ### Examples
@@ -370,27 +417,29 @@ prompt: |
 
 ## Full Configuration Schema
 
-Each YAML file in the processors directory defines one processor. Use **either** `text` (text-mode),
-`command` (command-mode), or `prompt` (prompt-mode) — not more than one.
+Each YAML document in the processors directory defines one processor. A file may contain
+multiple processors separated by `---` (see [Multiple Processors per File](#multiple-processors-per-file-multi-document-yaml)).
+Use **either** `text` (text-mode), `command` (command-mode), or `prompt` (prompt-mode) per document — not more than one.
 
 ```yaml
 # Required fields
 name: my-processor   # Human-readable identifier
 when:                # Trigger condition — always a block
-  on: userPrompt     # Phase: "userPrompt" (before send) or "agentResponded" (after response)
+  on: userPrompt     # Phase: "userPrompt" (before send), "agentResponded" (after each turn),
+                     #   or "agentIdle" (after the queue drains / agent goes idle)
   match: first       # Match: "first", "all", or "allExceptFirst"
   rerun:             # Optional: auto re-run — only valid with on:userPrompt + match:first
     afterTime: 30m          # re-run after 30 minutes since last run
     afterSentMsgs: 20       # re-run after 20 user messages since last run
     afterTokens: 50000      # re-run after 50000 tokens consumed since last run
-  # agentResponded-only fields (forbidden for userPrompt):
+  # agentResponded / agentIdle-only fields (forbidden for userPrompt):
   stopReasons:       # which ACP stop reasons trigger this processor (default: ["end_turn"])
     - end_turn       # valid values: end_turn, max_tokens, max_turn_requests, refusal, cancelled
   excludeOrigins:    # skip processor when message origin matches any of these
     - periodic-runner
 
 # --- Text-mode (use ONE of the three modes) ---
-# Only valid for on:userPrompt; forbidden for on:agentResponded
+# Only valid for on:userPrompt; forbidden for on:agentResponded and on:agentIdle
 text: |  # Static text to inject
   Your static content here.
 
@@ -411,7 +460,8 @@ priority: 100                # Execution order, lower = earlier (default: 100)
 # I/O configuration (command-mode only; ignored for text/prompt-mode)
 input: message   # "message", "conversation", or "none" (default: message)
 output: transform # "transform", "prepend", "append", "discard" (default: transform)
-                  # NOTE: transform/prepend/append are forbidden for on:agentResponded
+                  # NOTE: transform/prepend/append are forbidden for on:agentResponded and on:agentIdle
+outputFormat: json # "json" (default) or "raw"; command-mode only. "raw" uses trimmed stdout directly as the message/prepend/append text instead of parsing JSON.
 
 # Execution settings
 timeout: 5s       # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
@@ -554,9 +604,10 @@ correct because `match: first` on session resume already handles the restart cas
 
 ## Cadence Throttling (`cadence`)
 
-`on: agentResponded` processors with `match: all` can fire on every agent response, which
-may be too frequent for expensive background tasks. The `cadence:` block throttles how
-often the processor runs. **All specified thresholds must be met simultaneously (AND).**
+After-phase (`on: agentResponded` and `on: agentIdle`) processors with `match: all` can fire
+on every agent response, which may be too frequent for expensive background tasks. The
+`cadence:` block throttles how often the processor runs. **All specified thresholds must be
+met simultaneously (AND).**
 
 ```yaml
 when:
@@ -575,10 +626,16 @@ when:
 | `afterInterval` | duration | Fire only after this much wall-clock time since the last firing (`"5m"`, `"1h"`, `"30s"`) |
 
 **Constraints:**
-- Only valid with `on: agentResponded`.
+- Only valid with `on: agentResponded` or `on: agentIdle`.
 - Not valid with `match: first` (firing once needs no cadence).
 - At least one field must be specified.
 - All values must be positive.
+
+> **Cadence + `agentIdle`:** When combined with `on: agentIdle`, the cadence counters
+> (turns/tokens) keep accumulating on **every** turn of a queued burst, but the processor
+> only fires on the turn where the agent goes idle (queue drained) **and** the thresholds
+> are met. This yields a single firing per burst, at the natural breakpoint, with the whole
+> burst counted toward cadence.
 
 **Example** — run a preference extractor every 5 turns, but only once 30k tokens have
 accumulated and at most once every 5 minutes:
@@ -706,7 +763,9 @@ No stdin is provided (useful for side-effect-only processors).
 
 ## Output Format — Command-Mode (stdout)
 
-All output must be JSON. The format depends on the `output` setting:
+By default (`outputFormat: json`), all output must be JSON. The format depends on the `output` setting.
+
+When `outputFormat: raw` is set, stdout is used verbatim (trimmed) as the message/prepend/append text — no JSON wrapper required. See [`outputFormat: raw`](#outputformat-raw) below.
 
 ### `output: transform` (default)
 
@@ -727,6 +786,29 @@ Add text before/after the message:
 ### `output: discard`
 
 Output is ignored (processor runs for side effects only).
+
+### `outputFormat: raw`
+
+When `outputFormat: raw` is set, stdout is used verbatim (trimmed whitespace removed) as the message,
+prepend, or append text — no JSON wrapper is needed. This is useful for piping plain-text or markdown
+output from commands that don't produce JSON, such as `bd prime --memories-only`.
+
+**Example** — inject `bd prime` memories at the start of a conversation:
+
+```yaml
+name: beads-prime
+command: bd
+args: [prime, --memories-only]
+input: none
+output: prepend
+outputFormat: raw
+when:
+  on: userPrompt
+  match: first
+```
+
+With `outputFormat: raw`, whatever the command prints to stdout is prepended directly to the user's
+message without any JSON parsing. Error output (non-zero exit) is still handled according to `on_error`.
 
 ### Error Output
 
@@ -1017,7 +1099,7 @@ Processors that timeout or exit with non-zero status are treated as errors.
 | Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)    |
 | Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)|
 | Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking     |
-| Dependencies  | None                         | External script or binary              | Workspace with auxiliary ACP server          |
+| Dependencies  | None                         | External script or binary              | Workspace (auxiliary session on its ACP server; optional model selection) |
 
 All modes share the same triggering (`when`), priority, conditional enablement
 (`enabledWhen`), re-run, and error handling features. The `mutate`, `input`, and

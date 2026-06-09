@@ -892,6 +892,20 @@ a:hover {
   background: #f59e0b !important;  /* Original amber-500 */
 }
 
+/* =============================================================================
+   Beads semantic blue: in-progress status + feature type (don't remap to accent)
+   ============================================================================= */
+
+/* The in_progress status badge/toggle and the feature type tag use bg-blue-700,
+   which the accent remapping above turns red. Restore the original blue for
+   these specific marker classes in both themes (red stays reserved for bugs). */
+.v2-theme:not(.dark) .beads-status-inprogress,
+.v2-theme:not(.dark) .beads-type-feature,
+.v2-theme.dark .beads-status-inprogress,
+.v2-theme.dark .beads-type-feature {
+  background: #1d4ed8 !important;  /* Original blue-700 */
+}
+
 /* Toast text color: preserve white text on colored toast backgrounds
    (overrides the light-theme .text-white → near-black rule) */
 .v2-theme .toast-enter .text-white,
@@ -1334,6 +1348,54 @@ a:hover {
 }
 
 /* =============================================================================
+   Named Prompt Pill (periodic / by-name prompts)
+   ============================================================================= */
+
+/* =============================================================================
+   Message Timestamps & Date Separators
+   ============================================================================= */
+
+.message-timestamp {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.date-separator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 16px;
+  color: var(--muted);
+  font-size: 11px;
+  user-select: none;
+}
+
+.date-separator::before,
+.date-separator::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Light theme: red accent on white */
+.v2-theme:not(.dark) .named-prompt-pill {
+  background: #dc2626 !important;
+  border: 1px solid #b91c1c !important;
+  color: #ffffff !important;
+}
+
+/* Dark theme: red accent on dark */
+.v2-theme.dark .named-prompt-pill {
+  background: #dc2626 !important;
+  border: 1px solid #ef4444 !important;
+  color: #ffffff !important;
+}
+
+/* =============================================================================
    Error Message Bubble
    ============================================================================= */
 
@@ -1639,4 +1701,21 @@ a:hover {
 .v2-theme.dark .chat-input-action.stop-active:hover {
   background: var(--accent-hover, #ff7070) !important;
   color: var(--accent-foreground, #fafafa) !important;
+}
+
+
+/* =============================================================================
+   Settings Dialog - Normalize select/input heights
+   ============================================================================= */
+
+/* Ensure select elements in settings dialog match input element heights */
+.settings-dialog select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none'%3E%3Cpath d='M1 2l5 4 5-4' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2.5rem;
+  height: 38px; /* Match input height: py-2 (8px * 2) + text-sm line-height (~20px) + border */
 }

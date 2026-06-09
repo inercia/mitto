@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	rootconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -211,6 +213,42 @@ func TestProcessorShouldApply(t *testing.T) {
 			},
 			isFirstMessage: true,
 			expected:       false,
+		},
+		{
+			name: "enabledWhen CEL children.promptingCount zero when none prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: false},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp", IsPrompting: false},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL children.promptingCount non-zero when child is prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp", IsPrompting: false},
+				},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name: "enabledWhen CEL children.idleCount correct",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.idleCount == 1`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp", IsPrompting: false},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
 		},
 		{
 			name: "enabledWhen CEL invalid expression fails open",
@@ -727,6 +765,44 @@ prompt: "Analyze the session."
 `,
 			expectSkip:  false,
 			expectCount: 1,
+		},
+		{
+			name: "agentIdle command-mode accepted",
+			yaml: `
+name: ok-idle-cmd
+when:
+  on: agentIdle
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "agentIdle prompt-mode with cadence accepted",
+			yaml: `
+name: ok-idle-prompt
+when:
+  on: agentIdle
+  match: all
+  cadence:
+    everyNTurns: 3
+prompt: "Update memory."
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "agentIdle with text rejected",
+			yaml: `
+name: bad-idle-text
+when:
+  on: agentIdle
+  match: all
+text: "some text"
+`,
+			expectSkip:  true,
+			expectCount: 0,
 		},
 		{
 			name: "userPrompt stopReasons rejected",
@@ -2224,6 +2300,362 @@ func writeYAML(t *testing.T, dir, filename, content string) {
 	}
 }
 
+// TestLoaderMultiDoc_TwoValidProcessors verifies that a single YAML file with
+// two `---`-separated valid processor documents loads both processors.
+func TestLoaderMultiDoc_TwoValidProcessors(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "multi.yaml", `
+name: proc-one
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: proc-two
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(procs) != 2 {
+		t.Fatalf("expected 2 processors, got %d", len(procs))
+	}
+	names := map[string]bool{}
+	for _, p := range procs {
+		names[p.Name] = true
+	}
+	if !names["proc-one"] {
+		t.Error("missing proc-one")
+	}
+	if !names["proc-two"] {
+		t.Error("missing proc-two")
+	}
+}
+
+// TestLoaderMultiDoc_ValidPlusInvalid verifies that a file containing one valid
+// and one invalid document loads only the valid one and does not error.
+func TestLoaderMultiDoc_ValidPlusInvalid(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "mixed.yaml", `
+name: good-proc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: bad-proc
+when:
+  on: userPrompt
+  match: all
+# missing command/text/prompt — should be skipped
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() should not error (bad docs are skipped), got: %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+	if procs[0].Name != "good-proc" {
+		t.Errorf("expected good-proc, got %q", procs[0].Name)
+	}
+}
+
+// TestLoaderMultiDoc_EmptyDocumentsSkipped verifies that empty or comment-only
+// documents between `---` separators are silently skipped.
+func TestLoaderMultiDoc_EmptyDocumentsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "gaps.yaml", `
+---
+# just a comment — no fields
+---
+name: real-proc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+	if procs[0].Name != "real-proc" {
+		t.Errorf("expected real-proc, got %q", procs[0].Name)
+	}
+}
+
+// TestLoaderMultiDoc_LoadFileAll_ReturnsAll verifies that LoadFileAll returns
+// all valid documents from a multi-document file.
+func TestLoaderMultiDoc_LoadFileAll_ReturnsAll(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "two.yaml")
+	content := `name: alpha
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: beta
+when:
+  on: userPrompt
+  match: first
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.LoadFileAll(path)
+	if err != nil {
+		t.Fatalf("LoadFileAll() error = %v", err)
+	}
+	if len(procs) != 2 {
+		t.Fatalf("expected 2, got %d", len(procs))
+	}
+	if procs[0].Name != "alpha" || procs[1].Name != "beta" {
+		t.Errorf("unexpected names: %q, %q", procs[0].Name, procs[1].Name)
+	}
+}
+
+// TestLoaderMultiDoc_LoadFile_ReturnsFirst verifies backward-compatible
+// LoadFile behaviour: only the first document is returned.
+func TestLoaderMultiDoc_LoadFile_ReturnsFirst(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "two.yaml")
+	content := `name: first-doc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: second-doc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loader := NewLoader(dir, nil)
+	proc, err := loader.LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if proc == nil {
+		t.Fatal("LoadFile() returned nil, want a processor")
+	}
+	if proc.Name != "first-doc" {
+		t.Errorf("LoadFile() name = %q, want %q", proc.Name, "first-doc")
+	}
+}
+
+// TestLoaderMultiDoc_FilePath verifies that FilePath and HookDir are set on
+// every processor loaded from a multi-document file.
+func TestLoaderMultiDoc_FilePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "two.yaml")
+	content := `name: p1
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: p2
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.LoadFileAll(path)
+	if err != nil {
+		t.Fatalf("LoadFileAll() error = %v", err)
+	}
+	for _, p := range procs {
+		if p.FilePath != path {
+			t.Errorf("processor %q FilePath = %q, want %q", p.Name, p.FilePath, path)
+		}
+		if p.HookDir != dir {
+			t.Errorf("processor %q HookDir = %q, want %q", p.Name, p.HookDir, dir)
+		}
+	}
+}
+
+// TestIsMultiDocFile verifies the IsMultiDocFile helper.
+func TestIsMultiDocFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "single doc → false",
+			content: `name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`,
+			want: false,
+		},
+		{
+			name: "two docs → true",
+			content: `name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: proc-b
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`,
+			want: true,
+		},
+		{
+			name: "empty/comment-only docs only → false",
+			content: `---
+# just a comment
+---
+`,
+			want: false,
+		},
+		{
+			name: "empty doc then one real doc → false",
+			content: `---
+# comment
+---
+name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`,
+			want: false,
+		},
+		{
+			name:    "YAML syntax error → error",
+			content: "invalid: yaml: content:",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "*.yaml")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			if _, err := f.WriteString(tt.content); err != nil {
+				t.Fatalf("WriteString: %v", err)
+			}
+			f.Close()
+
+			got, err := IsMultiDocFile(f.Name())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("IsMultiDocFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("IsMultiDocFile() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateProcessorFileEnabled_SingleDoc verifies that a single-document file
+// is updated in-place (existing behavior).
+func TestUpdateProcessorFileEnabled_SingleDoc(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proc.yaml")
+	original := `name: my-proc
+enabled: true
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := UpdateProcessorFileEnabled(path, false); err != nil {
+		t.Fatalf("UpdateProcessorFileEnabled() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "enabled: false") {
+		t.Errorf("expected 'enabled: false' in file, got:\n%s", string(data))
+	}
+}
+
+// TestUpdateProcessorFileEnabled_MultiDoc verifies that calling
+// UpdateProcessorFileEnabled on a multi-document file returns an error and
+// does NOT modify the file.
+func TestUpdateProcessorFileEnabled_MultiDoc(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.yaml")
+	original := `name: proc-a
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+---
+name: proc-b
+when:
+  on: agentResponded
+  match: all
+command: /bin/echo
+`
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := UpdateProcessorFileEnabled(path, false)
+	if err == nil {
+		t.Fatal("UpdateProcessorFileEnabled() should return error for multi-doc file, got nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to edit multi-document") {
+		t.Errorf("error message should mention 'refusing to edit multi-document', got: %v", err)
+	}
+
+	// File must be byte-identical to original.
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile after error: %v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("file was modified despite error:\ngot:\n%s\nwant:\n%s", string(data), original)
+	}
+}
+
 // makeAfterInput returns a minimal AfterProcessorInput for tests.
 // SessionDir is set to a stable key so the MemoryStateStore injected by
 // makeAfterManager shares state across successive calls within the same test.
@@ -2231,6 +2663,7 @@ func makeAfterInput(origin, stopReason string) AfterProcessorInput {
 	return AfterProcessorInput{
 		SessionID:     "test-session",
 		SessionDir:    "test-session-dir", // key for MemoryStateStore
+		WorkspaceUUID: "test-workspace",
 		Origin:        origin,
 		StopReason:    stopReason,
 		UserPrompt:    "hello",
@@ -2724,29 +3157,82 @@ func TestParseUserDataOutput(t *testing.T) {
 
 // TestApplyAfter_PromptMode verifies that a prompt-mode processor renders
 // its template with after-phase variables and parses the result as notify output.
-func TestApplyAfter_PromptMode_Notify(t *testing.T) {
+// TestApplyAfter_PromptMode_Dispatched verifies that prompt-mode processors in the
+// agentResponded phase are dispatched via promptFunc (fire-and-forget) rather than
+// treated as command output. The output: field is ignored for prompt-mode processors.
+func TestApplyAfter_PromptMode_Dispatched(t *testing.T) {
+	var dispatched []struct{ workspace, name, prompt string }
+	var mu sync.Mutex
+
 	proc := &Processor{
-		Name:   "prompt-notifier",
+		Name:   "auggie-update-rules",
 		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
-		Prompt: `{"title":"Stop: @mitto:stop_reason","message":"Origin: @mitto:origin"}`,
+		Prompt: `Update rules for stop: @mitto:stop_reason origin: @mitto:origin`,
+		// Output field is intentionally set to OutputNotify to confirm it is ignored for prompt-mode.
 		Output: OutputNotify,
 	}
+
 	m := makeAfterManager([]*Processor{proc})
+	m.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dispatched = append(dispatched, struct{ workspace, name, prompt string }{
+			workspace: workspaceUUID,
+			name:      processorName,
+			prompt:    prompt,
+		})
+		return nil
+	})
+
 	input := makeAfterInput("user", "end_turn")
 	result := m.ApplyAfter(context.Background(), input)
+
+	// Wait briefly for the async goroutine to finish.
+	time.Sleep(50 * time.Millisecond)
 
 	if len(result.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", result.Errors)
 	}
-	if len(result.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(result.Notifications))
+	// Prompt-mode processors must NOT produce notifications — they are dispatched.
+	if len(result.Notifications) != 0 {
+		t.Errorf("expected 0 notifications for prompt-mode processor, got %d", len(result.Notifications))
 	}
-	n := result.Notifications[0]
-	if n.Title != "Stop: end_turn" {
-		t.Errorf("expected 'Stop: end_turn', got %q", n.Title)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 1 {
+		t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
 	}
-	if n.Message != "Origin: user" {
-		t.Errorf("expected 'Origin: user', got %q", n.Message)
+	d := dispatched[0]
+	if d.workspace != "test-workspace" {
+		t.Errorf("expected workspace 'test-workspace', got %q", d.workspace)
+	}
+	if d.name != "auggie-update-rules" {
+		t.Errorf("expected processor name 'auggie-update-rules', got %q", d.name)
+	}
+	wantPrompt := "Update rules for stop: end_turn origin: user"
+	if d.prompt != wantPrompt {
+		t.Errorf("expected prompt %q, got %q", wantPrompt, d.prompt)
+	}
+}
+
+// TestApplyAfter_PromptMode_NoPromptFunc verifies that prompt-mode processors are
+// skipped gracefully (not counted as errors) when no PromptFunc is configured.
+func TestApplyAfter_PromptMode_NoPromptFunc(t *testing.T) {
+	proc := &Processor{
+		Name:   "orphan-prompt",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: `Do something`,
+	}
+	// makeAfterManager does not set a PromptFunc.
+	m := makeAfterManager([]*Processor{proc})
+	result := m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors (skipped gracefully), got %v", result.Errors)
+	}
+	if len(result.Notifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(result.Notifications))
 	}
 }
 
@@ -2805,6 +3291,85 @@ printf '{"title":"cadence","message":"fired"}'`), 0755)
 	}
 }
 
+// TestApplyAfter_AgentIdleGate verifies that an agentIdle processor fires only when
+// the session is idle (SessionIdle=true) and is skipped while the agent is still
+// draining its queue (SessionIdle=false).
+func TestApplyAfter_AgentIdleGate(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"idle","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name:    "idle-proc",
+		When:    WhenConfig{On: PhaseAgentIdle, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// Busy turn: SessionIdle=false → should NOT fire.
+	busy := makeAfterInput("user", "end_turn")
+	busy.SessionIdle = false
+	r1 := m.ApplyAfter(context.Background(), busy)
+	if len(r1.Notifications) != 0 {
+		t.Errorf("busy turn: expected 0 notifications (agent not idle), got %d", len(r1.Notifications))
+	}
+
+	// Idle turn: SessionIdle=true → should fire.
+	idle := makeAfterInput("user", "end_turn")
+	idle.SessionIdle = true
+	r2 := m.ApplyAfter(context.Background(), idle)
+	if len(r2.Notifications) != 1 {
+		t.Errorf("idle turn: expected 1 notification (agent idle), got %d", len(r2.Notifications))
+	}
+}
+
+// TestApplyAfter_AgentIdle_CadenceAccumulatesAcrossBurst verifies that an agentIdle
+// processor's cadence counters keep accumulating on busy turns (so a queued burst counts
+// toward the threshold) but the processor only fires once, at the idle breakpoint.
+func TestApplyAfter_AgentIdle_CadenceAccumulatesAcrossBurst(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"idle","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "idle-cadence",
+		When: WhenConfig{
+			On:          PhaseAgentIdle,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTurns: 2},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	busy := makeAfterInput("user", "end_turn")
+	busy.SessionIdle = false
+	idle := makeAfterInput("user", "end_turn")
+	idle.SessionIdle = true
+
+	// Turn 1 (busy): counter→1; gate 1<2 not met → skip.
+	if r := m.ApplyAfter(context.Background(), busy); len(r.Notifications) != 0 {
+		t.Errorf("turn 1 (busy): expected 0, got %d", len(r.Notifications))
+	}
+	// Turn 2 (busy): counter→2; gate met BUT not idle → skip, counters NOT reset.
+	if r := m.ApplyAfter(context.Background(), busy); len(r.Notifications) != 0 {
+		t.Errorf("turn 2 (busy, gate met): expected 0 (idle gate), got %d", len(r.Notifications))
+	}
+	// Turn 3 (idle): counter→3; gate met AND idle → FIRE, reset to 0.
+	if r := m.ApplyAfter(context.Background(), idle); len(r.Notifications) != 1 {
+		t.Errorf("turn 3 (idle): expected 1 (fires with full burst counted), got %d", len(r.Notifications))
+	}
+	// Turn 4 (idle): counter→1 after reset; gate 1<2 not met → skip.
+	if r := m.ApplyAfter(context.Background(), idle); len(r.Notifications) != 0 {
+		t.Errorf("turn 4 (idle): expected 0 (counter reset after firing), got %d", len(r.Notifications))
+	}
+}
+
 // TestApplyAfter_Cadence_AfterInterval verifies that a processor with
 // cadence.afterInterval fires only after the specified duration has passed.
 func TestApplyAfter_Cadence_AfterInterval(t *testing.T) {
@@ -2851,6 +3416,96 @@ printf '{"title":"interval","message":"fired"}'`), 0755)
 	r3 := m.ApplyAfter(context.Background(), input)
 	if len(r3.Notifications) != 1 {
 		t.Errorf("turn 3: expected 1 notification (interval elapsed), got %d", len(r3.Notifications))
+	}
+}
+
+// TestApplyAfter_Cadence_EveryNTokens verifies that a processor with
+// cadence.everyNTokens fires only after enough cumulative tokens have been
+// reported. This covers both real ACP usage and estimated token fallback
+// (where only Total is set, Input/Output are zero).
+func TestApplyAfter_Cadence_EveryNTokens(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"tokens","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "token-proc",
+		When: WhenConfig{
+			On:          PhaseAgentResponded,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTokens: 10000},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// Turn 1: 5000 tokens (below 10000 threshold) → skip
+	input1 := makeAfterInput("user", "end_turn")
+	input1.TokenUsage = &AfterTokenUsage{Total: 5000}
+	r1 := m.ApplyAfter(context.Background(), input1)
+	if len(r1.Notifications) != 0 {
+		t.Errorf("turn 1: expected 0 notifications (5000 < 10000), got %d", len(r1.Notifications))
+	}
+
+	// Turn 2: another 6000 tokens (cumulative 11000 ≥ 10000) → fires
+	input2 := makeAfterInput("user", "end_turn")
+	input2.TokenUsage = &AfterTokenUsage{Total: 6000}
+	r2 := m.ApplyAfter(context.Background(), input2)
+	if len(r2.Notifications) != 1 {
+		t.Errorf("turn 2: expected 1 notification (11000 >= 10000), got %d", len(r2.Notifications))
+	}
+
+	// Turn 3: 3000 tokens after reset (3000 < 10000) → skip
+	input3 := makeAfterInput("user", "end_turn")
+	input3.TokenUsage = &AfterTokenUsage{Total: 3000}
+	r3 := m.ApplyAfter(context.Background(), input3)
+	if len(r3.Notifications) != 0 {
+		t.Errorf("turn 3: expected 0 notifications (3000 < 10000 after reset), got %d", len(r3.Notifications))
+	}
+
+	// Turn 4: estimated tokens only (Total set, Input/Output zero — fallback path)
+	// 8000 more → cumulative 11000 ≥ 10000 → fires
+	input4 := makeAfterInput("user", "end_turn")
+	input4.TokenUsage = &AfterTokenUsage{Total: 8000} // simulates estimated fallback
+	r4 := m.ApplyAfter(context.Background(), input4)
+	if len(r4.Notifications) != 1 {
+		t.Errorf("turn 4: expected 1 notification (11000 >= 10000 via estimated tokens), got %d", len(r4.Notifications))
+	}
+}
+
+// TestApplyAfter_Cadence_EveryNTokens_NilUsage verifies that when TokenUsage
+// is nil (no ACP usage AND no estimation), the token counter stays at zero
+// and the everyNTokens threshold blocks the processor indefinitely.
+func TestApplyAfter_Cadence_EveryNTokens_NilUsage(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "notify.sh")
+	os.WriteFile(scriptPath, []byte(`#!/bin/sh
+printf '{"title":"tokens","message":"fired"}'`), 0755)
+
+	proc := &Processor{
+		Name: "token-nil-proc",
+		When: WhenConfig{
+			On:          PhaseAgentResponded,
+			Match:       MatchAll,
+			StopReasons: []string{"end_turn"},
+			Cadence:     &CadenceConfig{EveryNTokens: 1000},
+		},
+		Command: scriptPath,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+
+	// 5 turns with nil TokenUsage → token counter stays at 0 → never fires
+	for i := 1; i <= 5; i++ {
+		input := makeAfterInput("user", "end_turn")
+		// input.TokenUsage is nil (default)
+		r := m.ApplyAfter(context.Background(), input)
+		if len(r.Notifications) != 0 {
+			t.Errorf("turn %d: expected 0 notifications (nil usage), got %d", i, len(r.Notifications))
+		}
 	}
 }
 
@@ -2931,12 +3586,253 @@ func TestCadenceConfig_Validation(t *testing.T) {
 			f.WriteString(yamlContent)
 			f.Close()
 			loader := NewLoader(tmpDir, nil)
-			_, err := loader.LoadFile(f.Name())
-			if err == nil {
-				t.Fatalf("expected validation error for %q, got nil", tt.name)
+			// The loader now skips invalid documents (lenient behavior) instead
+			// of returning an error. A bad cadence config should cause the
+			// document to be skipped, so LoadFile returns nil, nil.
+			proc, err := loader.LoadFile(f.Name())
+			if err != nil {
+				t.Fatalf("LoadFile() returned unexpected error: %v", err)
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			if proc != nil {
+				t.Fatalf("expected invalid cadence config %q to be skipped (nil proc), but got processor %q", tt.name, proc.Name)
+			}
+		})
+	}
+}
+
+// TestExecutorExecuteRawOutput verifies that a command-mode processor with outputFormat:raw
+// returns the trimmed stdout as both Message and Text (no JSON parsing required).
+func TestExecutorExecuteRawOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	scriptPath := filepath.Join(tmpDir, "raw.sh")
+	scriptContent := "#!/bin/sh\nprintf '  ## Beads Memories\\n\\nSome project context.  '\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to write script: %v", err)
+	}
+
+	executor := NewExecutor(tmpDir, nil)
+	proc := &Processor{
+		Name:         "raw-output-test",
+		Command:      scriptPath,
+		Output:       OutputPrepend,
+		OutputFormat: OutputFormatRaw,
+		Input:        InputNone,
+		HookDir:      tmpDir,
+	}
+	input := &ProcessorInput{
+		Message:    "user question",
+		WorkingDir: tmpDir,
+	}
+
+	ctx := context.Background()
+	output, err := executor.Execute(ctx, proc, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	want := "## Beads Memories\n\nSome project context."
+	if output.Message != want {
+		t.Errorf("Execute() Message = %q, want %q", output.Message, want)
+	}
+	if output.Text != want {
+		t.Errorf("Execute() Text = %q, want %q", output.Text, want)
+	}
+}
+
+// TestApplyWithRerun_PrependPreservesOriginalMessage is a regression test for the bug where
+// the applyWithRerun command-mode path ignored output type and replaced the message entirely.
+// A command-mode processor with output:prepend + outputFormat:raw must PREPEND to the user
+// message and PRESERVE the original — not replace it.
+func TestApplyWithRerun_PrependPreservesOriginalMessage(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Script outputs raw text (not JSON) simulating `bd prime --memories-only`
+	scriptPath := filepath.Join(tmpDir, "inject.sh")
+	scriptContent := "#!/bin/sh\necho '[INJECTED CONTEXT]'\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to write script: %v", err)
+	}
+
+	// We need at least one prompt-mode processor to force the applyWithRerun path.
+	mgr := NewManager(tmpDir, nil)
+	mgr.processors = []*Processor{
+		// Prompt-mode processor forces applyWithRerun path for ALL processors
+		{
+			Name:   "force-rerun-path",
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Prompt: "Analyze: @mitto:session_id",
+		},
+		// Command-mode prepend processor — this is the bug-under-test
+		{
+			Name:         "inject-context",
+			When:         WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Command:      scriptPath,
+			Output:       OutputPrepend,
+			OutputFormat: OutputFormatRaw,
+			Input:        InputNone,
+			HookDir:      tmpDir,
+			Priority:     50, // run before prompt-mode
+		},
+	}
+
+	// SetPromptFunc to handle the prompt-mode processor (fire-and-forget)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "original user message",
+		IsFirstMessage: true,
+		WorkingDir:     tmpDir,
+		WorkspaceUUID:  "ws-test",
+	}
+
+	ctx := context.Background()
+	result, err := mgr.Apply(ctx, input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	// Original message must be preserved (prepended to, not replaced)
+	if !strings.Contains(result.Message, "original user message") {
+		t.Errorf("original message lost; got %q", result.Message)
+	}
+	// Injected context must appear before the original message
+	if !strings.HasPrefix(result.Message, "[INJECTED CONTEXT]") {
+		t.Errorf("expected injected context prepended; got %q", result.Message)
+	}
+}
+
+// TestLoader_OutputFormatValidation verifies the outputFormat validation rules.
+func TestLoader_OutputFormatValidation(t *testing.T) {
+	t.Run("invalid outputFormat rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad.yaml", `
+name: bad-format
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+outputFormat: bogus
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error (bad files skipped): %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (bad outputFormat skipped), got %d", len(procs))
+		}
+	})
+
+	t.Run("outputFormat on text-mode processor rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad.yaml", `
+name: text-with-format
+when:
+  on: userPrompt
+  match: all
+text: "hello"
+mutate: prepend
+outputFormat: raw
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error (bad files skipped): %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (outputFormat on text-mode skipped), got %d", len(procs))
+		}
+	})
+
+	t.Run("valid outputFormat:raw on command-mode loads OK", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "good.yaml", `
+name: raw-command
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+output: prepend
+outputFormat: raw
+input: none
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if len(procs) != 1 {
+			t.Fatalf("expected 1 processor, got %d", len(procs))
+		}
+		if procs[0].GetOutputFormat() != OutputFormatRaw {
+			t.Errorf("expected OutputFormatRaw, got %q", procs[0].GetOutputFormat())
+		}
+	})
+
+	t.Run("valid outputFormat:json on command-mode loads OK", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "good.yaml", `
+name: json-command
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+outputFormat: json
+input: none
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if len(procs) != 1 {
+			t.Fatalf("expected 1 processor, got %d", len(procs))
+		}
+		if procs[0].GetOutputFormat() != OutputFormatJSON {
+			t.Errorf("expected OutputFormatJSON, got %q", procs[0].GetOutputFormat())
+		}
+	})
+}
+
+// TestBuiltinProcessorsValidity walks every embedded builtin YAML and asserts that
+// LoadFile parses and validates it without error. This guards all builtins including
+// the new beads-prime.yaml.
+func TestBuiltinProcessorsValidity(t *testing.T) {
+	filenames, err := rootconfig.ListEmbeddedProcessors()
+	if err != nil {
+		t.Fatalf("ListEmbeddedProcessors() error = %v", err)
+	}
+	if len(filenames) == 0 {
+		t.Fatal("no embedded builtin processors found; check config/processors/builtin/")
+	}
+
+	for _, filename := range filenames {
+		filename := filename
+		t.Run(filename, func(t *testing.T) {
+			// Read the embedded file content
+			srcPath := rootconfig.BuiltinProcessorsDir + "/" + filename
+			content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+			}
+
+			// Write to a temp dir and load via the Loader (full validation path)
+			dir := t.TempDir()
+			destPath := filepath.Join(dir, filename)
+			if err := os.WriteFile(destPath, content, 0644); err != nil {
+				t.Fatalf("WriteFile error = %v", err)
+			}
+
+			loader := NewLoader(dir, nil)
+			procs, err := loader.Load()
+			if err != nil {
+				t.Fatalf("Load() returned unexpected error: %v", err)
+			}
+			if len(procs) == 0 {
+				t.Errorf("Load() returned 0 processors (file may have failed validation); check loader warnings")
 			}
 		})
 	}

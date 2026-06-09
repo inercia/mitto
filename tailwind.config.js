@@ -19,6 +19,8 @@ export default {
         "mitto-user-border": "var(--mitto-user-border)",
         "mitto-agent": "var(--mitto-agent)",
         "mitto-border": "var(--mitto-border)",
+        "mitto-text": "var(--mitto-text)",
+        "mitto-text-secondary": "var(--mitto-text-secondary)",
       },
     },
   },

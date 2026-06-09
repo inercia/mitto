@@ -27,16 +27,20 @@ import {
 } from "../lib.js";
 
 import {
-  getLastActiveSessionId,
   setLastActiveSessionId,
+  getLastActiveSessionIdForTab,
+  setLastActiveSessionIdForTab,
   getLastSeenSeq,
   setLastSeenSeq,
   getSingleExpandedGroupMode,
   setGroupExpanded,
   isGroupExpanded,
   getExpandedGroups,
+  getFilterTab,
   getFilterTabGrouping,
   FILTER_TAB,
+  tabScopedGroupKey,
+  getFilterTabForSession,
 } from "../utils/storage.js";
 
 import { playAgentCompletedSound } from "../utils/audio.js";
@@ -58,12 +62,35 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
+
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   isReconnectLimitReached,
   checkSessionExists,
   isTerminalSessionError,
 } from "../utils/websocket.js";
+
+// =============================================================================
+// Session creation retry state (module-level, persists across re-renders)
+// Auto-retries POST /api/sessions on 503 session_creation_timeout instead of
+// silently blocking clicks. Keeps the button in a visible busy/spinner state.
+// =============================================================================
+
+// Maximum number of automatic retries on 503 session_creation_timeout
+const SESSION_CREATION_MAX_RETRIES = 4;
+
+// Fixed delay between retries (ms). The agent needs time to finish its turn;
+// a fixed 30s gap is more predictable than exponential backoff here.
+const SESSION_CREATION_RETRY_DELAY_MS = 30000;
+
+// Number of retries attempted for the current creation series (0 = first attempt)
+let _sessionCreationRetryCount = 0;
+
+// setTimeout handle for the pending auto-retry (null = no retry scheduled)
+let _sessionCreationRetryTimer = null;
+
+// Options snapshot for the pending auto-retry
+let _sessionCreationPendingOpts = null;
 
 // Time threshold (in ms) for considering the session potentially stale
 // If the page has been hidden for longer than this, we do an explicit auth check
@@ -107,6 +134,16 @@ const STARTUP_STAGGER_MS = 300;
 // single staggered reconnect prevents duplicate background-session timers from
 // firing concurrently and accumulating observers on BackgroundSession.
 const STAGGERED_RECONNECT_DEBOUNCE_MS = 5000;
+
+// Grace period (ms) before a background session's per-session WebSocket is
+// disconnected after it stops being the active session. Lazy-connect keeps only
+// the active session connected; releasing a background WebSocket removes its
+// server-side observer so the backend GC can reclaim the idle ACP process.
+// The grace window keeps rapid back-and-forth switching cheap (the connection is
+// reused if the user returns within the window). The disconnect timer resets on
+// every active-session change, so only sessions left untouched for the full
+// window are dropped.
+const BACKGROUND_DISCONNECT_GRACE_MS = 30000;
 
 // Maximum session age for automatic WebSocket reconnection.
 // Sessions whose IDs indicate creation more than this many milliseconds ago
@@ -277,6 +314,10 @@ export function useWebSocket() {
 
   const [eventsConnected, setEventsConnected] = useState(false);
 
+  // True while a session-creation request is in-flight or an auto-retry is pending.
+  // Used to show a spinner on the "New Conversation" button and prevent duplicate clicks.
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+
   // Multi-session state: { sessionId: { messages: [], info: {}, lastSeq: 0, isStreaming: false, ws: WebSocket } }
   const [sessions, setSessions] = useState({});
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -300,6 +341,12 @@ export function useWebSocket() {
   // Track background UI prompts for toast notifications
   // { sessionId, sessionName, question, timestamp }
   const [backgroundUIPrompt, setBackgroundUIPrompt] = useState(null);
+
+  // Track background UI prompt timeouts for native OS notifications
+  // Fired when a blocking prompt in a background session times out with no active viewer.
+  // { sessionId, sessionName, question, timestamp }
+  const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] =
+    useState(null);
 
   // Queue length for the active session
   const [queueLength, setQueueLength] = useState(0);
@@ -333,6 +380,9 @@ export function useWebSocket() {
   const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
   const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
+  // Always points to the latest createNewSession callback — used by the retry timer
+  // to avoid stale-closure issues when connectToSession changes between retries.
+  const createNewSessionRef = useRef(null);
   // Track pending send operations for ACK handling
   // { promptId: { resolve, reject, timeoutId } }
   const pendingSendsRef = useRef({});
@@ -418,6 +468,11 @@ export function useWebSocket() {
   // Track last force-reconnect time per session to debounce duplicate reconnects
   const reconnectDebounceRef = useRef(createReconnectDebounceTracker());
 
+  // Track whether the server is in the process of shutting down.
+  // Set to true when an acp_stopped message with reason "server_shutdown" is received.
+  // Prevents reconnection attempts after intentional server shutdown.
+  const serverShuttingDownRef = useRef(false);
+
   // Track pending staggered background-session reconnect timers.
   // Cancelled and replaced whenever reconnectAllSessionsStaggered fires again,
   // preventing a second call from scheduling a duplicate set of timers on top
@@ -427,6 +482,10 @@ export function useWebSocket() {
   // Timestamp (ms) of the last accepted reconnectAllSessionsStaggered call.
   // Zero means the function has never been called.
   const lastStaggeredReconnectRef = useRef(0);
+
+  // Timer for the lazy-connect background-session disconnect sweep. Reset on every
+  // active-session change so only sessions idle for the full grace window are dropped.
+  const backgroundDisconnectTimerRef = useRef(null);
 
   // Keepalive tracking for detecting zombie connections
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
@@ -659,11 +718,25 @@ export function useWebSocket() {
       const timeoutId = setTimeout(() => {
         const ws = sessionWsRefs.current[sessionId];
         if (ws && ws.readyState === WebSocket.OPEN) {
+          // Skip if a sync is already in-flight (keepalive or another gap fill).
+          // The server drops concurrent load_events via TryLock anyway, and the
+          // next keepalive_ack will re-evaluate after the in-flight sync completes.
+          if (pendingSyncRef.current[sessionId]) {
+            console.log(
+              `[gap-fill] Session ${sessionId}: Skipping — sync already in-flight`,
+            );
+            delete pendingGapFillRef.current[sessionId];
+            return;
+          }
           // Request events after our last known seq
           const afterSeq = clientMaxSeq;
           console.log(
             `[gap-fill] Session ${sessionId}: Requesting events after seq ${afterSeq}`,
           );
+          // Mark sync in-flight so keepalive doesn't fire a concurrent load_events.
+          // Without this, both gap fill and keepalive could send overlapping requests,
+          // leading to duplicate event processing.
+          setPendingSync(sessionId);
           ws.send(
             JSON.stringify({
               type: "load_events",
@@ -690,7 +763,7 @@ export function useWebSocket() {
         timeoutId,
       };
     },
-    [sessionsRef],
+    [sessionsRef, setPendingSync],
   );
 
   // Fetch workspaces and ACP servers
@@ -1076,6 +1149,7 @@ export function useWebSocket() {
         messageCount: data.messages?.length || 0,
         archived: isArchived,
         archive_pending: isArchivePending,
+        gc_suspended: data.info?.gc_suspended || false,
       };
     });
 
@@ -1086,7 +1160,7 @@ export function useWebSocket() {
     const fingerprint = result
       .map(
         (s) =>
-          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}`,
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}|${s.gc_suspended}`,
       )
       .sort()
       .join("\n");
@@ -1176,6 +1250,10 @@ export function useWebSocket() {
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Use server-sent archived flag, falling back to existing session info
                 archived: msg.data.archived ?? session.info?.archived ?? false,
+                archive_reason:
+                  msg.data.archive_reason ?? session.info?.archive_reason ?? "",
+                archived_at:
+                  msg.data.archived_at ?? session.info?.archived_at ?? null,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
                 // Periodic enabled state from server
@@ -1186,18 +1264,37 @@ export function useWebSocket() {
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
+                // GC-suspended state from server (for fresh loads/reconnections)
+                gc_suspended:
+                  msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
+                // Linked beads issue ID (always include, even if empty, so frontend can clear the control)
+                beads_issue: msg.data.beads_issue ?? session.info?.beads_issue ?? "",
                 // Processor stats
-                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
-                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                processor_count:
+                  msg.data.processor_count ??
+                  session.info?.processor_count ??
+                  0,
+                processor_activations:
+                  msg.data.processor_activations ??
+                  session.info?.processor_activations ??
+                  0,
+                processor_last_activation:
+                  msg.data.processor_last_activation ??
+                  session.info?.processor_last_activation ??
+                  null,
+                processor_last_names:
+                  msg.data.processor_last_names ??
+                  session.info?.processor_last_names ??
+                  null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
                 // Context window usage (size/used from ACP)
-                context_usage: msg.data.context_usage ?? session.info?.context_usage ?? null,
+                context_usage:
+                  msg.data.context_usage ?? session.info?.context_usage ?? null,
                 // Config options (model, mode, etc.) - per-session
                 // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
-                config_options: msg.data.config_options ?? session.info?.config_options ?? [],
+                config_options:
+                  msg.data.config_options ?? session.info?.config_options ?? [],
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -1212,13 +1309,17 @@ export function useWebSocket() {
         const htmlLen = msg.data.html?.length || 0;
         const isPromptingFromServer = msg.data.is_prompting;
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps using max_seq (immediate gap detection).
+        // IMPORTANT: Must run BEFORE updateLastKnownSeq so that clientMaxSeq
+        // reflects the state before this message, allowing gap detection to
+        // catch missing events (e.g., user_prompt from periodic runner that
+        // was broadcast before the WebSocket observer was attached).
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // Agent is responding - this proves any pending prompts were received.
         // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
@@ -1308,13 +1409,13 @@ export function useWebSocket() {
           msg.data.is_prompting,
         );
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // Agent is responding - this proves any pending prompts were received.
         // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
@@ -1387,13 +1488,13 @@ export function useWebSocket() {
           msg.data.is_prompting,
         );
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // M1 fix: Check for duplicate events
         if (isSeqDuplicate(sessionId, msgSeq, null)) {
@@ -1432,13 +1533,13 @@ export function useWebSocket() {
         const msgSeq = msg.data.seq;
         const maxSeq = msg.data.max_seq;
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
         }
+
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -1460,13 +1561,14 @@ export function useWebSocket() {
         break;
       }
 
-      case "action_buttons":
+      case "action_buttons": {
         // Store action buttons from async follow-up analysis
         // These are suggested response options generated by analyzing the agent's message
+        const newButtons = msg.data.buttons || [];
         console.log("[ActionButtons] Received action_buttons message:", {
           sessionId,
-          buttons: msg.data.buttons,
-          buttonCount: msg.data.buttons?.length || 0,
+          buttons: newButtons,
+          buttonCount: newButtons.length,
         });
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -1485,15 +1587,37 @@ export function useWebSocket() {
             return prev;
           }
 
+          // Dedup: skip state update if the incoming buttons are identical to
+          // what is already displayed. This prevents redundant re-renders when
+          // the backend resends cached buttons on every WebSocket reconnect
+          // (AddObserver → sendCachedActionButtonsTo fires on each reconnect).
+          const existing = session.actionButtons || [];
+          if (
+            newButtons.length > 0 &&
+            newButtons.length === existing.length &&
+            newButtons.every(
+              (b, i) =>
+                b.label === existing[i]?.label &&
+                b.response === existing[i]?.response,
+            )
+          ) {
+            console.log(
+              "[ActionButtons] Ignoring - identical to current buttons:",
+              sessionId,
+            );
+            return prev;
+          }
+
           return {
             ...prev,
             [sessionId]: {
               ...session,
-              actionButtons: msg.data.buttons || [],
+              actionButtons: newButtons,
             },
           };
         });
         break;
+      }
 
       case "ui_prompt": {
         // UI prompt from an MCP tool - display yes/no or select prompt
@@ -1505,6 +1629,18 @@ export function useWebSocket() {
           options: msg.data.options,
           timeoutSeconds: msg.data.timeout_seconds,
         });
+
+        // Dedup: ignore if already showing the same requestId (e.g. after reconnect re-send)
+        const alreadyActive =
+          sessionsRef.current[sessionId]?.activeUIPrompt?.requestId ===
+          msg.data.request_id;
+        if (alreadyActive) {
+          console.log(
+            "[UIPrompt] Ignoring duplicate ui_prompt for requestId:",
+            msg.data.request_id,
+          );
+          break;
+        }
 
         // Check if we should show a notification
         // Show notification when:
@@ -1550,6 +1686,11 @@ export function useWebSocket() {
           const session = prev[sessionId];
           if (!session) {
             console.warn("[UIPrompt] Session not found:", sessionId);
+            return prev;
+          }
+
+          // Secondary dedup guard inside setSessions (handles concurrent state updates)
+          if (session.activeUIPrompt?.requestId === msg.data.request_id) {
             return prev;
           }
 
@@ -1629,14 +1770,14 @@ export function useWebSocket() {
           currentSession?.messages?.[currentSession.messages.length - 1];
         const maxSeq = msg.data.max_seq;
 
-        // Update last known seq from max_seq (server's authoritative max)
-        updateLastKnownSeq(sessionId, maxSeq || 0);
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         // This is important for prompt_complete as it signals the end of a response
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, null);
         }
+
+        // Update last known seq from max_seq (server's authoritative max, after gap check)
+        updateLastKnownSeq(sessionId, maxSeq || 0);
 
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -1662,17 +1803,31 @@ export function useWebSocket() {
               ...session,
               messages,
               isStreaming: false,
+              activeUIPrompt: null,
               // Update processor stats from prompt_complete
               info: {
                 ...session.info,
-                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
-                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                processor_count:
+                  msg.data.processor_count ??
+                  session.info?.processor_count ??
+                  0,
+                processor_activations:
+                  msg.data.processor_activations ??
+                  session.info?.processor_activations ??
+                  0,
+                processor_last_activation:
+                  msg.data.processor_last_activation ??
+                  session.info?.processor_last_activation ??
+                  null,
+                processor_last_names:
+                  msg.data.processor_last_names ??
+                  session.info?.processor_last_names ??
+                  null,
                 // Token usage from last prompt
                 usage: msg.data.usage ?? session.info?.usage ?? null,
                 // Context window usage (updated with each prompt)
-                context_usage: msg.data.context_usage ?? session.info?.context_usage ?? null,
+                context_usage:
+                  msg.data.context_usage ?? session.info?.context_usage ?? null,
               },
             },
           };
@@ -1754,7 +1909,12 @@ export function useWebSocket() {
           ]);
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false },
+            [sessionId]: {
+              ...session,
+              messages,
+              isStreaming: false,
+              activeUIPrompt: null,
+            },
           };
         });
         break;
@@ -1798,15 +1958,26 @@ export function useWebSocket() {
             const newInfo = {
               ...session.info,
               processor_count: msg.data.processor_count,
-              processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-              processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-              processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+              processor_activations:
+                msg.data.processor_activations ??
+                session.info?.processor_activations ??
+                0,
+              processor_last_activation:
+                msg.data.processor_last_activation ??
+                session.info?.processor_last_activation ??
+                null,
+              processor_last_names:
+                msg.data.processor_last_names ??
+                session.info?.processor_last_names ??
+                null,
             };
             // Only update if something changed to avoid unnecessary re-renders
             if (
               newInfo.processor_count === session.info?.processor_count &&
-              newInfo.processor_activations === session.info?.processor_activations &&
-              newInfo.processor_last_activation === session.info?.processor_last_activation
+              newInfo.processor_activations ===
+                session.info?.processor_activations &&
+              newInfo.processor_last_activation ===
+                session.info?.processor_last_activation
             ) {
               return prev;
             }
@@ -1867,9 +2038,18 @@ export function useWebSocket() {
                 info: {
                   ...session.info,
                   processor_count: msg.data.processor_count,
-                  processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                  processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                  processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                  processor_activations:
+                    msg.data.processor_activations ??
+                    session.info?.processor_activations ??
+                    0,
+                  processor_last_activation:
+                    msg.data.processor_last_activation ??
+                    session.info?.processor_last_activation ??
+                    null,
+                  processor_last_names:
+                    msg.data.processor_last_names ??
+                    session.info?.processor_last_names ??
+                    null,
                 },
               },
             };
@@ -1932,7 +2112,10 @@ export function useWebSocket() {
             // Skip if we recently completed a stale recovery — React state and
             // auto-load prepend need time to settle before we re-evaluate.
             const lastRecovery = staleRecoveryCooldownRef.current[sessionId];
-            if (lastRecovery && Date.now() - lastRecovery < STALE_RECOVERY_COOLDOWN_MS) {
+            if (
+              lastRecovery &&
+              Date.now() - lastRecovery < STALE_RECOVERY_COOLDOWN_MS
+            ) {
               console.debug(
                 `[keepalive] Session ${sessionId} stale state detected but within recovery cooldown (${Math.round((Date.now() - lastRecovery) / 1000)}s ago) — skipping`,
               );
@@ -2038,7 +2221,12 @@ export function useWebSocket() {
           ]);
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false },
+            [sessionId]: {
+              ...session,
+              messages,
+              isStreaming: false,
+              activeUIPrompt: null,
+            },
           };
         });
         break;
@@ -2273,19 +2461,24 @@ export function useWebSocket() {
 
         // Context-load fallback for the localStorage-watermark fast-path:
         // When the app restarts we send after_seq=<stored_seq> instead of limit:50.
-        // If nothing happened while the app was closed (0 new events) the session
-        // would appear empty even though it has history.  Detect this and fall back
-        // to the normal initial load so the user sees recent messages.
+        // The after_seq delta only returns events NEWER than the watermark, so when
+        // the client has no in-memory messages the recent history is missing. This
+        // happens both when the delta is empty (nothing changed while away) AND when
+        // it returns only a partial page (e.g. a periodic run produced a few events
+        // since the watermark): the user would otherwise see just those few events
+        // plus a "Load earlier messages…" button until a hard reload. Detect either
+        // case (no prior messages + delta smaller than a full page) and fall back to
+        // the normal initial load so the user sees the recent history immediately.
         if (
           needsContextLoadRef.current[sessionId] &&
           !isPrepend &&
-          newMessages.length === 0 &&
+          newMessages.length < INITIAL_EVENTS_LIMIT &&
           (currentSession?.messages?.length || 0) === 0 &&
           totalCount > 0
         ) {
           delete needsContextLoadRef.current[sessionId];
           console.log(
-            `[localStorage-watermark] Session ${sessionId} has ${totalCount} events on server but none new — loading context`,
+            `[localStorage-watermark] Session ${sessionId} has ${totalCount} events on server but only ${newMessages.length} new since watermark — loading recent context`,
           );
           const currentWs = sessionWsRefs.current[sessionId];
           if (currentWs && currentWs.readyState === WebSocket.OPEN) {
@@ -2343,6 +2536,7 @@ export function useWebSocket() {
           image_ids,
           sender_id,
           is_prompting,
+          prompt_name,
         } = msg.data;
         console.log("user_prompt received:", {
           seq,
@@ -2355,21 +2549,20 @@ export function useWebSocket() {
           is_queue_message: sender_id === "queue",
         });
 
-        // Update last known seq from this event
-        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
-
-        // Check for gaps using max_seq (immediate gap detection)
+        // Check for gaps BEFORE updating lastKnownSeq (see agent_message handler comment)
         if (max_seq) {
           checkAndFillGap(sessionId, max_seq, seq);
         }
 
-        // M1 fix: Mark seq as seen (for our own prompts, we mark after confirmation)
+        // Update last known seq from this event (after gap check)
+        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
+
+        // Mark seq as seen for tracking (but don't use it for dedup — the
+        // alreadyExists check inside setSessions handles dedup by seq match).
+        // Previously, the M1 isSeqDuplicate check here would race with
+        // events_loaded marking seqs as seen, causing user_prompt messages
+        // to be silently dropped for periodic prompts.
         if (!is_mine && seq) {
-          // For other clients' prompts, check for duplicates
-          if (isSeqDuplicate(sessionId, seq, null)) {
-            console.log("M1 dedup: Skipping duplicate user_prompt seq", seq);
-            break; // Skip duplicate
-          }
           markSeqSeen(sessionId, seq);
         }
 
@@ -2524,6 +2717,7 @@ export function useWebSocket() {
               timestamp: Date.now(),
               fromOtherClient: true,
               seq, // Include seq for ordering and deduplication
+              promptName: prompt_name || undefined,
             };
             // Add image references if present, constructing full image objects
             // with URLs so the Message component can render them immediately
@@ -2618,6 +2812,18 @@ export function useWebSocket() {
         }
         break;
 
+      case "memory_recycled":
+        // Server notifies that the GC's memory-recycle tier restarted a
+        // memory-bloated idle agent process to reclaim memory.
+        console.log("Memory recycled:", msg.data);
+        if (msg.data) {
+          // Dispatch event for toast notification
+          window.dispatchEvent(
+            new CustomEvent("mitto:memory_recycled", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "acp_start_failed":
         // Server notifies that the ACP server failed to start
         console.error("ACP start failed:", msg.data);
@@ -2659,12 +2865,25 @@ export function useWebSocket() {
                   session.info?.available_commands ??
                   [],
                 // Update processor stats (may have changed since connected message)
-                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
-                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
-                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
-                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                processor_count:
+                  msg.data.processor_count ??
+                  session.info?.processor_count ??
+                  0,
+                processor_activations:
+                  msg.data.processor_activations ??
+                  session.info?.processor_activations ??
+                  0,
+                processor_last_activation:
+                  msg.data.processor_last_activation ??
+                  session.info?.processor_last_activation ??
+                  null,
+                processor_last_names:
+                  msg.data.processor_last_names ??
+                  session.info?.processor_last_names ??
+                  null,
                 // Update config options if provided
-                config_options: msg.data.config_options || session.info?.config_options || [],
+                config_options:
+                  msg.data.config_options || session.info?.config_options || [],
               },
             },
           };
@@ -2685,15 +2904,27 @@ export function useWebSocket() {
           const session = prev[sessionId];
           if (!session) return prev;
 
-          // For archived sessions, show a neutral system message
-          // For other stop reasons (errors, crashes), show an error message
+          // Categorize the stop reason for appropriate UX:
+          // - archived/archived_timeout: neutral system message
+          // - gc_suspended: friendly info message (session will auto-resume)
+          // - anything else: error message
           const reason = msg.data?.reason || "unknown reason";
           const isArchived =
             reason === "archived" || reason === "archived_timeout";
-          const messageRole = isArchived ? "system" : "error";
-          const messageText = isArchived
-            ? "Session archived. Unarchive to continue."
-            : `Session stopped: ${reason}. Unarchive to continue.`;
+          const isGCSuspended = reason === "gc_suspended";
+
+          let messageRole, messageText;
+          if (isArchived) {
+            messageRole = "system";
+            messageText = "Session archived. Unarchive to continue.";
+          } else if (isGCSuspended) {
+            messageRole = "system";
+            messageText =
+              "Session suspended to save resources. It will resume when you need it.";
+          } else {
+            messageRole = "error";
+            messageText = `Session stopped: ${reason}. Unarchive to continue.`;
+          }
 
           return {
             ...prev,
@@ -2701,9 +2932,13 @@ export function useWebSocket() {
               ...session,
               isRunning: false,
               isStreaming: false,
+              activeUIPrompt: null,
               info: {
                 ...session.info,
                 acp_ready: false,
+                // Track GC-suspended state so the UI can suppress the
+                // "Reconnecting to AI agent..." spinner for suspended sessions.
+                gc_suspended: isGCSuspended || false,
               },
               // Add a system/error message to inform the user
               messages: [
@@ -2723,6 +2958,27 @@ export function useWebSocket() {
             s.session_id === sessionId ? { ...s, isStreaming: false } : s,
           ),
         );
+
+        // When the server is shutting down, suppress reconnection.
+        // Close the WebSocket preemptively so onclose doesn't trigger reconnect.
+        if (msg.data?.reason === "server_shutdown") {
+          serverShuttingDownRef.current = true;
+          console.log(
+            `Server shutdown detected for session ${sessionId}, suppressing reconnect`,
+          );
+          const ws = sessionWsRefs.current[sessionId];
+          if (ws) {
+            // Delete ref BEFORE closing so onclose sees no ref and skips reconnect
+            delete sessionWsRefs.current[sessionId];
+            ws.close();
+          }
+          // Also cancel any pending reconnect timer for this session
+          if (sessionReconnectRefs.current[sessionId]) {
+            clearTimeout(sessionReconnectRefs.current[sessionId]);
+            delete sessionReconnectRefs.current[sessionId];
+          }
+          break; // Skip the delayed sync — server is going away
+        }
 
         // Delayed sync to catch session_end event.
         // The server writes session_end AFTER sending acp_stopped (see background_session.go Close()),
@@ -3142,6 +3398,14 @@ export function useWebSocket() {
           return;
         }
 
+        // Don't reconnect if the server is shutting down
+        if (serverShuttingDownRef.current) {
+          console.log(
+            `Server shutdown in progress, not reconnecting session ${sessionId}`,
+          );
+          return;
+        }
+
         // Reconnect if this session is still active (user hasn't switched away)
         // and no newer WebSocket has been created
         // This handles cases like mobile browser suspension when phone is locked
@@ -3157,6 +3421,8 @@ export function useWebSocket() {
           //    server (the server only keeps sessions alive while the binary is
           //    running; after a restart old sessions are gone). Reconnecting them
           //    only causes the readyState: 3 CLOSED log-spam that triggered this fix.
+          //    NOTE: Periodic sessions are exempt from this age check — they are
+          //    long-lived by design and must always be allowed to reconnect.
           //
           // 2. Attempt cap (isReconnectLimitReached from utils/websocket.js):
           //    even for recent sessions, if we have repeatedly failed to
@@ -3165,8 +3431,16 @@ export function useWebSocket() {
           //    The counter resets on the next successful onopen, and is cleared
           //    when the user explicitly switches to this session (switchSession).
 
+          // Check if this is a periodic session — they're long-lived by design
+          // and should always be allowed to reconnect regardless of age.
+          const isPeriodic =
+            sessionsRef.current[sessionId]?.info?.periodic_enabled ||
+            storedSessionsRef.current?.find((s) => s.session_id === sessionId)
+              ?.periodic_enabled;
+
           const sessionAgeMs = getSessionAgeMs(sessionId);
           const isTooOld =
+            !isPeriodic &&
             sessionAgeMs !== null &&
             sessionAgeMs > SESSION_MAX_RECONNECT_AGE_MS;
 
@@ -3284,6 +3558,12 @@ export function useWebSocket() {
       // hourglass icon survives fetchStoredSessions() overwriting storedSessions.
       const mapped = (data || []).map((s) => ({
         ...s,
+        // Mark non-archived sessions as active so the sidebar dot shows green.
+        // Under lazy-connect most sessions lack a per-session WebSocket (only the
+        // active session connects one), so they don't enter activeSessions which
+        // sets isActive. Without this, background sessions fall through to the
+        // amber "Not connected" dot even though they are perfectly available.
+        isActive: !s.archived,
         isWaitingForChildren: s.is_waiting_for_children || false,
       }));
       setStoredSessions(mapped);
@@ -3299,77 +3579,86 @@ export function useWebSocket() {
   // In accordion mode, also collapses all other groups
   const expandGroupForSession = useCallback(
     (sessionId, workingDir, acpServer) => {
-      // Build the group key for this session based on current grouping mode
+      const storedSessions = storedSessionsRef.current || [];
+      const storedSession = storedSessions.find(
+        (s) => s.session_id === sessionId,
+      );
+
+      // Determine which tab this session belongs to and use that tab's grouping
+      // mode. Group keys are namespaced per tab (see tabScopedGroupKey in app.js),
+      // so expansion state must be scoped to the session's own tab.
+      const tab = getFilterTabForSession(storedSession);
+      const groupingMode = getFilterTabGrouping(tab);
+
+      // Build the raw group key for this session based on its grouping mode.
       // Must match the key format used by the sidebar rendering in app.js:
       // - server mode: acpServer || "Unknown"
       // - workspace mode: `${workingDir}|${acpServer}`
       // - folder mode: workingDir || "Unknown" (just the folder, no acp server)
-      const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-      let groupKey;
+      let rawGroupKey;
       if (groupingMode === "server") {
-        groupKey = acpServer || "Unknown";
+        rawGroupKey = acpServer || "Unknown";
       } else if (groupingMode === "workspace") {
-        groupKey = `${workingDir || ""}|${acpServer || ""}`;
+        rawGroupKey = `${workingDir || ""}|${acpServer || ""}`;
       } else if (groupingMode === "folder") {
-        groupKey = workingDir || "Unknown";
+        rawGroupKey = workingDir || "Unknown";
       }
 
       // In folder mode, also expand the parent session group if this is a child session.
       // Folder grouping uses both folder keys (working_dir) and parent keys
       // (`parent:<parent_session_id>`) for nested child sessions, so if a child
       // session is selected while its parent group is collapsed it would remain hidden.
-      if (groupingMode === "folder") {
-        const storedSessions = storedSessionsRef.current || [];
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === sessionId,
-        );
-        if (storedSession?.parent_session_id) {
-          const parentGroupKey = `parent:${storedSession.parent_session_id}`;
-          if (!isGroupExpanded(parentGroupKey)) {
-            setGroupExpanded(parentGroupKey, true);
-          }
+      if (groupingMode === "folder" && storedSession?.parent_session_id) {
+        const parentGroupKey = `parent:${storedSession.parent_session_id}`;
+        if (!isGroupExpanded(parentGroupKey)) {
+          setGroupExpanded(parentGroupKey, true);
+        }
 
-          // For cross-workspace children: resolve the root parent's working_dir so
-          // the folder group key matches where the child is actually displayed.
-          // app.js uses resolveRootParent() to group children under their root parent's
-          // folder, so we must use the root parent's working_dir for the groupKey
-          // rather than the child's own working_dir.
-          let rootParent = storedSessions.find(
-            (s) => s.session_id === storedSession.parent_session_id,
+        // For cross-workspace children: resolve the root parent's working_dir so
+        // the folder group key matches where the child is actually displayed.
+        // app.js uses resolveRootParent() to group children under their root parent's
+        // folder, so we must use the root parent's working_dir for the groupKey
+        // rather than the child's own working_dir.
+        let rootParent = storedSessions.find(
+          (s) => s.session_id === storedSession.parent_session_id,
+        );
+        let depth = 0;
+        while (rootParent?.parent_session_id && depth < 10) {
+          const next = storedSessions.find(
+            (s) => s.session_id === rootParent.parent_session_id,
           );
-          let depth = 0;
-          while (rootParent?.parent_session_id && depth < 10) {
-            const next = storedSessions.find(
-              (s) => s.session_id === rootParent.parent_session_id,
-            );
-            if (!next) break;
-            rootParent = next;
-            depth++;
-          }
-          if (rootParent) {
-            groupKey = rootParent.working_dir || "Unknown";
-          }
+          if (!next) break;
+          rootParent = next;
+          depth++;
+        }
+        if (rootParent) {
+          rawGroupKey = rootParent.working_dir || "Unknown";
         }
       }
 
       // Only expand if we have a valid group key and groups are being used
-      if (groupKey && groupingMode && groupingMode !== "none") {
+      if (rawGroupKey && groupingMode && groupingMode !== "none") {
+        const groupKey = tabScopedGroupKey(tab, rawGroupKey);
         // In accordion mode, collapse all other groups first
         if (getSingleExpandedGroupMode()) {
           // Compute all group keys from stored sessions so we can collapse groups
           // that were never explicitly toggled (which default to expanded).
           // getExpandedGroups() only contains explicitly-set groups, so groups that
           // default to expanded would be missed.
+          // Only consider sessions in the SAME tab so we never collapse groups
+          // that belong to a different tab's view.
           const allGroupKeys = new Set();
-          const storedSessions = storedSessionsRef.current || [];
           for (const s of storedSessions) {
+            if (getFilterTabForSession(s) !== tab) continue;
+            let rawKey;
             if (groupingMode === "server") {
-              allGroupKeys.add(s.acp_server || "Unknown");
+              rawKey = s.acp_server || "Unknown";
             } else if (groupingMode === "workspace") {
-              allGroupKeys.add(`${s.working_dir || ""}|${s.acp_server || ""}`);
+              rawKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
             } else if (groupingMode === "folder") {
-              allGroupKeys.add(s.working_dir || "Unknown");
+              rawKey = s.working_dir || "Unknown";
             }
+            if (rawKey) allGroupKeys.add(tabScopedGroupKey(tab, rawKey));
           }
           for (const key of allGroupKeys) {
             if (key !== groupKey && isGroupExpanded(key)) {
@@ -3384,6 +3673,28 @@ export function useWebSocket() {
       }
     },
     [],
+  );
+
+  // Send message to the current session's WebSocket
+  const sendToSession = useCallback((sessionId, msg) => {
+    const ws = sessionWsRefs.current[sessionId];
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Send ensure_resumed to the active session's WebSocket.
+  // Called when the user focuses on a conversation so the server can resume
+  // the ACP connection immediately, bypassing any startup stagger delay.
+  const ensureResumed = useCallback(
+    (sessionId) => {
+      const targetId = sessionId || activeSessionIdRef.current;
+      if (!targetId) return;
+      sendToSession(targetId, { type: "ensure_resumed", data: {} });
+    },
+    [sendToSession],
   );
 
   // Switch to an existing session
@@ -3438,6 +3749,16 @@ export function useWebSocket() {
             existingWs.close();
           }
           connectToSession(sessionId);
+        } else {
+          // WebSocket is already open — hint the server to resume ACP if not running.
+          // This bypasses any startup stagger and allows the session to become
+          // interactive immediately when the user navigates to it.
+          // Skip for archived sessions — they have no ACP connection to resume.
+          const isArchived =
+            existingSession?.info?.archived || storedSession?.archived || false;
+          if (!isArchived) {
+            ensureResumed(sessionId);
+          }
         }
         return;
       }
@@ -3532,7 +3853,7 @@ export function useWebSocket() {
         console.error("Failed to switch session:", err);
       }
     },
-    [connectToSession, expandGroupForSession],
+    [connectToSession, expandGroupForSession, ensureResumed],
   );
 
   // Handle global events (session lifecycle)
@@ -3551,10 +3872,12 @@ export function useWebSocket() {
           const parentKey = `parent:${msg.data.parent_session_id}`;
           setGroupExpanded(parentKey, true);
 
-          // Also expand the folder containing the parent session
-          // Folder key is just the working_dir (no prefix)
+          // Also expand the folder containing the parent session.
+          // Folder keys are namespaced by the filter tab the new session
+          // belongs to, matching the sidebar's tab-scoped keys.
           if (msg.data.working_dir) {
-            const folderKey = msg.data.working_dir;
+            const tab = getFilterTabForSession(msg.data);
+            const folderKey = tabScopedGroupKey(tab, msg.data.working_dir);
             setGroupExpanded(folderKey, true);
           }
         }
@@ -3630,7 +3953,12 @@ export function useWebSocket() {
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
-              ? { ...s, archived: msg.data.archived, archive_pending: false }
+              ? {
+                  ...s,
+                  archived: msg.data.archived,
+                  archive_pending: false,
+                  archive_reason: msg.data.archive_reason || "",
+                }
               : s,
           ),
         );
@@ -3646,10 +3974,32 @@ export function useWebSocket() {
                 ...session.info,
                 archived: msg.data.archived,
                 archive_pending: false,
+                archive_reason: msg.data.archive_reason || "",
               },
             },
           };
         });
+        // If the active session was just archived, switch to another session in the same tab.
+        // storedSessionsRef.current still has the pre-archive state here, so we can filter by tab.
+        if (
+          msg.data.archived &&
+          msg.data.session_id === activeSessionIdRef.current
+        ) {
+          const currentTab = getFilterTab();
+          const remaining = (storedSessionsRef.current || []).filter((s) => {
+            if (s.session_id === msg.data.session_id) return false; // exclude the one being archived
+            if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
+            if (currentTab === FILTER_TAB.PERIODIC)
+              return !s.archived && s.periodic_enabled;
+            return !s.archived && !s.periodic_enabled; // conversations tab
+          });
+          if (remaining.length > 0) {
+            setActiveSessionId(remaining[0].session_id);
+          } else {
+            // No sessions left in this tab — clear active session, don't switch tabs
+            setActiveSessionId(null);
+          }
+        }
         break;
 
       case "session_archive_pending":
@@ -3766,6 +4116,26 @@ export function useWebSocket() {
         });
         break;
 
+      case "background_ui_prompt_timeout": {
+        // A blocking UI prompt timed out in a session the user was not actively viewing.
+        // Show a native OS notification (sticky) so the user knows the session needed input.
+        const {
+          session_id: timedOutSessionId,
+          session_name: timedOutSessionName,
+          question: timedOutQuestion,
+        } = msg.data;
+        console.log(
+          `[global] Background UI prompt timed out: ${timedOutSessionId} (${timedOutSessionName})`,
+        );
+        setBackgroundUIPromptTimeout({
+          sessionId: timedOutSessionId,
+          sessionName: timedOutSessionName,
+          question: timedOutQuestion,
+          timestamp: Date.now(),
+        });
+        break;
+      }
+
       case "periodic_updated":
         // Update session periodic state
         // This is broadcast when any session's periodic state changes
@@ -3822,6 +4192,7 @@ export function useWebSocket() {
               periodicEnabled: msg.data.periodic_enabled,
               frequency: msg.data.frequency,
               nextScheduledAt: msg.data.next_scheduled_at,
+              freshContext: msg.data.fresh_context,
             },
           }),
         );
@@ -3849,9 +4220,20 @@ export function useWebSocket() {
         setSessions((prev) => {
           const { [deletedId]: removed, ...rest } = prev;
           if (deletedId === currentId) {
-            const remainingIds = Object.keys(rest);
-            if (remainingIds.length > 0) {
-              setActiveSessionId(remainingIds[0]);
+            // Filter remaining stored sessions to the current tab so we don't
+            // jump to a session in a different tab (e.g., archived when on conversations).
+            const currentTab = getFilterTab();
+            const remainingStored = (storedSessionsRef.current || []).filter(
+              (s) => s.session_id !== deletedId,
+            );
+            const tabFiltered = remainingStored.filter((s) => {
+              if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
+              if (currentTab === FILTER_TAB.PERIODIC)
+                return !s.archived && s.periodic_enabled;
+              return !s.archived && !s.periodic_enabled; // conversations tab
+            });
+            if (tabFiltered.length > 0) {
+              setActiveSessionId(tabFiltered[0].session_id);
             } else {
               // Don't create a new session here - let the user do it manually
               // or let the initiating window handle it. This prevents multiple
@@ -3898,6 +4280,7 @@ export function useWebSocket() {
               info: {
                 ...session.info,
                 acp_ready: true,
+                gc_suspended: false, // Clear GC-suspended state on resume
               },
               // Add a system message to inform the user
               messages: [
@@ -3990,7 +4373,6 @@ export function useWebSocket() {
           }),
         );
         break;
-
     }
   }, []);
 
@@ -4016,50 +4398,53 @@ export function useWebSocket() {
         console.log("Refreshing session list after reconnect");
         fetchStoredSessions();
       } else {
-        // Initial connection: fetch stored sessions and resume last session
+        // Initial connection: fetch stored sessions and resume the
+        // conversation last viewed *in the persisted filter tab*. The active
+        // filter tab is persisted per-device (localStorage); restoring a
+        // session from a different tab would cause the effect in app.js to
+        // flip the tab away from the user's persisted choice. So the restore
+        // is tab-aware: prefer the persisted tab's last session, then fall
+        // back to the most recent session within that same tab.
         fetchStoredSessions().then((storedSessionsList) => {
-          const lastSessionId = getLastActiveSessionId();
-          // Determine the target (active) session to connect first
-          const targetSessionId =
-            lastSessionId ||
-            (storedSessionsList?.length > 0
-              ? storedSessionsList[0].session_id
-              : null);
+          const sessions = storedSessionsList || [];
+          const persistedTab = getFilterTab();
 
-          if (lastSessionId) {
-            // Connect to the last session from localStorage
-            switchSession(lastSessionId);
-          } else if (storedSessionsList && storedSessionsList.length > 0) {
-            // No last session in localStorage, but there are stored sessions
-            // Switch to the most recent one (first in the list, sorted by updated_at desc)
-            const mostRecentSession = storedSessionsList[0];
-            switchSession(mostRecentSession.session_id);
-          }
-          // No stored sessions - show empty state, let user create manually
+          // Candidate: the session last focused in the persisted tab.
+          const lastTabSessionId = getLastActiveSessionIdForTab(persistedTab);
+          const lastTabSession =
+            lastTabSessionId &&
+            sessions.find((s) => s.session_id === lastTabSessionId);
 
-          // Pre-connect other non-archived sessions with staggered delays.
-          // This prevents thundering herd where all sessions send load_events
-          // simultaneously, overwhelming the server with concurrent large event replays.
-          // The active session connects first (above); background sessions connect
-          // after increasing delays so their load_events requests are spread over time.
-          if (storedSessionsList && storedSessionsList.length > 1) {
-            const otherSessions = storedSessionsList.filter(
-              (s) => s.session_id !== targetSessionId && !s.archived,
-            );
-            otherSessions.forEach((session, index) => {
-              setTimeout(
-                () => {
-                  // Only connect if not already connected (guard against race conditions)
-                  if (!sessionWsRefs.current[session.session_id]) {
-                    console.log(
-                      `[startup] Pre-connecting background session ${session.session_id} (stagger ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
-                    );
-                    connectToSession(session.session_id);
-                  }
-                },
-                (index + 1) * STARTUP_STAGGER_MS,
+          // Lazy-connect: only the active session opens a per-session WebSocket
+          // at startup. Background sessions are NOT pre-connected — they connect
+          // on demand when the user switches to them (via switchSession). This
+          // prevents the "startup storm" where every non-archived session resumes
+          // its ACP process simultaneously, spiking CPU and memory. Sidebar status
+          // for background sessions stays live via the global events WebSocket.
+          if (
+            lastTabSession &&
+            getFilterTabForSession(lastTabSession) === persistedTab
+          ) {
+            switchSession(lastTabSession.session_id);
+          } else {
+            // Stale or missing per-tab session — clear the stale reference and
+            // fall back to the most recent session within the persisted tab.
+            if (lastTabSessionId) {
+              console.log(
+                `Last active session ${lastTabSessionId} for tab "${persistedTab}" no longer exists, clearing localStorage`,
               );
-            });
+              setLastActiveSessionIdForTab(persistedTab, null);
+            }
+            // sessions is sorted by updated_at desc, so the first match is the
+            // most recent session belonging to the persisted tab.
+            const mostRecentInTab = sessions.find(
+              (s) => getFilterTabForSession(s) === persistedTab,
+            );
+            if (mostRecentInTab) {
+              switchSession(mostRecentInTab.session_id);
+            }
+            // No session in the persisted tab — keep the tab selected and show
+            // the empty state; do NOT jump to a different tab's session.
           }
         });
       }
@@ -4098,6 +4483,14 @@ export function useWebSocket() {
         return;
       }
 
+      // Don't reconnect if the server is shutting down
+      if (serverShuttingDownRef.current) {
+        console.log(
+          "Server is shutting down, not reconnecting global events WebSocket",
+        );
+        return;
+      }
+
       // M2: Use exponential backoff for reconnection
       const attempt = eventsReconnectAttemptRef.current;
       const delay = calculateReconnectDelay(attempt);
@@ -4124,9 +4517,24 @@ export function useWebSocket() {
 
   // Create a new session via REST API
   // Options: { name?: string, workingDir?: string, acpServer?: string }
-  // Returns: { sessionId: string } on success, { error: string, errorCode?: string } on failure, or null on network error
+  // Returns on first call:
+  //   { sessionId } on immediate success
+  //   { error, errorCode: "session_creation_timeout", retrying: true } when agent is busy
+  //     → the auto-retry loop continues silently; isCreatingSession stays true
+  //   { error, errorCode } for other failures
+  // When an auto-retry eventually succeeds, setActiveSessionId fires and the session
+  // appears in the sidebar (the original caller has already returned).
   const createNewSession = useCallback(
     async (options = {}) => {
+      // Cancel any pending auto-retry — a fresh manual click supersedes it.
+      if (_sessionCreationRetryTimer !== null) {
+        clearTimeout(_sessionCreationRetryTimer);
+        _sessionCreationRetryTimer = null;
+      }
+
+      // Mark creation as in-flight so the button shows a spinner.
+      setIsCreatingSession(true);
+
       try {
         // Support both old (name string) and new (options object) signatures
         const opts = typeof options === "string" ? { name: options } : options;
@@ -4138,24 +4546,65 @@ export function useWebSocket() {
             name: opts.name || "",
             working_dir: opts.workingDir || "",
             acp_server: opts.acpServer || "",
+            beads_issue: opts.beadsIssue || "",
           }),
         });
 
         if (!response.ok) {
-          // Try to parse as JSON for structured error
+          // Parse structured error response when available
           const contentType = response.headers.get("content-type");
+          let errorCode, errorMessage;
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
             console.error("Failed to create session:", errorData);
+            errorCode = errorData.error;
+            errorMessage = errorData.message || "Failed to create session";
+          } else {
+            const errorText = await response.text();
+            console.error("Failed to create session:", errorText);
+            errorMessage = errorText || "Failed to create session";
+          }
+
+          // Agent is busy (503 session_creation_timeout) — schedule auto-retry
+          // instead of silently backing off. isCreatingSession stays true so the
+          // button remains in spinner state until the retry succeeds or is exhausted.
+          if (
+            errorCode === "session_creation_timeout" &&
+            _sessionCreationRetryCount < SESSION_CREATION_MAX_RETRIES
+          ) {
+            _sessionCreationRetryCount++;
+            _sessionCreationPendingOpts = opts;
+            console.warn(
+              `[createNewSession] Agent busy — scheduling retry ${_sessionCreationRetryCount}/${SESSION_CREATION_MAX_RETRIES} in ${SESSION_CREATION_RETRY_DELAY_MS}ms`,
+            );
+            _sessionCreationRetryTimer = setTimeout(() => {
+              const pendingOpts = _sessionCreationPendingOpts;
+              _sessionCreationRetryTimer = null;
+              if (pendingOpts) {
+                // Use ref to always call the latest version of createNewSession
+                createNewSessionRef.current?.(pendingOpts);
+              }
+            }, SESSION_CREATION_RETRY_DELAY_MS);
+            // Return immediately so the caller can show a toast; isCreatingSession
+            // remains true while the retry is pending.
             return {
-              error: errorData.message || "Failed to create session",
-              errorCode: errorData.error,
+              error: "Agent is busy — retrying automatically\u2026",
+              errorCode: "session_creation_timeout",
+              retrying: true,
             };
           }
-          const error = await response.text();
-          console.error("Failed to create session:", error);
-          return { error: error || "Failed to create session" };
+
+          // Other errors, or retry limit exhausted — clear busy state.
+          _sessionCreationRetryCount = 0;
+          _sessionCreationPendingOpts = null;
+          setIsCreatingSession(false);
+          return { error: errorMessage, errorCode };
         }
+
+        // Success — reset all retry state and clear busy indicator.
+        _sessionCreationRetryCount = 0;
+        _sessionCreationPendingOpts = null;
+        setIsCreatingSession(false);
 
         const data = await response.json();
         const sessionId = data.session_id;
@@ -4199,12 +4648,20 @@ export function useWebSocket() {
 
         return { sessionId };
       } catch (err) {
-        console.error("Failed to create session:", err);
+        // Network/fetch error — clear busy state
+        _sessionCreationRetryCount = 0;
+        _sessionCreationPendingOpts = null;
+        setIsCreatingSession(false);
+        console.error(`[createNewSession] Network error:`, err);
         return { error: err.message || "Network error" };
       }
     },
     [connectToSession],
   );
+
+  // Keep ref current so the retry timer always calls the latest createNewSession
+  // (connectToSession may change between retries, recreating the callback).
+  createNewSessionRef.current = createNewSession;
 
   // Helper functions for session state updates
   const addMessageToSession = useCallback((sessionId, message) => {
@@ -4233,16 +4690,6 @@ export function useWebSocket() {
       if (!session || !session.actionButtons?.length) return prev;
       return { ...prev, [sessionId]: { ...session, actionButtons: [] } };
     });
-  }, []);
-
-  // Send message to the current session's WebSocket
-  const sendToSession = useCallback((sessionId, msg) => {
-    const ws = sessionWsRefs.current[sessionId];
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-      return true;
-    }
-    return false;
   }, []);
 
   // Timeout configuration for message delivery with automatic retry
@@ -4495,6 +4942,7 @@ export function useWebSocket() {
           role: ROLE_USER,
           text: message,
           timestamp: Date.now(),
+          promptName: options.promptName || undefined,
         };
         if (images.length > 0) {
           userMessage.images = images; // Array of { id, url, name, mimeType }
@@ -4540,6 +4988,7 @@ export function useWebSocket() {
             type: "prompt",
             data: {
               message,
+              prompt_name: options.promptName || undefined,
               image_ids: imageIds,
               file_ids: fileIds,
               prompt_id: promptId,
@@ -4679,6 +5128,15 @@ export function useWebSocket() {
   const cancelPrompt = useCallback(() => {
     if (!activeSessionId) return;
     sendToSession(activeSessionId, { type: "cancel" });
+    // Clear any active UI prompt when user cancels
+    setSessions((prev) => {
+      const session = prev[activeSessionId];
+      if (!session || !session.activeUIPrompt) return prev;
+      return {
+        ...prev,
+        [activeSessionId]: { ...session, activeUIPrompt: null },
+      };
+    });
   }, [activeSessionId, sendToSession]);
 
   // Force reset a stuck session (when agent is unresponsive)
@@ -4963,44 +5421,58 @@ export function useWebSocket() {
         // Fetch remaining sessions from server to get accurate list
         const remainingSessions = await fetchStoredSessions();
         if (remainingSessions && remainingSessions.length > 0) {
-          // In accordion mode with grouping, prefer a session from the same group
-          // so we don't jump to a session in a different (possibly collapsed) group
-          let nextSession = remainingSessions[0];
-          const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-          if (
-            getSingleExpandedGroupMode() &&
-            groupingMode &&
-            groupingMode !== "none"
-          ) {
-            // Compute the deleted session's group key (mirrors expandGroupForSession logic)
-            let deletedGroupKey;
-            if (groupingMode === "server") {
-              deletedGroupKey = deletedAcpServer || "Unknown";
-            } else if (groupingMode === "workspace") {
-              deletedGroupKey = `${deletedWorkingDir}|${deletedAcpServer}`;
-            } else if (groupingMode === "folder") {
-              deletedGroupKey = deletedWorkingDir || "Unknown";
-            }
-            if (deletedGroupKey) {
-              const sameGroupSession = remainingSessions.find((s) => {
-                let sessionGroupKey;
-                if (groupingMode === "server") {
-                  sessionGroupKey = s.acp_server || "Unknown";
-                } else if (groupingMode === "workspace") {
-                  sessionGroupKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
-                } else if (groupingMode === "folder") {
-                  sessionGroupKey = s.working_dir || "Unknown";
+          // Filter to sessions in the same tab so we don't jump to a different tab
+          const currentTab = getFilterTab();
+          const tabFiltered = remainingSessions.filter((s) => {
+            if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
+            if (currentTab === FILTER_TAB.PERIODIC)
+              return !s.archived && s.periodic_enabled;
+            return !s.archived && !s.periodic_enabled; // conversations tab
+          });
+
+          if (tabFiltered.length > 0) {
+            // In accordion mode with grouping, prefer a session from the same group
+            // so we don't jump to a session in a different (possibly collapsed) group
+            let nextSession = tabFiltered[0];
+            const groupingMode = getFilterTabGrouping(currentTab);
+            if (
+              getSingleExpandedGroupMode() &&
+              groupingMode &&
+              groupingMode !== "none"
+            ) {
+              // Compute the deleted session's group key (mirrors expandGroupForSession logic)
+              let deletedGroupKey;
+              if (groupingMode === "server") {
+                deletedGroupKey = deletedAcpServer || "Unknown";
+              } else if (groupingMode === "workspace") {
+                deletedGroupKey = `${deletedWorkingDir}|${deletedAcpServer}`;
+              } else if (groupingMode === "folder") {
+                deletedGroupKey = deletedWorkingDir || "Unknown";
+              }
+              if (deletedGroupKey) {
+                const sameGroupSession = tabFiltered.find((s) => {
+                  let sessionGroupKey;
+                  if (groupingMode === "server") {
+                    sessionGroupKey = s.acp_server || "Unknown";
+                  } else if (groupingMode === "workspace") {
+                    sessionGroupKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
+                  } else if (groupingMode === "folder") {
+                    sessionGroupKey = s.working_dir || "Unknown";
+                  }
+                  return sessionGroupKey === deletedGroupKey;
+                });
+                if (sameGroupSession) {
+                  nextSession = sameGroupSession;
                 }
-                return sessionGroupKey === deletedGroupKey;
-              });
-              if (sameGroupSession) {
-                nextSession = sameGroupSession;
               }
             }
+            switchSession(nextSession.session_id);
+          } else {
+            // No sessions left in this tab — clear active session, don't switch tabs
+            setActiveSessionId(null);
           }
-          switchSession(nextSession.session_id);
         } else {
-          // No sessions left - show empty state, let user create manually
+          // No sessions left at all - show empty state, let user create manually
           setActiveSessionId(null);
         }
       }
@@ -5102,6 +5574,12 @@ export function useWebSocket() {
   // force-closed and reconnected with increasing delays so their load_events requests are spread
   // over time rather than hitting the server simultaneously.
   //
+  // Under lazy-connect this operates only on sessions that already have an open
+  // WebSocket — typically just the active session plus any background sessions
+  // still within their disconnect grace window. It never opens connections for
+  // sessions that were not already connected, so it does not re-create a startup
+  // storm on wake/visibility events.
+  //
   // Debounce: multiple macOS activation events (NSWorkspaceDidWakeNotification,
   // NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
   // 4–10 s apart for the same wake/focus event.  Without a debounce each call
@@ -5189,6 +5667,69 @@ export function useWebSocket() {
       staggeredBackgroundTimersRef.current[sessionId] = timerId;
     });
   }, [forceReconnectActiveSession, connectToSession]);
+
+  // Lazy-connect hygiene: when the active session changes, schedule a sweep that
+  // disconnects per-session WebSockets for sessions that are no longer active.
+  // Releasing the WebSocket removes the server-side observer, allowing the backend
+  // GC to reclaim idle ACP processes. The timer resets on every active-session
+  // change, so only sessions left untouched for the full grace window are dropped.
+  // Sessions that are actively streaming, awaiting a user prompt, or waiting on
+  // child conversations are kept connected so in-flight work is not interrupted;
+  // they are swept on a later switch once they go idle. Disconnected sessions
+  // resync from server authority via load_events when the user switches back.
+  useEffect(() => {
+    if (backgroundDisconnectTimerRef.current) {
+      clearTimeout(backgroundDisconnectTimerRef.current);
+      backgroundDisconnectTimerRef.current = null;
+    }
+
+    backgroundDisconnectTimerRef.current = setTimeout(() => {
+      backgroundDisconnectTimerRef.current = null;
+      const currentActive = activeSessionIdRef.current;
+
+      // Sessions doing active work are kept connected (driven by global events).
+      const keepConnected = new Set(
+        (storedSessionsRef.current || [])
+          .filter(
+            (s) =>
+              s.isStreaming ||
+              s.isWaitingForUserInput ||
+              s.isWaitingForChildren,
+          )
+          .map((s) => s.session_id),
+      );
+
+      for (const sessionId of Object.keys(sessionWsRefs.current)) {
+        if (sessionId === currentActive) continue; // never disconnect active
+        if (keepConnected.has(sessionId)) continue; // keep busy sessions live
+
+        // Cancel any pending reconnect timer for this background session so it
+        // does not get revived after we intentionally disconnect it.
+        if (sessionReconnectRefs.current[sessionId]) {
+          clearTimeout(sessionReconnectRefs.current[sessionId]);
+          delete sessionReconnectRefs.current[sessionId];
+        }
+
+        const ws = sessionWsRefs.current[sessionId];
+        if (ws) {
+          console.log(
+            `[lazy] Disconnecting idle background session ${sessionId} (grace elapsed)`,
+          );
+          // Delete the ref BEFORE closing so onclose treats this as intentional.
+          // (The onclose reconnect guard only fires for the active session anyway.)
+          delete sessionWsRefs.current[sessionId];
+          ws.close();
+        }
+      }
+    }, BACKGROUND_DISCONNECT_GRACE_MS);
+
+    return () => {
+      if (backgroundDisconnectTimerRef.current) {
+        clearTimeout(backgroundDisconnectTimerRef.current);
+        backgroundDisconnectTimerRef.current = null;
+      }
+    };
+  }, [activeSessionId]);
 
   // Ref to track which sessions we've already attempted to recover from inconsistent state
   // This prevents infinite loops where recovery triggers state change which triggers recovery
@@ -5379,6 +5920,11 @@ export function useWebSocket() {
     setBackgroundUIPrompt(null);
   }, []);
 
+  // Clear background UI prompt timeout notification
+  const clearBackgroundUIPromptTimeout = useCallback(() => {
+    setBackgroundUIPromptTimeout(null);
+  }, []);
+
   // Send UI prompt answer (yes/no or select response)
   const sendUIPromptAnswer = useCallback(
     (sessionId, requestId, optionId, label, freeText = "") => {
@@ -5442,6 +5988,7 @@ export function useWebSocket() {
     cancelPrompt,
     forceReset,
     newSession,
+    isCreatingSession,
     switchSession,
     loadSession,
     loadMoreMessages,
@@ -5468,6 +6015,8 @@ export function useWebSocket() {
     clearPeriodicStarted,
     backgroundUIPrompt,
     clearBackgroundUIPrompt,
+    backgroundUIPromptTimeout,
+    clearBackgroundUIPromptTimeout,
     queueLength,
     queueMessages,
     queueConfig,
@@ -5487,5 +6036,6 @@ export function useWebSocket() {
     setConfigOption,
     activeUIPrompt,
     sendUIPromptAnswer,
+    ensureResumed,
   };
 }

@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,6 +101,12 @@ type BackgroundSession struct {
 	promptStartTime      time.Time // When the current prompt started (for logging)
 	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
 
+	// lastAgentActivityAt records the time (Unix nanos) of the most recent streamed
+	// update received from the agent during a prompt. It is reset when a prompt starts
+	// and updated on every ACP SessionUpdate. The prompt inactivity watchdog reads it
+	// to detect a live-but-unresponsive agent (one that stops streaming without crashing).
+	lastAgentActivityAt atomic.Int64
+
 	// Configuration
 	autoApprove bool
 	logger      *slog.Logger
@@ -126,6 +134,12 @@ type BackgroundSession struct {
 	cachedActionButtons []ActionButton              // In-memory cache for fast access
 	followUpInProgress  atomic.Bool                 // Prevents concurrent follow-up analyses (prompt completion vs session resume race)
 
+	// selfDestructRequested is set when the agent requests deletion of its own
+	// conversation via the mitto_conversation_delete MCP tool. The deletion is
+	// deferred until the current turn completes (see PromptWithMeta), at which
+	// point onSelfDestruct is invoked to actually remove the conversation.
+	selfDestructRequested atomic.Bool
+
 	// File links configuration
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
@@ -140,6 +154,10 @@ type BackgroundSession struct {
 	// onUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	onUIPromptStateChanged func(sessionID string, isWaiting bool)
 
+	// onUIPromptTimeout is called when a blocking UI prompt times out with no active viewer.
+	// Used to broadcast a native notification to all connected clients.
+	onUIPromptTimeout func(sessionID string, req UIPromptRequest, sessionName string)
+
 	// onPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	onPlanStateChanged func(sessionID string, entries []PlanEntry)
@@ -147,6 +165,15 @@ type BackgroundSession struct {
 	// onTitleGenerated is called when a title is auto-generated for this session.
 	// Used to broadcast session_renamed events to all clients.
 	onTitleGenerated func(sessionID, title string)
+
+	// onSelfDestruct is called after a turn completes when the agent has
+	// requested deletion of its own conversation. It performs the actual
+	// deletion (close ACP, remove from disk, broadcast) via SessionManager.
+	onSelfDestruct func(sessionID string)
+
+	// isChildPrompting checks if a child session is currently prompting.
+	// Set by SessionManager to enable children.promptingCount CEL context.
+	isChildPrompting func(childSessionID string) bool
 
 	// Available slash commands from the agent
 	availableCommandsMu sync.RWMutex
@@ -156,13 +183,15 @@ type BackgroundSession struct {
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
 	// To prevent infinite restart loops, we limit restarts to MaxACPRestarts within
 	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
-	acpCommand        string          // Command used to start ACP process (for restart)
-	acpCwd            string          // Working directory for ACP process (for restart)
-	restartCount      int             // Total number of restarts across the session lifetime
-	restartTimes      []time.Time     // Timestamps of recent restarts (for rate limiting)
-	restartReasons    []RestartReason // Reasons for recent restarts (parallel to restartTimes)
-	permanentlyFailed bool            // Circuit breaker: true when ACP cannot be restarted (permanent error or lifetime cap hit)
-	restartMu         sync.Mutex      // Protects restart tracking fields (restartCount, restartTimes, restartReasons, permanentlyFailed)
+	acpCommand           string                                 // Command used to start ACP process (for restart)
+	acpCwd               string                                 // Working directory for ACP process (for restart)
+	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
+	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
+	restartCount         int                                    // Total number of restarts across the session lifetime
+	restartTimes         []time.Time                            // Timestamps of recent restarts (for rate limiting)
+	restartReasons       []RestartReason                        // Reasons for recent restarts (parallel to restartTimes)
+	permanentlyFailed    bool                                   // Circuit breaker: true when ACP cannot be restarted (permanent error or lifetime cap hit)
+	restartMu            sync.Mutex                             // Protects restart tracking fields (restartCount, restartTimes, restartReasons, permanentlyFailed)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -198,9 +227,38 @@ type BackgroundSession struct {
 	// slot on the shared process. nil = legacy per-session process ownership.
 	sharedProcess *SharedACPProcess
 
+	// Lazy ACP session handshake for shared-process sessions.
+	// When pendingShared is true, session/new has not yet been called;
+	// it is deferred to the first prompt to avoid blocking the create path
+	// when the shared agent process is busy.
+	pendingShared           bool
+	pendingSharedMu         sync.Mutex                     // Guards the lazy handshake (idempotency)
+	pendingSharedWorkingDir string                         // Stored for deferred session/new RPC
+	pendingSharedMcpServers []acp.McpServer                // Must be empty array, not nil — ACP validates this
+	pendingSharedModes      *acp.SessionModeState          // Modes from NewSession, applied by applyPendingSharedModes
+	pendingSharedModels     *acp.UnstableSessionModelState // Models from NewSession, applied by applyPendingSharedModes
+
+	// handshakeMu serialises the full deferred-handshake completion (session/new
+	// RPC + store writes + mode/model application + acp_started notification) so the
+	// first-prompt goroutine and the background-prewarm goroutine never run it
+	// concurrently. See completeDeferredHandshake and PrewarmACPSession.
+	handshakeMu sync.Mutex
+
 	// resumeMethod tracks which method was used to establish the ACP session:
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
+
+	// creationCtx is the context passed for the initial ACP session creation RPC.
+	// It is set from BackgroundSessionConfig.CreationCtx and nil'd out after the RPC
+	// completes so we don't hold a reference longer than necessary.
+	// It is ONLY used in startSharedACPSession and resumeSharedACPSession, never for
+	// the session's lifetime. Use creationRPCCtx() to obtain a ready-to-use context.
+	creationCtx context.Context
+
+	// promptResolver resolves a named workspace prompt to its full text at send time.
+	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
+	// When nil, PromptMeta.PromptName resolution is skipped.
+	promptResolver PromptResolverFunc
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -214,7 +272,8 @@ type activeUIPrompt struct {
 type BackgroundSessionConfig struct {
 	PersistedID      string
 	ACPCommand       string
-	ACPCwd           string // Working directory for the ACP process (not the session working dir)
+	ACPCwd           string            // Working directory for the ACP process (not the session working dir)
+	Env              map[string]string // Server-specific env vars from settings.json (acp_servers[].env)
 	ACPServer        string
 	ACPSessionID     string // ACP-assigned session ID for resumption (optional)
 	WorkingDir       string
@@ -246,6 +305,10 @@ type BackgroundSessionConfig struct {
 	// OnUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	OnUIPromptStateChanged func(sessionID string, isWaiting bool)
 
+	// OnUIPromptTimeout is called when a blocking UI prompt times out with no active viewer.
+	// Used to trigger a native OS notification so the user knows the session needed input.
+	OnUIPromptTimeout func(sessionID string, req UIPromptRequest, sessionName string)
+
 	// OnPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	OnPlanStateChanged func(sessionID string, entries []PlanEntry)
@@ -258,6 +321,11 @@ type BackgroundSessionConfig struct {
 	// OnTitleGenerated is called when a title is auto-generated for this session.
 	// Used to broadcast session_renamed events to all connected clients.
 	OnTitleGenerated func(sessionID, title string)
+
+	// OnSelfDestruct is called after a turn completes when the agent has requested
+	// deletion of its own conversation via the mitto_conversation_delete MCP tool.
+	// It should permanently delete the conversation (and its children).
+	OnSelfDestruct func(sessionID string)
 
 	// GlobalMCPServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
@@ -275,6 +343,22 @@ type BackgroundSessionConfig struct {
 	// When set, the recorder automatically prunes old events after each recording
 	// to keep the session within the configured limits (max messages, max size).
 	PruneConfig *session.PruneConfig
+
+	// PromptResolver resolves a named workspace prompt to its full text at send time.
+	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
+	PromptResolver PromptResolverFunc
+
+	// IsChildPrompting checks if a child session's agent is currently responding.
+	// Used to populate children.promptingCount in the CEL context for enabledWhen.
+	IsChildPrompting func(childSessionID string) bool
+
+	// CreationCtx is the context for the initial ACP session creation RPC (NewSession).
+	// If nil or missing a deadline, a default sessionCreationRPCTimeout is applied.
+	// This context is NOT used for the session's lifetime — only for the blocking
+	// NewSession RPC call in startSharedACPSession / resumeSharedACPSession.
+	// Pass r.Context() from HTTP handlers so that the 30s request-timeout middleware
+	// can cancel the RPC and free the goroutine if the agent is busy.
+	CreationCtx context.Context
 }
 
 // NewBackgroundSession creates a new background session.
@@ -300,15 +384,24 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		runner:                  cfg.Runner,
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onUIPromptStateChanged:  cfg.OnUIPromptStateChanged,
+		onUIPromptTimeout:       cfg.OnUIPromptTimeout,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
 		onTitleGenerated:        cfg.OnTitleGenerated,
+		onSelfDestruct:          cfg.OnSelfDestruct,
 		acpCommand:              cfg.ACPCommand,          // Store for restart
 		acpCwd:                  cfg.ACPCwd,              // Store for restart
+		serverEnv:               cfg.Env,                 // Store for restart
 		globalMcpServer:         cfg.GlobalMCPServer,     // Global MCP server for session registration
 		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
+		promptResolver:          cfg.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
+		isChildPrompting:        cfg.IsChildPrompting,    // Callback to check if a child session is prompting
+		creationCtx:             cfg.CreationCtx,         // Context for initial ACP session creation RPC only
 	}
+
+	// Look up ACP server constraints from config
+	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
@@ -415,8 +508,10 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 
 	// Use shared process if available, otherwise start a new per-session process.
+	// For shared sessions, defer the session/new RPC to the first prompt so that
+	// creating a conversation never blocks on a busy agent process.
 	if cfg.SharedProcess != nil {
-		if err := bs.startSharedACPSession(cfg.SharedProcess, cfg.WorkingDir); err != nil {
+		if err := bs.prepareSharedACPSession(cfg.SharedProcess, cfg.WorkingDir); err != nil {
 			cancel()
 			if bs.recorder != nil {
 				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
@@ -485,15 +580,23 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		runner:                  config.Runner,
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onUIPromptStateChanged:  config.OnUIPromptStateChanged,
+		onUIPromptTimeout:       config.OnUIPromptTimeout,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
 		onTitleGenerated:        config.OnTitleGenerated,
 		acpCommand:              config.ACPCommand,          // Store for restart
 		acpCwd:                  config.ACPCwd,              // Store for restart
+		serverEnv:               config.Env,                 // Store for restart
 		globalMcpServer:         config.GlobalMCPServer,     // Global MCP server for session registration
 		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
+		promptResolver:          config.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
+		isChildPrompting:        config.IsChildPrompting,    // Callback to check if a child session is prompting
+		creationCtx:             config.CreationCtx,         // Context for initial ACP session creation RPC only
 	}
+
+	// Look up ACP server constraints from config
+	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
@@ -670,6 +773,35 @@ func (bs *BackgroundSession) StartedAt() time.Time {
 // IsClosed returns true if the session has been closed.
 func (bs *BackgroundSession) IsClosed() bool {
 	return bs.closed.Load() != 0
+}
+
+// RequestSelfDestruct marks this conversation for deletion once the current
+// turn completes. It is invoked by the mitto_conversation_delete MCP handler
+// when the agent requests deletion of its own conversation. The deletion is
+// deferred (rather than performed immediately) so the agent's in-flight tool
+// call can return cleanly before the conversation and its ACP connection are
+// torn down.
+func (bs *BackgroundSession) RequestSelfDestruct() {
+	bs.selfDestructRequested.Store(true)
+}
+
+// IsSelfDestructRequested returns true if the agent has requested deletion of
+// its own conversation during the current turn.
+func (bs *BackgroundSession) IsSelfDestructRequested() bool {
+	return bs.selfDestructRequested.Load()
+}
+
+// HasParent returns true if this session was spawned by another session (has a parent).
+// Used by the GC to apply ChildIdleTimeout instead of IdleTimeout for faster child GC.
+func (bs *BackgroundSession) HasParent() bool {
+	if bs.store == nil || bs.persistedID == "" {
+		return false
+	}
+	meta, err := bs.store.GetMetadata(bs.persistedID)
+	if err != nil {
+		return false
+	}
+	return meta.ParentSessionID != ""
 }
 
 // IsACPReady returns true if the ACP connection is initialized and ready for prompts.
@@ -1219,6 +1351,12 @@ func (bs *BackgroundSession) killACPProcess() {
 	}
 }
 
+// sessionCreationRPCTimeout is the default timeout for the initial ACP session creation RPC
+// (NewSession call). It is intentionally shorter than the HTTP middleware's 30s request
+// timeout so that if the RPC times out, the HTTP handler can still return a proper error
+// response instead of a generic "Request timeout" from the middleware.
+const sessionCreationRPCTimeout = 25 * time.Second
+
 // maxACPStartRetries is the maximum number of times to retry starting the ACP process
 // if the initial connection fails (e.g., "peer disconnected before response").
 const maxACPStartRetries = 3
@@ -1476,6 +1614,14 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 		// Shared mode: restart the shared OS process, then create a new session on it.
 		// Note: multiple sessions may call Restart() concurrently; SharedACPProcess.canRestart()
 		// is rate-limited so only one restart happens, others get the already-restarted process.
+
+		// Save the shared process reference before attempting session creation.
+		// resumeSharedACPSession nils bs.sharedProcess on failure (to clean up for
+		// initial session creation), but during restart we must preserve it so future
+		// prompts can trigger another restart attempt instead of getting permanently
+		// stuck with "The AI agent is still starting up".
+		savedSharedProcess := bs.sharedProcess
+
 		if restartErr := bs.sharedProcess.Restart(); restartErr != nil {
 			// Log but don't fail — the process may have been restarted by another session.
 			if bs.logger != nil {
@@ -1485,6 +1631,13 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 			}
 		}
 		err = bs.resumeSharedACPSession(bs.sharedProcess, bs.workingDir, bs.acpID)
+
+		// Restore the shared process reference if session creation failed.
+		// This prevents the session from becoming a permanent zombie — future
+		// prompts will still detect the dead connection and can retry.
+		if err != nil && bs.sharedProcess == nil {
+			bs.sharedProcess = savedSharedProcess
+		}
 	} else {
 		// Per-session mode: start a new ACP process, attempting to resume the session.
 		err = bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
@@ -1683,6 +1836,10 @@ func (c *stderrCollector) Close() {
 //
 // Fix C: These patterns come from the claude-code-agent-sdk Rust layer which logs
 // to stderr when the CLI subprocess dies unexpectedly.
+// httpStatusRegex matches HTTP status codes in ACP error strings.
+// It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
+var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
+
 var stderrCrashPatterns = []string{
 	"stream ended unexpectedly",
 	"EOF received from CLI stdout",
@@ -1698,14 +1855,22 @@ var stderrCrashPatterns = []string{
 // startStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
 // If onCrashDetected is non-nil, it is called (at most once) when crash patterns are
 // detected in the stderr output, enabling early process death signaling.
-func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, onCrashDetected func()) {
+// If onFirstActivity is non-nil, it is called (at most once) the first time any bytes
+// are observed on stderr — used by the startup watchdog to detect "live" processes.
+func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, onCrashDetected func(), onFirstActivity func()) {
 	go func() {
 		crashSignaled := false
+		activitySignaled := false
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := stderr.Read(buf)
 			if n > 0 {
 				collector.Write(buf[:n])
+
+				if !activitySignaled && onFirstActivity != nil {
+					activitySignaled = true
+					onFirstActivity()
+				}
 
 				// Fix C: Check for crash patterns in stderr output.
 				// This detects inner CLI subprocess death immediately from SDK
@@ -1727,6 +1892,189 @@ func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, on
 		}
 		collector.Close()
 	}()
+}
+
+// acpStartupWatchdogWarnDelay is the delay before the startup watchdog emits a WARN log
+// when no stderr activity has been observed and the ACP Initialize handshake has not completed.
+// Exposed as a var so tests can override it.
+var acpStartupWatchdogWarnDelay = 10 * time.Second
+
+// acpStartupWatchdogErrorDelay is the delay before the startup watchdog emits an ERROR log
+// when the process is still unresponsive.
+var acpStartupWatchdogErrorDelay = 30 * time.Second
+
+// startACPStartupWatchdog runs a background goroutine that emits a WARN log if no stderr
+// activity is observed within acpStartupWatchdogWarnDelay, and an ERROR log if the process
+// is still unresponsive after acpStartupWatchdogErrorDelay. The returned signalActivity
+// callback should be wired to stderr first-activity AND called when the Initialize
+// handshake completes (success or failure); callers should also defer-cancel ctx so the
+// watchdog is torn down when startup finishes. Returns a no-op if logger is nil.
+func startACPStartupWatchdog(ctx context.Context, logger *slog.Logger, command, acpServer string, pid int) func() {
+	if logger == nil {
+		return func() {}
+	}
+	activityCh := make(chan struct{})
+	var once sync.Once
+	signalActivity := func() { once.Do(func() { close(activityCh) }) }
+
+	go func() {
+		warnTimer := time.NewTimer(acpStartupWatchdogWarnDelay)
+		errTimer := time.NewTimer(acpStartupWatchdogErrorDelay)
+		defer warnTimer.Stop()
+		defer errTimer.Stop()
+
+		baseAttrs := []any{"command", command, "acp_server", acpServer}
+		if pid > 0 {
+			baseAttrs = append(baseAttrs, "pid", pid)
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-activityCh:
+				return
+			case <-warnTimer.C:
+				logger.Warn("ACP process appears unresponsive — no stderr output and no handshake observed in startup window",
+					append(baseAttrs, "elapsed", acpStartupWatchdogWarnDelay.String())...)
+			case <-errTimer.C:
+				logger.Error("ACP process still unresponsive after extended startup window — handshake has not completed",
+					append(baseAttrs, "elapsed", acpStartupWatchdogErrorDelay.String())...)
+			}
+		}
+	}()
+
+	return signalActivity
+}
+
+// promptInactivityWatchdogWarnDelay is the idle duration (no streamed agent activity)
+// after which the prompt inactivity watchdog emits a WARN log. Non-destructive.
+// Exposed as a var so tests can override it.
+var promptInactivityWatchdogWarnDelay = 2 * time.Minute
+
+// promptInactivityWatchdogTimeout is the idle duration (no streamed agent activity)
+// after which the prompt inactivity watchdog cancels the in-flight prompt so the
+// session can recover from a live-but-unresponsive agent (one that stops streaming
+// without crashing — e.g. wedged during MCP init or GC-thrashing).
+//
+// Default 0: automatic cancellation is DISABLED — the watchdog is WARN-only out of
+// the box. This avoids ever cancelling a legitimate long-running tool call that
+// produces no intermediate streamed output (the residual false-positive of an
+// automatic cancel). Set to a positive duration to opt in to automatic cancellation.
+// Exposed as a var so tests can override it.
+var promptInactivityWatchdogTimeout time.Duration = 0
+
+// signalAgentActivity records the current time as the most recent streamed agent
+// activity. It is called on every ACP SessionUpdate so the prompt inactivity watchdog
+// can distinguish a working agent from a wedged one.
+func (bs *BackgroundSession) signalAgentActivity() {
+	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+}
+
+// startPromptInactivityWatchdog launches a background goroutine that watches for a
+// live-but-unresponsive agent during a prompt. Unlike the process-death and
+// connection-EOF monitors, this catches the case where the agent stays alive with an
+// open connection but stops streaming any updates (the "stuck, still responding"
+// state the user sees in the UI).
+//
+// The watchdog resets its idle baseline to now, then on each tick:
+//   - returns when ctx is done (the prompt completed or was cancelled elsewhere);
+//   - pauses (resets the baseline) while a UI prompt is active, since permission
+//     dialogs and MCP tool questions legitimately block the agent on user input;
+//   - emits a WARN log once the idle time crosses promptInactivityWatchdogWarnDelay;
+//   - sets fired and calls cancel() once the idle time crosses
+//     promptInactivityWatchdogTimeout, unblocking the prompt RPC so is_prompting clears.
+//
+// The goroutine is torn down via ctx.Done(); callers cancel the prompt context after
+// Prompt() returns. It is a no-op when both delays are non-positive.
+func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, cancel context.CancelFunc, fired *atomic.Bool) {
+	warnDelay := promptInactivityWatchdogWarnDelay
+	timeout := promptInactivityWatchdogTimeout
+	if warnDelay <= 0 && timeout <= 0 {
+		return
+	}
+
+	// Establish the idle baseline at prompt start.
+	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+
+	// Tick frequently enough to detect the threshold with reasonable granularity
+	// (a quarter of the smaller delay), with a small floor to bound overhead. In
+	// production the delays are tens of seconds, so the floor never applies; it only
+	// guards against pathologically small configured values.
+	interval := timeout
+	if interval <= 0 || (warnDelay > 0 && warnDelay < interval) {
+		interval = warnDelay
+	}
+	interval /= 4
+	if interval < 25*time.Millisecond {
+		interval = 25 * time.Millisecond
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		warned := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Pause while the agent is legitimately blocked on a UI prompt
+				// (permission dialog or MCP tool question). Reset the baseline so the
+				// idle clock starts fresh once the user responds.
+				if bs.GetActiveUIPrompt() != nil {
+					bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+					warned = false
+					continue
+				}
+
+				idle := time.Since(time.Unix(0, bs.lastAgentActivityAt.Load()))
+
+				if timeout > 0 && idle >= timeout {
+					if bs.logger != nil {
+						bs.logger.Error("Agent unresponsive during prompt — no streamed activity within inactivity window, cancelling prompt",
+							"session_id", bs.persistedID,
+							"idle", idle.Round(time.Second).String(),
+							"timeout", timeout.String())
+					}
+					fired.Store(true)
+					cancel()
+					return
+				}
+
+				if warnDelay > 0 && !warned && idle >= warnDelay {
+					warned = true
+					if bs.logger != nil {
+						bs.logger.Warn("Agent slow during prompt — no streamed activity observed",
+							"session_id", bs.persistedID,
+							"idle", idle.Round(time.Second).String(),
+							"warn_delay", warnDelay.String())
+					}
+				}
+			}
+		}
+	}()
+}
+
+// buildACPProcessEnv constructs the environment slice for an ACP subprocess.
+// Keys are replaced in-place via mittoAcp.MergeEnv; precedence is:
+//
+//  1. os.Environ() — inherited from the Mitto process (lowest).
+//  2. serverEnv — server-specific env from settings.json (acp_servers[].env).
+//  3. mittoEnv — MITTO_* vars set by Mitto (highest precedence).
+//
+// This is shared between the direct-exec and restricted-runner branches so that
+// the runner branch sees the same env as the non-runner branch.
+func buildACPProcessEnv(serverEnv map[string]string, mittoEnv map[string]string) []string {
+	combined := make(map[string]string, len(serverEnv)+len(mittoEnv))
+	for k, v := range serverEnv {
+		combined[k] = v
+	}
+	for k, v := range mittoEnv {
+		combined[k] = v // MITTO_* vars keep highest precedence
+	}
+	return mittoAcp.MergeEnv(os.Environ(), combined)
 }
 
 // doStartACPProcess performs a single attempt to start the ACP process.
@@ -1802,6 +2150,12 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		})
 	}
 
+	// Startup watchdog: warn/error if no stderr activity and no Initialize completion
+	// within the configured windows. Cancelled when doStartACPProcess returns.
+	watchdogCtx, watchdogCancel := context.WithCancel(bs.ctx)
+	defer watchdogCancel()
+	var signalStartupActivity func()
+
 	// Use runner if configured, otherwise direct execution
 	if bs.runner != nil {
 		// Use restricted runner with RunWithPipes
@@ -1816,13 +2170,18 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				"runner_type", bs.runner.Type(),
 				"command", acpCommand)
 		}
-		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], nil)
+		// Pass the same env layering used by the direct-exec branch so server-specific
+		// vars reach the runner-spawned process.
+		runnerEnv := buildACPProcessEnv(bs.serverEnv, mittoEnv)
+		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			return "", &sessionError{"failed to start with runner: " + err.Error()}
 		}
 
-		// Monitor stderr in background (with crash detection for Fix C)
-		startStderrMonitor(stderr, stderrCollector, onCrashDetected)
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", -1)
+
+		// Monitor stderr in background (with crash detection for Fix C and watchdog wake-up)
+		startStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		// Store wait function for cleanup
 		// We'll call it in Close() method
@@ -1858,19 +2217,23 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
 
-		// Set MITTO_* environment variables for the ACP subprocess
-		processEnv := os.Environ()
-		for k, v := range mittoEnv {
-			processEnv = append(processEnv, k+"="+v)
-		}
-		cmd.Env = processEnv
+		// Set environment variables for the ACP subprocess: server-specific env from
+		// settings.json layered with MITTO_* vars (same layering as the runner branch).
+		cmd.Env = buildACPProcessEnv(bs.serverEnv, mittoEnv)
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
 		}
 
-		// Monitor stderr in background (same as runner case, with crash detection for Fix C)
-		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
+		pid := -1
+		if cmd.Process != nil {
+			pid = cmd.Process.Pid
+		}
+		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", pid)
+
+		// Monitor stderr in background (same as runner case, with crash detection for Fix C
+		// and watchdog wake-up on first stderr activity)
+		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		bs.acpCmd = cmd
 
@@ -2232,6 +2595,7 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 		OnCurrentModeChanged: bs.onCurrentModeChanged,
 		OnMittoToolCall:      bs.onMittoToolCall,
 		OnContextUsageUpdate: bs.onContextUsageUpdate,
+		OnActivity:           bs.signalAgentActivity,
 	}
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{
@@ -2246,54 +2610,58 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	return cfg
 }
 
-// startSharedACPSession sets up this BackgroundSession to use a session on the
-// given shared ACP process instead of starting its own OS process.
-// The session is registered with the shared process's MultiplexClient so that it
-// receives only its own events.
-func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProcess, workingDir string) error {
+// creationRPCCtx returns a context suitable for the initial ACP session creation RPC.
+// It uses CreationCtx from the config if it already has a deadline; otherwise it
+// applies sessionCreationRPCTimeout.  The returned cancel function must be called.
+//
+// Design rationale: The 25s default is shorter than the HTTP middleware's 30s request
+// timeout so that if the RPC times out, the HTTP handler can still return a proper
+// error response (503 with a helpful message) rather than a generic "Request timeout".
+func (bs *BackgroundSession) creationRPCCtx() (context.Context, context.CancelFunc) {
+	base := bs.creationCtx
+	if base == nil {
+		base = bs.ctx
+	}
+	if _, hasDeadline := base.Deadline(); hasDeadline {
+		// Caller already set a deadline — honour it, just make it cancellable.
+		return context.WithCancel(base)
+	}
+	return context.WithTimeout(base, sessionCreationRPCTimeout)
+}
+
+// prepareSharedACPSession sets up this BackgroundSession to use a session on the
+// given shared ACP process WITHOUT issuing the blocking session/new RPC.
+// All eager setup (capabilities, MCP server, acpClient, death-channel bridge) is
+// done here; the session/new RPC is deferred to the first prompt via
+// ensureSharedACPSession so that creating a conversation never blocks on a busy agent.
+func (bs *BackgroundSession) prepareSharedACPSession(sharedProcess *SharedACPProcess, workingDir string) error {
 	bs.sharedProcess = sharedProcess
 
-	// Register with global MCP server and get the (empty) mcpServers list.
 	var caps acp.AgentCapabilities
 	if sharedCaps := sharedProcess.Capabilities(); sharedCaps != nil {
 		caps = *sharedCaps
 	}
 	mcpServers := bs.startSessionMcpServer(bs.store, caps)
-
-	// Create WebClient for stream processing (same callbacks as per-session path).
-	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
-
-	// Create a session on the shared process.
-	handle, err := sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
-	if err != nil {
-		bs.stopSessionMcpServer()
-		bs.acpClient.Close()
-		bs.acpClient = nil
-		bs.sharedProcess = nil
-		return fmt.Errorf("failed to create session on shared process: %w", err)
+	if mcpServers == nil {
+		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
 	}
 
-	// Register this session's WebClient callbacks with the shared MultiplexClient.
-	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
-		OnSessionUpdate:       bs.acpClient.SessionUpdate,
-		OnReadTextFile:        bs.acpClient.ReadTextFile,
-		OnWriteTextFile:       bs.acpClient.WriteTextFile,
-		OnRequestPermission:   bs.acpClient.RequestPermission,
-		OnCreateTerminal:      bs.acpClient.CreateTerminal,
-		OnTerminalOutput:      bs.acpClient.TerminalOutput,
-		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
-		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
-		OnKillTerminal:        bs.acpClient.KillTerminal,
-	})
-
-	bs.acpID = handle.SessionID
+	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
 	bs.agentSupportsImages = caps.PromptCapabilities.Image
-	bs.setSessionModes(handle.Modes)
-	bs.setAgentModels(handle.Models)
+
+	// Store what ensureSharedACPSession will need for the deferred RPC.
+	bs.pendingSharedWorkingDir = workingDir
+	bs.pendingSharedMcpServers = mcpServers
+	bs.pendingShared = true
+
+	// Release the creation context — it is the HTTP request context and will be
+	// cancelled as soon as the create handler returns. The deferred session/new uses
+	// bs.ctx instead (see ensureSharedACPSession). resumeSharedACPSession (called on
+	// crash restart) also uses creationRPCCtx(), so this nil ensures it falls back to
+	// bs.ctx rather than the long-expired HTTP request context.
+	bs.creationCtx = nil
 
 	// Bridge the shared process's death channel to bs.acpProcessDone.
-	// bs.acpProcessDone is a bidirectional chan; sharedProcess.ProcessDone() is receive-only.
-	// We bridge them with a goroutine so all existing select sites work unchanged.
 	done := make(chan struct{})
 	bs.acpProcessDone = done
 	bs.acpProcessDoneOnce = sync.Once{}
@@ -2307,13 +2675,151 @@ func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProce
 	}()
 
 	if bs.logger != nil {
-		bs.logger.Info("Created ACP session on shared process",
+		bs.logger.Info("Prepared shared ACP session (session/new deferred to first prompt)",
 			"session_id", bs.persistedID,
-			"acp_session_id", bs.acpID,
 			"supports_images", bs.agentSupportsImages)
+	}
+	return nil
+}
+
+// ensureSharedACPSession performs the deferred session/new RPC for a shared-process
+// session. It is idempotent and safe under concurrent callers (guarded by pendingSharedMu).
+// Returns nil immediately if the handshake already completed or was handled by a restart.
+// On error, the session is left in a retryable state — the caller should surface a clear
+// error to the user and allow the next prompt to retry.
+func (bs *BackgroundSession) ensureSharedACPSession() error {
+	bs.pendingSharedMu.Lock()
+	defer bs.pendingSharedMu.Unlock()
+
+	// Return if already done or if a restart path already set bs.acpID.
+	if !bs.pendingShared || bs.acpID != "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(bs.ctx, sessionCreationRPCTimeout)
+	handle, err := bs.sharedProcess.NewSession(ctx, bs.pendingSharedWorkingDir, bs.pendingSharedMcpServers)
+	cancel()
+	if err != nil {
+		// Leave pendingShared=true so the next prompt can retry.
+		return fmt.Errorf("failed to create session on shared process: %w", err)
+	}
+
+	bs.sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
+		OnSessionUpdate:       bs.acpClient.SessionUpdate,
+		OnReadTextFile:        bs.acpClient.ReadTextFile,
+		OnWriteTextFile:       bs.acpClient.WriteTextFile,
+		OnRequestPermission:   bs.acpClient.RequestPermission,
+		OnCreateTerminal:      bs.acpClient.CreateTerminal,
+		OnTerminalOutput:      bs.acpClient.TerminalOutput,
+		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
+		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
+		OnKillTerminal:        bs.acpClient.KillTerminal,
+	})
+
+	bs.acpID = handle.SessionID
+
+	// Stash modes and models for applyPendingSharedModes to apply from the prompt
+	// goroutine. We must NOT call setSessionModes / setAgentModels here because
+	// they trigger store writes (via persistConfigValue / applyConfigConstraints)
+	// that may race with concurrent store access from other goroutines (e.g., the
+	// test event-injector using a separate Store instance on the same directory).
+	bs.pendingSharedModes = handle.Modes
+	bs.pendingSharedModels = handle.Models
+
+	bs.pendingShared = false
+
+	if bs.logger != nil {
+		bs.logger.Info("Completed deferred session/new on shared process",
+			"session_id", bs.persistedID,
+			"acp_session_id", bs.acpID)
 		bs.logAgentModels(handle.Models)
 	}
 	return nil
+}
+
+// applyPendingSharedModes applies the modes and models that were stashed by
+// ensureSharedACPSession. Safe to call only from a single goroutine (the prompt
+// goroutine) because setSessionModes and setAgentModels trigger store writes via
+// persistConfigValue / applyConfigConstraints.
+// Calling this more than once is a no-op once the fields are cleared.
+func (bs *BackgroundSession) applyPendingSharedModes() {
+	bs.pendingSharedMu.Lock()
+	modes := bs.pendingSharedModes
+	models := bs.pendingSharedModels
+	bs.pendingSharedModes = nil
+	bs.pendingSharedModels = nil
+	bs.pendingSharedMu.Unlock()
+
+	if modes != nil {
+		bs.setSessionModes(modes)
+	}
+	if models != nil {
+		bs.setAgentModels(models)
+	}
+}
+
+// completeDeferredHandshake performs the deferred session/new RPC for a shared-
+// process session, persists the ACP session ID, applies the session's modes and
+// models (which populate the config options surfaced to the UI as model/mode
+// selectors), and notifies observers that ACP is ready. It serialises these store
+// writes via handshakeMu so it is safe to call from either the first-prompt
+// goroutine or the background prewarm goroutine (see PrewarmACPSession). It returns
+// nil — without notifying — when there is nothing to do (not a deferred shared
+// session, or the handshake already completed).
+func (bs *BackgroundSession) completeDeferredHandshake() error {
+	bs.handshakeMu.Lock()
+	defer bs.handshakeMu.Unlock()
+
+	// Nothing to do if this is not a deferred shared session, or the handshake has
+	// already completed. pendingShared is flipped to false (under pendingSharedMu)
+	// by ensureSharedACPSession once the RPC succeeds.
+	bs.pendingSharedMu.Lock()
+	pending := bs.pendingShared
+	bs.pendingSharedMu.Unlock()
+	if bs.sharedProcess == nil || !pending {
+		return nil
+	}
+
+	if err := bs.ensureSharedACPSession(); err != nil {
+		return err
+	}
+
+	// Persist the ACP session ID. Done here (not inside ensureSharedACPSession) so
+	// that store writes happen from a single serialised goroutine (handshakeMu).
+	if bs.store != nil && bs.persistedID != "" && bs.acpID != "" {
+		if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			m.ACPSessionID = bs.acpID
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to persist ACP session ID after deferred handshake", "error", err)
+		}
+	}
+
+	bs.applyPendingSharedModes()
+
+	// Notify observers that ACP is now ready and config options (model, mode) are
+	// available, so the UI can render the model/mode selectors.
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnACPStarted()
+	})
+	return nil
+}
+
+// PrewarmACPSession completes the deferred ACP session/new handshake in the
+// background so the model and mode selectors become available before the first
+// prompt is sent. It is best-effort and idempotent: a no-op for non-deferred or
+// already-started sessions, and on failure it leaves the session retryable so the
+// first prompt re-attempts the handshake. Intended to be called from a goroutine.
+func (bs *BackgroundSession) PrewarmACPSession() {
+	if bs == nil || bs.sharedProcess == nil {
+		return
+	}
+	if err := bs.completeDeferredHandshake(); err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("Background ACP prewarm failed (will retry on first prompt)",
+				"session_id", bs.persistedID,
+				"error", err)
+		}
+	}
 }
 
 // resumeSharedACPSession sets up this BackgroundSession to use a session on the
@@ -2405,7 +2911,10 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 	// Final fallback: create new session
 	if handle == nil {
 		bs.resumeMethod = "new"
-		handle, err = sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
+		// Use the creation context so the HTTP handler's timeout can cancel this RPC.
+		rpcCtx, rpcCancel := bs.creationRPCCtx()
+		handle, err = sharedProcess.NewSession(rpcCtx, workingDir, mcpServers)
+		rpcCancel()
 		if err != nil {
 			bs.stopSessionMcpServer()
 			bs.acpClient.Close()
@@ -2414,6 +2923,7 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 			return fmt.Errorf("failed to create session on shared process: %w", err)
 		}
 	}
+	bs.creationCtx = nil // Release reference — only needed for the creation RPCs above.
 
 	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
 		OnSessionUpdate:       bs.acpClient.SessionUpdate,
@@ -2586,6 +3096,14 @@ func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
 	})
 }
 
+// TriggerTitleGeneration triggers async title generation if the session has no title yet.
+// This is the public interface used by MCP tools and API handlers to generate titles
+// for sessions that received prompts via paths that don't normally trigger title generation
+// (e.g., periodic prompt configuration, queue processing).
+func (bs *BackgroundSession) TriggerTitleGeneration(message string) {
+	bs.retryTitleGenerationIfNeeded(message)
+}
+
 // GetWorkspaceUUID returns the workspace UUID associated with this session.
 func (bs *BackgroundSession) GetWorkspaceUUID() string {
 	return bs.workspaceUUID
@@ -2596,14 +3114,27 @@ func (bs *BackgroundSession) GetAuxiliaryManager() *auxiliary.WorkspaceAuxiliary
 	return bs.auxiliaryManager
 }
 
+// SetPromptResolver sets the function used to resolve named workspace prompts to their full text.
+// This is called by the server setup code (same resolver used by PeriodicRunner).
+func (bs *BackgroundSession) SetPromptResolver(resolver PromptResolverFunc) {
+	bs.promptResolver = resolver
+}
+
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
 	SenderID         string          // Unique identifier of the sending client (for broadcast deduplication)
 	PromptID         string          // Client-generated prompt ID (for delivery confirmation)
+	PromptName       string          // Name of workspace prompt (resolved to full text before ACP; empty for ad-hoc prompts)
 	ImageIDs         []string        // IDs of images attached to the prompt
 	FileIDs          []string        // IDs of files attached to the prompt
 	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
+	FreshContext     bool            // True to suppress history injection and use a new ACP session for this prompt
+	// Arguments, when non-empty, triggers bash-like ${VAR}/${VAR:-default}
+	// substitution on the resolved prompt text before persistence and broadcast.
+	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that
+	// pasted shell/code containing ${...} is never corrupted.
+	Arguments map[string]string
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -2629,6 +3160,27 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 // The meta parameter contains sender information for multi-client broadcast.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
+	// Resolve prompt name to full text before any other processing.
+	// meta.PromptName is UI metadata only; the ACP agent always receives the full text.
+	if meta.PromptName != "" && message == "" {
+		if bs.promptResolver == nil {
+			return fmt.Errorf("prompt %q cannot be resolved: no prompt resolver configured", meta.PromptName)
+		}
+		resolved, err := bs.promptResolver(meta.PromptName, bs.workingDir)
+		if err != nil {
+			return fmt.Errorf("failed to resolve prompt %q: %w", meta.PromptName, err)
+		}
+		message = resolved
+	}
+
+	// Apply bash-like ${VAR}/${VAR:-default} argument substitution when the caller
+	// supplied an arguments map. Done here (the single chokepoint for all entry
+	// paths) and before persistence/broadcast so the transcript shows the
+	// substituted text. Guarded on len > 0 so ad-hoc messages are untouched.
+	if len(meta.Arguments) > 0 {
+		message = processors.SubstituteArguments(message, meta.Arguments)
+	}
+
 	imageIDs := meta.ImageIDs
 	fileIDs := meta.FileIDs
 	if bs.IsClosed() {
@@ -2638,6 +3190,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		return &sessionError{"The AI agent is still starting up. Please wait a moment and try again."}
 	}
 
+retryAfterRestart:
 	bs.promptMu.Lock()
 	if bs.isPrompting {
 		// Check if the ACP connection is dead (process crashed)
@@ -2704,14 +3257,21 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					return &sessionError{"ACP process died and restart failed: " + err.Error()}
 				}
 
-				// Restart succeeded - notify user to retry the prompt
+				// Restart succeeded — automatically retry the prompt.
 				// Note: we say "restarted" (not "restarted successfully") because the
 				// process may crash again on the next prompt — we don't want to give
 				// false confidence.
 				bs.notifyObservers(func(o SessionObserver) {
-					o.OnError("AI agent restarted. Please resend your message.")
+					o.OnError("AI agent restarted. Retrying your message automatically...")
 				})
-				return &sessionError{"ACP process restarted - please resend your message"}
+				if bs.logger != nil {
+					bs.logger.Info("Auto-retrying prompt after ACP restart",
+						"session_id", bs.persistedID,
+						"reason", "crash_during_prompt")
+				}
+				// isPrompting was cleared above; re-acquire promptMu and proceed
+				// through the normal prompt path below.
+				goto retryAfterRestart
 			}
 
 			// Restart limit exceeded - notify user to manually restart
@@ -2729,8 +3289,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	bs.promptCount++
 	bs.TouchActivity()
 
-	// Check if we need to inject conversation history (first prompt of resumed session)
-	shouldInjectHistory := bs.isResumed && !bs.historyInjected
+	// Check if we need to inject conversation history (first prompt of resumed session).
+	// FreshContext suppresses history injection so each periodic run starts clean.
+	shouldInjectHistory := bs.isResumed && !bs.historyInjected && !meta.FreshContext
 	if shouldInjectHistory {
 		bs.historyInjected = true
 	}
@@ -2866,7 +3427,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// The prompt ID is included so clients can clear pending prompts on reconnect
 	var userPromptSeq int64
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 		// Get the seq that was assigned to the user prompt (it's the current event count)
@@ -2882,7 +3443,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		fileIDStrings[i] = f.ID
 	}
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName)
 	})
 
 	// Build the actual prompt to send to ACP.
@@ -2893,7 +3454,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// Fetch session metadata for @mitto:variable substitution.
 	// Done unconditionally so substitution works even with no processors configured.
 	// Best-effort: unavailable fields substitute to "".
-	var sessionName, acpServer, parentSessionID, parentSessionName string
+	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
 	var childSessions []processors.ChildSession
 	var advancedSettings map[string]bool
 	if bs.store != nil && bs.persistedID != "" {
@@ -2902,6 +3463,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			acpServer = sessionMeta.ACPServer
 			parentSessionID = sessionMeta.ParentSessionID
 			advancedSettings = sessionMeta.AdvancedSettings
+			beadsIssue = sessionMeta.BeadsIssue
 		}
 		// Resolve parent session name for @mitto:parent variable
 		if parentSessionID != "" {
@@ -2912,12 +3474,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		// Resolve child sessions for @mitto:children variable
 		if children, childErr := bs.store.ListChildSessions(bs.persistedID); childErr == nil {
 			for _, child := range children {
+				isPrompting := false
+				if bs.isChildPrompting != nil {
+					isPrompting = bs.isChildPrompting(child.SessionID)
+				}
 				childSessions = append(childSessions, processors.ChildSession{
 					ID:          child.SessionID,
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
 					IsAutoChild: child.ChildOrigin == session.ChildOriginAuto,
 					ChildOrigin: string(child.ChildOrigin),
+					IsPrompting: isPrompting,
 				})
 			}
 		}
@@ -2975,6 +3542,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		SessionName:            sessionName,
 		ACPServer:              acpServer,
 		WorkspaceUUID:          bs.workspaceUUID,
+		BeadsIssue:             beadsIssue,
 		AvailableACPServers:    bs.availableACPServers,
 		ChildSessions:          childSessions,
 		MCPToolNames:           mcpToolNames,
@@ -3066,20 +3634,107 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	// Run prompt in background
 	go func() {
+		// autoRetried guards a single automatic retry after an ACP crash during
+		// streaming. On the first crash we restart the process and jump back to
+		// retryPrompt; if the retry also crashes we fall through to the normal
+		// "please resend" message instead of looping forever.
+		autoRetried := false
+
+		// For shared-process sessions, complete the deferred session/new handshake
+		// before the first prompt. This runs after the HTTP create path has already
+		// returned, so a busy agent delays the prompt — not conversation creation.
+		// The background prewarm (see PrewarmACPSession) may have already completed
+		// this when the client opened the conversation; completeDeferredHandshake is
+		// idempotent and a no-op in that case.
+		if bs.sharedProcess != nil {
+			if err := bs.completeDeferredHandshake(); err != nil {
+				if bs.logger != nil {
+					bs.logger.Error("Deferred session/new failed",
+						"session_id", bs.persistedID,
+						"error", err)
+				}
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("Could not start the agent session: " + err.Error() + ". Please try again.")
+				})
+				bs.promptMu.Lock()
+				bs.isPrompting = false
+				bs.promptStartTime = time.Time{}
+				bs.promptCond.Broadcast()
+				bs.promptMu.Unlock()
+				if bs.onStreamingStateChanged != nil {
+					bs.onStreamingStateChanged(bs.persistedID, false)
+				}
+				return
+			}
+		}
+
+		// For fresh-context runs, create a new ACP session so the agent has no
+		// in-memory context from prior interactions. Only supported on non-shared
+		// connections; shared-process sessions fall back to history suppression only.
+		freshContextSessionID := ""
+		if meta.FreshContext && bs.acpConn != nil {
+			cwd := bs.workingDir
+			if cwd == "" {
+				cwd = "."
+			}
+			freshCtx, freshCancel := context.WithTimeout(bs.ctx, 10*time.Second)
+			freshSess, freshErr := bs.acpConn.NewSession(freshCtx, acp.NewSessionRequest{
+				Cwd:        cwd,
+				McpServers: []acp.McpServer{}, // Must be empty array, not nil — ACP validates this
+			})
+			freshCancel()
+			if freshErr == nil {
+				freshContextSessionID = string(freshSess.SessionId)
+				if bs.logger != nil {
+					bs.logger.Info("Created fresh ACP session for periodic run",
+						"fresh_session_id", freshContextSessionID,
+						"session_id", bs.persistedID)
+				}
+			} else if bs.logger != nil {
+				bs.logger.Warn("Failed to create fresh ACP session, using existing",
+					"error", freshErr,
+					"session_id", bs.persistedID)
+			}
+		}
+
+		// Declare all variables that are live across the retryPrompt goto target
+		// here, before the label, so that Go's "no jumping over declarations" rule
+		// is satisfied. They are assigned (not declared) inside the loop body.
+		var (
+			promptCtx       context.Context
+			promptCancel    context.CancelFunc
+			promptResp      acp.PromptResponse
+			err             error
+			promptStartedAt time.Time
+			promptEndedAt   time.Time
+			processDoneCh   <-chan struct{}
+			connDoneCh      <-chan struct{}
+			// inactivityWatchdogFired is set by the prompt inactivity watchdog when it
+			// cancels the prompt because the agent stopped streaming (live-but-unresponsive).
+			// The error-handling path below reads it to surface a recoverable message and
+			// skip the crash-restart logic (the process is alive, not dead).
+			inactivityWatchdogFired atomic.Bool
+		)
+
+	retryPrompt:
+		// Reset the inactivity flag for this attempt (a goto retryPrompt reuses it).
+		inactivityWatchdogFired.Store(false)
 		// Create a prompt context that gets cancelled when the ACP process dies.
 		// This ensures we fail fast instead of waiting for the ACP server's internal
 		// 60-second control request timeout when the CLI subprocess has crashed.
 		// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
-		promptCtx, promptCancel := context.WithCancel(bs.ctx)
-		defer promptCancel()
+		promptCtx, promptCancel = context.WithCancel(bs.ctx)
+		// NOTE: no defer — we call promptCancel() explicitly after the prompt
+		// returns so that (a) we clean up the health-monitor goroutine eagerly,
+		// and (b) a goto back to retryPrompt doesn't accumulate extra defers.
 
 		// Monitor ACP process health: if the connection's Done() channel closes
 		// or the OS process exits (acpProcessDone), cancel the prompt context immediately.
 		// The acpProcessDone channel provides faster detection than Done() because it
 		// uses OS-level process liveness checks (signal 0) rather than waiting for
 		// pipe EOF to propagate through the JSON-RPC transport layer.
-		processDoneCh := bs.acpProcessDone // capture for goroutine
-		var connDoneCh <-chan struct{}
+		processDoneCh = bs.acpProcessDone // refresh on each retry (new process after restart)
+		connDoneCh = nil                  // reset before assigning below
 		if bs.acpConn != nil {
 			connDoneCh = bs.acpConn.Done()
 		} else if bs.sharedProcess != nil {
@@ -3106,18 +3761,30 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			}()
 		}
 
-		var promptResp acp.PromptResponse
-		var err error
-		promptStartedAt := time.Now() // captured for after-phase processors
+		// Monitor for a live-but-unresponsive agent: if the agent stops streaming any
+		// updates for the configured window (and is not blocked on a UI prompt), cancel
+		// the prompt so is_prompting clears and the user can resend. This catches the
+		// "stuck, still responding" state that the process-death/connection monitors miss.
+		bs.startPromptInactivityWatchdog(promptCtx, promptCancel, &inactivityWatchdogFired)
+
+		// On retry after ACP crash, freshContextSessionID is from the old (dead)
+		// connection; fall back to bs.acpID which holds the new session.
+		acpSessionIDForPrompt := bs.acpID
+		if freshContextSessionID != "" && !autoRetried {
+			acpSessionIDForPrompt = freshContextSessionID
+		}
+
+		promptStartedAt = time.Now() // captured for after-phase processors
 		if bs.sharedProcess != nil {
-			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(bs.acpID), finalBlocks)
+			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(acpSessionIDForPrompt), finalBlocks)
 		} else {
 			promptResp, err = bs.acpConn.Prompt(promptCtx, acp.PromptRequest{
-				SessionId: acp.SessionId(bs.acpID),
+				SessionId: acp.SessionId(acpSessionIDForPrompt),
 				Prompt:    finalBlocks,
 			})
 		}
-		promptEndedAt := time.Now() // captured for after-phase processors
+		promptCancel()             // cancel context to unblock the health-monitor goroutine
+		promptEndedAt = time.Now() // captured for after-phase processors
 
 		// Store token usage from the prompt response (if available).
 		if promptResp.Usage != nil {
@@ -3229,7 +3896,29 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				}
 			}
 
-			if acpDead && bs.canRestartACP() {
+			if inactivityWatchdogFired.Load() {
+				// The agent stayed alive and connected but stopped streaming updates.
+				// The watchdog already cancelled the prompt and is_prompting was cleared
+				// above. Surface a recoverable message and do NOT auto-restart (the
+				// process is healthy, not crashed) or auto-advance the queue (the next
+				// queued message would likely wedge the same way).
+				if bs.logger != nil {
+					bs.logger.Warn("prompt_cancelled_by_inactivity_watchdog",
+						"session_id", bs.persistedID)
+				}
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("The AI agent stopped responding (no activity for a while), so the conversation was reset. Please resend your message. If this keeps happening, switch to another conversation and back to restart the agent.")
+				})
+			} else if acpDead && autoRetried {
+				// The auto-retry already happened and the process crashed again.
+				// Don't consume another restart slot — let the next user-triggered prompt
+				// handle the restart. This ensures each user message uses at most one
+				// restart slot, so MaxACPRestarts behaves predictably from the user's POV.
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("AI agent restarted. Please resend your message.")
+				})
+			} else if acpDead && bs.canRestartACP() {
+				// First crash on this prompt — restart and automatically retry.
 				restartInfo := bs.getRestartInfo()
 				bs.notifyObservers(func(o SessionObserver) {
 					o.OnError(fmt.Sprintf("The AI agent process stopped unexpectedly. Restarting %s...", restartInfo))
@@ -3245,9 +3934,25 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 						o.OnError(errMsg)
 					})
 				} else {
+					// Restart succeeded — automatically retry the prompt.
+					autoRetried = true
 					bs.notifyObservers(func(o SessionObserver) {
-						o.OnError("AI agent restarted. Please resend your message.")
+						o.OnError("AI agent restarted. Retrying your message automatically...")
 					})
+					if bs.logger != nil {
+						bs.logger.Info("Auto-retrying prompt after ACP restart during stream",
+							"session_id", bs.persistedID)
+					}
+					// Re-acquire the prompting state so the retry runs under the
+					// same invariants as the original prompt call.
+					bs.promptMu.Lock()
+					bs.isPrompting = true
+					bs.promptStartTime = time.Now()
+					bs.promptMu.Unlock()
+					if bs.onStreamingStateChanged != nil {
+						bs.onStreamingStateChanged(bs.persistedID, true)
+					}
+					goto retryPrompt
 				}
 			} else if acpDead {
 				// ACP process died but restart limit exceeded — tell user to manually restart
@@ -3287,8 +3992,10 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				o.OnPromptComplete(eventCount)
 			})
 
-			// Process next queued message if queue processing is enabled
-			bs.processNextQueuedMessage()
+			// Process next queued message if queue processing is enabled.
+			// dispatched is true when another queued turn was started (the session is
+			// not yet idle); it gates agentIdle after-phase processors below.
+			dispatched := bs.processNextQueuedMessage()
 
 			// Retry title generation if session still has no title.
 			// This catches failed initial attempts (e.g. context deadline exceeded)
@@ -3319,12 +4026,14 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				}
 			}
 
-			// Apply after-phase processors (on: agentResponded pipeline).
+			// Apply after-phase processors (agentResponded + agentIdle pipeline).
 			// Runs after follow-up analysis so all event state is fully persisted.
 			// This is synchronous — processors are fast (command execution with timeouts).
+			// sessionIdle is true when no further queued message was dispatched, so
+			// agentIdle processors fire only once the queue has drained.
 			if bs.processorManager != nil {
 				bs.applyAfterProcessors(bs.ctx, message, meta.SenderID,
-					string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp)
+					string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp, !dispatched)
 			}
 		}
 
@@ -3333,6 +4042,18 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		// so the caller can accurately track the final outcome (nil = success, non-nil = failure).
 		if meta.OnComplete != nil {
 			meta.OnComplete(err)
+		}
+
+		// Self-destruct: if the agent requested deletion of its own conversation
+		// during this turn, delete it now that the turn has fully completed and
+		// observers have seen the final response. Run asynchronously so this
+		// goroutine can unwind before the session (and its ACP connection) is
+		// torn down by the deletion path.
+		if bs.IsSelfDestructRequested() && bs.onSelfDestruct != nil {
+			if bs.logger != nil {
+				bs.logger.Info("self_destruct_triggered", "session_id", bs.persistedID)
+			}
+			go bs.onSelfDestruct(bs.persistedID)
 		}
 	}()
 
@@ -3466,9 +4187,11 @@ func promptOriginFromSenderID(senderID string) string {
 	}
 }
 
-// applyAfterProcessors runs the agentResponded processor pipeline after an ACP turn completes.
-// It is called synchronously in the prompt goroutine, after follow-up suggestion analysis,
-// so all events are already flushed and persisted at this point.
+// applyAfterProcessors runs the after-phase processor pipeline (agentResponded + agentIdle)
+// after an ACP turn completes. It is called synchronously in the prompt goroutine, after
+// follow-up suggestion analysis, so all events are already flushed and persisted at this point.
+// sessionIdle reports whether the queue was drained after this turn; it gates agentIdle
+// processors so they fire only once the agent has finished its burst of work.
 //
 // Results are dispatched as follows:
 //   - Notifications → bs.UINotify (fire-and-forget toast)
@@ -3482,6 +4205,7 @@ func (bs *BackgroundSession) applyAfterProcessors(
 	stopReason string,
 	startedAt, endedAt time.Time,
 	promptResp acp.PromptResponse,
+	sessionIdle bool,
 ) {
 	// Build agent messages from the last persisted agent message.
 	var agentMessages []string
@@ -3493,13 +4217,26 @@ func (bs *BackgroundSession) applyAfterProcessors(
 		}
 	}
 
-	// Build token usage snapshot (nil if ACP did not report usage).
+	// Build token usage snapshot.
+	// Use actual ACP usage when available; otherwise estimate from message text
+	// so that cadence token thresholds (everyNTokens) can still be met.
 	var tokenUsage *processors.AfterTokenUsage
 	if promptResp.Usage != nil {
 		tokenUsage = &processors.AfterTokenUsage{
 			Input:  int64(promptResp.Usage.InputTokens),
 			Output: int64(promptResp.Usage.OutputTokens),
 			Total:  int64(promptResp.Usage.TotalTokens),
+		}
+	} else {
+		// Fallback: estimate tokens from user prompt + agent response text.
+		estimated := int64(processors.EstimateTokens(userPrompt))
+		for _, msg := range agentMessages {
+			estimated += int64(processors.EstimateTokens(msg))
+		}
+		if estimated > 0 {
+			tokenUsage = &processors.AfterTokenUsage{
+				Total: estimated,
+			}
 		}
 	}
 
@@ -3512,6 +4249,7 @@ func (bs *BackgroundSession) applyAfterProcessors(
 	input := processors.AfterProcessorInput{
 		SessionID:     bs.persistedID,
 		SessionDir:    sessionDir,
+		WorkspaceUUID: bs.workspaceUUID,
 		WorkingDir:    bs.workingDir,
 		Origin:        promptOriginFromSenderID(senderID),
 		StopReason:    stopReason,
@@ -3521,6 +4259,7 @@ func (bs *BackgroundSession) applyAfterProcessors(
 		TokenUsage:    tokenUsage,
 		StartedAt:     startedAt,
 		EndedAt:       endedAt,
+		SessionIdle:   sessionIdle,
 	}
 
 	result := bs.processorManager.ApplyAfter(ctx, input)
@@ -3903,15 +4642,17 @@ func (bs *BackgroundSession) hasImmediateQueuedMessages() bool {
 
 // processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
 // This is called after a prompt completes and applies the configured delay before sending.
-func (bs *BackgroundSession) processNextQueuedMessage() {
+// It returns true if a queued message was popped and dispatched (a new turn is starting,
+// so the session is NOT idle), and false if the queue was empty/disabled (the session is idle).
+func (bs *BackgroundSession) processNextQueuedMessage() bool {
 	// Check if queue processing is enabled
 	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
-		return
+		return false
 	}
 
 	// Get the queue for this session
 	if bs.store == nil {
-		return
+		return false
 	}
 	queue := bs.store.Queue(bs.persistedID)
 
@@ -3919,7 +4660,7 @@ func (bs *BackgroundSession) processNextQueuedMessage() {
 	msg, err := queue.Pop()
 	if err != nil {
 		// Queue is empty or error - nothing to do
-		return
+		return false
 	}
 
 	// Notify observers that we're sending a queued message
@@ -3933,6 +4674,7 @@ func (bs *BackgroundSession) processNextQueuedMessage() {
 	}
 
 	bs.sendQueuedMessage(queue, msg)
+	return true
 }
 
 // TryProcessQueuedMessage checks if the session is idle and enough time has passed since the last
@@ -4015,9 +4757,11 @@ func (bs *BackgroundSession) sendQueuedMessage(queue *session.Queue, msg session
 
 	// Send the queued message
 	meta := PromptMeta{
-		SenderID: "queue",
-		PromptID: msg.ID,
-		ImageIDs: msg.ImageIDs,
+		SenderID:   "queue",
+		PromptID:   msg.ID,
+		ImageIDs:   msg.ImageIDs,
+		Arguments:  msg.Arguments,
+		PromptName: msg.PromptName,
 	}
 	if err := bs.PromptWithMeta(msg.Message, meta); err != nil {
 		if bs.logger != nil {
@@ -4599,16 +5343,24 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 	}
 
 	// Convert models to config option values
-	options := make([]SessionConfigOptionValue, len(models.AvailableModels))
-	for i, m := range models.AvailableModels {
-		desc := ""
-		if m.Description != nil {
-			desc = *m.Description
-		}
-		options[i] = SessionConfigOptionValue{
-			Value:       string(m.ModelId),
-			Name:        m.Name,
-			Description: desc,
+	options := modelsToConfigOptions(models)
+
+	// Start with the agent's reported current model.
+	// Pre-apply any matching constraint to local state immediately, so the UI shows
+	// the desired model from the very first acp_started message — before the async
+	// RPC in applyConfigConstraints completes. agentModels.CurrentModelId is NOT
+	// updated here; applyConfigConstraints compares against it to know whether the
+	// agent-side change still needs to happen.
+	currentValue := string(models.CurrentModelId)
+	if constraint, ok := bs.acpServerConstraints[ConfigOptionCategoryModel]; ok && constraint != nil && constraint.Pattern != "" {
+		if matched := matchConstraintOption(constraint, options); matched != "" && matched != currentValue {
+			if bs.logger != nil {
+				bs.logger.Debug("ACP server constraint: pre-applying model to local state",
+					"category", ConfigOptionCategoryModel,
+					"agent_model", currentValue,
+					"desired_model", matched)
+			}
+			currentValue = matched
 		}
 	}
 
@@ -4618,7 +5370,7 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 		Description:  "AI model for this session (UNSTABLE)",
 		Category:     ConfigOptionCategoryModel,
 		Type:         ConfigOptionTypeSelect,
-		CurrentValue: string(models.CurrentModelId),
+		CurrentValue: currentValue,
 		Options:      options,
 	}
 
@@ -4632,6 +5384,103 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 	}
 	bs.configOptions = append(filtered, modelOption)
 	bs.configMu.Unlock()
+
+	// Apply any ACP server constraints for the model category
+	go bs.applyConfigConstraints(ConfigOptionCategoryModel)
+}
+
+// lookupACPServerConstraints returns the auto-selection constraints for the named
+// ACP server in the given config, or nil if cfg is nil or no matching server is found.
+func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
+	if cfg == nil {
+		return nil
+	}
+	for _, srv := range cfg.ACPServers {
+		if srv.Name == serverName {
+			return srv.Constraints
+		}
+	}
+	return nil
+}
+
+// applyConfigConstraints checks ACP server constraints and auto-selects matching config option values.
+// Called after config options (like models) become available during ACP initialization.
+// Only applies constraints for config option categories that are present in the constraints map.
+func (bs *BackgroundSession) applyConfigConstraints(category string) {
+	if len(bs.acpServerConstraints) == 0 {
+		return
+	}
+
+	constraint, ok := bs.acpServerConstraints[category]
+	if !ok || constraint == nil || constraint.Pattern == "" {
+		return
+	}
+
+	bs.configMu.RLock()
+	var targetOption *SessionConfigOption
+	for i := range bs.configOptions {
+		if bs.configOptions[i].Category == category {
+			targetOption = &bs.configOptions[i]
+			break
+		}
+	}
+	bs.configMu.RUnlock()
+
+	if targetOption == nil || len(targetOption.Options) == 0 {
+		return
+	}
+
+	matchedValue := matchConstraintOption(constraint, targetOption.Options)
+
+	if matchedValue == "" {
+		if bs.logger != nil {
+			bs.logger.Warn("ACP server constraint: no matching option found",
+				"category", category,
+				"match_mode", constraint.MatchMode,
+				"pattern", constraint.Pattern,
+				"available_count", len(targetOption.Options))
+		}
+		return
+	}
+
+	// Skip if the agent already has the matching value.
+	// For the model category, compare against agentModels.CurrentModelId (the agent's actual
+	// current model) rather than the local configOption.CurrentValue, which may have been
+	// pre-applied optimistically in setAgentModels before the RPC completed. This ensures
+	// the RPC still fires even when local state was eagerly set to the desired model.
+	alreadySet := targetOption.CurrentValue == matchedValue
+	if category == ConfigOptionCategoryModel && bs.agentModels != nil {
+		alreadySet = string(bs.agentModels.CurrentModelId) == matchedValue
+	}
+	if alreadySet {
+		if bs.logger != nil {
+			bs.logger.Debug("ACP server constraint: already set to matching value",
+				"category", category,
+				"value", matchedValue)
+		}
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("ACP server constraint: auto-selecting option",
+			"category", category,
+			"match_mode", constraint.MatchMode,
+			"pattern", constraint.Pattern,
+			"selected_value", matchedValue)
+	}
+
+	// Use a background context since this is called during initialization
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := bs.SetConfigOption(ctx, category, matchedValue); err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("ACP server constraint: failed to auto-select option",
+				"category", category,
+				"value", matchedValue,
+				"error", err)
+		}
+	}
 }
 
 // ConfigOptions returns a copy of all session config options.
@@ -4883,17 +5732,45 @@ func formatACPError(err error) string {
 		return "Rate limit reached. Please wait a moment before sending another message."
 	}
 
-	// Generic JSON-RPC internal error (-32603).
+	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.
 	// Previously this required "details" to be present in the message; without it the
 	// raw JSON-RPC error string was shown to the user. Now we always return a
 	// user-friendly message whenever the -32603 code is detected.
 	if strings.Contains(errMsg, "-32603") && strings.Contains(errMsg, "Internal error") {
+		if httpStatus := extractHTTPStatus(errMsg); httpStatus > 0 {
+			switch httpStatus {
+			case 408:
+				return fmt.Sprintf("The AI service request timed out (HTTP %d). The service may be overloaded — please try again in a moment.", httpStatus)
+			case 500:
+				return fmt.Sprintf("The AI service encountered a server error (HTTP %d). Please try again.", httpStatus)
+			case 502, 503:
+				return fmt.Sprintf("The AI service is temporarily unavailable (HTTP %d). Please try again shortly.", httpStatus)
+			case 504:
+				return fmt.Sprintf("The AI service gateway timed out (HTTP %d). Please try again.", httpStatus)
+			default:
+				return fmt.Sprintf("The AI service returned an error (HTTP %d). Please try again, or simplify your request if the problem persists.", httpStatus)
+			}
+		}
 		return "The AI agent encountered an internal error. Please try again, " +
 			"or simplify your request if the problem persists."
 	}
 
 	// Default: return original error with prefix
 	return "Prompt failed: " + errMsg
+}
+
+// extractHTTPStatus tries to extract an HTTP status code from an error string.
+// It searches for common patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
+// Returns 0 if no HTTP status code is found or the extracted value is outside the 4xx–5xx range.
+func extractHTTPStatus(errMsg string) int {
+	matches := httpStatusRegex.FindStringSubmatch(errMsg)
+	if len(matches) >= 2 {
+		status, err := strconv.Atoi(matches[1])
+		if err == nil && status >= 400 && status < 600 {
+			return status
+		}
+	}
+	return 0
 }
 
 // =============================================================================
@@ -4985,7 +5862,19 @@ func (bs *BackgroundSession) UIPrompt(ctx context.Context, req UIPromptRequest) 
 		if bs.logger != nil {
 			bs.logger.Info("UI prompt timed out",
 				"session_id", bs.persistedID,
-				"request_id", req.RequestID)
+				"request_id", req.RequestID,
+				"has_observers", bs.HasObservers())
+		}
+		// Notify all clients if the user was not actively viewing this session.
+		// This triggers a native OS notification so the user knows they missed a prompt.
+		if req.Blocking && !bs.HasObservers() && bs.onUIPromptTimeout != nil {
+			sessionName := ""
+			if bs.store != nil {
+				if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil {
+					sessionName = meta.Name
+				}
+			}
+			go bs.onUIPromptTimeout(bs.persistedID, req, sessionName)
 		}
 		return UIPromptResponse{RequestID: req.RequestID, TimedOut: true}, nil
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,16 +23,14 @@ import (
 //
 // It also implements auxiliary.ProcessProvider to manage auxiliary sessions
 // (title generation, follow-up analysis, etc.) within workspace processes.
+// Auxiliary sessions always run on the same process as the main workspace,
+// with optional model selection via WorkspaceConfigProvider.
 type ACPProcessManager struct {
 	mu        sync.RWMutex
 	processes map[string]*SharedACPProcess // keyed by workspace UUID
 
-	// Dedicated auxiliary processes, keyed by workspace UUID.
-	// Only populated when workspace has AuxiliaryACPServer configured.
-	auxProcesses map[string]*SharedACPProcess
-
 	// WorkspaceConfigProvider returns workspace settings for a given UUID.
-	// Set by SessionManager during initialization to resolve auxiliary config.
+	// Used to look up AuxiliaryModelSelection for new auxiliary sessions.
 	WorkspaceConfigProvider func(workspaceUUID string) *config.WorkspaceSettings
 
 	// Auxiliary session tracking
@@ -62,6 +61,64 @@ type ACPProcessManager struct {
 	sessionQuery    SessionQueryFunc
 	sessionClose    SessionCloseFunc
 	gcMu            sync.Mutex // protects lastSessionSeen and gc lifecycle fields
+
+	// rssSampler samples the RSS (in bytes) of a shared process tree for the GC's
+	// memory-recycle tier. It defaults to (*SharedACPProcess).RSSBytes; tests
+	// override it to exercise the tier without launching a real subprocess.
+	rssSampler func(p *SharedACPProcess) (uint64, error)
+
+	// onMemoryRecycled, if set, is called by the GC's Tier 4 memory-recycle path
+	// when a memory-bloated idle shared ACP process is recycled. Used to broadcast
+	// a toast notification to connected clients. Set after construction (see NewServer).
+	onMemoryRecycled func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)
+
+	// gcSuspendedSessions tracks session IDs that were intentionally suspended
+	// by the GC's periodic-suspend heuristic. When a periodic session's next run
+	// is far away, the GC closes it and adds it here. The WebSocket auto-resume
+	// handler checks this set and skips resume for flagged sessions, preventing
+	// a suspend/resume thrashing loop (GC closes → WS reconnects → auto-resume
+	// → GC closes again). The flag is cleared by:
+	//   - ensure_resumed (explicit user focus)
+	//   - PeriodicRunner (when the prompt is due)
+	//   - ResumeSession (any explicit resume call)
+	gcSuspendedSessions map[string]bool // protected by gcMu
+
+	// Global restart rate limiter — prevents cross-workspace restart cascades.
+	// When multiple workspaces crash simultaneously (e.g., system-wide OOM), individual
+	// per-process rate limiters are insufficient because each workspace independently
+	// restarts, compounding memory pressure.
+	globalRestartMu     sync.Mutex
+	globalRestartTimes  []time.Time
+	globalCooldownUntil time.Time
+}
+
+// MarkGCSuspended records that a session was intentionally suspended by the GC's
+// periodic-suspend heuristic. The WebSocket auto-resume handler checks this flag
+// and skips resume to prevent suspend/resume thrashing.
+func (m *ACPProcessManager) MarkGCSuspended(sessionID string) {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	if m.gcSuspendedSessions == nil {
+		m.gcSuspendedSessions = make(map[string]bool)
+	}
+	m.gcSuspendedSessions[sessionID] = true
+}
+
+// ClearGCSuspended removes the GC-suspended flag for a session, allowing
+// WebSocket auto-resume to proceed normally. Called by ensure_resumed (explicit
+// user focus), PeriodicRunner (when the prompt is due), and ResumeSession.
+func (m *ACPProcessManager) ClearGCSuspended(sessionID string) {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	delete(m.gcSuspendedSessions, sessionID)
+}
+
+// IsGCSuspended returns true if the session was intentionally suspended by the
+// GC and should not be auto-resumed by WebSocket reconnections.
+func (m *ACPProcessManager) IsGCSuspended(sessionID string) bool {
+	m.gcMu.Lock()
+	defer m.gcMu.Unlock()
+	return m.gcSuspendedSessions[sessionID]
 }
 
 // auxSessionKey uniquely identifies an auxiliary session.
@@ -78,18 +135,34 @@ type auxiliarySessionState struct {
 	lastUsed  time.Time
 }
 
-func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, workspace *config.WorkspaceSettings) bool {
-	if p == nil || workspace == nil {
+// sharedProcessConfigMatchesWorkspace returns true if the running process config
+// matches the resolved ACP parameters for the workspace.
+// acpCommand, acpCwd, and acpEnv are the runtime-resolved values (not stored on workspace).
+//
+// Comparison notes (intentional, to avoid spurious recreation):
+//   - ACPCwd is compared as the RAW (unexpanded) value on both sides. The stored
+//     p.config.ACPCwd and the freshly-resolved acpCwd both originate from the same
+//     resolution path (config server.Cwd, see resolveWorkspaceACPLocked) and are
+//     expanded ($MITTO_*) only later, at process start. Comparing raw-vs-raw is
+//     therefore correct; we must NOT expand here (expanding only one side would
+//     create a false mismatch).
+//   - Env is compared by content via mapsEqual, which treats a nil map and an empty
+//     map as equal. This is the only benign-equivalence normalization applied: a
+//     config reload may rebuild the Env map (new reference) without changing its
+//     contents, and a process started with no env (nil) must match a re-resolved
+//     empty map. Any genuine env key/value change still triggers recreation.
+func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, acpServer, acpCommand, acpCwd string, acpEnv map[string]string) bool {
+	if p == nil {
 		return false
 	}
-	if p.config.ACPServer != workspace.ACPServer ||
-		p.config.ACPCommand != workspace.ACPCommand ||
-		p.config.ACPCwd != workspace.ACPCwd {
+	if p.config.ACPServer != acpServer ||
+		p.config.ACPCommand != acpCommand ||
+		p.config.ACPCwd != acpCwd {
 		return false
 	}
 	// Compare environment variables — a change to Env (e.g., NODE_OPTIONS)
 	// should trigger process recreation so the new values take effect.
-	return mapsEqual(p.config.Env, workspace.ACPEnv)
+	return mapsEqual(p.config.Env, acpEnv)
 }
 
 // mapsEqual returns true if two string maps have identical key-value pairs.
@@ -106,15 +179,49 @@ func mapsEqual(a, b map[string]string) bool {
 	return true
 }
 
+// diffEnvKeys compares two env maps and returns the sorted KEY NAMES that were
+// added (present in b but not a), removed (present in a but not b), or changed
+// (present in both with different values).
+//
+// SECURITY: only key names are ever returned — never values — because env values
+// may hold secrets (API keys, tokens). Callers log these keys to make a config
+// recreation diagnosable without leaking secrets.
+func diffEnvKeys(a, b map[string]string) (added, removed, changed []string) {
+	for k, bv := range b {
+		if av, ok := a[k]; !ok {
+			added = append(added, k)
+		} else if av != bv {
+			changed = append(changed, k)
+		}
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			removed = append(removed, k)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(changed)
+	return added, removed, changed
+}
+
 // NewACPProcessManager creates a new process manager.
+// It does NOT perform orphan cleanup — call CleanupOrphanedProcesses() explicitly
+// at server startup if orphan cleanup is desired.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
 	return &ACPProcessManager{
-		processes:    make(map[string]*SharedACPProcess),
-		auxProcesses: make(map[string]*SharedACPProcess),
-		auxSessions:  make(map[auxSessionKey]*auxiliarySessionState),
-		ctx:          ctx,
-		logger:       logger,
+		processes:   make(map[string]*SharedACPProcess),
+		auxSessions: make(map[auxSessionKey]*auxiliarySessionState),
+		ctx:         ctx,
+		logger:      logger,
 	}
+}
+
+// CleanupOrphanedProcesses kills any ACP processes left over from a previous Mitto
+// instance that crashed without running its shutdown sequence. Call this once at
+// server startup, before creating any new processes. Not called in tests.
+func (m *ACPProcessManager) CleanupOrphanedProcesses() {
+	cleanupOrphanedACPProcesses(m.logger)
 }
 
 // Ensure ACPProcessManager implements auxiliary.ProcessProvider
@@ -123,7 +230,11 @@ var _ auxiliary.ProcessProvider = (*ACPProcessManager)(nil)
 // GetOrCreateProcess returns the shared ACP process for the given workspace,
 // creating one if it doesn't exist yet. If prewarm is true and a new process is
 // created, auxiliary sessions are pre-warmed in the background.
-func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettings, r *runner.Runner, prewarm bool) (*SharedACPProcess, error) {
+//
+// acpCommand, acpCwd, and acpEnv are the runtime-resolved ACP connection parameters.
+// They must NOT be read from the workspace struct (those fields no longer exist) and
+// must be resolved from global config by the caller (e.g. via resolveWorkspaceACPLocked).
+func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner, prewarm bool) (*SharedACPProcess, error) {
 	if workspace == nil {
 		return nil, fmt.Errorf("workspace is required")
 	}
@@ -150,14 +261,39 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 			delete(m.processes, workspace.UUID)
 			recreated = true
 		default:
-			if !sharedProcessConfigMatchesWorkspace(p, workspace) {
+			if !sharedProcessConfigMatchesWorkspace(p, workspace.ACPServer, acpCommand, acpCwd, acpEnv) {
 				if m.logger != nil {
+					// Log EXACTLY which field(s) differ so spurious recreations are
+					// diagnosable. Env is logged as key names only (never values),
+					// see diffEnvKeys.
+					addedKeys, removedKeys, changedKeys := diffEnvKeys(p.config.Env, acpEnv)
+					envChanged := len(addedKeys) > 0 || len(removedKeys) > 0 || len(changedKeys) > 0
+					changedFields := make([]string, 0, 4)
+					if p.config.ACPServer != workspace.ACPServer {
+						changedFields = append(changedFields, "server")
+					}
+					if p.config.ACPCommand != acpCommand {
+						changedFields = append(changedFields, "command")
+					}
+					if p.config.ACPCwd != acpCwd {
+						changedFields = append(changedFields, "cwd")
+					}
+					if envChanged {
+						changedFields = append(changedFields, "env")
+					}
 					m.logger.Warn("Shared ACP process config changed, recreating",
 						"workspace_uuid", workspace.UUID,
 						"existing_acp_server", p.config.ACPServer,
 						"new_acp_server", workspace.ACPServer,
 						"existing_acp_command", p.config.ACPCommand,
-						"new_acp_command", workspace.ACPCommand)
+						"new_acp_command", acpCommand,
+						"existing_acp_cwd", p.config.ACPCwd,
+						"new_acp_cwd", acpCwd,
+						"env_changed", envChanged,
+						"env_keys_added", addedKeys,
+						"env_keys_removed", removedKeys,
+						"env_keys_changed", changedKeys,
+						"changed_fields", changedFields)
 				}
 				p.Close()
 				delete(m.processes, workspace.UUID)
@@ -184,13 +320,16 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		ACPCommand: workspace.ACPCommand,
-		ACPCwd:     workspace.ACPCwd,
-		ACPServer:  workspace.ACPServer,
-		WorkingDir: workspace.WorkingDir,
-		Env:        workspace.ACPEnv,
-		Runner:     r,
-		Logger:     processLogger,
+		WorkspaceUUID:    workspace.UUID,
+		ACPCommand:       acpCommand,
+		ACPCwd:           acpCwd,
+		ACPServer:        workspace.ACPServer,
+		WorkingDir:       workspace.WorkingDir,
+		Env:              acpEnv,
+		Runner:           r,
+		Logger:           processLogger,
+		CanRestartGlobal: m.CanRestartGlobally,
+		RecordRestart:    m.RecordGlobalRestart,
 	})
 	createDuration := time.Since(createStart)
 
@@ -251,144 +390,19 @@ func (m *ACPProcessManager) GetProcess(workspaceUUID string) *SharedACPProcess {
 	return m.processes[workspaceUUID]
 }
 
-// GetOrCreateAuxProcess returns or creates a dedicated auxiliary ACP process for the workspace.
-// auxACPCommand is the resolved shell command for the workspace's AuxiliaryACPServer.
-// Returns (nil, nil) if no dedicated aux process is needed for this workspace.
-func (m *ACPProcessManager) GetOrCreateAuxProcess(workspace *config.WorkspaceSettings, auxACPCommand string, r *runner.Runner) (*SharedACPProcess, error) {
-	if workspace == nil || workspace.UUID == "" {
-		return nil, fmt.Errorf("workspace with UUID is required")
-	}
-	if auxACPCommand == "" {
-		return nil, nil
-	}
-
-	lockStart := time.Now()
-	m.mu.Lock()
-	lockWait := time.Since(lockStart)
-
-	// Check if dedicated aux process already exists and is alive
-	if p, ok := m.auxProcesses[workspace.UUID]; ok {
-		select {
-		case <-p.Done():
-			// Process is dead, clean up and recreate
-			if m.logger != nil {
-				m.logger.Info("Dedicated aux ACP process found dead, recreating",
-					"workspace_uuid", workspace.UUID)
-			}
-			delete(m.auxProcesses, workspace.UUID)
-		default:
-			if p.config.ACPCommand != auxACPCommand {
-				// Config changed, close and recreate
-				if m.logger != nil {
-					m.logger.Warn("Dedicated aux ACP process config changed, recreating",
-						"workspace_uuid", workspace.UUID,
-						"existing_command", p.config.ACPCommand,
-						"new_command", auxACPCommand)
-				}
-				p.Close()
-				delete(m.auxProcesses, workspace.UUID)
-			} else {
-				// Process is alive and config matches, return it
-				m.mu.Unlock()
-				if m.logger != nil && lockWait > 10*time.Millisecond {
-					m.logger.Info("GetOrCreateAuxProcess returning existing (lock contention)",
-						"workspace_uuid", workspace.UUID,
-						"lock_wait_ms", lockWait.Milliseconds())
-				}
-				return p, nil
-			}
-		}
-	}
-
-	processLogger := m.logger
-	if processLogger != nil {
-		processLogger = processLogger.With("workspace_uuid", workspace.UUID, "aux", true)
-	}
-
-	createStart := time.Now()
-	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		ACPCommand: auxACPCommand,
-		ACPServer:  workspace.AuxiliaryACPServer,
-		WorkingDir: workspace.WorkingDir,
-		Runner:     r,
-		Logger:     processLogger,
-	})
-	createDuration := time.Since(createStart)
-
-	if err != nil {
-		m.mu.Unlock()
-		if m.logger != nil {
-			m.logger.Warn("GetOrCreateAuxProcess failed to create process",
-				"workspace_uuid", workspace.UUID,
-				"lock_wait_ms", lockWait.Milliseconds(),
-				"create_ms", createDuration.Milliseconds(),
-				"error", err)
-		}
-		return nil, fmt.Errorf("failed to start dedicated aux ACP process for workspace %s: %w", workspace.UUID, err)
-	}
-
-	m.auxProcesses[workspace.UUID] = p
-
-	// Register restart callback so auxiliary sessions are invalidated when the
-	// dedicated aux process restarts (e.g., after a crash).
-	wuuid := workspace.UUID
-	p.SetOnRestart(func() {
-		m.invalidateAuxiliarySessions(wuuid)
-	})
-
-	m.mu.Unlock()
-
-	if m.logger != nil {
-		m.logger.Info("Created dedicated aux ACP process for workspace",
-			"workspace_uuid", workspace.UUID,
-			"aux_acp_server", workspace.AuxiliaryACPServer,
-			"lock_wait_ms", lockWait.Milliseconds(),
-			"create_process_ms", createDuration.Milliseconds())
-	}
-
-	// Pre-warm auxiliary sessions on the dedicated process.
-	// getOrCreateAuxiliarySession will find the aux process via getAuxProcess.
-	if !m.DisableAuxiliary {
-		go m.prewarmAuxiliarySessions(workspace.UUID, processLogger)
-	}
-
-	return p, nil
-}
-
-// getAuxProcess returns the dedicated auxiliary process for a workspace, or nil.
-func (m *ACPProcessManager) getAuxProcess(workspaceUUID string) *SharedACPProcess {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.auxProcesses[workspaceUUID]
-}
-
-// StopAuxProcess stops the dedicated auxiliary process for a workspace.
-func (m *ACPProcessManager) StopAuxProcess(workspaceUUID string) {
-	m.mu.Lock()
-	p, ok := m.auxProcesses[workspaceUUID]
-	if ok {
-		delete(m.auxProcesses, workspaceUUID)
-	}
-	m.mu.Unlock()
-	if ok && p != nil {
-		if m.logger != nil {
-			m.logger.Info("Stopping dedicated aux ACP process",
-				"workspace_uuid", workspaceUUID)
-		}
-		p.Close()
-	}
-}
-
 // CreateSession creates a new ACP session on the shared process for the given workspace.
 // If no shared process exists yet, one is created.
+// acpCommand, acpCwd, acpEnv are the runtime-resolved ACP connection parameters.
 func (m *ACPProcessManager) CreateSession(
 	ctx context.Context,
 	workspace *config.WorkspaceSettings,
+	acpCommand, acpCwd string,
+	acpEnv map[string]string,
 	r *runner.Runner,
 	cwd string,
 	mcpServers []acp.McpServer,
 ) (*SessionHandle, error) {
-	process, err := m.GetOrCreateProcess(workspace, r, true)
+	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		return nil, err
 	}
@@ -397,15 +411,18 @@ func (m *ACPProcessManager) CreateSession(
 }
 
 // LoadSession attempts to load/resume an existing ACP session on the shared process.
+// acpCommand, acpCwd, acpEnv are the runtime-resolved ACP connection parameters.
 func (m *ACPProcessManager) LoadSession(
 	ctx context.Context,
 	workspace *config.WorkspaceSettings,
+	acpCommand, acpCwd string,
+	acpEnv map[string]string,
 	r *runner.Runner,
 	acpSessionID string,
 	cwd string,
 	mcpServers []acp.McpServer,
 ) (*SessionHandle, error) {
-	process, err := m.GetOrCreateProcess(workspace, r, true)
+	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		return nil, err
 	}
@@ -457,27 +474,11 @@ func (m *ACPProcessManager) Close() {
 		processes[k] = v
 	}
 	m.processes = make(map[string]*SharedACPProcess)
-
-	// Also collect all dedicated auxiliary processes
-	auxProcesses := make(map[string]*SharedACPProcess, len(m.auxProcesses))
-	for k, v := range m.auxProcesses {
-		auxProcesses[k] = v
-	}
-	m.auxProcesses = make(map[string]*SharedACPProcess)
 	m.mu.Unlock()
 
 	for uuid, p := range processes {
 		if m.logger != nil {
 			m.logger.Info("Stopping shared ACP process on shutdown",
-				"workspace_uuid", uuid)
-		}
-		p.Close()
-	}
-
-	// Close all dedicated auxiliary processes
-	for uuid, p := range auxProcesses {
-		if m.logger != nil {
-			m.logger.Info("Stopping dedicated aux ACP process on shutdown",
 				"workspace_uuid", uuid)
 		}
 		p.Close()
@@ -523,12 +524,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	// Update last used time
 	auxState.lastUsed = time.Now()
 
-	// Use the dedicated aux process if available, otherwise fall back to the main process.
-	process := m.getAuxProcess(workspaceUUID)
-	if process == nil {
-		// Fall back to main workspace process
-		process = m.GetProcess(workspaceUUID)
-	}
+	process := m.GetProcess(workspaceUUID)
 	if process == nil {
 		auxState.mu.Unlock()
 		return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
@@ -576,10 +572,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 
 		auxState.lastUsed = time.Now()
 
-		process = m.getAuxProcess(workspaceUUID)
-		if process == nil {
-			process = m.GetProcess(workspaceUUID)
-		}
+		process = m.GetProcess(workspaceUUID)
 		if process == nil {
 			auxState.mu.Unlock()
 			return "", fmt.Errorf("shared process for workspace %s disappeared on retry (process may have exited)", workspaceUUID)
@@ -643,11 +636,7 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 	// Update last used time
 	auxState.lastUsed = time.Now()
 
-	// Use the dedicated aux process if available, otherwise fall back to the main process.
-	process := m.getAuxProcess(workspaceUUID)
-	if process == nil {
-		process = m.GetProcess(workspaceUUID)
-	}
+	process := m.GetProcess(workspaceUUID)
 	if process == nil {
 		auxState.mu.Unlock()
 		return fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
@@ -696,14 +685,10 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 
 	// Need to create a new auxiliary session.
-	// Use dedicated aux process if available, otherwise fall back to the main workspace process.
-	process := m.getAuxProcess(workspaceUUID)
-	if process == nil {
-		// Fall back: main workspace process
-		// Note: This assumes the process was already created by a user session.
-		// If not, this will fail - auxiliary sessions require an existing workspace process.
-		process = m.GetProcess(workspaceUUID)
-	}
+	// Auxiliary sessions always use the main workspace process.
+	// Note: This assumes the process was already created by a user session.
+	// If not, this will fail - auxiliary sessions require an existing workspace process.
+	process := m.GetProcess(workspaceUUID)
 	if process == nil {
 		return nil, fmt.Errorf("no shared process for workspace %s (auxiliary sessions require an active workspace)", workspaceUUID)
 	}
@@ -739,6 +724,45 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	sessionHandle, err := process.NewSession(ctx, auxCwd, mcpServers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auxiliary session: %w", err)
+	}
+
+	// Apply auxiliary model selection if configured for this workspace.
+	// If AuxiliaryModelSelection is set and a model matches, switch the session model.
+	// On no match or nil selection, leave the ACP server's default model unchanged.
+	if m.WorkspaceConfigProvider != nil {
+		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil && ws.AuxiliaryModelSelection != nil && ws.AuxiliaryModelSelection.Pattern != "" {
+			options := modelsToConfigOptions(sessionHandle.Models)
+			if matched := matchConstraintOption(ws.AuxiliaryModelSelection, options); matched != "" {
+				// Derive from m.ctx, NOT from ctx: NewSession above may have consumed most
+				// of ctx's budget (e.g., in prewarmAuxiliarySessions where multiple goroutines
+				// were previously sharing a single deadline), making ctx already expired by the
+				// time SetSessionModel runs. Using m.ctx gives SetSessionModel its full 10-second
+				// window regardless of caller-deadline pressure. m.ctx is cancelled on manager
+				// shutdown, providing a safety backstop so this never hangs indefinitely.
+				setCtx, setCancel := context.WithTimeout(m.ctx, 10*time.Second)
+				defer setCancel()
+				if setErr := process.SetSessionModel(setCtx, acp.SessionId(sessionHandle.SessionID), matched); setErr != nil {
+					if m.logger != nil {
+						m.logger.Warn("Auxiliary session: failed to set model",
+							"workspace_uuid", workspaceUUID,
+							"purpose", purpose,
+							"model_id", matched,
+							"error", setErr)
+					}
+				} else if m.logger != nil {
+					m.logger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
+						"workspace_uuid", workspaceUUID,
+						"purpose", purpose,
+						"model_id", matched)
+				}
+			} else if m.logger != nil {
+				m.logger.Debug("Auxiliary session: no model matched AuxiliaryModelSelection, using server default",
+					"workspace_uuid", workspaceUUID,
+					"purpose", purpose,
+					"match_mode", ws.AuxiliaryModelSelection.MatchMode,
+					"pattern", ws.AuxiliaryModelSelection.Pattern)
+			}
+		}
 	}
 
 	// Create auxiliary client to collect responses
@@ -819,9 +843,6 @@ func (m *ACPProcessManager) CloseWorkspaceAuxiliary(workspaceUUID string) error 
 			"workspace_uuid", workspaceUUID,
 			"session_count", len(sessionsToClose))
 	}
-
-	// Stop dedicated aux process if exists
-	m.StopAuxProcess(workspaceUUID)
 
 	return nil
 }
@@ -917,6 +938,31 @@ func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Durat
 	return len(staleKeys)
 }
 
+// EnsurePrewarmed checks whether the workspace has pre-warmed auxiliary sessions
+// (at minimum title-gen) and launches async pre-warming if not.
+// This is cheap to call repeatedly — it only checks the auxSessions map under a lock.
+//
+// This should be called when creating a new BackgroundSession on an existing shared
+// process. When a shared process is first created, prewarmAuxiliarySessions runs
+// automatically. But auxiliary sessions can be lost (server restart, process recreation,
+// idle reaping) and won't be re-created until something needs them. Without this,
+// title generation can block for minutes waiting for a NewSession RPC while the agent
+// is busy with extended thinking on the main prompt.
+func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.Logger) {
+	if m.DisableAuxiliary {
+		return
+	}
+
+	m.auxMu.Lock()
+	key := auxSessionKey{workspaceUUID, auxiliary.PurposeTitleGen}
+	_, exists := m.auxSessions[key]
+	m.auxMu.Unlock()
+
+	if !exists {
+		go m.prewarmAuxiliarySessions(workspaceUUID, logger)
+	}
+}
+
 // prewarmAuxiliarySessions eagerly creates auxiliary sessions for the most commonly used
 // purposes right after a workspace process starts. This one-time upfront cost means that
 // later callers (MCP tool fetch, title generation, follow-up analysis) can find an existing
@@ -924,11 +970,6 @@ func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Durat
 //
 // Run in a goroutine after releasing the ACPProcessManager lock.
 func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logger *slog.Logger) {
-	// Use a short timeout: session creation should complete quickly after process start.
-	// 30 seconds is generous; in practice session creation completes in < 1 second per session.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	purposes := []string{
 		auxiliary.PurposeTitleGen,
 		auxiliary.PurposeMCPCheck,
@@ -937,11 +978,18 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 	}
 
 	// Fire off all prewarm requests in parallel so all sessions are created concurrently.
+	// Each goroutine gets its OWN independent timeout context so that a slow or queued
+	// NewSession for one purpose cannot drain the shared budget and starve the others.
+	// Derived from m.ctx (not context.Background()) so manager shutdown propagates.
 	var wg sync.WaitGroup
 	for _, purpose := range purposes {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
+			// Independent per-goroutine timeout: avoids cross-session budget starvation.
+			// 30 seconds is generous; in practice session creation completes in < 1s.
+			ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+			defer cancel()
 			if _, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, p); err != nil {
 				if logger != nil {
 					logger.Debug("auxiliary session pre-warm failed",

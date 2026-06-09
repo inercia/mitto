@@ -8,6 +8,7 @@ import {
   pickFolder,
   fetchConfig,
   invalidateConfigCache,
+  openExternalURL,
 } from "../utils/index.js";
 
 import {
@@ -26,17 +27,69 @@ import {
   ServerIcon,
   EditIcon,
   PlusIcon,
+  RefreshIcon,
   RobotIcon,
+  GlobeIcon,
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { WorkspaceBadge } from "./WorkspaceBadge.js";
 
 import {
   AutoChildrenEditor,
   RunnerRestrictionsEditor,
 } from "./SettingsDialog.js";
 
-export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
+import { ModelSelection } from "./ModelSelection.js";
+
+// Recommended beads config keys per upstream task system. Shown as context-sensitive
+// help under the upstream selector in the Beads tab.
+const BEADS_UPSTREAM_HELP = {
+  github: {
+    label: "GitHub",
+    rows: [
+      { key: "github.token", desc: "Personal access token" },
+      { key: "github.owner", desc: "Repository owner" },
+      { key: "github.repo", desc: "Repository name" },
+      { key: "github.repository", desc: 'Combined "owner/repo" format' },
+      { key: "github.url", desc: "Custom API URL (GitHub Enterprise)" },
+    ],
+  },
+  jira: {
+    label: "Jira",
+    rows: [
+      { key: "jira.url", desc: 'Base URL, e.g. "https://company.atlassian.net"' },
+      { key: "jira.project", desc: 'Project key, e.g. "PROJ"' },
+      { key: "jira.projects", desc: 'Multiple projects, comma-separated, e.g. "PROJ1,PROJ2"' },
+      { key: "jira.api_token", desc: "API token" },
+      { key: "jira.username", desc: "Account email (Jira Cloud)" },
+      { key: "jira.push_prefix", desc: 'Only push matching issues, e.g. "hippo" or "proj1,proj2"' },
+    ],
+  },
+  gitlab: {
+    label: "GitLab",
+    rows: [
+      { key: "gitlab.url", desc: "GitLab instance URL" },
+      { key: "gitlab.token", desc: "Personal access token" },
+      { key: "gitlab.project_id", desc: "Project ID or path" },
+      { key: "gitlab.group_id", desc: "Group ID for group-level sync" },
+      { key: "gitlab.default_project_id", desc: "Project for creating issues in group mode" },
+    ],
+  },
+  linear: {
+    label: "Linear",
+    rows: [
+      { key: "linear.api_key", desc: "API key (for individual developers)" },
+      { key: "linear.team_id", desc: "Team ID (UUID)" },
+      { key: "linear.team_ids", desc: "Multiple team IDs, comma-separated UUIDs" },
+      { key: "linear.project_id", desc: "Optional: sync only this project" },
+      { key: "linear.id_mode", desc: 'ID generation: "hash" (default)' },
+      { key: "linear.hash_length", desc: "Hash length 3-8 (default: 6)" },
+    ],
+  },
+};
+
+export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, initialTab, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -48,6 +101,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
 
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState(null);
   const [activeTab, setActiveTab] = useState("general");
+  // Pending initial tab to apply after auto-selecting a folder via initialWorkingDir.
+  // The folder-population effect (keyed on selectedFolder) otherwise forces "general",
+  // so we hand the desired tab off here and consume it there.
+  const pendingInitialTabRef = useRef(null);
 
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
@@ -56,10 +113,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const [editCode, setEditCode] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
-  const [editAuxAcpServer, setEditAuxAcpServer] = useState("");
+  const [editAuxModelMode, setEditAuxModelMode] = useState("");
+  const [editAuxModelPattern, setEditAuxModelPattern] = useState("");
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
+  const [editIsDefault, setEditIsDefault] = useState(false);
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
   const [editAutoChildren, setEditAutoChildren] = useState([]);
   const [effectiveConfig, setEffectiveConfig] = useState(null);
@@ -70,10 +129,19 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
 
   const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
   const [mcpInstallJson, setMcpInstallJson] = useState("");
+  const [mcpInstallName, setMcpInstallName] = useState("");
   const [mcpInstallScope, setMcpInstallScope] = useState("");
   const [mcpInstallLoading, setMcpInstallLoading] = useState(false);
   const [mcpInstallError, setMcpInstallError] = useState("");
   const [mcpInstallSuccess, setMcpInstallSuccess] = useState("");
+
+  const [mcpRemoveLoading, setMcpRemoveLoading] = useState(false);
+  const mcpRemoveScopeRef = useRef("");
+  const scrollContainerRef = useRef(null);
+
+  // Ephemeral restart state — resets when dialog closes (component state)
+  const [needsRestart, setNeedsRestart] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
@@ -104,6 +172,20 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   // Folder processors state (for the Processors tab)
   const [folderProcessors, setFolderProcessors] = useState([]);
   const [processorsLoading, setProcessorsLoading] = useState(false);
+
+  // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
+  // beadsConfig holds the raw {key: value} map last loaded from the server.
+  // beadsConfigEntries is the editable list of {key, value} rows for namespaced keys.
+  const [beadsConfig, setBeadsConfig] = useState(null);
+  const [beadsConfigLoading, setBeadsConfigLoading] = useState(false);
+  const [beadsConfigError, setBeadsConfigError] = useState("");
+  const [beadsConfigSaving, setBeadsConfigSaving] = useState(false);
+  const [newBeadsKey, setNewBeadsKey] = useState("");
+  const [newBeadsValue, setNewBeadsValue] = useState("");
+  // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"),
+  // persisted in folders.json via /api/beads/upstream.
+  const [beadsUpstream, setBeadsUpstream] = useState("none");
+  const [beadsUpstreamSaving, setBeadsUpstreamSaving] = useState(false);
 
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -185,15 +267,48 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     }
   }, [isOpen]);
 
+  // Auto-select the folder matching initialWorkingDir when dialog opens and data is loaded
+  useEffect(() => {
+    if (isOpen && initialWorkingDir && groupedWorkspaces.length > 0) {
+      const matchingGroup = groupedWorkspaces.find((g) =>
+        g.workspaces.some((ws) => ws.working_dir === initialWorkingDir)
+      );
+      if (matchingGroup) {
+        // Hand the desired tab to the folder-population effect (keyed on selectedFolder),
+        // which would otherwise force "general". Also set it directly for the case where
+        // selectedFolder is unchanged (reopening on the same folder) and that effect won't run.
+        pendingInitialTabRef.current = initialTab || null;
+        setSelectedFolder(matchingGroup.displayName);
+        setSelectedWorkspaceKey(null);
+        setActiveTab(initialTab || "general");
+      }
+    }
+  }, [isOpen, initialWorkingDir, initialTab, groupedWorkspaces]);
+
+  // Scroll selected folder into view in the tree
+  useEffect(() => {
+    if (!isOpen || !selectedFolder) return;
+    requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const el = container.querySelector(`[data-folder-name="${CSS.escape(selectedFolder)}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    });
+  }, [isOpen, selectedFolder, loading]);
+
   // When a workspace child is selected, populate workspace-level edit fields
   useEffect(() => {
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
-    setEditAuxAcpServer(selectedWorkspace.auxiliary_acp_server || "");
+    setEditAuxModelMode(selectedWorkspace.auxiliary_model_selection?.matchMode || "");
+    setEditAuxModelPattern(selectedWorkspace.auxiliary_model_selection?.pattern || "");
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
     setEditAutoApprove(selectedWorkspace.auto_approve === true);
+    setEditIsDefault(selectedWorkspace.is_default === true);
     setEffectiveConfig(null);
     setMcpTools(null);
     setMcpToolsError("");
@@ -220,7 +335,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
         "#808080",
     );
     setEditAutoChildren(firstWs.auto_children || []);
-    setActiveTab("general");
+    // Apply a pending initial tab (from initialWorkingDir auto-select), else default to general.
+    const pendingTab = pendingInitialTabRef.current;
+    pendingInitialTabRef.current = null;
+    setActiveTab(pendingTab || "general");
 
     // Load workspace metadata from .mittorc
     setFolderMetadata(null);
@@ -263,6 +381,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       loadMcpTools(editAcpServer || selectedWorkspace.acp_server, selectedWorkspace.working_dir);
     }
   }, [activeTab, selectedWorkspaceKey, editAcpServer]);
+
+  // Lazily load beads config + upstream when the Beads folder tab is opened.
+  useEffect(() => {
+    if (activeTab !== "beads" || !selectedFolder) return;
+    const workingDir = getSelectedFolderDir();
+    if (workingDir) {
+      reloadBeadsConfig(workingDir);
+      reloadBeadsUpstream(workingDir);
+    }
+  }, [activeTab, selectedFolder]);
+
+  // Reset beads config state when switching folders.
+  useEffect(() => {
+    setBeadsConfig(null);
+    setBeadsConfigError("");
+    setNewBeadsKey("");
+    setNewBeadsValue("");
+    setBeadsUpstream("none");
+  }, [selectedFolder]);
 
   const loadData = async () => {
     setLoading(true);
@@ -344,6 +481,39 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     }
   }, []);
 
+  // Check if the given workspace UUID has any active (running) sessions.
+  const checkActiveSessionsForWorkspace = useCallback(async (workspaceUUID) => {
+    if (!workspaceUUID) return false;
+    try {
+      const res = await secureFetch(apiUrl("/api/sessions/running"));
+      if (!res.ok) return false;
+      const data = await res.json();
+      return (data.sessions || []).some(s => s.workspace_uuid === workspaceUUID);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Restart the ACP process for the selected workspace so MCP changes take effect.
+  const handleRestartAcp = useCallback(async () => {
+    if (!selectedWorkspace?.uuid) return;
+    setRestarting(true);
+    try {
+      const res = await secureFetch(apiUrl(`/api/workspaces/${selectedWorkspace.uuid}/restart-acp`), {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+      setNeedsRestart(false);
+    } catch (err) {
+      setError("Failed to restart ACP: " + err.message);
+    } finally {
+      setRestarting(false);
+    }
+  }, [selectedWorkspace]);
+
   const handleMcpInstall = useCallback(async () => {
     // Client-side JSON validation
     let parsed;
@@ -354,10 +524,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       return;
     }
 
-    // Validate structure
-    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Object.keys(parsed.mcpServers).length === 0) {
-      setMcpInstallError('JSON must contain a non-empty "mcpServers" object.');
-      return;
+    // Normalize to { mcpServers: { ... } } — detect format automatically
+    if (parsed.mcpServers && typeof parsed.mcpServers === "object" && Object.keys(parsed.mcpServers).length > 0) {
+      // Format 1: already has mcpServers wrapper — use as-is
+    } else if (typeof parsed.command === "string" || typeof parsed.url === "string") {
+      // Format 3: single server definition without a name
+      if (!mcpInstallName.trim()) {
+        setMcpInstallError("Please enter a server name for the single server definition.");
+        return;
+      }
+      parsed = { mcpServers: { [mcpInstallName.trim()]: parsed } };
+    } else {
+      // Format 2: bare map of named servers — check all values look like server entries
+      const vals = Object.values(parsed);
+      if (vals.length > 0 && vals.every(v => v && typeof v === "object" && (typeof v.command === "string" || typeof v.url === "string"))) {
+        parsed = { mcpServers: parsed };
+      } else {
+        setMcpInstallError('Unrecognized JSON format. Paste a "mcpServers" object, a map of named servers, or a single server definition with "command" or "url".');
+        return;
+      }
     }
 
     setMcpInstallLoading(true);
@@ -391,11 +576,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       } else {
         const names = results.map(r => r.name).join(", ");
         setMcpInstallSuccess(`Successfully installed: ${names}`);
+        // Check if active sessions need an ACP restart to pick up the new MCP server
+        if (selectedWorkspace?.uuid) {
+          checkActiveSessionsForWorkspace(selectedWorkspace.uuid).then(hasActive => {
+            if (hasActive) setNeedsRestart(true);
+          });
+        }
         // Reload MCP tools list after successful install
         setTimeout(() => {
           loadMcpTools(acpServer, selectedWorkspace?.working_dir);
           setMcpInstallOpen(false);
           setMcpInstallJson("");
+          setMcpInstallName("");
           setMcpInstallSuccess("");
           setMcpInstallError("");
         }, 1500);
@@ -405,20 +597,102 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     } finally {
       setMcpInstallLoading(false);
     }
-  }, [mcpInstallJson, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools]);
+  }, [mcpInstallJson, mcpInstallName, mcpInstallScope, editAcpServer, selectedWorkspace, loadMcpTools, checkActiveSessionsForWorkspace]);
+
+  const handleMcpRemove = useCallback(async (serverName, scope) => {
+    setMcpRemoveLoading(true);
+    try {
+      const acpServer = editAcpServer || selectedWorkspace?.acp_server;
+      const res = await secureFetch(apiUrl("/api/workspace-mcp-remove"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          acp_server: acpServer,
+          dir: selectedWorkspace?.working_dir,
+          scope: scope || mcpTools?.mcp_scopes?.[0] || "",
+          name: serverName,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (!data.success) {
+        setMcpToolsError(data.message || "Failed to remove MCP server");
+      } else {
+        // Check if active sessions need an ACP restart to drop the removed MCP server
+        if (selectedWorkspace?.uuid) {
+          const hasActive = await checkActiveSessionsForWorkspace(selectedWorkspace.uuid);
+          if (hasActive) setNeedsRestart(true);
+        }
+      }
+      // Refresh the MCP tools list
+      await loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+    } catch (err) {
+      setMcpToolsError("Failed to remove MCP server: " + err.message);
+    } finally {
+      setMcpRemoveLoading(false);
+    }
+  }, [editAcpServer, selectedWorkspace, mcpTools, loadMcpTools, checkActiveSessionsForWorkspace]);
+
+  const handleMcpRemoveConfirm = useCallback((serverName) => {
+    const defaultScope = mcpTools?.mcp_scopes?.[0] || "";
+    mcpRemoveScopeRef.current = defaultScope;
+    setConfirmDialog({
+      title: "Remove MCP Server",
+      message: `Remove MCP server "${serverName}"?`,
+      confirmLabel: "Remove",
+      confirmVariant: "danger",
+      children: mcpTools?.mcp_scopes?.length > 0 ? html`
+        <div class="mt-3">
+          <label class="block text-sm text-gray-400 mb-1">Scope</label>
+          <select
+            value=${defaultScope}
+            onInput=${(e) => { mcpRemoveScopeRef.current = e.target.value; }}
+            class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white"
+          >
+            ${mcpTools.mcp_scopes.map(scope => html`
+              <option key=${scope} value=${scope}>${scope}</option>
+            `)}
+          </select>
+        </div>
+      ` : null,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await handleMcpRemove(serverName, mcpRemoveScopeRef.current || defaultScope);
+      },
+    });
+  }, [mcpTools, handleMcpRemove]);
+
+  // Toggle the "default workspace for this folder" flag. Enforce a single default
+  // per folder live: when enabling it, immediately clear is_default on every other
+  // workspace that shares this folder so the UI reflects the change before saving.
+  const handleToggleIsDefault = (checked) => {
+    setEditIsDefault(checked);
+    if (checked && selectedWorkspace?.working_dir) {
+      setWorkspaces((prev) =>
+        prev.map((ws) =>
+          ws.working_dir === selectedWorkspace.working_dir && getWorkspaceKey(ws) !== selectedWorkspaceKey
+            ? { ...ws, is_default: undefined }
+            : ws
+        )
+      );
+    }
+  };
 
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
-    const server = acpServers.find((s) => s.name === editAcpServer);
+    // Build auxiliary_model_selection object only when both mode and pattern are set
+    const auxModelSelection = (editAuxModelMode && editAuxModelPattern)
+      ? { matchMode: editAuxModelMode, pattern: editAuxModelPattern }
+      : undefined;
     return {
       ...ws,
       acp_server: editAcpServer,
-      acp_command: server ? server.command : ws.acp_command,
-      auxiliary_acp_server: editAuxAcpServer || undefined,
+      auxiliary_model_selection: auxModelSelection,
       restricted_runner: editRunner,
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
       auto_approve: editAutoApprove || undefined,
+      is_default: editIsDefault || undefined,
       acp_command_override: editAcpCommandOverride || undefined,
     };
   };
@@ -430,6 +704,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       return;
     }
     setSaving(true);
+    const saveStartTime = Date.now();
     setError("");
     try {
       // Filter out any workspaces with empty working_dir (safety net)
@@ -447,9 +722,19 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       // Apply workspace-level edits if a workspace is selected
       if (selectedWorkspaceKey) {
         updated = updated.map(applyWorkspaceEdits);
+
+        // Enforce a single default workspace per folder: if the selected workspace
+        // was marked default, clear is_default on the other workspaces in the same folder.
+        if (editIsDefault && selectedWorkspace?.working_dir) {
+          updated = updated.map((ws) =>
+            ws.working_dir === selectedWorkspace.working_dir && getWorkspaceKey(ws) !== selectedWorkspaceKey
+              ? { ...ws, is_default: undefined }
+              : ws
+          );
+        }
       }
 
-      if (updated.length === 0) { setError("At least one workspace is required"); setSaving(false); return; }
+      if (updated.length === 0) { setError("At least one workspace is required"); const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed)); return; }
 
       const config = await fetchConfig(null, true);
       const res = await secureFetch(apiUrl("/api/config"), {
@@ -483,7 +768,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             }
           } catch (metaErr) {
             setError("Failed to save metadata: " + metaErr.message);
-            setSaving(false);
+            const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
             return;
           }
         }
@@ -511,18 +796,26 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             }
           } catch (schemaErr) {
             setError("Failed to save user data schema: " + schemaErr.message);
-            setSaving(false);
+            const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
             return;
           }
         }
       }
 
+      setWorkspaces(updated);
       setNewFolderKey(null);
       onSave?.();
+      showToast?.({
+        style: "success",
+        title: "Workspaces saved",
+        duration: 2000,
+      });
     } catch (err) {
       setError(err.message);
     } finally {
-      setSaving(false);
+      const elapsed = Date.now() - saveStartTime;
+      const remaining = Math.max(0, 1000 - elapsed);
+      setTimeout(() => setSaving(false), remaining);
     }
   };
 
@@ -568,7 +861,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       uuid: crypto.randomUUID(),
       working_dir: "",
       acp_server: server.name,
-      acp_command: server.command,
       restricted_runner: "exec",
     };
     const key = getWorkspaceKey(newWs);
@@ -619,7 +911,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       uuid: crypto.randomUUID(),
       working_dir: ws.working_dir,
       acp_server: altName,
-      acp_command: altSrv.command,
       restricted_runner: ws.restricted_runner || "exec",
       ...(ws.name && { name: ws.name }),
       ...(ws.code && { code: ws.code }),
@@ -652,7 +943,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       uuid: crypto.randomUUID(),
       working_dir: firstWs.working_dir,
       acp_server: unusedServer,
-      acp_command: server.command,
       restricted_runner: "exec",
       ...(firstWs.name && { name: firstWs.name }),
       ...(firstWs.code && { code: firstWs.code }),
@@ -691,6 +981,109 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const getSelectedFolderDir = () => {
     const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
     return folderGroup?.workspaces[0]?.working_dir || null;
+  };
+
+  // Load (reload) beads config for the selected folder via GET /api/beads/config.
+  const reloadBeadsConfig = async (workingDir) => {
+    setBeadsConfigLoading(true);
+    setBeadsConfigError("");
+    try {
+      const res = await secureFetch(apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}`));
+      const data = await res.json();
+      if (data && data.error) {
+        // bd missing or not initialized in this folder.
+        setBeadsConfig(null);
+        setBeadsConfigError(data.error);
+      } else {
+        setBeadsConfig(data || {});
+      }
+    } catch (err) {
+      setBeadsConfig(null);
+      setBeadsConfigError(err.message || "Failed to load beads config");
+    } finally {
+      setBeadsConfigLoading(false);
+    }
+  };
+
+  // Set a single beads config key via PUT /api/beads/config, then reload.
+  const setBeadsConfigKey = async (key, value) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir || !key) return;
+    setBeadsConfigSaving(true);
+    setBeadsConfigError("");
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/config"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, key, value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to set config");
+      if (data && data.error) throw new Error(data.stderr || data.error);
+      await reloadBeadsConfig(workingDir);
+    } catch (err) {
+      setBeadsConfigError(err.message || "Failed to set config");
+    } finally {
+      setBeadsConfigSaving(false);
+    }
+  };
+
+  // Delete a single beads config key via DELETE /api/beads/config, then reload.
+  const unsetBeadsConfigKey = async (key) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir || !key) return;
+    setBeadsConfigSaving(true);
+    setBeadsConfigError("");
+    try {
+      const res = await secureFetch(
+        apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}&key=${encodeURIComponent(key)}`),
+        { method: "DELETE" },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to delete config");
+      if (data && data.error) throw new Error(data.stderr || data.error);
+      await reloadBeadsConfig(workingDir);
+    } catch (err) {
+      setBeadsConfigError(err.message || "Failed to delete config");
+    } finally {
+      setBeadsConfigSaving(false);
+    }
+  };
+
+  // Load the folder's upstream task system via GET /api/beads/upstream.
+  const reloadBeadsUpstream = async (workingDir) => {
+    try {
+      const res = await secureFetch(apiUrl(`/api/beads/upstream?working_dir=${encodeURIComponent(workingDir)}`));
+      const data = await res.json().catch(() => ({}));
+      setBeadsUpstream((data && data.upstream) || "none");
+    } catch (_err) {
+      setBeadsUpstream("none");
+    }
+  };
+
+  // Persist the folder's upstream task system via PUT /api/beads/upstream.
+  const saveBeadsUpstream = async (upstream) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    const prev = beadsUpstream;
+    setBeadsUpstream(upstream); // optimistic
+    setBeadsUpstreamSaving(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/upstream"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, upstream }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to set upstream");
+      if (data && data.error) throw new Error(data.error);
+      setBeadsUpstream((data && data.upstream) || upstream);
+    } catch (err) {
+      setBeadsUpstream(prev); // revert on failure
+      setBeadsConfigError(err.message || "Failed to set upstream");
+    } finally {
+      setBeadsUpstreamSaving(false);
+    }
   };
 
   // Load (reload) prompts for the selected folder
@@ -809,6 +1202,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const folderTabs = [
     { id: "general", label: "General" },
     { id: "metadata", label: "Metadata" },
+    { id: "beads", label: "Tasks" },
     { id: "prompts", label: "Prompts" },
     { id: "processors", label: "Processors" },
     { id: "children", label: "Children" },
@@ -860,7 +1254,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
 
           <!-- Left panel: workspace list -->
           <div class="flex-shrink-0 flex flex-col" style="width: ${leftPanelWidth}px">
-            <div class="flex-1 overflow-y-auto p-3 space-y-1.5">
+            <div ref=${scrollContainerRef} class="flex-1 overflow-y-auto p-3 space-y-1.5">
               ${loading
                 ? html`<div class="flex items-center justify-center py-8"><${SpinnerIcon} className="w-6 h-6 text-blue-400" /></div>`
                 : workspaces.length === 0
@@ -875,6 +1269,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                         <div key=${displayName} class="mb-1.5">
                           <!-- Folder header -->
                           <div
+                            data-folder-name=${displayName}
                             class="group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${isFolderSelected ? "bg-blue-500/10" : "hover:bg-slate-700/30"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
@@ -965,9 +1360,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                   const isNewFolder = newFolderKey && getWorkspaceKey(firstWs) === newFolderKey;
                   const isIncomplete = isNewFolder && (!firstWs.working_dir || firstWs.working_dir.trim() === "");
                   const updateNewFolderPath = (path) => {
-                    setWorkspaces((prev) => prev.map((ws) =>
-                      getWorkspaceKey(ws) === newFolderKey ? { ...ws, working_dir: path } : ws
-                    ));
+                    setWorkspaces((prev) => {
+                      // If no other workspace already lives in this folder, this is the
+                      // folder's first workspace — mark it as the default for the folder.
+                      const isFirstForFolder = !prev.some(
+                        (ws) => getWorkspaceKey(ws) !== newFolderKey && ws.working_dir === path
+                      );
+                      return prev.map((ws) =>
+                        getWorkspaceKey(ws) === newFolderKey
+                          ? { ...ws, working_dir: path, is_default: isFirstForFolder ? true : undefined }
+                          : ws
+                      );
+                    });
                     // Update the selected folder name to reflect new path
                     const newDisplayName = editName || getBasename(path) || "New Workspace";
                     setSelectedFolder(newDisplayName);
@@ -1176,6 +1580,172 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                               </div>
                             `}
                           </div>
+                        </div>
+                      `}
+
+                      <!-- Folder Beads tab -->
+                      ${activeTab === "beads" && html`
+                        <div class="space-y-4">
+                          <p class="text-sm text-gray-400">
+                            Mitto uses${" "}
+                            <a
+                              href="https://github.com/steveyegge/beads"
+                              onClick=${(e) => {
+                                e.preventDefault();
+                                openExternalURL("https://github.com/steveyegge/beads");
+                              }}
+                              class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                              >beads</a
+                            >${" "}(the <code>bd</code> tool) for managing tasks.
+                          </p>
+                          <!-- Upstream task system selector (persisted in folders.json) -->
+                          <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Upstream tasks management</label>
+                            <p class="text-xs text-gray-500 mb-2">
+                              Select the external task system beads syncs with. When set, Pull/Push/Sync
+                              actions appear in the Tasks view for this folder.
+                            </p>
+                            <select
+                              value=${beadsUpstream}
+                              onInput=${(e) => saveBeadsUpstream(e.target.value)}
+                              disabled=${beadsUpstreamSaving}
+                              class="w-full bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                            >
+                              <option value="none">None</option>
+                              <option value="jira">Jira</option>
+                              <option value="github">GitHub</option>
+                              <option value="gitlab">GitLab</option>
+                              <option value="linear">Linear</option>
+                            </select>
+                          </div>
+
+                          ${beadsUpstream !== "none" && BEADS_UPSTREAM_HELP[beadsUpstream] && html`
+                            <div class="p-3 bg-mitto-input-box border border-mitto-border rounded-lg">
+                              <p class="text-xs text-gray-400 mb-2">
+                                Recommended ${BEADS_UPSTREAM_HELP[beadsUpstream].label} keys${" "}
+                                (click a key to fill the add-key field below):
+                              </p>
+                              <div class="space-y-1">
+                                ${BEADS_UPSTREAM_HELP[beadsUpstream].rows.map((row) => html`
+                                  <div key=${row.key} class="flex items-baseline gap-2 text-xs">
+                                    <button
+                                      type="button"
+                                      onClick=${() => setNewBeadsKey(row.key)}
+                                      class="font-mono text-blue-400 hover:text-blue-300 hover:underline whitespace-nowrap"
+                                      title="Use this key in the add-key field below"
+                                    >${row.key}</button>
+                                    <span class="text-gray-500">— ${row.desc}</span>
+                                  </div>
+                                `)}
+                              </div>
+                            </div>
+                          `}
+
+                          <div class="pt-2 border-t border-mitto-border"></div>
+
+                          <p class="text-xs text-gray-500">
+                            Integration settings stored in this folder's beads database via${" "}
+                            <span class="font-mono text-gray-400">bd config</span>. Use namespaced keys such as${" "}
+                            <span class="font-mono text-gray-400">jira.url</span>,${" "}
+                            <span class="font-mono text-gray-400">github.repo</span>, or${" "}
+                            <span class="font-mono text-gray-400">${"custom.<key>"}</span>.
+                          </p>
+
+                          ${beadsConfigError && html`
+                            <div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-300">
+                              ${beadsConfigError}
+                            </div>
+                          `}
+
+                          ${beadsConfigLoading
+                            ? html`<div class="flex items-center gap-2 text-sm text-gray-400"><${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…</div>`
+                            : (beadsConfig && html`
+                              ${(() => {
+                                const editable = Object.entries(beadsConfig).filter(([k]) => k.includes("."));
+                                const system = Object.entries(beadsConfig).filter(([k]) => !k.includes("."));
+                                return html`
+                                  <div class="space-y-2">
+                                    ${editable.length === 0
+                                      ? html`<p class="text-xs text-gray-500 italic">No integration keys set yet.</p>`
+                                      : editable.map(([k, v]) => html`
+                                        <div key=${k} class="flex gap-2 items-center">
+                                          <input
+                                            type="text"
+                                            value=${k}
+                                            readOnly
+                                            class="bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-400 font-mono cursor-default"
+                                            style="width: 38%; height: 38px; box-sizing: border-box"
+                                          />
+                                          <input
+                                            key=${k + ":" + v}
+                                            type="text"
+                                            defaultValue=${v}
+                                            disabled=${beadsConfigSaving}
+                                            onBlur=${(e) => { if (e.target.value !== v) setBeadsConfigKey(k, e.target.value); }}
+                                            class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                            style="height: 38px; box-sizing: border-box"
+                                          />
+                                          <button
+                                            onClick=${() => unsetBeadsConfigKey(k)}
+                                            disabled=${beadsConfigSaving}
+                                            class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50"
+                                            title="Delete this key"
+                                            style="height: 38px; box-sizing: border-box"
+                                          ><${TrashIcon} className="w-4 h-4" /></button>
+                                        </div>
+                                      `)}
+
+                                    <!-- Add a new key -->
+                                    <div class="flex gap-2 items-center">
+                                      <input
+                                        type="text"
+                                        value=${newBeadsKey}
+                                        onInput=${(e) => setNewBeadsKey(e.target.value)}
+                                        placeholder="jira.url"
+                                        class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                        style="width: 38%; height: 38px; box-sizing: border-box"
+                                      />
+                                      <input
+                                        type="text"
+                                        value=${newBeadsValue}
+                                        onInput=${(e) => setNewBeadsValue(e.target.value)}
+                                        placeholder="value"
+                                        class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                        style="height: 38px; box-sizing: border-box"
+                                      />
+                                      <button
+                                        onClick=${async () => {
+                                          const key = newBeadsKey.trim();
+                                          if (!key) return;
+                                          await setBeadsConfigKey(key, newBeadsValue);
+                                          setNewBeadsKey("");
+                                          setNewBeadsValue("");
+                                        }}
+                                        disabled=${beadsConfigSaving || !newBeadsKey.trim()}
+                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
+                                        title="Add key"
+                                        style="height: 38px; box-sizing: border-box"
+                                      ><${PlusIcon} className="w-4 h-4" /></button>
+                                    </div>
+                                  </div>
+
+                                  ${system.length > 0 && html`
+                                    <div class="mt-6 pt-4 border-t border-mitto-border">
+                                      <h3 class="text-sm font-medium text-gray-300 mb-1">System</h3>
+                                      <p class="text-xs text-gray-500 mb-2">Operational beads settings (read-only here; edit via the bd CLI).</p>
+                                      <div class="space-y-1">
+                                        ${system.map(([k, v]) => html`
+                                          <div key=${k} class="flex gap-2 text-xs font-mono text-gray-500">
+                                            <span class="truncate" style="width: 38%">${k}</span>
+                                            <span class="flex-1 truncate">${String(v)}</span>
+                                          </div>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  `}
+                                `;
+                              })()}
+                            `)}
                         </div>
                       `}
 
@@ -1416,8 +1986,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                                               <div class="flex items-center gap-2">
                                                 ${isPromptMode && html`<${RobotIcon} className="w-4 h-4 text-purple-400 flex-shrink-0" />`}
                                                 <span class="text-sm font-medium font-mono ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${proc.name}</span>
-                                                <span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>
-                                                ${isPromptMode && html`<span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">prompt</span>`}
+                                                ${proc.source === "global"
+                                                  ? html`<${GlobeIcon} className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" title="Global processor" />`
+                                                  : html`<span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>`
+                                                }
                                                 ${proc.on && html`<span class="text-xs text-gray-500">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
                                               </div>
                                               ${proc.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${proc.description}</p>`}
@@ -1504,16 +2076,15 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                         <p class="text-xs text-gray-500 mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
                       </div>
                       <div>
-                        <label class="block text-sm text-gray-400 mb-1">Auxiliary ACP Server (optional)</label>
-                        <select
-                          value=${editAuxAcpServer}
-                          onChange=${(e) => setEditAuxAcpServer(e.target.value)}
-                          class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          style="height: 38px; box-sizing: border-box"
-                        >
-                          <option value="">None</option>
-                          ${sortedAcpServers.map((s) => html`<option key=${s.name} value=${s.name}>${s.name}</option>`)}
-                        </select>
+                        <label class="block text-sm text-gray-400 mb-1">Auxiliary Model Selection (optional)</label>
+                        <p class="text-xs text-gray-500 mb-2">
+                          Switch auxiliary sessions (titles, suggestions) to a specific model
+                        </p>
+                        <${ModelSelection}
+                          matchMode=${editAuxModelMode}
+                          pattern=${editAuxModelPattern}
+                          onChange=${(mode, pat) => { setEditAuxModelMode(mode); setEditAuxModelPattern(pat); }}
+                        />
                       </div>
                       <label class="flex items-center gap-3 cursor-pointer">
                         <input
@@ -1524,6 +2095,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                         />
                         <span class="text-sm">Auto-approve tool calls</span>
                       </label>
+                      <label class="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked=${editIsDefault}
+                          onChange=${(e) => handleToggleIsDefault(e.target.checked)}
+                          class="rounded border-mitto-border text-blue-500 focus:ring-blue-500"
+                        />
+                        <span class="text-sm">Default workspace for this folder</span>
+                      </label>
+                      <p class="text-xs text-gray-500 -mt-2 ml-7">
+                        Preferred when this folder has several workspaces and one is launched without a specific agent.
+                      </p>
                     </div>
                   `}
 
@@ -1567,21 +2150,32 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                         <p class="text-sm text-gray-400">
                           MCP servers configured for this workspace's ACP agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
                         </p>
-                        ${mcpTools?.has_mcp_install && html`
+                        <div class="flex items-center gap-0.5">
                           <button
-                            onClick=${() => {
-                              setMcpInstallOpen(true);
-                              setMcpInstallJson("");
-                              setMcpInstallScope(mcpTools?.mcp_scopes?.[0] || "");
-                              setMcpInstallError("");
-                              setMcpInstallSuccess("");
-                            }}
+                            onClick=${() => loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir)}
                             class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
-                            title="Install MCP server"
+                            title="Refresh MCP server list"
+                            disabled=${mcpToolsLoading}
                           >
-                            <${PlusIcon} className="w-4 h-4" />
+                            <${RefreshIcon} className=${`w-4 h-4 ${mcpToolsLoading ? "animate-spin" : ""}`} />
                           </button>
-                        `}
+                          ${mcpTools?.has_mcp_install && html`
+                            <button
+                              onClick=${() => {
+                                setMcpInstallOpen(true);
+                                setMcpInstallJson("");
+                                setMcpInstallName("");
+                                setMcpInstallScope(mcpTools?.mcp_scopes?.[0] || "");
+                                setMcpInstallError("");
+                                setMcpInstallSuccess("");
+                              }}
+                              class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                              title="Install MCP servers"
+                            >
+                              <${PlusIcon} className="w-4 h-4" />
+                            </button>
+                          `}
+                        </div>
                       </div>
                       ${mcpToolsLoading
                         ? html`<div class="flex items-center justify-center p-8"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
@@ -1593,20 +2187,40 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                               </div>`
                             : html`
                               <div class="border border-mitto-border rounded-lg overflow-hidden">
-                                <table class="w-full text-sm">
+                                <table class="w-full text-sm" style="table-layout: fixed;">
+                                  <colgroup>
+                                    <col style="width: 140px;" />
+                                    <col />
+                                    ${mcpTools?.has_mcp_remove && html`<col style="width: 44px;" />`}
+                                  </colgroup>
                                   <thead>
                                     <tr class="bg-slate-800/50">
                                       <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Name</th>
                                       <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Command / URL</th>
+                                      ${mcpTools?.has_mcp_remove && html`
+                                        <th class="px-2 py-2.5"></th>
+                                      `}
                                     </tr>
                                   </thead>
                                   <tbody>
                                     ${mcpTools?.servers?.map((srv, i) => html`
                                       <tr key=${srv.name || i} class="border-t border-mitto-border hover:bg-slate-800/30">
-                                        <td class="px-4 py-2.5 font-medium">${srv.name}</td>
-                                        <td class="px-4 py-2.5 text-gray-400 font-mono text-xs truncate max-w-[400px]" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
+                                        <td class="px-4 py-2.5 font-medium truncate" title=${srv.name}>${srv.name}</td>
+                                        <td class="px-4 py-2.5 text-gray-400 font-mono text-xs truncate" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
                                           ${srv.url || [srv.command, ...(srv.args || [])].join(" ")}
                                         </td>
+                                        ${mcpTools?.has_mcp_remove && html`
+                                          <td class="px-2 py-2.5 text-center">
+                                            <button
+                                              onClick=${() => handleMcpRemoveConfirm(srv.name)}
+                                              class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
+                                              title="Remove MCP server"
+                                              disabled=${mcpRemoveLoading}
+                                            >
+                                              <${TrashIcon} className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                                            </button>
+                                          </td>
+                                        `}
                                       </tr>
                                     `)}
                                   </tbody>
@@ -1630,14 +2244,27 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             ${error && html`<p class="text-xs text-red-400">${error}</p>`}
           </div>
           <div class="flex gap-2">
+            ${needsRestart && html`
+              <button
+                onClick=${handleRestartAcp}
+                disabled=${restarting}
+                class="px-4 py-2 text-sm bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+                title="Restart ACP to apply MCP changes to active conversations"
+              >
+                ${restarting
+                  ? html`<${SpinnerIcon} className="w-4 h-4" /> Restarting...`
+                  : "Restart ACP"}
+              </button>
+            `}
             <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors">Close</button>
             <button
               onClick=${handleSave}
               disabled=${saving || loading}
               class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
             >
-              ${saving && html`<${SpinnerIcon} className="w-4 h-4" />`}
-              Save
+              ${saving
+                ? html`<${SpinnerIcon} className="w-4 h-4" /> Saving...`
+                : "Save"}
             </button>
           </div>
         </div>
@@ -1653,12 +2280,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       confirmVariant=${confirmDialog?.confirmVariant || "primary"}
       onConfirm=${confirmDialog?.onConfirm}
       onCancel=${() => setConfirmDialog(null)}
-    />
+    >
+      ${confirmDialog?.children}
+    <//>
 
     <!-- MCP Install Dialog -->
     <${ConfirmDialog}
       isOpen=${mcpInstallOpen}
-      title="Install MCP Server"
+      title="Install MCP Servers"
       confirmLabel="Install"
       cancelLabel="Cancel"
       isLoading=${mcpInstallLoading}
@@ -1666,6 +2295,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       onCancel=${() => {
         if (!mcpInstallLoading) {
           setMcpInstallOpen(false);
+          setMcpInstallName("");
           setMcpInstallError("");
           setMcpInstallSuccess("");
         }
@@ -1673,7 +2303,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     >
       <div class="space-y-4 mt-3">
         <p class="text-sm text-gray-400">
-          Paste an MCP server definition as JSON.
+          Paste one or more MCP server definitions as JSON.
         </p>
         <textarea
           value=${mcpInstallJson}
@@ -1683,6 +2313,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
           disabled=${mcpInstallLoading}
           spellcheck="false"
         />
+        ${(() => {
+          // Detect format 3 (single server def) to show the name input
+          try {
+            const p = JSON.parse(mcpInstallJson);
+            return (typeof p.command === "string" || typeof p.url === "string") && !p.mcpServers;
+          } catch { return false; }
+        })() && html`
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">Server name</label>
+            <input
+              type="text"
+              value=${mcpInstallName}
+              onInput=${(e) => { setMcpInstallName(e.target.value); setMcpInstallError(""); }}
+              placeholder="my-server"
+              class="w-full bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              disabled=${mcpInstallLoading}
+            />
+          </div>
+        `}
         ${mcpTools?.mcp_scopes?.length > 0 && html`
           <div>
             <label class="block text-sm text-gray-400 mb-1">Scope</label>

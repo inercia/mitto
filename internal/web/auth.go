@@ -793,6 +793,13 @@ type contextKey string
 // authentication, even from localhost.
 const ContextKeyExternalConnection contextKey = "external_connection"
 
+// contextKeyAuthUser is the context key used to store the authenticated user identity.
+// The value is a string in one of these forms:
+//   - session username (e.g. "alice") for session-cookie auth
+//   - "cf:<email>" for Cloudflare Access JWT auth
+//   - "allowlist:<ip>" for IP allow list bypass
+const contextKeyAuthUser contextKey = "authUser"
+
 // IsExternalConnection returns true if the request came through the external listener.
 // External connections always require authentication, regardless of client IP.
 func IsExternalConnection(r *http.Request) bool {
@@ -845,6 +852,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// Check if client IP is in the allow list (bypass auth)
 		if a.IsIPAllowed(clientIP) {
 			logger.Debug("Auth bypass - allowed IP", "client_ip", clientIP, "path", r.URL.Path)
+			r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, "allowlist:"+clientIP))
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -878,6 +886,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 					"path", r.URL.Path,
 					"remote_addr", r.RemoteAddr,
 				)
+				r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, "cf:"+email))
 				next.ServeHTTP(w, r)
 				return
 			} else if hasJWTHeader {
@@ -933,6 +942,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			"client_ip", clientIP,
 			"username", session.Username,
 		)
+		r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, session.Username))
 		next.ServeHTTP(w, r)
 	})
 }

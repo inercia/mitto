@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,8 +23,9 @@ func TestSessionManager_NewSessionManager(t *testing.T) {
 	if ws == nil {
 		t.Fatal("GetDefaultWorkspace returned nil")
 	}
-	if ws.ACPCommand != "echo test" {
-		t.Errorf("defaultWorkspace.ACPCommand = %q, want %q", ws.ACPCommand, "echo test")
+	// CLI command is stored as ACPCommandOverride (per-workspace override)
+	if ws.ACPCommandOverride != "echo test" {
+		t.Errorf("defaultWorkspace.ACPCommandOverride = %q, want %q", ws.ACPCommandOverride, "echo test")
 	}
 	if ws.ACPServer != "test-server" {
 		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", ws.ACPServer, "test-server")
@@ -166,8 +168,8 @@ func TestSessionManager_ResumeSession_AlreadyRunning(t *testing.T) {
 
 func TestNewSessionManagerWithOptions(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
+		{ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -184,22 +186,19 @@ func TestNewSessionManagerWithOptions(t *testing.T) {
 		t.Errorf("workspaces count = %d, want 2", len(sm.workspaces))
 	}
 
-	// Check default workspace
+	// Check default workspace (command is resolved from global config at runtime, not stored here)
 	if sm.defaultWorkspace == nil {
 		t.Fatal("defaultWorkspace should not be nil")
 	}
 	if sm.defaultWorkspace.ACPServer != "server1" {
 		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", sm.defaultWorkspace.ACPServer, "server1")
 	}
-	if sm.defaultWorkspace.ACPCommand != "echo server1" {
-		t.Errorf("defaultWorkspace.ACPCommand = %q, want %q", sm.defaultWorkspace.ACPCommand, "echo server1")
-	}
 }
 
 func TestSessionManager_GetWorkspaces(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
+		{ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -215,8 +214,8 @@ func TestSessionManager_GetWorkspaces(t *testing.T) {
 
 func TestSessionManager_GetWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
+		{ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -242,7 +241,7 @@ func TestSessionManager_GetWorkspace(t *testing.T) {
 
 func TestSessionManager_GetDefaultWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
+		{ACPServer: "server1", WorkingDir: "/path1"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -269,8 +268,9 @@ func TestSessionManager_GetDefaultWorkspace_Legacy(t *testing.T) {
 	if ws.ACPServer != "legacy-server" {
 		t.Errorf("default workspace ACPServer = %q, want %q", ws.ACPServer, "legacy-server")
 	}
-	if ws.ACPCommand != "echo legacy" {
-		t.Errorf("default workspace ACPCommand = %q, want %q", ws.ACPCommand, "echo legacy")
+	// CLI command is stored as ACPCommandOverride
+	if ws.ACPCommandOverride != "echo legacy" {
+		t.Errorf("default workspace ACPCommandOverride = %q, want %q", ws.ACPCommandOverride, "echo legacy")
 	}
 }
 
@@ -301,7 +301,6 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 	// Add a workspace
 	ws := config.WorkspaceSettings{
 		ACPServer:  "new-server",
-		ACPCommand: "echo new",
 		WorkingDir: "/path/to/project",
 	}
 	sm.AddWorkspace(ws)
@@ -329,8 +328,8 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 
 func TestSessionManager_RemoveWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{UUID: "uuid-1", ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{UUID: "uuid-2", ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{UUID: "uuid-1", ACPServer: "server1", WorkingDir: "/path1"},
+		{UUID: "uuid-2", ACPServer: "server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -423,6 +422,172 @@ func TestSessionManager_ResumeSession_UsesGlobalConfigACPCommand(t *testing.T) {
 			t.Error("ResumeSession should have used ACP command from global config, but got 'empty ACP command' error")
 		}
 		// Other errors (like "failed to start ACP server") are expected since "echo hello" is not a valid ACP server
+	}
+}
+
+func TestSessionManager_ResumeSession_OrphanedServer_RescuesWithFolderWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// A workspace for /tmp using the CURRENT (renamed) ACP server.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "new-server"},
+		},
+	})
+	sm.SetStore(store)
+
+	// Global config only knows about the new server — the old one was removed.
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "new-server", Command: "echo hello"},
+		},
+	})
+
+	// Orphaned session: its stored ACP server name no longer exists in config.
+	meta := session.Metadata{
+		SessionID:  "orphaned-session",
+		ACPServer:  "old-removed-server",
+		WorkingDir: "/tmp",
+		Name:       "Orphaned Session",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Resume should rescue the conversation by adopting the /tmp workspace's
+	// server, so it must NOT fail with an empty-command error.
+	_, err = sm.ResumeSession("orphaned-session", "Orphaned Session", "/tmp")
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have rescued the orphaned conversation with the folder workspace, but got empty-command error: %v", err)
+	}
+}
+
+func TestSessionManager_ResumeSession_OrphanedServer_NoWorkspace_Fails(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// No workspaces and no default ACP command for the folder.
+	sm := NewSessionManager("", "", true, nil)
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "some-other-server", Command: "echo hello"},
+		},
+	})
+
+	// Orphaned session in a folder with no configured workspace/server.
+	meta := session.Metadata{
+		SessionID:  "orphaned-no-rescue",
+		ACPServer:  "old-removed-server",
+		WorkingDir: "/no/such/workspace/dir",
+		Name:       "Orphaned No Rescue",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// With nothing to rescue with, resume must fail (no agent available).
+	_, err = sm.ResumeSession("orphaned-no-rescue", "Orphaned No Rescue", "/no/such/workspace/dir")
+	if err == nil {
+		t.Error("ResumeSession should fail when the stored ACP server is gone and no workspace exists for the folder")
+	}
+}
+
+func TestSessionManager_ApplyACPServerRenames_MigratesMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManager("", "", true, nil)
+	sm.SetStore(store)
+
+	// Two sessions reference the old server name; one references a different one.
+	metas := []session.Metadata{
+		{SessionID: "s1", ACPServer: "Auggie (Opus 4.6)", WorkingDir: "/tmp", Name: "S1"},
+		{SessionID: "s2", ACPServer: "Auggie (Opus 4.6)", WorkingDir: "/tmp", Name: "S2"},
+		{SessionID: "s3", ACPServer: "Other Server", WorkingDir: "/tmp", Name: "S3"},
+	}
+	for _, m := range metas {
+		if err := store.Create(m); err != nil {
+			t.Fatalf("Create(%s) failed: %v", m.SessionID, err)
+		}
+	}
+
+	result, err := sm.ApplyACPServerRenames(map[string]string{
+		"Auggie (Opus 4.6)": "Auggie (Opus)",
+	})
+	if err != nil {
+		t.Fatalf("ApplyACPServerRenames failed: %v", err)
+	}
+	if result == nil || len(result.UpdatedSessionIDs) != 2 {
+		t.Fatalf("expected 2 updated sessions, got %+v", result)
+	}
+
+	// Migrated sessions adopt the new server name.
+	for _, id := range []string{"s1", "s2"} {
+		m, err := store.GetMetadata(id)
+		if err != nil {
+			t.Fatalf("GetMetadata(%s) failed: %v", id, err)
+		}
+		if m.ACPServer != "Auggie (Opus)" {
+			t.Errorf("session %s: expected ACPServer %q, got %q", id, "Auggie (Opus)", m.ACPServer)
+		}
+	}
+
+	// Unrelated session is untouched.
+	m3, err := store.GetMetadata("s3")
+	if err != nil {
+		t.Fatalf("GetMetadata(s3) failed: %v", err)
+	}
+	if m3.ACPServer != "Other Server" {
+		t.Errorf("session s3 should be untouched, got %q", m3.ACPServer)
+	}
+}
+
+func TestSessionManager_ApplyACPServerRenames_NoMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManager("", "", true, nil)
+	sm.SetStore(store)
+
+	if err := store.Create(session.Metadata{
+		SessionID: "s1", ACPServer: "Server A", WorkingDir: "/tmp", Name: "S1",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Renaming a server that no session references is a no-op.
+	result, err := sm.ApplyACPServerRenames(map[string]string{"Unused": "New"})
+	if err != nil {
+		t.Fatalf("ApplyACPServerRenames failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result when nothing matches, got %+v", result)
+	}
+
+	m, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if m.ACPServer != "Server A" {
+		t.Errorf("session s1 should be untouched, got %q", m.ACPServer)
 	}
 }
 
@@ -997,7 +1162,7 @@ func TestSessionManager_ProcessPendingQueues_SkipsArchivedSessions(t *testing.T)
 
 	// Add a message to the queue
 	queue := store.Queue("archived-session")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1016,7 +1181,7 @@ func TestSessionManager_ProcessPendingQueues_SkipsArchivedSessions(t *testing.T)
 	}
 
 	queue2 := store.Queue("active-session")
-	_, err = queue2.Add("Test message 2", nil, nil, "client1", 0)
+	_, err = queue2.Add("Test message 2", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1261,14 +1426,12 @@ func TestSessionManager_WorkspaceAutoApprove_Enabled(t *testing.T) {
 		{
 			UUID:        "ws-auto-approve",
 			ACPServer:   "test-server",
-			ACPCommand:  "echo test",
 			WorkingDir:  "/path/auto-approve",
 			AutoApprove: &autoApproveTrue, // Per-workspace auto-approve enabled
 		},
 		{
 			UUID:       "ws-no-auto-approve",
 			ACPServer:  "test-server",
-			ACPCommand: "echo test",
 			WorkingDir: "/path/no-auto-approve",
 			// AutoApprove is nil (not set)
 		},
@@ -1307,7 +1470,6 @@ func TestSessionManager_WorkspaceAutoApprove_Disabled(t *testing.T) {
 		{
 			UUID:        "ws-explicit-false",
 			ACPServer:   "test-server",
-			ACPCommand:  "echo test",
 			WorkingDir:  "/path/explicit-false",
 			AutoApprove: &autoApproveFalse, // Explicitly disabled
 		},
@@ -1341,7 +1503,6 @@ func TestSessionManager_WorkspaceAutoApprove_SetWorkspaces(t *testing.T) {
 		{
 			UUID:        "ws-with-auto",
 			ACPServer:   "test-server",
-			ACPCommand:  "echo test",
 			WorkingDir:  "/path/with-auto",
 			AutoApprove: &autoApproveTrue,
 		},
@@ -1367,7 +1528,6 @@ func TestSessionManager_WorkspaceAutoApprove_AddWorkspace(t *testing.T) {
 	ws := config.WorkspaceSettings{
 		UUID:        "ws-added",
 		ACPServer:   "test-server",
-		ACPCommand:  "echo test",
 		WorkingDir:  "/path/added",
 		AutoApprove: &autoApproveTrue,
 	}
@@ -1535,21 +1695,18 @@ func TestSessionManager_WorkspaceAutoApprove_GetWorkspaces(t *testing.T) {
 		{
 			UUID:        "ws-1",
 			ACPServer:   "server1",
-			ACPCommand:  "echo server1",
 			WorkingDir:  "/path1",
 			AutoApprove: &autoApproveTrue,
 		},
 		{
 			UUID:        "ws-2",
 			ACPServer:   "server2",
-			ACPCommand:  "echo server2",
 			WorkingDir:  "/path2",
 			AutoApprove: &autoApproveFalse,
 		},
 		{
 			UUID:       "ws-3",
 			ACPServer:  "server3",
-			ACPCommand: "echo server3",
 			WorkingDir: "/path3",
 			// AutoApprove is nil
 		},
@@ -1665,6 +1822,79 @@ func TestSessionManager_DeleteChildSessions(t *testing.T) {
 	if !store.Exists("parent-1") {
 		t.Error("parent-1 should still exist")
 	}
+	if !store.Exists("unrelated-1") {
+		t.Error("unrelated-1 should still exist")
+	}
+}
+
+// TestSessionManager_DeleteSessionAndChildren tests that deleteSessionAndChildren
+// (used by the self-destruct path) permanently removes the target session and all
+// of its descendants while leaving unrelated sessions intact.
+func TestSessionManager_DeleteSessionAndChildren(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create the self-destructing session
+	if err := store.Create(session.Metadata{
+		SessionID:  "selfdestruct-1",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Self Destruct",
+	}); err != nil {
+		t.Fatalf("Create selfdestruct session failed: %v", err)
+	}
+
+	// Create a child and a grandchild (descendants that must be removed)
+	if err := store.Create(session.Metadata{
+		SessionID:       "child-1",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Child 1",
+		ParentSessionID: "selfdestruct-1",
+	}); err != nil {
+		t.Fatalf("Create child1 failed: %v", err)
+	}
+	if err := store.Create(session.Metadata{
+		SessionID:       "grandchild-1",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Grandchild 1",
+		ParentSessionID: "child-1",
+	}); err != nil {
+		t.Fatalf("Create grandchild1 failed: %v", err)
+	}
+
+	// Create an unrelated session (should NOT be deleted)
+	if err := store.Create(session.Metadata{
+		SessionID:  "unrelated-1",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Unrelated",
+	}); err != nil {
+		t.Fatalf("Create unrelated failed: %v", err)
+	}
+
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetStore(store)
+
+	sm.deleteSessionAndChildren("selfdestruct-1", "self_destructed")
+
+	// The session and all its descendants should be deleted
+	if store.Exists("selfdestruct-1") {
+		t.Error("selfdestruct-1 should be deleted")
+	}
+	if store.Exists("child-1") {
+		t.Error("child-1 should be deleted")
+	}
+	if store.Exists("grandchild-1") {
+		t.Error("grandchild-1 should be deleted")
+	}
+
+	// Unrelated session should still exist
 	if !store.Exists("unrelated-1") {
 		t.Error("unrelated-1 should still exist")
 	}

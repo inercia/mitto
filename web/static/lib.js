@@ -486,6 +486,7 @@ export function convertEventsToMessages(events, options = {}) {
           text: event.data?.message || event.data?.text || "",
           timestamp: new Date(event.timestamp).getTime(),
           seq,
+          promptName: event.data?.prompt_name || undefined,
         };
         // Convert stored image references to full image objects with URLs
         // Image refs are stored as: [{id, name?, mime_type}]
@@ -781,6 +782,7 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
   // When a message with matching seq is found, compare content to keep the longer/complete version
   const filteredNewMessages = [];
   const seqsToUpdate = new Map(); // seq -> newMessage (for messages that should replace existing)
+  const pendingUpdates = new Map(); // hash -> newMessage (for optimistic UI messages that need a seq)
 
   for (const m of newMessages) {
     // If both have seq, check if we should prefer the new message
@@ -817,6 +819,25 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
       continue;
     }
 
+    // If the message has a seq, check if there's a seq-less existing message
+    // with matching content. This handles the optimistic UI → server confirmation
+    // case where the user's message was added before receiving a seq.
+    // If no seq-less match exists, the message is a genuinely new event (e.g.,
+    // periodic prompts with the same text across different runs) — skip the
+    // content hash check which would incorrectly deduplicate it.
+    if (m.seq) {
+      const hash = getMessageHash(m);
+      const hasPendingMatch = existingMessages.some(
+        (e) => !e.seq && getMessageHash(e) === hash,
+      );
+      if (hasPendingMatch) {
+        pendingUpdates.set(hash, m);
+      } else {
+        filteredNewMessages.push(m);
+      }
+      continue;
+    }
+
     // Fall back to content hash for messages without seq
     const hash = getMessageHash(m);
     if (!existingHashes.has(hash)) {
@@ -829,11 +850,17 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     if (m.seq && seqsToUpdate.has(m.seq)) {
       return seqsToUpdate.get(m.seq);
     }
+    if (!m.seq) {
+      const hash = getMessageHash(m);
+      if (pendingUpdates.has(hash)) {
+        return pendingUpdates.get(hash);
+      }
+    }
     return m;
   });
 
   // Add filtered new messages
-  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0) {
+  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0 && pendingUpdates.size === 0) {
     return existingMessages;
   }
 
@@ -1514,5 +1541,29 @@ export function formatTimeAgo(date) {
   } else {
     const years = Math.floor(diffDays / 365);
     return `${years}y ago`;
+  }
+}
+
+// =============================================================================
+// Archive Reason Helpers
+// =============================================================================
+
+/**
+ * Returns a human-readable description of why a session was archived.
+ * @param {string} reason - The archive reason code (e.g. "manual", "inactivity", "acp_start_failures")
+ * @param {string|null} archivedAt - ISO 8601 timestamp when the session was archived
+ * @returns {string}
+ */
+export function getArchiveReasonText(reason, archivedAt) {
+  const dateStr = archivedAt ? new Date(archivedAt).toLocaleDateString() : "";
+  switch (reason) {
+    case "manual":
+      return `Archived by user${dateStr ? ` on ${dateStr}` : ""}`;
+    case "inactivity":
+      return `Auto-archived due to inactivity${dateStr ? ` on ${dateStr}` : ""}`;
+    case "acp_start_failures":
+      return `Auto-archived: agent failed to start after repeated attempts${dateStr ? ` on ${dateStr}` : ""}`;
+    default:
+      return `Archived${dateStr ? ` on ${dateStr}` : ""}`;
   }
 }

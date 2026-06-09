@@ -25,11 +25,14 @@ func newTestGCManager(
 		logger:          newTestLogger(),
 		processes:       make(map[string]*SharedACPProcess),
 		lastSessionSeen: make(map[string]time.Time),
+		auxSessions:     make(map[auxSessionKey]*auxiliarySessionState),
 		gcConfig: GCConfig{
-			Interval:            30 * time.Second,
-			GracePeriod:         60 * time.Second,
-			ObserverGracePeriod: 60 * time.Second,
-			IdleTimeout:         5 * time.Minute,
+			Interval:                 30 * time.Second,
+			GracePeriod:              60 * time.Second,
+			ObserverGracePeriod:      60 * time.Second,
+			IdleTimeout:              5 * time.Minute,
+			AuxIdleTimeout:           10 * time.Minute,
+			PeriodicSuspendThreshold: 30 * time.Minute,
 		},
 		sessionQuery: query,
 		sessionClose: closeSession,
@@ -661,6 +664,76 @@ func TestGCTier1_MaxClosuresUnlimited(t *testing.T) {
 	}
 }
 
+// TestGCTier3_CleansUpStaleAuxiliarySessions verifies that auxiliary sessions idle
+// longer than AuxIdleTimeout are removed by Tier 3, while fresh sessions remain.
+func TestGCTier3_CleansUpStaleAuxiliarySessions(t *testing.T) {
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return map[string][]SessionInfo{} },
+		func(id string) {},
+	)
+
+	staleKey := auxSessionKey{workspaceUUID: "ws-1", purpose: "title-gen"}
+	freshKey := auxSessionKey{workspaceUUID: "ws-1", purpose: "follow-up"}
+
+	m.auxSessions[staleKey] = &auxiliarySessionState{
+		sessionID: "aux-stale",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-20 * time.Minute),
+	}
+	m.auxSessions[freshKey] = &auxiliarySessionState{
+		sessionID: "aux-fresh",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-1 * time.Minute),
+	}
+
+	m.RunGCOnce()
+
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+
+	if _, ok := m.auxSessions[staleKey]; ok {
+		t.Error("stale auxiliary session (20min idle) should have been cleaned up by Tier 3 GC")
+	}
+	if _, ok := m.auxSessions[freshKey]; !ok {
+		t.Error("fresh auxiliary session (1min idle) should NOT have been cleaned up by Tier 3 GC")
+	}
+}
+
+// TestGCTier3_NoCleanupWhenAllFresh verifies that Tier 3 does not remove auxiliary
+// sessions that are within the AuxIdleTimeout window.
+func TestGCTier3_NoCleanupWhenAllFresh(t *testing.T) {
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return map[string][]SessionInfo{} },
+		func(id string) {},
+	)
+
+	key1 := auxSessionKey{workspaceUUID: "ws-1", purpose: "title-gen"}
+	key2 := auxSessionKey{workspaceUUID: "ws-1", purpose: "follow-up"}
+
+	m.auxSessions[key1] = &auxiliarySessionState{
+		sessionID: "aux-1",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-1 * time.Minute),
+	}
+	m.auxSessions[key2] = &auxiliarySessionState{
+		sessionID: "aux-2",
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now().Add(-1 * time.Minute),
+	}
+
+	m.RunGCOnce()
+
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+
+	if _, ok := m.auxSessions[key1]; !ok {
+		t.Error("fresh auxiliary session key1 should NOT have been cleaned up by Tier 3 GC")
+	}
+	if _, ok := m.auxSessions[key2]; !ok {
+		t.Error("fresh auxiliary session key2 should NOT have been cleaned up by Tier 3 GC")
+	}
+}
+
 // TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers verifies that sessions
 // WITH observers are kept alive regardless of LastObserverRemovedAt.
 func TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers(t *testing.T) {
@@ -696,5 +769,706 @@ func TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers(t *testing.T) {
 	defer mu.Unlock()
 	if closed["has-observers"] {
 		t.Error("session with active observers should never be GC'd")
+	}
+}
+
+// =============================================================================
+// Periodic Suspend Heuristic Tests
+// =============================================================================
+
+// TestGCTier1_PeriodicSuspend_ClosesWithObservers verifies that a periodic session
+// with active observers is suspended (closed) when its next periodic prompt is
+// farther away than the PeriodicSuspendThreshold.
+func TestGCTier1_PeriodicSuspend_ClosesWithObservers(t *testing.T) {
+	// Next periodic is 2 hours away — well beyond the 30m threshold.
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-far",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				LastActivityAt: time.Now().Add(-1 * time.Minute), // Recent activity — normally would prevent GC
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["periodic-far"] {
+		t.Error("periodic session with distant next-run should be suspended even with observers")
+	}
+	// Verify the GC-suspended flag is set to prevent auto-resume thrashing
+	if !m.IsGCSuspended("periodic-far") {
+		t.Error("periodic session should be marked as GC-suspended after suspension")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared verifies that ClearGCSuspended
+// removes the flag and IsGCSuspended returns false for non-suspended sessions.
+func TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared(t *testing.T) {
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return nil },
+		func(id string) {},
+	)
+
+	// Initially not suspended
+	if m.IsGCSuspended("test-session") {
+		t.Error("session should not be GC-suspended initially")
+	}
+
+	// Mark as suspended
+	m.MarkGCSuspended("test-session")
+	if !m.IsGCSuspended("test-session") {
+		t.Error("session should be GC-suspended after MarkGCSuspended")
+	}
+
+	// Clear the flag
+	m.ClearGCSuspended("test-session")
+	if m.IsGCSuspended("test-session") {
+		t.Error("session should not be GC-suspended after ClearGCSuspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended verifies that regular
+// idle session closures do NOT set the GC-suspended flag (only periodic suspensions do).
+func TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "idle-session",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   false,
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				LastActivityAt: time.Now().Add(-10 * time.Minute),
+			},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+
+	m.RunGCOnce()
+
+	if m.IsGCSuspended("idle-session") {
+		t.Error("regular idle session closure should NOT set GC-suspended flag")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers verifies that a
+// periodic session with observers is NOT suspended when its next periodic prompt
+// is within the PeriodicSuspendThreshold.
+func TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers(t *testing.T) {
+	// Next periodic is 10 minutes away — within the 30m threshold.
+	close_ := time.Now().Add(10 * time.Minute)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-close",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				NextPeriodicAt: &close_,
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-close"] {
+		t.Error("periodic session with nearby next-run and observers should NOT be suspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers verifies that a
+// non-periodic session with observers is never closed (the periodic suspend
+// heuristic does not apply to non-periodic sessions).
+func TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:     "non-periodic",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				ResumedAt:     time.Now().Add(-10 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["non-periodic"] {
+		t.Error("non-periodic session with observers should NOT be closed")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_SkipsPrompting verifies that a periodic session
+// eligible for suspension is NOT closed when it is actively prompting.
+func TestGCTier1_PeriodicSuspend_SkipsPrompting(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-prompting",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				IsPrompting:    true,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-prompting"] {
+		t.Error("periodic session that is prompting should NOT be suspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue verifies that a periodic session
+// eligible for suspension is NOT closed when it has queued messages.
+func TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-queue",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				QueueLength:    3,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-queue"] {
+		t.Error("periodic session with non-empty queue should NOT be suspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed verifies that a periodic session
+// eligible for suspension is NOT closed when it was recently resumed (within one
+// GC interval). This prevents a resume → immediate close → resume loop.
+func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-just-resumed",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-5 * time.Second), // Resumed 5s ago, within 30s interval
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-just-resumed"] {
+		t.Error("recently resumed periodic session should NOT be suspended (anti-thrash)")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_SkipsWithinGrace verifies that a periodic session
+// that recently finished a turn is NOT suspended while it is within the generous
+// PeriodicSuspendGracePeriod. This protects a conversation that just ended a turn
+// (and may be about to continue) from being reclaimed too aggressively. The grace
+// is keyed on LastResponseCompleteAt (turn END), not LastActivityAt (prompt START).
+func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-grace",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-2 * time.Hour), // long ago — not "recently resumed"
+				// Prompt started long ago (stale), but the turn ended just 2m ago.
+				LastActivityAt:         time.Now().Add(-90 * time.Minute),
+				LastResponseCompleteAt: time.Now().Add(-2 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.gcConfig.PeriodicSuspendGracePeriod = 10 * time.Minute
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-grace"] {
+		t.Error("periodic session that finished a turn within the grace window should NOT be suspended")
+	}
+	if m.IsGCSuspended("periodic-grace") {
+		t.Error("periodic session within grace window should NOT be marked GC-suspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_SuspendsAfterGrace verifies that once a periodic
+// session has been idle longer than PeriodicSuspendGracePeriod (no recent turn
+// completion or activity), it is suspended as normal.
+func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:              "periodic-past-grace",
+				WorkspaceUUID:          "ws-1",
+				HasObservers:           true,
+				NextPeriodicAt:         &far,
+				ResumedAt:              time.Now().Add(-2 * time.Hour),
+				LastActivityAt:         time.Now().Add(-90 * time.Minute),
+				LastResponseCompleteAt: time.Now().Add(-30 * time.Minute), // well beyond grace
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.gcConfig.PeriodicSuspendGracePeriod = 10 * time.Minute
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["periodic-past-grace"] {
+		t.Error("periodic session idle beyond the grace window should be suspended")
+	}
+	if !m.IsGCSuspended("periodic-past-grace") {
+		t.Error("periodic session suspended after grace should be marked GC-suspended")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_WithConnectedClients verifies that a periodic session
+// eligible for suspension is closed even when it has connected WebSocket clients
+// (pre-connected background sessions that haven't sent load_events yet).
+func TestGCTier1_PeriodicSuspend_WithConnectedClients(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:           "periodic-clients",
+				WorkspaceUUID:       "ws-1",
+				HasObservers:        false,
+				HasConnectedClients: true,
+				NextPeriodicAt:      &far,
+				ResumedAt:           time.Now().Add(-10 * time.Minute),
+				LastActivityAt:      time.Now().Add(-1 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["periodic-clients"] {
+		t.Error("periodic session with distant next-run should be suspended even with connected clients")
+	}
+}
+
+// TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero verifies that setting
+// PeriodicSuspendThreshold to 0 disables the periodic suspend heuristic.
+func TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero(t *testing.T) {
+	far := time.Now().Add(2 * time.Hour)
+
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "periodic-no-suspend",
+				WorkspaceUUID:  "ws-1",
+				HasObservers:   true,
+				NextPeriodicAt: &far,
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	// Disable periodic suspend by setting threshold to 0 (disabled).
+	// StartGC converts negative values to 0; RunGCOnce skips the heuristic when <= 0.
+	m.gcConfig.PeriodicSuspendThreshold = 0
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["periodic-no-suspend"] {
+		t.Error("periodic session should NOT be suspended when PeriodicSuspendThreshold is disabled")
+	}
+}
+
+// gcTier4Threshold is a convenient RSS threshold (1 GB) for Tier 4 tests.
+const gcTier4Threshold uint64 = 1 << 30
+
+// TestGCTier4_RecyclesBloatedIdleProcess verifies that an idle but memory-bloated
+// shared process is recycled: its sessions are GC-suspended and closed, and the
+// process is stopped. Sessions have observers so Tier 1 skips them, isolating the
+// Tier 4 behavior.
+func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
+	workspaceUUID := "ws-bloat"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			{SessionID: "s2", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	var recycledCalls int
+	var gotUUID string
+	var gotRSS, gotThreshold uint64
+	var gotCount int
+	m.onMemoryRecycled = func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
+		mu.Lock()
+		defer mu.Unlock()
+		recycledCalls++
+		gotUUID = workspaceUUID
+		gotRSS = rssBytes
+		gotThreshold = threshold
+		gotCount = sessionCount
+	}
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Error("bloated idle process should have been recycled (stopped)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range []string{"s1", "s2"} {
+		if !closed[id] {
+			t.Errorf("expected session %s to be closed during recycle", id)
+		}
+		if !m.IsGCSuspended(id) {
+			t.Errorf("expected session %s to be marked GC-suspended before close", id)
+		}
+	}
+
+	// The recycle notification callback must fire exactly once with the
+	// recycled workspace, the sampled RSS, the configured threshold, and the
+	// number of recycled sessions.
+	if recycledCalls != 1 {
+		t.Errorf("expected onMemoryRecycled to be called once, got %d", recycledCalls)
+	}
+	if gotUUID != workspaceUUID {
+		t.Errorf("expected recycled workspace %q, got %q", workspaceUUID, gotUUID)
+	}
+	if gotRSS != gcTier4Threshold+1 {
+		t.Errorf("expected recycled rss %d, got %d", gcTier4Threshold+1, gotRSS)
+	}
+	if gotThreshold != gcTier4Threshold {
+		t.Errorf("expected recycled threshold %d, got %d", gcTier4Threshold, gotThreshold)
+	}
+	if gotCount != 2 {
+		t.Errorf("expected recycled session count 2, got %d", gotCount)
+	}
+}
+
+// TestGCTier4_SkipsPromptingSession verifies that a process is not recycled while
+// any of its sessions is actively prompting.
+func TestGCTier4_SkipsPromptingSession(t *testing.T) {
+	workspaceUUID := "ws-prompting"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true, IsPrompting: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled while a session is prompting")
+	}
+}
+
+// TestGCTier4_SkipsActiveRPCs verifies that a process is not recycled while it has
+// in-flight RPCs.
+func TestGCTier4_SkipsActiveRPCs(t *testing.T) {
+	workspaceUUID := "ws-rpcs"
+	proc := newTestSharedProcess()
+	proc.activeRPCs.Add(1)
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled while RPCs are in-flight")
+	}
+}
+
+// TestGCTier4_SkipsNonEmptyQueue verifies that a process is not recycled while any
+// of its sessions has a non-empty queue.
+func TestGCTier4_SkipsNonEmptyQueue(t *testing.T) {
+	workspaceUUID := "ws-queue"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true, QueueLength: 1},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled while a session has a non-empty queue")
+	}
+}
+
+// TestGCTier4_DisabledWhenThresholdZero verifies that the memory-recycle tier is
+// skipped entirely when MemoryRecycleThreshold is 0, and the RSS sampler is never
+// invoked.
+func TestGCTier4_DisabledWhenThresholdZero(t *testing.T) {
+	workspaceUUID := "ws-disabled"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	// Threshold left at 0 (disabled).
+	sampled := false
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+		sampled = true
+		return gcTier4Threshold + 1, nil
+	}
+
+	m.RunGCOnce()
+
+	if sampled {
+		t.Error("RSS sampler must not be called when MemoryRecycleThreshold is 0")
+	}
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("process should NOT be recycled when memory recycling is disabled")
 	}
 }

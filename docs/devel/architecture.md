@@ -421,10 +421,7 @@ flowchart LR
 
 ## Future Considerations
 
-1. **Permission Dialog**: Interactive UI for handling permission requests in web interface
-2. **Session Loading**: Load and replay past sessions in web interface
-3. **Session Search**: Index sessions for quick searching by content
-4. **Session Export**: Export sessions to different formats (Markdown, HTML)
-5. **Multiple Storage Backends**: Support for database or cloud storage
-6. **Session Sharing**: Share sessions between users or machines
-7. **Touch Gestures**: Swipe navigation for mobile web interface
+1. **Session Search**: Index sessions for quick searching by content
+2. **Session Export**: Export sessions to different formats (Markdown, HTML)
+3. **Multiple Storage Backends**: Support for database or cloud storage
+4. **Session Sharing**: Share sessions between users or machines

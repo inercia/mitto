@@ -45,6 +45,7 @@ const isMacApp = typeof window.mittoPickFolder === "function";
 | `window.mittoFocusInput()`         | Focus the chat input            |
 | `window.mittoToggleSidebar()`      | Toggle sidebar visibility       |
 | `window.mittoCloseConversation()`  | Close current conversation      |
+| `window.mittoArchiveConversation()` | Archive/unarchive conversation |
 | `window.mittoNextConversation()`   | Navigate to next conversation   |
 | `window.mittoPrevConversation()`   | Navigate to previous            |
 
@@ -79,6 +80,7 @@ Handled at two levels:
 | `Cmd+Shift+M` | Show/hide window (global) | Native only |
 | `Cmd+N`     | New conversation           | Native only |
 | `Cmd+W`     | Close conversation         | Native only |
+| `Cmd+Shift+A` | Archive conversation     | Both        |
 | `Cmd+1-9`   | Switch to conversation     | Web         |
 | `Cmd+,`     | Settings                   | Web         |
 | `Cmd+[/]`   | Previous/next conversation | Web         |

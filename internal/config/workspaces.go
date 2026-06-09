@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -55,17 +56,10 @@ type WorkspaceSettings struct {
 	// UUID is a unique identifier for this workspace.
 	// Automatically generated if not set when loading or creating a workspace.
 	UUID string `json:"uuid,omitempty" yaml:"uuid,omitempty"`
-	// ACPServer is the name of the ACP server (from settings.json)
+	// ACPServer is the name of the ACP server (from settings.json).
+	// The actual command, cwd, and env are always resolved from global ACP server
+	// config at runtime — they are never cached here.
 	ACPServer string `json:"acp_server" yaml:"acp_server"`
-	// ACPCommand is the shell command to start the ACP server
-	ACPCommand string `json:"acp_command" yaml:"acp_command"`
-	// ACPCwd is the working directory for the ACP server process.
-	// If empty, the ACP process inherits the current working directory.
-	ACPCwd string `json:"acp_cwd,omitempty" yaml:"acp_cwd,omitempty"`
-	// ACPEnv is a map of environment variables to set when starting the ACP server.
-	// These are resolved from the ACP server configuration and merged with the
-	// current environment (server-specific vars take precedence).
-	ACPEnv map[string]string `json:"acp_env,omitempty" yaml:"acp_env,omitempty"`
 	// WorkingDir is the absolute path to the working directory
 	WorkingDir string `json:"working_dir" yaml:"working_dir"`
 	// RestrictedRunner is the runner type to use for this workspace.
@@ -97,24 +91,20 @@ type WorkspaceSettings struct {
 	// conversation is created in this workspace. Only applies to conversations
 	// without a parent (to prevent infinite recursion). Maximum 5 children.
 	AutoChildren []AutoChild `json:"auto_children,omitempty" yaml:"auto_children,omitempty"`
-	// AuxiliaryACPServer is the name of the ACP server to use for auxiliary tasks
+	// AuxiliaryModelSelection defines model selection criteria for auxiliary sessions
 	// (title generation, follow-up analysis, MCP checks, etc.) in this workspace.
-	// When set, a dedicated ACP process is spawned for auxiliary work, decoupled
-	// from the main workspace process.
-	// Special values:
-	//   "" (empty) = use main workspace process (current behavior)
-	//   "none"     = disable auxiliary features for this workspace
-	AuxiliaryACPServer string `json:"auxiliary_acp_server,omitempty" yaml:"auxiliary_acp_server,omitempty"`
-}
-
-// HasDedicatedAuxiliary returns true if this workspace has a dedicated auxiliary ACP server configured.
-func (w *WorkspaceSettings) HasDedicatedAuxiliary() bool {
-	return w.AuxiliaryACPServer != "" && !strings.EqualFold(w.AuxiliaryACPServer, "none")
-}
-
-// IsAuxiliaryDisabled returns true if auxiliary features are explicitly disabled.
-func (w *WorkspaceSettings) IsAuxiliaryDisabled() bool {
-	return strings.EqualFold(w.AuxiliaryACPServer, "none")
+	// When set, auxiliary sessions are created on the same ACP process as the main
+	// workspace, then the model is switched to the best match from available models.
+	// When nil or Pattern is empty, the ACP server's default model is used.
+	AuxiliaryModelSelection *ACPServerConstraint `json:"auxiliary_model_selection,omitempty" yaml:"auxiliary_model_selection,omitempty"`
+	// IsDefault marks this workspace as the default for its working directory.
+	// When multiple workspaces share the same folder (e.g. different ACP servers
+	// or model variants), the one with IsDefault set is preferred when a workspace
+	// must be resolved from the folder alone (no ACP server specified). This is a
+	// per-workspace field and is intentionally NOT hoisted to folders.json, since
+	// it distinguishes between workspaces in the same folder. At most one workspace
+	// per folder should set this; if several do, the first match wins.
+	IsDefault bool `json:"is_default,omitempty" yaml:"is_default,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.
@@ -151,6 +141,24 @@ func (w *WorkspaceSettings) GetRestrictedRunner() string {
 // or false if explicitly disabled.
 func (w *WorkspaceSettings) GetAutoApprove() *bool {
 	return w.AutoApprove
+}
+
+// NormalizeDefaultWorkspaces enforces the invariant that at most one workspace
+// per working directory has IsDefault set. When several workspaces sharing the
+// same folder are marked default, the first one (in slice order) is kept and the
+// IsDefault flag is cleared on the rest. The slice is modified in place.
+func NormalizeDefaultWorkspaces(workspaces []WorkspaceSettings) {
+	seen := make(map[string]bool)
+	for i := range workspaces {
+		if !workspaces[i].IsDefault {
+			continue
+		}
+		if seen[workspaces[i].WorkingDir] {
+			workspaces[i].IsDefault = false
+			continue
+		}
+		seen[workspaces[i].WorkingDir] = true
+	}
 }
 
 // ValidateRestrictedRunner validates the restricted_runner field.
@@ -235,16 +243,34 @@ func LoadWorkspaces() ([]WorkspaceSettings, error) {
 		}
 	}
 
-	// If any UUIDs were generated, save the file back
-	if needsSave {
-		if err := SaveWorkspaces(file.Workspaces); err != nil {
-			// Log but don't fail - the workspaces are still valid
-			// The UUIDs will be re-generated next time if save failed
-			_ = err // ignore save error, UUIDs will be re-generated
+	// Load folder-level settings and merge them into the in-memory workspaces.
+	// The in-memory representation stays fully populated so that no other code
+	// needs to know about folders.json.
+	folders, ferr := LoadFolders()
+	if ferr != nil {
+		return nil, fmt.Errorf("failed to read folders file: %w", ferr)
+	}
+
+	populated := make([]WorkspaceSettings, len(file.Workspaces))
+	copy(populated, file.Workspaces)
+	ApplyFolderDefaults(populated, folders)
+
+	// Determine the desired on-disk state and migrate to it when needed. The
+	// first load of a legacy file (folder fields inline in workspaces.json)
+	// lifts those fields into the authoritative folders.json; subsequent loads
+	// detect no change and skip the rewrite (idempotent). extractFolderSettings
+	// produces only workspace-derived fields, so merge folder-native settings
+	// (Beads) back before comparing/saving.
+	cleaned, newFolders := extractFolderSettings(populated)
+	newFolders = preserveFolderNativeFields(cleaned, newFolders)
+	if needsSave || !reflect.DeepEqual(file.Workspaces, cleaned) || !foldersEqual(folders, newFolders) {
+		if err := saveWorkspacesAndFolders(cleaned, newFolders); err != nil {
+			// Log but don't fail - the in-memory workspaces are still valid.
+			_ = err
 		}
 	}
 
-	return file.Workspaces, nil
+	return populated, nil
 }
 
 // LoadWorkspacesFromFile loads workspaces from an explicit JSON or YAML file.
@@ -284,17 +310,32 @@ func LoadWorkspacesFromFile(path string) ([]WorkspaceSettings, error) {
 	return file.Workspaces, nil
 }
 
-// SaveWorkspaces saves workspaces to the Mitto data directory.
+// SaveWorkspaces saves workspaces to the Mitto data directory. Folder-level
+// fields (name, color, code, auto_children) are extracted into the authoritative
+// folders.json (keyed by working directory); the remaining per-workspace data is
+// written to workspaces.json.
 func SaveWorkspaces(workspaces []WorkspaceSettings) error {
+	cleaned, folders := extractFolderSettings(workspaces)
+	// extractFolderSettings produces only workspace-derived fields, so merge
+	// folder-native settings (e.g. Beads) back from the authoritative
+	// folders.json before writing — otherwise this save would wipe them.
+	folders = preserveFolderNativeFields(cleaned, folders)
+	return saveWorkspacesAndFolders(cleaned, folders)
+}
+
+// saveWorkspacesAndFolders writes the already-extracted workspaces and the
+// folders map to disk. folders.json is written FIRST so that folder-level values
+// can never be lost if a crash occurs between the two writes (workspaces.json no
+// longer contains them once cleaned). The folders map must already include any
+// folder-native fields (callers merge them via preserveFolderNativeFields).
+func saveWorkspacesAndFolders(cleaned []WorkspaceSettings, folders map[string]FolderSettings) error {
+	if err := SaveFolders(folders); err != nil {
+		return err
+	}
+
 	workspacesPath, err := appdir.WorkspacesPath()
 	if err != nil {
 		return err
 	}
-
-	file := WorkspacesFile{
-		Workspaces: workspaces,
-	}
-
-	// Use atomic write for safety
-	return fileutil.WriteJSONAtomic(workspacesPath, file, 0644)
+	return fileutil.WriteJSONAtomic(workspacesPath, WorkspacesFile{Workspaces: cleaned}, 0644)
 }

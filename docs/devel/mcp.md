@@ -174,6 +174,37 @@ Lists all configured workspaces with settings and metadata from `.mittorc` files
 | `acp_server`  | ACP server name                                                          |
 | `metadata`    | Optional `.mittorc` metadata (description, URL, group, user data schema) |
 
+#### `mitto_workspace_update`
+
+Updates a workspace's `.mittorc` configuration: descriptive metadata and/or the user_data schema. Supports partial updates — only provided fields change.
+
+**Parameters:**
+
+| Parameter               | Type    | Description                                                                                       |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `self_id`               | string  | Required. Identifies the calling session.                                                         |
+| `workspace`             | string  | Target workspace UUID (from `mitto_workspace_list`). Omit to target the caller's own workspace.  |
+| `description`           | string  | Workspace description. Omit to leave unchanged; pass `""` to clear.                              |
+| `url`                   | string  | Associated URL (e.g. repo URL). Omit to leave unchanged; pass `""` to clear.                     |
+| `group`                 | string  | Grouping label. Omit to leave unchanged; pass `""` to clear.                                     |
+| `user_data_schema`      | array   | List of `{name, description, type}` field definitions. `type` is `"string"` (default), `"url"`, or `"filename"`. Nil/absent = leave schema untouched. |
+| `user_data_schema_merge`| boolean | If `true` (default), merge fields by name with the existing schema. If `false`, replace the whole schema (an empty list clears it). |
+
+**Returns:**
+
+| Field            | Description                                        |
+| ---------------- | -------------------------------------------------- |
+| `success`        | Whether the update succeeded                       |
+| `error`          | Error message (only on failure)                    |
+| `workspace_uuid` | UUID of the updated workspace                      |
+| `working_dir`    | Working directory of the updated workspace         |
+| `updated`        | List of field names that were changed              |
+| `metadata`       | The workspace's new `.mittorc` metadata after update |
+
+**Cross-workspace access:** Targeting another workspace requires the `Can interact with other workspaces` flag and an interactive user confirmation dialog.
+
+**Note:** `.mittorc` is a version-controlled file in the workspace root. Changes take effect immediately but should be committed.
+
 ### Session-Scoped Tools (Require session_id parameter)
 
 These tools operate on a specific conversation and require a `session_id` parameter:
@@ -358,30 +389,53 @@ Returns (embeds `ConversationDetails`):
 
 #### `mitto_conversation_delete`
 
-Delete (archive) a child conversation. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
+Permanently delete a conversation. This tool supports two modes:
 
-The child conversation is gracefully stopped (waits for any active response to complete) and then archived. Archived conversations are read-only and will no longer accept prompts.
+1. **Delete a child conversation** — pass the child's `conversation_id`. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
+2. **Self-destruct** — pass `"self"` or your own conversation ID as `conversation_id` to delete the conversation you are currently running in.
 
-| Parameter         | Type   | Required | Description                      |
-| ----------------- | ------ | -------- | -------------------------------- |
-| `self_id`         | string | Yes      | Parent session ID (your session) |
-| `conversation_id` | string | Yes      | Child conversation ID to delete  |
+The target conversation is gracefully stopped (waits for any active response to complete) and then permanently deleted from disk, along with all of its descendants. Deleted conversations cannot be recovered.
+
+| Parameter         | Type   | Required | Description                                                        |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------ |
+| `self_id`         | string | Yes      | Your session ID (the caller)                                       |
+| `conversation_id` | string | Yes      | Child conversation ID to delete, or `"self"` / your own ID to self-destruct |
 
 Returns:
 
-| Field             | Description                      |
-| ----------------- | -------------------------------- |
-| `success`         | Whether the deletion succeeded   |
-| `conversation_id` | The deleted conversation's ID    |
-| `error`           | Error message if deletion failed |
+| Field             | Description                                            |
+| ----------------- | ------------------------------------------------------ |
+| `success`         | Whether the deletion (or self-destruct request) succeeded |
+| `conversation_id` | The deleted conversation's ID                          |
+| `error`           | Error message if deletion failed                       |
 
-**Security:** Only the parent that created the child can delete it. Attempting to delete a conversation that is not your child returns `"permission denied: can only delete your own child conversations"`.
+**Security:** Only the parent that created a child can delete it. Attempting to delete a conversation that is neither your child nor your own returns `"permission denied: can only delete your own child conversations"`.
+
+**Self-destruct (deferred deletion):** When the agent requests deletion of its **own** conversation, the deletion cannot run synchronously — the agent is mid-turn and its ACP connection is in use, and the parent-only security check would also reject a self-targeting request. Instead, the handler sets an in-memory flag on the calling `BackgroundSession` (`RequestSelfDestruct`) and returns success immediately. Once the current turn finishes (at the end of `BackgroundSession.PromptWithMeta`, after observers are notified), the backend invokes the `OnSelfDestruct` callback, which calls `SessionManager.deleteSessionAndChildren` to close the ACP process(es), remove the conversation and its descendants from disk, and broadcast `session_deleted` to all connected clients.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant MCP as MCP handler
+    participant BS as BackgroundSession
+    participant SM as SessionManager
+
+    Agent->>MCP: mitto_conversation_delete(conversation_id="self")
+    MCP->>BS: RequestSelfDestruct()
+    MCP-->>Agent: success (deferred)
+    Note over Agent: finishes current turn
+    BS->>BS: turn completes (PromptWithMeta)
+    BS->>SM: OnSelfDestruct(sessionID)
+    SM->>SM: deleteSessionAndChildren()
+    Note over SM: close ACP, store.Delete,<br/>broadcast session_deleted
+```
 
 **Example use cases:**
 
 - Clean up child conversations after collecting their results via `mitto_children_tasks_wait`
 - Remove failed children before retrying with new instructions
 - Tidy up the conversation list after a multi-iteration workflow completes
+- A short-lived agent removing its own conversation once its task is complete (self-destruct)
 
 #### `mitto_conversation_update`
 
@@ -412,6 +466,7 @@ Returns:
 - If the workspace has no schema, any user data update is rejected
 - If a field name is not in the schema, the update is rejected
 - If a value doesn't match the field type (e.g., invalid URL for `url` type), the update is rejected
+- For `filename`-typed fields, the value must resolve (absolute, or relative to the conversation's working directory) to an existing, readable file that is not a directory; otherwise the update is rejected. An empty value is allowed (clears the field).
 
 **Merge behavior (default):** When `user_data_merge` is `true` (or omitted), existing attributes are preserved and only the specified attributes are added or updated. When `false`, the full attribute set is replaced.
 

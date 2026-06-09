@@ -7,12 +7,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // badgeClickRequest represents a request to execute the badge click action.
 type badgeClickRequest struct {
 	// WorkspacePath is the absolute path to the workspace directory.
 	WorkspacePath string `json:"workspace_path"`
+	// Action specifies which action to perform: "folder" (default) or "terminal".
+	Action string `json:"action,omitempty"`
 }
 
 // badgeClickResponse represents the response from the badge click action.
@@ -65,18 +68,30 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the badge click action configuration
+	// Get the action configuration based on the requested action type
 	var enabled bool
 	var command string
 
 	mittoConfig := s.config.MittoConfig
-	if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.BadgeClickAction != nil {
-		enabled = mittoConfig.UI.Mac.BadgeClickAction.GetEnabled()
-		command = mittoConfig.UI.Mac.BadgeClickAction.GetCommand()
+	if req.Action == "terminal" {
+		// Use terminal action config
+		if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.TerminalAction != nil {
+			enabled = mittoConfig.UI.Mac.TerminalAction.GetEnabled()
+			command = mittoConfig.UI.Mac.TerminalAction.GetCommand()
+		} else {
+			enabled = true
+			command = "open -a Terminal ${MITTO_WORKING_DIR}"
+		}
 	} else {
-		// Use defaults
-		enabled = true
-		command = "open ${MITTO_WORKING_DIR}"
+		// Default: use badge click (folder open) action config
+		if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.BadgeClickAction != nil {
+			enabled = mittoConfig.UI.Mac.BadgeClickAction.GetEnabled()
+			command = mittoConfig.UI.Mac.BadgeClickAction.GetCommand()
+		} else {
+			// Use defaults
+			enabled = true
+			command = "open ${MITTO_WORKING_DIR}"
+		}
 	}
 
 	if !enabled {
@@ -98,6 +113,10 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("sh", "-c", finalCommand)
 	cmd.Dir = req.WorkspacePath
 
+	// Capture stderr for error reporting
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
+
 	if err := cmd.Start(); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Failed to execute badge click command",
@@ -113,11 +132,38 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Don't wait for the command to complete - it runs in the background
-	// This allows commands like "open" to return immediately
+	// Wait briefly for the command to detect immediate failures (e.g., command not found)
+	// Commands like "open" typically exit quickly on success
+	done := make(chan error, 1)
 	go func() {
-		_ = cmd.Wait()
+		done <- cmd.Wait()
 	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			errMsg := stderrBuf.String()
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			if s.logger != nil {
+				s.logger.Error("Badge click command failed",
+					"command", finalCommand,
+					"workspace", req.WorkspacePath,
+					"error", errMsg,
+				)
+			}
+			writeJSONOK(w, badgeClickResponse{
+				Success: false,
+				Error:   fmt.Sprintf("Command failed: %s", strings.TrimSpace(errMsg)),
+			})
+			return
+		}
+		// Command completed successfully
+	case <-time.After(2 * time.Second):
+		// Command is still running after 2s - assume it's a long-running process (e.g., terminal app)
+		// and consider it successful
+	}
 
 	if s.logger != nil {
 		s.logger.Debug("Badge click command executed",

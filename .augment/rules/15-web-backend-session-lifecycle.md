@@ -1,5 +1,5 @@
 ---
-description: Session lifecycle management, archive/unarchive flows, ACP connection lifecycle, graceful shutdown, crash recovery, error classification, parent-child rules, and session lifecycle anti-patterns
+description: Session lifecycle management, archive/unarchive flows, ACP connection lifecycle, graceful shutdown, crash recovery, error classification, parent-child rules, session suspension, staggered resumption
 globs:
   - "internal/web/session_api.go"
   - "internal/web/session_manager.go"
@@ -8,24 +8,22 @@ globs:
   - "internal/web/session_periodic_api.go"
   - "internal/web/acp_error_classification.go"
   - "internal/web/shared_acp_process.go"
+  - "internal/web/acp_process_gc.go"
   - "internal/mcpserver/server.go"
 keywords:
   - session lifecycle
   - archive
   - unarchive
+  - suspend
+  - ensure_resumed
+  - stagger
   - ACP connection
   - graceful shutdown
   - session resume
-  - archived session
   - session_gone
-  - negative cache
-  - circuit breaker
   - error classification
   - crash recovery
-  - restart
-  - backoff
   - parent child
-  - child session
   - cascade delete
   - periodic
 ---
@@ -34,11 +32,12 @@ keywords:
 
 ## Session States
 
-| State        | ACP Connection | User Can Send | Visible In List |
-| ------------ | -------------- | ------------- | --------------- |
-| **Active**   | Running        | Yes           | Yes (green dot) |
-| **Archived** | Stopped        | No (read-only)| Archived section|
-| **Deleted**  | N/A            | N/A           | No              |
+| State         | ACP Connection | User Can Send | Visible In List |
+| ------------- | -------------- | ------------- | --------------- |
+| **Active**    | Running        | Yes           | Yes (green dot) |
+| **Suspended** | Stopped (GC)   | Yes (resumes) | Yes (yellow dot)|
+| **Archived**  | Stopped        | No (read-only)| Archived section|
+| **Deleted**   | N/A            | N/A           | No              |
 
 ## Archive / Unarchive Flow
 
@@ -47,14 +46,36 @@ keywords:
 
 **Critical**: Always check `meta.Archived` before calling `ResumeSession()` on WebSocket connect — never resume an archived session automatically.
 
+## Session Suspension (GC Periodic Suspend)
+
+The GC suspends idle periodic sessions whose next prompt is far away, saving ACP resources. Sessions resume transparently when the user focuses them.
+
+- **Config**: `PeriodicSuspendThreshold` (default 30m) in `acp_process_gc.go`. Settings UI: `periodic_suspend_timeout` (`"disabled"`, `"15m"`, `"30m"`, `"1h"`, `"2h"`).
+- **Eligibility**: Periodic session + next prompt > threshold from now. Applies even if user has it open (resumes instantly).
+- **Grace window**: `PeriodicSuspendGracePeriod` (default 10m) — a session is NOT suspended while its most recent turn completion (`SessionInfo.LastResponseCompleteAt`) or activity (`LastActivityAt`) is within this window. Prevents reclaiming a conversation that just ended a turn and may continue. Use `LastResponseCompleteAt` (turn END) as the signal — `LastActivityAt` is set at prompt START and is stale after long tasks. GC always skips actively-prompting sessions first (`IsPrompting`), so this only matters once the turn ends.
+- **Tracking**: `ACPProcessManager.gcSuspendedSessions` map. `SetGCSuspended()` / `IsGCSuspended()` / `ClearGCSuspended()`.
+- **Resume**: `ensure_resumed` WebSocket message (sent on user focus) → `handleEnsureResumed()` in `session_ws.go`. Also clears GC-suspended flag on any explicit resume (periodic runner, prompt send).
+- **UI**: Suspended sessions show a friendly "Session suspended" balloon (not error), yellow dot in sidebar tooltip.
+
+## Staggered Session Resumption
+
+`reconnectAllSessionsStaggered()` in `session_manager.go` prevents thundering herd on startup. Sessions sharing the same ACP process are staggered by `startup_stagger_ms` (default 300ms). Non-active sessions are deferred — resumed on first user focus via `ensure_resumed`.
+
+## Archive Reasons
+
+`Metadata.ArchiveReason` (`ArchiveReason` type in `session/types.go`) tracks why a session was archived. Cleared on unarchive.
+
+| Reason              | Constant                      | Trigger                                      |
+| ------------------- | ----------------------------- | -------------------------------------------- |
+| `manual`            | `ArchiveReasonManual`         | User/MCP archive action                      |
+| `inactivity`        | `ArchiveReasonInactivity`     | Auto-archive after configured inactive period|
+| `acp_start_failures`| `ArchiveReasonACPFailures`    | `ACPStartFailureCount` ≥ threshold (3)       |
+
+Broadcast in `session_archived` WebSocket message as `archive_reason` field.
+
 ## Auto-Archive
 
-```yaml
-session:
-  auto_archive_inactive_after: "1w"  # implemented in checkAutoArchive()
-```
-
-Excluded from auto-archive: already-archived sessions, child sessions, sessions with enabled periodic prompts.
+Config: `session.auto_archive_inactive_after: "1w"` (in `checkAutoArchive()`). Excluded: already-archived, child sessions, sessions with periodic prompts (enabled or paused).
 
 ## ACP Process Crash Recovery
 
@@ -66,27 +87,23 @@ Both `BackgroundSession` and `SharedACPProcess` attempt automatic restart with e
 
 **Restart constants** (`acp_error_classification.go`): `MaxACPRestarts`=3 per window, `MaxACPTotalRestarts`=10 lifetime cap, `ACPRestartWindow`=5min, `ACPRestartBaseDelay`=3s→30s (exponential). Circuit breaker: `permanentlyFailed bool` (in `restartMu`) — set on lifetime cap or permanent error; `canRestartACP()` checks it first, never resets.
 
-**Telemetry**: `bs.recordRestart(reason)` — reasons: `crash_during_prompt`, `crash_during_stream`, `unexpected_exit`. `bs.GetRestartStats()` → stats struct.
-
 ### Auxiliary Session Invalidation
 
-Two mechanisms keep auxiliary sessions fresh after crashes:
-- **On `SharedACPProcess.Restart()`**: `onRestart` callback calls `m.invalidateAuxiliarySessions(wuuid)` — removes ALL aux sessions for the workspace.
-- **On connection error in `PromptAuxiliary()`**: `m.invalidateAuxSession(workspaceUUID, purpose)` — removes just the one session, waits 1s, retries once.
+- **On `SharedACPProcess.Restart()`**: `onRestart` → `invalidateAuxiliarySessions(wuuid)` (removes ALL aux sessions).
+- **On connection error in `PromptAuxiliary()`**: `invalidateAuxSession(wuuid, purpose)` (removes one, retries once).
+- Lock ordering: both called WITHOUT holding `m.mu`; they acquire `auxMu` internally.
 
-Lock ordering: both must be called WITHOUT holding `m.mu`; they acquire `auxMu` internally.
+### Auxiliary Session GC (Tier 3)
+
+Tier 3 cleans up auxiliary sessions idle longer than `AuxIdleTimeout` (default: 10m) via `CleanupStaleAuxiliarySessions()`. Lazily re-created on next use.
 
 ### ACP Process Death Detection (Three-Layer)
-
-Fast crash detection avoids waiting for the ACP SDK's 60-second control request timeout:
 
 | Layer | Mechanism | Detection Time | File |
 | ----- | --------- | -------------- | ---- |
 | **Fix A** | OS liveness polling (`kill(pid, 0)`) | ~2s | `shared_acp_process.go` |
 | **Fix B** | `conn.Done()` pipe EOF | ~seconds | SDK level |
 | **Fix C** | Stderr crash pattern matching | Immediate | `background_session.go`, `shared_acp_process.go` |
-
-Key stderr crash patterns: `stream ended unexpectedly`, `EOF received from CLI stdout`, `connection reset by peer`, `broken pipe`, `failed to queue notification; closing connection`.
 
 All three layers signal via `processDone` channel (closed once via `sync.Once`).
 
@@ -104,21 +121,18 @@ Per-session resources must be destroyed on archive and recreated (new instances)
 
 ## Deleted Sessions
 
-When a client connects to a deleted session, send `session_gone` (NOT a generic error — clients retry generic errors 15× but stop on `session_gone`).
-
-`NegativeSessionCache` (30s TTL) prevents repeated FS lookups: check `IsNotFound()` → populate on `ErrSessionNotFound` → invalidate on `handleCreateSession`/`ResumeSession`.
-
-**Critical**: Archived sessions still exist — do NOT cache them as "not found".
+Send `session_gone` (NOT generic error — clients stop reconnecting on `session_gone`). `NegativeSessionCache` (30s TTL) prevents repeated FS lookups. **Critical**: Archived sessions still exist — do NOT cache them as "not found".
 
 ## WebSocket Messages
 
 | Message Type        | Direction       | When                          |
 | ------------------- | --------------- | ----------------------------- |
-| `session_archived`  | Server->Client  | Session archived/unarchived   |
-| `acp_stopped`       | Server->Client  | ACP connection closed         |
-| `acp_started`       | Server->Client  | ACP connection started        |
-| `acp_start_failed`  | Server->Client  | ACP failed to start           |
-| `session_gone`      | Server->Client  | Session deleted/not found (terminal — client must stop reconnecting) |
+| `session_archived`  | Server→Client   | Session archived/unarchived   |
+| `acp_stopped`       | Server→Client   | ACP connection closed         |
+| `acp_started`       | Server→Client   | ACP connection started        |
+| `acp_start_failed`  | Server→Client   | ACP failed to start           |
+| `session_gone`      | Server→Client   | Session deleted/not found (terminal) |
+| `ensure_resumed`    | Client→Server   | Request ACP resume on user focus |
 
 
 ## Parent-Child Session Lifecycle Rules
@@ -133,13 +147,14 @@ When a client connects to a deleted session, send `session_gone` (NOT a generic 
 
 **Anti-patterns**: Never archive a child directly. Never allow periodic config on a child.
 
+## Periodic Prompt Name Resolution
+
+`PromptName` field selects a named workspace prompt instead of inline text. Resolved at send time via `PromptResolverFunc`. Either `Prompt` or `PromptName` must be set.
+
 ## Auto-Resume Guard (Race Condition)
 
-**Bug**: GC-closed sessions become `SessionStatusCompleted` but are NOT archived. Auto-resume guards that only check `!Archived` will re-create a new `BackgroundSession`, causing a second `session_end` event when the session is later deleted.
-
-**Fix**: Always check BOTH conditions in `internal/mcpserver/server.go`:
+GC-closed sessions become `SessionStatusCompleted` but are NOT archived. Always check BOTH conditions before auto-resume:
 ```go
-// handleChildrenTasksWait and handleSendPrompt — must check both:
 if bs == nil && !meta.Archived && meta.Status != session.SessionStatusCompleted {
     // safe to auto-resume
 }

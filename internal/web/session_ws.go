@@ -103,6 +103,14 @@ type SessionWSClient struct {
 	// so that a second load_events arriving while one is in-flight is silently
 	// dropped (the client will get the results from the first one).
 	loadEventsMu sync.Mutex
+
+	// Deduplication for action_buttons: tracks the key of the last buttons sent to
+	// this client. Prevents flooding the client with identical button messages on
+	// every WebSocket reconnect (sendCachedActionButtonsTo fires on each AddObserver).
+	// An empty string means no buttons have been sent yet or the last send was a
+	// clear signal (empty buttons). Thread-safe because OnActionButtons is called
+	// from the observer notification goroutine, which is serialised per-client.
+	lastSentButtonsKey string
 }
 
 func hasRenderableConversationEvent(events []session.Event) bool {
@@ -243,6 +251,25 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					clientLogger.Debug("Session is archived, not resuming ACP",
 						"session_id", sessionID)
 				}
+			} else if s.IsShutdown() {
+				// Server is shutting down — don't resume ACP. A reconnecting
+				// frontend WebSocket briefly succeeds before the HTTP server fully
+				// stops, but starting a new ACP process here would leave it
+				// orphaned and cause the UI to get stuck on "Resuming session…".
+				if clientLogger != nil {
+					clientLogger.Debug("Server is shutting down, not resuming ACP",
+						"session_id", sessionID)
+				}
+			} else if s.acpProcessManager != nil && s.acpProcessManager.IsGCSuspended(sessionID) {
+				// Session was intentionally suspended by the GC's periodic-suspend
+				// heuristic. Skip auto-resume to prevent the suspend/resume thrashing
+				// loop (GC closes → frontend reconnects WS → auto-resume → GC closes).
+				// The session will be resumed by ensure_resumed (user focus) or the
+				// PeriodicRunner (when the prompt is due).
+				if clientLogger != nil {
+					clientLogger.Debug("Session is GC-suspended, not auto-resuming",
+						"session_id", sessionID)
+				}
 			} else {
 				// Session exists in store and is not archived.
 				// Resume ACP asynchronously to avoid blocking the WebSocket handler.
@@ -367,6 +394,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	if c.store != nil {
 		if meta, err := c.store.GetMetadata(c.sessionID); err == nil {
 			data["name"] = meta.Name
+			data["beads_issue"] = meta.BeadsIssue
 			data["working_dir"] = meta.WorkingDir
 			data["created_at"] = meta.CreatedAt.Format(time.RFC3339)
 			data["status"] = meta.Status
@@ -377,6 +405,16 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 				// Archived sessions don't have ACP connections, so mark as "ready"
 				// to prevent the "Reconnecting to AI agent..." banner
 				data["acp_ready"] = true
+				if meta.ArchiveReason != "" {
+					data["archive_reason"] = string(meta.ArchiveReason)
+				}
+			} else if c.server.acpProcessManager != nil && c.server.acpProcessManager.IsGCSuspended(c.sessionID) {
+				// GC-suspended sessions are intentionally paused — include the flag so
+				// the frontend shows the correct UI state instead of "Reconnecting to AI agent..."
+				data["gc_suspended"] = true
+			}
+			if !meta.ArchivedAt.IsZero() {
+				data["archived_at"] = meta.ArchivedAt.Format(time.RFC3339)
 			}
 			// Include parent-child relationship fields for session tree rendering
 			if meta.ParentSessionID != "" {
@@ -531,16 +569,17 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	switch msg.Type {
 	case WSMsgTypePrompt:
 		var data struct {
-			Message  string   `json:"message"`
-			ImageIDs []string `json:"image_ids,omitempty"`
-			FileIDs  []string `json:"file_ids,omitempty"`
-			PromptID string   `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
+			Message    string   `json:"message"`
+			PromptName string   `json:"prompt_name,omitempty"` // Name of workspace prompt (backend resolves to text)
+			ImageIDs   []string `json:"image_ids,omitempty"`
+			FileIDs    []string `json:"file_ids,omitempty"`
+			PromptID   string   `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handlePromptWithMeta(data.Message, data.PromptID, data.ImageIDs, data.FileIDs)
+		c.handlePromptWithMeta(data.Message, data.PromptName, data.PromptID, data.ImageIDs, data.FileIDs)
 
 	case WSMsgTypeCancel:
 		c.handleCancel()
@@ -616,10 +655,13 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label, data.FreeText)
+
+	case WSMsgTypeEnsureResumed:
+		c.handleEnsureResumed()
 	}
 }
 
-func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, imageIDs, fileIDs []string) {
+func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string, promptID string, imageIDs, fileIDs []string) {
 	// If bgSession is nil, try to attach to a running session.
 	// This handles the case where the session was unarchived after this client connected.
 	if c.bgSession == nil {
@@ -637,10 +679,11 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 
 	// Send prompt to background session with sender info for multi-client broadcast
 	meta := PromptMeta{
-		SenderID: c.clientID,
-		PromptID: promptID,
-		ImageIDs: imageIDs,
-		FileIDs:  fileIDs,
+		SenderID:   c.clientID,
+		PromptID:   promptID,
+		PromptName: promptName,
+		ImageIDs:   imageIDs,
+		FileIDs:    fileIDs,
 	}
 	if err := c.bgSession.PromptWithMeta(message, meta); err != nil {
 		c.sendPromptError("Failed to send prompt: "+err.Error(), promptID)
@@ -653,7 +696,11 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 
 	// Auto-generate title if session has no title yet
 	if shouldGenerateTitle {
-		go c.generateAndSetTitle(message)
+		titleMessage := message
+		if titleMessage == "" && promptName != "" {
+			titleMessage = promptName
+		}
+		go c.generateAndSetTitle(titleMessage)
 	}
 }
 
@@ -1130,6 +1177,13 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 					"session_id", c.sessionID,
 					"observer_count", c.bgSession.ObserverCount())
 			}
+			// Background-prewarm the deferred ACP session/new handshake so the
+			// model/mode selectors appear before the first prompt. This is a no-op
+			// for already-started sessions. It runs after AddObserver so this client
+			// reliably receives the acp_started broadcast (with config_options) once
+			// the handshake completes. PrewarmACPSession is idempotent and safe under
+			// concurrent callers (e.g. multiple connected clients).
+			go c.bgSession.PrewarmACPSession()
 			// Re-send any active UI prompt to the newly connected client.
 			// This handles the case where a page reload occurs while a blocking
 			// UI prompt (e.g., mitto_ui_options) is waiting for user input.
@@ -1694,6 +1748,77 @@ func (c *SessionWSClient) sendPromptError(message string, promptID string) {
 	})
 }
 
+// handleEnsureResumed ensures the session's ACP connection is running.
+// This is called when the user focuses on a conversation, providing an explicit
+// hint that this session should be resumed immediately (bypassing any startup stagger).
+func (c *SessionWSClient) handleEnsureResumed() {
+	// Already attached to a running session
+	if c.bgSession != nil {
+		return
+	}
+
+	// Try to attach to a session that may have been resumed by another path
+	c.tryAttachToSession()
+	if c.bgSession != nil {
+		return
+	}
+
+	// Session not running - check if we should resume it
+	if c.store == nil {
+		return
+	}
+
+	meta, err := c.store.GetMetadata(c.sessionID)
+	if err != nil {
+		return
+	}
+
+	// Don't resume archived sessions
+	if meta.Archived {
+		return
+	}
+
+	// Don't resume during shutdown
+	if c.server.IsShutdown() {
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Info("User focused conversation, ensuring ACP is resumed",
+			"session_id", c.sessionID)
+	}
+
+	// Clear GC-suspended flag — the user explicitly focused this session,
+	// so it should resume regardless of the periodic suspend heuristic.
+	if c.server.acpProcessManager != nil {
+		c.server.acpProcessManager.ClearGCSuspended(c.sessionID)
+	}
+
+	// Resume asynchronously (same pattern as the WebSocket connect handler)
+	cwd := meta.WorkingDir
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	sessionName := meta.Name
+	go func() {
+		resumedBS, err := c.server.sessionManager.ResumeSession(c.sessionID, sessionName, cwd)
+		if err != nil {
+			if c.logger != nil {
+				c.logger.Error("Failed to resume session (ensure_resumed)", "error", err)
+			}
+			c.server.BroadcastACPStartFailed(c.sessionID, sessionName, err, "")
+			return
+		}
+		if c.logger != nil {
+			c.logger.Debug("Resumed session via ensure_resumed",
+				"acp_id", resumedBS.GetACPID())
+		}
+		c.tryAttachToSession()
+		c.server.BroadcastACPStarted(c.sessionID)
+		resumedBS.TriggerFollowUpSuggestions()
+	}()
+}
+
 // tryAttachToSession attempts to attach to a running BackgroundSession.
 // This is called when bgSession is nil but the session may have been resumed
 // (e.g., after unarchiving). If successful, the client is added as an observer.
@@ -1711,12 +1836,12 @@ func (c *SessionWSClient) tryAttachToSession() {
 	c.bgSession = bs
 	bs.AddConnectedClient()
 
-	// Add as observer if initial load is done
+	// Determine if we should add the observer now.
 	c.initialLoadMu.Lock()
-	shouldAddObserver := c.initialLoadDone
-	c.initialLoadMu.Unlock()
-
-	if shouldAddObserver {
+	if c.initialLoadDone {
+		// Normal case: initial load already completed with bgSession available.
+		// Add observer immediately.
+		c.initialLoadMu.Unlock()
 		bs.AddObserver(c)
 		if c.logger != nil {
 			c.logger.Debug("Attached to session after unarchive",
@@ -1724,23 +1849,60 @@ func (c *SessionWSClient) tryAttachToSession() {
 				"acp_id", bs.GetACPID(),
 				"observer_count", bs.ObserverCount())
 		}
-		// Re-send any active UI prompt to the newly attached client.
-		// This handles the case where a session is unarchived while a blocking
-		// UI prompt is waiting, ensuring the dialog appears for the client.
-		if activePrompt := bs.GetActiveUIPrompt(); activePrompt != nil {
+	} else {
+		// Check if the client already completed its initial load while bgSession was nil.
+		// This happens when ACP resumes AFTER the initial load_events has already run.
+		// In this case, initialLoadDone is still false because postLoadProcessing
+		// skipped observer registration (bgSession was nil at that time).
+		// We detect this by checking lastSentSeq > 0 (events were already sent to client).
+		c.seqMu.Lock()
+		alreadyLoaded := c.lastSentSeq > 0
+		lastSeq := c.lastSentSeq
+		c.seqMu.Unlock()
+
+		if alreadyLoaded {
+			// The client already loaded events but was never registered as an observer
+			// because bgSession was nil at load time. Register now and sync any missed events.
+			c.initialLoadDone = true
+			c.initialLoadMu.Unlock()
+			bs.AddObserver(c)
 			if c.logger != nil {
-				c.logger.Info("Re-sending active UI prompt to attached client",
+				c.logger.Debug("Attached to session after unarchive (observer added — load was already done)",
 					"session_id", c.sessionID,
-					"client_id", c.clientID,
-					"request_id", activePrompt.RequestID,
-					"prompt_type", activePrompt.Type)
+					"acp_id", bs.GetACPID(),
+					"last_sent_seq", lastSeq,
+					"observer_count", bs.ObserverCount())
 			}
-			c.OnUIPrompt(*activePrompt)
+			// Sync any events that were persisted between the initial load and now.
+			// This covers the window where events arrived after the client's load_events
+			// but before we registered as an observer.
+			if lastSeq > 0 {
+				c.syncMissedEventsDuringRegistration(lastSeq)
+			}
+		} else {
+			// Client hasn't loaded events yet. Observer will be added in postLoadProcessing
+			// when load_events arrives.
+			c.initialLoadMu.Unlock()
+			if c.logger != nil {
+				c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
+					"session_id", c.sessionID,
+					"acp_id", bs.GetACPID())
+			}
 		}
-	} else if c.logger != nil {
-		c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
-			"session_id", c.sessionID,
-			"acp_id", bs.GetACPID())
+	}
+
+	// Re-send any active UI prompt to the newly attached client.
+	// This handles the case where a session is unarchived while a blocking
+	// UI prompt is waiting, ensuring the dialog appears for the client.
+	if activePrompt := bs.GetActiveUIPrompt(); activePrompt != nil {
+		if c.logger != nil {
+			c.logger.Info("Re-sending active UI prompt to attached client",
+				"session_id", c.sessionID,
+				"client_id", c.clientID,
+				"request_id", activePrompt.RequestID,
+				"prompt_type", activePrompt.Type)
+		}
+		c.OnUIPrompt(*activePrompt)
 	}
 
 	// Send a notification to the client that the session is now running,
@@ -2151,10 +2313,45 @@ func (c *SessionWSClient) OnContextUsageUpdate(size, used int) {
 	})
 }
 
+// actionButtonsKey builds a lightweight dedup key from a slice of buttons.
+// It concatenates "label\x00response" pairs separated by "\x01" so that
+// different label/response orderings produce different keys.
+// An empty slice returns "" (the sentinel for "no buttons / clear signal").
+func actionButtonsKey(buttons []ActionButton) string {
+	if len(buttons) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, btn := range buttons {
+		if i > 0 {
+			b.WriteByte('\x01')
+		}
+		b.WriteString(btn.Label)
+		b.WriteByte('\x00')
+		b.WriteString(btn.Response)
+	}
+	return b.String()
+}
+
 // OnActionButtons is called when action buttons are extracted from the agent's response.
 // An empty slice is a valid "clear" signal and must be forwarded to all clients.
 func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 	c.logger.Debug("action_buttons: OnActionButtons called", "button_count", len(buttons))
+
+	// Dedup: skip if these exact buttons were already sent to this client.
+	// This prevents storms of identical messages when sendCachedActionButtonsTo
+	// fires on every WebSocket reconnect (AddObserver is called on each reconnect).
+	// Empty-button clear signals (key=="") are never suppressed so the UI always
+	// sees the "buttons cleared" notification.
+	key := actionButtonsKey(buttons)
+	if key != "" && key == c.lastSentButtonsKey {
+		c.logger.Debug("action_buttons: skipping duplicate send (identical to last sent)",
+			"session_id", c.sessionID,
+			"button_count", len(buttons))
+		return
+	}
+	c.lastSentButtonsKey = key
+
 	c.logger.Debug("action_buttons: sending to WebSocket",
 		"session_id", c.sessionID,
 		"button_count", len(buttons))
@@ -2170,23 +2367,17 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // OnUserPrompt is called when any observer sends a prompt.
 // This allows all connected clients to see user messages from other clients.
 // senderID identifies which client sent the prompt (for deduplication).
+// promptName is the name of the workspace prompt used (empty for ad-hoc prompts).
 // seq is the sequence number for this user prompt event.
-func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string) {
-	// Check seq tracking
+func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
+	// Always deliver user_prompt to the client — do NOT skip based on lastSentSeq.
+	// Unlike streamed agent_message chunks, user_prompt is a one-shot event.
+	// The frontend's alreadyExists check (by seq) handles dedup if events_loaded
+	// also delivered this event. Skipping here races with handleLoadEvents:
+	// a concurrent load_events can update lastSentSeq to include this seq before
+	// the observer notification runs, silently dropping the live notification.
+	// This caused periodic prompt pills to never appear in real-time.
 	c.seqMu.Lock()
-	if seq > 0 && seq <= c.lastSentSeq {
-		// L1: Log skipped duplicate
-		if c.logger != nil {
-			c.logger.Debug("seq_skipped_duplicate",
-				"seq", seq,
-				"last_sent_seq", c.lastSentSeq,
-				"event_type", "user_prompt",
-				"prompt_id", promptID,
-				"client_id", c.clientID)
-		}
-		c.seqMu.Unlock()
-		return
-	}
 	if seq > c.lastSentSeq {
 		c.lastSentSeq = seq
 	}
@@ -2203,7 +2394,7 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 			"client_id", c.clientID)
 	}
 
-	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
+	data := map[string]interface{}{
 		"seq":          seq,
 		"max_seq":      c.getServerMaxSeq(),
 		"session_id":   c.sessionID,
@@ -2214,7 +2405,11 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 		"file_ids":     fileIDs,
 		"is_mine":      senderID == c.clientID,
 		"is_prompting": true, // Signal frontend to show Stop button immediately
-	})
+	}
+	if promptName != "" {
+		data["prompt_name"] = promptName
+	}
+	c.sendMessage(WSMsgTypeUserPrompt, data)
 }
 
 // GetClientID returns the unique identifier for this client.

@@ -9,18 +9,20 @@ import (
 
 // PeriodicPromptRequest is the request body for creating/updating a periodic prompt.
 type PeriodicPromptRequest struct {
-	Prompt     string            `json:"prompt"`
-	PromptName string            `json:"prompt_name,omitempty"`
-	Frequency  session.Frequency `json:"frequency"`
-	Enabled    bool              `json:"enabled"`
+	Prompt       string            `json:"prompt"`
+	PromptName   string            `json:"prompt_name,omitempty"`
+	Frequency    session.Frequency `json:"frequency"`
+	Enabled      bool              `json:"enabled"`
+	FreshContext bool              `json:"fresh_context,omitempty"`
 }
 
 // PeriodicPromptPatchRequest is the request body for partial updates.
 type PeriodicPromptPatchRequest struct {
-	Prompt     *string            `json:"prompt,omitempty"`
-	PromptName *string            `json:"prompt_name,omitempty"`
-	Frequency  *session.Frequency `json:"frequency,omitempty"`
-	Enabled    *bool              `json:"enabled,omitempty"`
+	Prompt       *string            `json:"prompt,omitempty"`
+	PromptName   *string            `json:"prompt_name,omitempty"`
+	Frequency    *session.Frequency `json:"frequency,omitempty"`
+	Enabled      *bool              `json:"enabled,omitempty"`
+	FreshContext *bool              `json:"fresh_context,omitempty"`
 }
 
 // handleSessionPeriodic handles periodic prompt operations for a session.
@@ -98,10 +100,11 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 	}
 
 	p := &session.PeriodicPrompt{
-		Prompt:     req.Prompt,
-		PromptName: req.PromptName,
-		Frequency:  req.Frequency,
-		Enabled:    req.Enabled,
+		Prompt:       req.Prompt,
+		PromptName:   req.PromptName,
+		Frequency:    req.Frequency,
+		Enabled:      req.Enabled,
+		FreshContext: req.FreshContext,
 	}
 
 	if err := ps.Set(p); err != nil {
@@ -123,6 +126,19 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 
+	// If the session has no title, trigger title generation from the periodic prompt.
+	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
+		promptText := req.Prompt
+		if promptText == "" {
+			promptText = req.PromptName
+		}
+		if promptText != "" {
+			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+				bs.TriggerTitleGeneration(promptText)
+			}
+		}
+	}
+
 	// Broadcast periodic state change to all clients (includes full config)
 	s.BroadcastPeriodicUpdated(sessionID, updated)
 
@@ -136,7 +152,7 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled); err != nil {
+	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext); err != nil {
 		if err == session.ErrPeriodicNotFound {
 			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
 			return
@@ -157,6 +173,22 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 	if err != nil {
 		http.Error(w, "Failed to get updated periodic prompt", http.StatusInternalServerError)
 		return
+	}
+
+	// If the session has no title, trigger title generation from the periodic prompt.
+	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
+		promptText := ""
+		if updated != nil {
+			promptText = updated.Prompt
+			if promptText == "" {
+				promptText = updated.PromptName
+			}
+		}
+		if promptText != "" {
+			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+				bs.TriggerTitleGeneration(promptText)
+			}
+		}
 	}
 
 	// Broadcast periodic state change to all clients (includes full config)

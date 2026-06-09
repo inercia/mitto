@@ -35,6 +35,17 @@ void completeTermination(void);
 // with trackpad swipes: swipe left goes to next, swipe right goes to previous.
 void setupSwipeGestureRecognizer(void);
 
+// setupKeyboardShortcutMonitor installs a local key event monitor that intercepts
+// Ctrl+Cmd+Arrow key events and consumes them to prevent the macOS system beep.
+// This is needed because WKWebView's responder chain can produce a beep even when
+// native menu items or JavaScript handlers process the shortcut.
+void setupKeyboardShortcutMonitor(void);
+
+// suppressTextEditingBeeps swizzles NSWindow's noResponderFor: to suppress the
+// macOS system beep for text editing selectors (deleteBackward:, deleteForward:,
+// etc.) that WKWebView handles internally in its web process.
+void suppressTextEditingBeeps(void);
+
 // disableWindowFullscreen prevents the window from entering fullscreen mode.
 // This removes the fullscreen button from the window's title bar.
 // This must be called after the window is created.
@@ -44,6 +55,11 @@ void disableWindowFullscreen(void);
 // WebKit child processes (WebContent) for their display names.
 // This should be called as early as possible in app startup, before webview creation.
 void setProcessName(const char* name);
+
+// setWindowFrameAutosaveName enables automatic saving/restoring of the main window's
+// frame (position and size) across app launches.
+// This must be called after the window is created (use w.Dispatch).
+void setWindowFrameAutosaveName(void);
 
 #endif // MENU_DARWIN_H
 

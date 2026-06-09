@@ -1,5 +1,5 @@
 // Mitto Web Interface - Settings Dialog Component
-const { useState, useEffect, useMemo, html } = window.preact;
+const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
 import {
@@ -44,12 +44,12 @@ import {
   SearchIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
+import { ModelSelection } from "./ModelSelection.js";
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
 
-// Import WorkspaceBadge from app.js - we'll need to pass it as a prop or extract it
-// For now, we'll receive it as a prop
+// WorkspaceBadge is now a standalone component module (not prop-drilled from app.js)
 
 /**
  * FolderListEditor — reusable folder list editing component with append/replace modes.
@@ -509,258 +509,10 @@ export function RunnerRestrictionsEditor({
 }
 
 /**
- * Helper component for editing a workspace inline (accordion-style)
- */
-function WorkspaceEditForm({
-  workspace,
-  acpServers,
-  allWorkspaces,
-  supportedRunners,
-  getWorkspaceVisualInfo,
-  getBasename,
-  onSave,
-  onCancel,
-}) {
-  const [name, setName] = useState(workspace.name || "");
-  const [code, setCode] = useState(workspace.code || "");
-  const [color, setColor] = useState(
-    workspace.color ||
-      getWorkspaceVisualInfo(workspace.working_dir).color.backgroundHex ||
-      "#808080",
-  );
-  const [acpServer, setAcpServer] = useState(workspace.acp_server);
-  const [auxiliaryAcpServer, setAuxiliaryAcpServer] = useState(
-    workspace.auxiliary_acp_server || "",
-  );
-  const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
-  const [autoApprove, setAutoApprove] = useState(
-    workspace.auto_approve === true,
-  );
-  const [autoChildren, setAutoChildren] = useState(
-    workspace.auto_children || [],
-  );
-  // Per-workspace runner restriction overrides (null = no overrides)
-  const [runnerConfig, setRunnerConfig] = useState(
-    workspace.restricted_runner_config || null,
-  );
-  // Effective config from global+agent levels (for showing inherited values)
-  const [effectiveConfig, setEffectiveConfig] = useState(null);
-
-  // Fetch effective runner config when workspace UUID changes or on mount
-  useEffect(() => {
-    if (!workspace.uuid) return;
-    secureFetch(apiUrl(`/api/workspaces/${workspace.uuid}/effective-runner-config`))
-      .then((r) => r.json())
-      .then((data) => setEffectiveConfig(data))
-      .catch(() => {}); // Ignore errors — effective config is optional for display
-  }, [workspace.uuid]);
-
-  // When runner type switches to "exec", clear runner config
-  const handleRunnerChange = (newRunner) => {
-    setRunner(newRunner);
-    if (newRunner === "exec") {
-      setRunnerConfig(null);
-    } else if (!runnerConfig) {
-      // Pre-populate write folders with $MITTO_WORKING_DIR when first enabling restrictions
-      setRunnerConfig({
-        restrictions: { allow_write_folders: ["$MITTO_WORKING_DIR"] },
-      });
-    }
-  };
-
-  // Sort ACP servers alphabetically by name for display
-  const sortedServers = useMemo(
-    () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
-    [acpServers],
-  );
-
-  const handleSave = () => {
-    // Ensure code is uppercase and max 3 characters
-    const sanitizedCode = (code || "").toUpperCase().slice(0, 3);
-    onSave({
-      name: name || undefined,
-      code: sanitizedCode || undefined,
-      color: color || undefined,
-      acp_server: acpServer,
-      auxiliary_acp_server: auxiliaryAcpServer,
-      restricted_runner: runner,
-      // Only include runner config for non-exec runners
-      restricted_runner_config: runner !== "exec" ? runnerConfig : undefined,
-      auto_approve: autoApprove || undefined, // undefined to omit if false
-      auto_children: autoChildren.length > 0 ? autoChildren : undefined,
-    });
-  };
-
-  return html`
-    <div class="space-y-3 mt-3 pt-3 border-t border-slate-600/50">
-      <!-- Friendly Name -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1">Display Name</label>
-        <input
-          type="text"
-          value=${name}
-          onInput=${(e) => setName(e.target.value)}
-          placeholder=${getBasename(workspace.working_dir)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <p class="text-xs text-gray-500 mt-1">
-          Optional friendly name shown in the UI
-        </p>
-      </div>
-
-      <!-- ACP Server Selection -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1">ACP Server</label>
-        <select
-          value=${acpServer}
-          onChange=${(e) => setAcpServer(e.target.value)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          ${sortedServers.map(
-            (srv) => html`
-              <option key=${srv.name} value=${srv.name}>${srv.name}</option>
-            `,
-          )}
-        </select>
-      </div>
-
-      <!-- Auxiliary ACP Server Selection -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1"
-          >Auxiliary ACP Server</label
-        >
-        <select
-          value=${auxiliaryAcpServer}
-          onChange=${(e) => setAuxiliaryAcpServer(e.target.value)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Default (shared with main)</option>
-          <option value="none">None (disabled)</option>
-          ${sortedServers.map(
-            (srv) => html`
-              <option key=${"aux-" + srv.name} value=${srv.name}>
-                ${srv.name}
-              </option>
-            `,
-          )}
-        </select>
-        <p class="text-xs text-gray-500 mt-1">
-          Dedicated server for background tasks (titles, suggestions)
-        </p>
-      </div>
-
-      <!-- Sandbox Type -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1">Sandbox Type</label>
-        <select
-          value=${runner}
-          onChange=${(e) => handleRunnerChange(e.target.value)}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          ${supportedRunners
-            .filter((r) => r.supported)
-            .map(
-              (r) => html`
-                <option key=${r.type} value=${r.type}>${r.label}</option>
-              `,
-            )}
-        </select>
-        <p class="text-xs text-gray-500 mt-1">
-          Controls how the agent is sandboxed
-        </p>
-
-        ${runner !== "exec" &&
-        html`
-          <${RunnerRestrictionsEditor}
-            runnerType=${runner}
-            config=${runnerConfig}
-            effectiveConfig=${effectiveConfig}
-            onChange=${setRunnerConfig}
-          />
-        `}
-      </div>
-
-      <!-- Auto-approve Permissions -->
-      <label
-        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
-      >
-        <input
-          type="checkbox"
-          checked=${autoApprove}
-          onChange=${(e) => setAutoApprove(e.target.checked)}
-          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-        />
-        <div class="flex-1">
-          <div class="font-medium text-sm">Auto-approve Permissions</div>
-          <div class="text-xs text-gray-500">
-            Automatically approve all permission requests from the agent for
-            sessions in this workspace
-          </div>
-        </div>
-      </label>
-
-      <!-- Badge Customization -->
-      <div>
-        <label class="block text-sm text-gray-400 mb-1"
-          >Badge Customization</label
-        >
-        <div class="flex items-center gap-3">
-          <input
-            type="text"
-            value=${code}
-            onInput=${(e) => setCode(e.target.value.toUpperCase().slice(0, 3))}
-            placeholder=${getWorkspaceVisualInfo(workspace.working_dir)
-              .abbreviation}
-            maxlength="3"
-            class="w-20 px-3 py-2 bg-slate-700 rounded-lg text-sm text-center uppercase focus:outline-none focus:ring-2 focus:ring-blue-500"
-            title="Three-letter code"
-          />
-          <input
-            type="color"
-            value=${color}
-            onChange=${(e) => setColor(e.target.value)}
-            class="w-10 h-10 rounded cursor-pointer border border-slate-600"
-            title="Badge color"
-          />
-          <span class="text-xs text-gray-500">Code and color for badge</span>
-        </div>
-      </div>
-
-      <!-- Auto-Children Section -->
-      <div class="pt-3 border-t border-slate-600/30">
-        <${AutoChildrenEditor}
-          children=${autoChildren}
-          workspaces=${allWorkspaces}
-          currentWorkspaceUUID=${workspace.uuid}
-          onChange=${setAutoChildren}
-          getBasename=${getBasename}
-        />
-      </div>
-
-      <!-- Actions -->
-      <div class="flex justify-end gap-2 pt-2">
-        <button
-          onClick=${onCancel}
-          class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick=${handleSave}
-          class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
-        >
-          Save
-        </button>
-      </div>
-    </div>
-  `;
-}
-
-/**
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
-function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
+function ServerEditForm({ server, agentTypes = [], onChange }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
@@ -776,41 +528,59 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
-  const [typeError, setTypeError] = useState(false);
-  const [formError, setFormError] = useState("");
+  // Model constraint state
+  const [constraintModelMode, setConstraintModelMode] = useState(
+    server.constraints?.model?.matchMode || "",
+  );
+  const [constraintModelPattern, setConstraintModelPattern] = useState(
+    server.constraints?.model?.pattern || "",
+  );
 
-  const handleSave = () => {
-    setFormError("");
-    if (!name.trim()) {
-      setFormError("Server name cannot be empty");
-      return;
-    }
-    if (!command.trim()) {
-      setFormError("Server command cannot be empty");
-      return;
-    }
-    if (!type.trim()) {
-      setTypeError(true);
-      setFormError("Please select an agent type");
-      return;
-    }
-    setTypeError(false);
-    // Convert envVars array back to object, filtering out empty keys
+  // Build the current server state and notify the parent
+  const emitChange = (overrides = {}) => {
+    const currentState = {
+      name: overrides.name !== undefined ? overrides.name : name,
+      command: overrides.command !== undefined ? overrides.command : command,
+      type: overrides.type !== undefined ? overrides.type : type,
+      autoApprove: overrides.autoApprove !== undefined ? overrides.autoApprove : autoApprove,
+      tags: overrides.tags !== undefined ? overrides.tags : tags,
+      envVars: overrides.envVars !== undefined ? overrides.envVars : envVars,
+      constraintModelMode: overrides.constraintModelMode !== undefined ? overrides.constraintModelMode : constraintModelMode,
+      constraintModelPattern: overrides.constraintModelPattern !== undefined ? overrides.constraintModelPattern : constraintModelPattern,
+    };
+
+    // Convert envVars array to object, filtering out empty keys
     const envObj = {};
-    envVars.forEach(({ key, value }) => {
+    currentState.envVars.forEach(({ key, value }) => {
       if (key && key.trim()) {
         envObj[key.trim()] = value || "";
       }
     });
-    // Parse tags: split by comma, trim whitespace, filter empty strings
-    const parsedTags = tags
+
+    // Parse tags
+    const parsedTags = currentState.tags
       .split(",")
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
-    const err = onSave(name, command, type, autoApprove, envObj, parsedTags);
-    if (err) {
-      setFormError(err);
+
+    // Build constraints
+    const constraints = {};
+    if (currentState.constraintModelMode && currentState.constraintModelPattern) {
+      constraints.model = {
+        matchMode: currentState.constraintModelMode,
+        pattern: currentState.constraintModelPattern,
+      };
     }
+
+    onChange(
+      currentState.name,
+      currentState.command,
+      currentState.type,
+      currentState.autoApprove,
+      envObj,
+      parsedTags,
+      Object.keys(constraints).length > 0 ? constraints : undefined,
+    );
   };
 
   const addEnvVar = () => {
@@ -818,13 +588,16 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
   };
 
   const removeEnvVar = (index) => {
-    setEnvVars(envVars.filter((_, i) => i !== index));
+    const newVars = envVars.filter((_, i) => i !== index);
+    setEnvVars(newVars);
+    emitChange({ envVars: newVars });
   };
 
   const updateEnvVar = (index, field, value) => {
     const updated = [...envVars];
     updated[index] = { ...updated[index], [field]: value };
     setEnvVars(updated);
+    emitChange({ envVars: updated });
   };
 
   return html`
@@ -834,7 +607,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="text"
           value=${name}
-          onInput=${(e) => setName(e.target.value)}
+          onInput=${(e) => { setName(e.target.value); emitChange({ name: e.target.value }); }}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
@@ -843,8 +616,24 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="text"
           value=${command}
-          onInput=${(e) => setCommand(e.target.value)}
+          onInput=${(e) => { setCommand(e.target.value); emitChange({ command: e.target.value }); }}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <!-- Model Selection -->
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">Model Selection</label>
+        <p class="text-xs text-gray-500 mb-2">
+          Switch to a model based on some selection criteria
+        </p>
+        <${ModelSelection}
+          matchMode=${constraintModelMode}
+          pattern=${constraintModelPattern}
+          onChange=${(mode, pat) => {
+            setConstraintModelMode(mode);
+            setConstraintModelPattern(pat);
+            emitChange({ constraintModelMode: mode, constraintModelPattern: pat });
+          }}
         />
       </div>
       <div>
@@ -854,20 +643,14 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         >
         <select
           value=${type}
-          onChange=${(e) => {
-            setType(e.target.value);
-            if (e.target.value) setTypeError(false);
-          }}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${typeError ? "ring-2 ring-red-500" : "focus:ring-blue-500"}"
+          onChange=${(e) => { setType(e.target.value); emitChange({ type: e.target.value }); }}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="">-- Select agent type --</option>
           ${agentTypes.map(
             (t) => html`<option key=${t} value=${t}>${t}</option>`,
           )}
         </select>
-        ${typeError && html`<p class="text-xs text-red-400 mt-1">
-          Agent type is required.
-        </p>`}
         <p class="text-xs text-gray-500 mt-1">
           Servers with the same type share prompts and agent configuration.
         </p>
@@ -882,7 +665,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="text"
           value=${tags}
-          onInput=${(e) => setTags(e.target.value)}
+          onInput=${(e) => { setTags(e.target.value); emitChange({ tags: e.target.value }); }}
           placeholder="e.g., coding, fast-model, production"
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
@@ -898,7 +681,7 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         <input
           type="checkbox"
           checked=${autoApprove}
-          onChange=${(e) => setAutoApprove(e.target.checked)}
+          onChange=${(e) => { setAutoApprove(e.target.checked); emitChange({ autoApprove: e.target.checked }); }}
           class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
         />
         <div class="flex-1">
@@ -1006,29 +789,6 @@ function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
         </div>
       `}
 
-      ${formError &&
-      html`
-        <div
-          class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
-        >
-          ⚠️ ${formError}
-        </div>
-      `}
-
-      <div class="flex justify-end gap-2">
-        <button
-          onClick=${onCancel}
-          class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick=${handleSave}
-          class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
-        >
-          Save
-        </button>
-      </div>
     </div>
   `;
 }
@@ -1167,13 +927,12 @@ export function SettingsDialog({
   onClose,
   onSave,
   forceOpen = false,
-  WorkspaceBadge,
+  showToast,
 }) {
   const [activeTab, setActiveTab] = useState("servers");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [warning, setWarning] = useState("");
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
@@ -1181,6 +940,14 @@ export function SettingsDialog({
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
+  // Stable key counter for ACP servers — survives renames without losing focus
+  const stableKeyRef = useRef(0);
+  const assignStableKey = (srv) => {
+    if (srv._key == null) {
+      srv._key = ++stableKeyRef.current;
+    }
+    return srv;
+  };
   // Sorted ACP servers for display (alphabetical by name)
   const sortedAcpServers = useMemo(
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
@@ -1193,6 +960,9 @@ export function SettingsDialog({
   // Track whether the password was loaded from an existing config (sanitized by backend).
   // When true, the user hasn't changed it and we should skip client-side validation.
   const [authPasswordUnchanged, setAuthPasswordUnchanged] = useState(false);
+  // True when the backend reported that a password already exists (in keychain or settings).
+  // Used to distinguish "user left field empty" from "no password was ever set".
+  const [hasExistingPassword, setHasExistingPassword] = useState(false);
   const [cfEnabled, setCfEnabled] = useState(false);
   const [cfTeamDomain, setCfTeamDomain] = useState("");
   const [cfAudience, setCfAudience] = useState("");
@@ -1239,9 +1009,11 @@ export function SettingsDialog({
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
-  const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
   const [badgeClickCommand, setBadgeClickCommand] =
     useState("open ${MITTO_WORKING_DIR}");
+  const [terminalActionCommand, setTerminalActionCommand] = useState(
+    "open -a Terminal ${MITTO_WORKING_DIR}",
+  );
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
@@ -1255,6 +1027,12 @@ export function SettingsDialog({
   // Auto-archive inactive period setting
   const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
   const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(2000);
+
+  // Periodic suspend timeout setting (default "" = 30 minutes)
+  const [periodicSuspendTimeout, setPeriodicSuspendTimeout] = useState("");
+
+  // Memory recycle threshold setting (default "" = disabled, opt-in)
+  const [memoryRecycleThreshold, setMemoryRecycleThreshold] = useState("");
 
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
@@ -1271,6 +1049,9 @@ export function SettingsDialog({
 
   // Input font family setting (web UI)
   const [inputFontFamily, setInputFontFamily] = useState("system");
+
+  // Input font size setting (web UI)
+  const [inputFontSize, setInputFontSize] = useState("default");
 
   // Send key mode setting (web UI) - default: "enter"
   // "enter" = Enter to send, Shift+Enter for new line
@@ -1403,7 +1184,6 @@ export function SettingsDialog({
       // Clear any previous messages when dialog opens
       setError("");
       setWarning("");
-      setSuccess("");
       loadConfig();
       loadSupportedRunners();
     }
@@ -1478,6 +1258,7 @@ export function SettingsDialog({
 
       // Load ACP servers first (needed for workspace validation)
       const servers = config.acp_servers || [];
+      servers.forEach(assignStableKey);
       setAcpServers(servers);
 
       // Reset server renames when config is loaded
@@ -1529,6 +1310,8 @@ export function SettingsDialog({
       // Backend sanitizes the password (sends empty string) for security.
       // Track this so we can skip validation and preserve the existing password on save.
       setAuthPasswordUnchanged(!!loadedUsername && !loadedPassword);
+      // Track whether a password already exists in the keychain/settings.
+      setHasExistingPassword(!!config.has_auth_password);
 
       // Cloudflare auth
       setCfEnabled(!!hasCfAuth);
@@ -1557,11 +1340,14 @@ export function SettingsDialog({
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
 
       // Load badge click action settings (macOS only)
-      setBadgeClickEnabled(
-        config.ui?.mac?.badge_click_action?.enabled !== false,
-      );
       setBadgeClickCommand(
         config.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
+      );
+
+      // Load terminal action settings (macOS only)
+      setTerminalActionCommand(
+        config.ui?.mac?.terminal_action?.command ||
+          "open -a Terminal ${MITTO_WORKING_DIR}",
       );
 
       // Load notification permission status (macOS only) - used to show warning if denied
@@ -1609,6 +1395,16 @@ export function SettingsDialog({
         setMaxMessagesPerSession(rawMaxMessages || 2000);
       }
 
+      // Load periodic suspend timeout (default "" = 30 minutes)
+      setPeriodicSuspendTimeout(
+        config.session?.periodic_suspend_timeout || "",
+      );
+
+      // Load memory recycle threshold (default "" = disabled)
+      setMemoryRecycleThreshold(
+        config.session?.memory_recycle_threshold || "",
+      );
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -1626,6 +1422,9 @@ export function SettingsDialog({
 
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
+
+      // Load input font size setting (web UI) - default to "default"
+      setInputFontSize(config.ui?.web?.input_font_size || "default");
 
       // Load send key mode setting (web UI) - default to "enter"
       setSendKeyMode(config.ui?.web?.send_key_mode || "enter");
@@ -1673,7 +1472,6 @@ export function SettingsDialog({
   const handleSave = async () => {
     setError("");
     setWarning("");
-    setSuccess("");
 
     // Validation
     if (workspaces.length === 0) {
@@ -1683,6 +1481,28 @@ export function SettingsDialog({
 
     if (acpServers.length === 0) {
       setError("At least one ACP server is required");
+      setActiveTab("servers");
+      return;
+    }
+
+    // Validate all ACP servers have required fields
+    for (const srv of acpServers) {
+      if (!srv.name || !srv.name.trim()) {
+        setError("All ACP servers must have a name");
+        setActiveTab("servers");
+        return;
+      }
+      if (!srv.command || !srv.command.trim()) {
+        setError(`ACP server "${srv.name}" must have a command`);
+        setActiveTab("servers");
+        return;
+      }
+    }
+    // Check for duplicate server names
+    const serverNames = acpServers.map((s) => s.name.trim());
+    const duplicates = serverNames.filter((n, i) => serverNames.indexOf(n) !== i);
+    if (duplicates.length > 0) {
+      setError(`Duplicate ACP server name: "${duplicates[0]}"`);
       setActiveTab("servers");
       return;
     }
@@ -1697,11 +1517,17 @@ export function SettingsDialog({
       // Skip password validation if the password hasn't been changed from the
       // sanitized empty value loaded from the backend (existing password is preserved server-side).
       if (!authPasswordUnchanged) {
-        const passwordError = validatePassword(authPassword);
-        if (passwordError) {
-          setError(passwordError);
-          setActiveTab("web");
-          return;
+        // If the field is empty but a password already exists in the keychain,
+        // treat this as "keep existing" — no validation needed.
+        if (authPassword === "" && hasExistingPassword) {
+          // No-op: server will preserve the existing password.
+        } else {
+          const passwordError = validatePassword(authPassword);
+          if (passwordError) {
+            setError(passwordError);
+            setActiveTab("web");
+            return;
+          }
         }
       }
     }
@@ -1729,6 +1555,7 @@ export function SettingsDialog({
     }
 
     setSaving(true);
+    const saveStartTime = Date.now();
     try {
       // Build web config
       const webConfig = {
@@ -1790,6 +1617,7 @@ export function SettingsDialog({
         // Web-specific UI settings
         web: {
           input_font_family: inputFontFamily,
+          input_font_size: inputFontSize,
           send_key_mode: sendKeyMode,
           conversation_cycling_mode: conversationCyclingMode,
           single_expanded_group: singleExpandedGroup,
@@ -1811,8 +1639,12 @@ export function SettingsDialog({
           show_in_all_spaces: showInAllSpaces,
           start_at_login: startAtLogin,
           badge_click_action: {
-            enabled: badgeClickEnabled,
+            enabled: badgeClickCommand.trim() !== "",
             command: badgeClickCommand,
+          },
+          terminal_action: {
+            enabled: terminalActionCommand.trim() !== "",
+            command: terminalActionCommand,
           },
         };
       }
@@ -1841,6 +1673,8 @@ export function SettingsDialog({
         auto_archive_inactive_after: autoArchiveInactiveAfter,
         max_messages_per_session:
           maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
+        periodic_suspend_timeout: periodicSuspendTimeout,
+        memory_recycle_threshold: memoryRecycleThreshold,
       };
 
       // ACP servers are saved with source field so backend can filter out RC file servers
@@ -1853,6 +1687,7 @@ export function SettingsDialog({
           auto_approve: srv.auto_approve || false, // Include auto-approve setting
           env: srv.env || undefined, // Include env vars if present
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
+          constraints: srv.constraints || undefined, // Include constraints if present
         };
         // Only include type if specified (otherwise name is used as type)
         if (srv.type) {
@@ -1942,17 +1777,13 @@ export function SettingsDialog({
         }
       }
 
-      // Fetch updated external status to get the actual running port
-      let actualExternalPort = null;
-      let externalAccessActive = false;
+      // Fetch updated external status to refresh the displayed port/state
       try {
         const statusRes = await fetch(apiUrl("/api/external-status"), {
           credentials: "same-origin",
         });
         if (statusRes.ok) {
           const status = await statusRes.json();
-          externalAccessActive = status.enabled;
-          actualExternalPort = status.port;
           setExternalEnabled(status.enabled);
           setCurrentExternalPort(status.port || null);
         }
@@ -1960,23 +1791,22 @@ export function SettingsDialog({
         console.error("Failed to fetch external status:", e);
       }
 
-      // Build success message based on what was applied
-      let successMsg = "Configuration saved successfully";
-      if (externalAccessActive && actualExternalPort) {
-        successMsg = `Configuration saved. External access on port ${actualExternalPort}`;
-      } else if (result.applied) {
-        const details = [];
+      // Notify success via the app-wide auto-dismissing toast
+      const appliedDetails = [];
+      if (result.applied) {
         if (result.applied.external_access_enabled) {
-          details.push("external access enabled");
+          appliedDetails.push("external access enabled");
         }
         if (result.applied.auth_enabled) {
-          details.push("authentication active");
-        }
-        if (details.length > 0) {
-          successMsg += ` (${details.join(", ")})`;
+          appliedDetails.push("authentication active");
         }
       }
-      setSuccess(successMsg);
+      showToast?.({
+        style: "success",
+        title: "Configuration saved",
+        message: appliedDetails.join(", "),
+        duration: 2000,
+      });
 
       // Clear server renames after successful save
       setServerRenames({});
@@ -1985,22 +1815,15 @@ export function SettingsDialog({
     } catch (err) {
       setError(err.message);
     } finally {
-      setSaving(false);
+      const elapsed = Date.now() - saveStartTime;
+      const remaining = Math.max(0, 1000 - elapsed);
+      setTimeout(() => setSaving(false), remaining);
     }
   };
 
   const handleClose = () => {
-    // Always require at least one ACP server
-    if (acpServers.length === 0) {
-      setError("At least one ACP server is required");
-      setActiveTab("servers");
-      return;
-    }
-    // Always require at least one workspace
-    if (workspaces.length === 0) {
-      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
-      return;
-    }
+    // Closing the dialog is always allowed; configuration validation
+    // (at least one ACP server, at least one workspace) is enforced on Save.
     onClose?.();
   };
 
@@ -2043,6 +1866,7 @@ export function SettingsDialog({
       newServer.tags = parsedNewTags;
     }
 
+    assignStableKey(newServer);
     setAcpServers([...acpServers, newServer]);
     setNewServerName("");
     setNewServerCommand("");
@@ -2052,34 +1876,21 @@ export function SettingsDialog({
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags) => {
-    if (!newName.trim() || !newCommand.trim()) {
-      return "Server name and command cannot be empty";
-    }
-    if (!newType || !newType.trim()) {
-      return "Please select an agent type";
-    }
-
-    // Check for duplicate name (excluding current)
-    if (
-      newName !== oldName &&
-      acpServers.some((s) => s.name === newName.trim())
-    ) {
-      return "A server with this name already exists";
-    }
-
-    // Update server (prompts are now read-only from files)
+  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags, constraints) => {
+    // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
       acpServers.map((s) => {
         if (s.name !== oldName) return s;
         const updated = {
-          name: newName.trim(),
-          command: newCommand.trim(),
+          _key: s._key, // Preserve stable key across renames
+          name: (newName || "").trim() || oldName, // Fall back to old name if empty
+          command: (newCommand || "").trim() || s.command, // Fall back to old command if empty
           prompts: s.prompts, // Preserve existing prompts (read-only from files)
           source: s.source, // Preserve source (rcfile or settings)
           auto_approve: autoApprove || undefined, // undefined to omit if false
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
+          constraints: constraints || undefined, // undefined to omit if empty
         };
         // Only include type if specified (otherwise name is used as type)
         if (newType && newType.trim()) {
@@ -2089,44 +1900,35 @@ export function SettingsDialog({
       }),
     );
 
-    // Update workspaces that reference this server
-    if (newName !== oldName) {
+    // Update workspace references for renames (editingServer uses _key, no update needed)
+    const trimmedNewName = (newName || "").trim();
+    if (trimmedNewName && trimmedNewName !== oldName) {
       setWorkspaces(
-        workspaces.map((ws) =>
-          ws.acp_server === oldName
-            ? { ...ws, acp_server: newName.trim() }
-            : ws,
-        ),
+        workspaces.map((ws) => {
+          const updated = { ...ws };
+          if (updated.acp_server === oldName) {
+            updated.acp_server = trimmedNewName;
+          }
+          return updated;
+        }),
       );
-
-      // Track server rename so backend can update sessions
-      // If oldName was already a rename target, follow the chain to the original name
-      const trimmedNewName = newName.trim();
+      // Track server rename
       const originalName = Object.entries(serverRenames).find(
         ([, target]) => target === oldName,
       )?.[0];
       if (originalName) {
-        // Update the existing rename entry
-        setServerRenames({
-          ...serverRenames,
-          [originalName]: trimmedNewName,
-        });
+        setServerRenames({ ...serverRenames, [originalName]: trimmedNewName });
       } else {
-        // Add a new rename entry
-        setServerRenames({
-          ...serverRenames,
-          [oldName]: trimmedNewName,
-        });
+        setServerRenames({ ...serverRenames, [oldName]: trimmedNewName });
       }
     }
-
-    setEditingServer(null);
-    setError("");
   };
 
   const removeServer = (serverName) => {
-    // Check if any workspace uses this server
-    const usedBy = workspaces.filter((ws) => ws.acp_server === serverName);
+    // Check if any workspace uses this server as its primary ACP server
+    const usedBy = workspaces.filter(
+      (ws) => ws.acp_server === serverName,
+    );
     if (usedBy.length > 0) {
       // Build a helpful error message listing the workspaces using this server
       const workspacePaths = usedBy.map((ws) => ws.working_dir).slice(0, 3); // Show up to 3
@@ -2199,6 +2001,7 @@ export function SettingsDialog({
       duplicatedServer.auto_approve = server.auto_approve;
     }
 
+    assignStableKey(duplicatedServer);
     setAcpServers([...acpServers, duplicatedServer]);
     setError("");
   };
@@ -2223,7 +2026,7 @@ export function SettingsDialog({
       onClick=${canClose ? handleClose : null}
     >
       <div
-        class="bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
+        class="settings-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
         onClick=${(e) => e.stopPropagation()}
       >
         <!-- Header -->
@@ -2434,135 +2237,136 @@ export function SettingsDialog({
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
+                                const isExpanded = editingServer === srv._key && !isRCFile;
                                 return html`
                                   <div
-                                    key=${srv.name}
-                                    class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
-                                      ? ""
-                                      : "hover:bg-slate-700/30"} transition-colors group ${isRCFile
+                                    key=${srv._key}
+                                    class="bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
                                       ? "opacity-80"
-                                      : ""}"
+                                      : ""} transition-colors group"
                                   >
-                                    ${editingServer === srv.name && !isRCFile
-                                      ? html`
-                                          <${ServerEditForm}
-                                            server=${srv}
-                                            agentTypes=${agentTypes}
-                                            onSave=${(name, cmd, type, autoApprove, env, tags) =>
-                                              updateServer(
-                                                srv.name,
-                                                name,
-                                                cmd,
-                                                type,
-                                                autoApprove,
-                                                env,
-                                                tags,
-                                              )}
-                                            onCancel=${() =>
-                                              setEditingServer(null)}
+                                    <!-- Collapsed header row — click to expand/collapse -->
+                                    <div
+                                      class="flex items-center gap-3 p-3 ${!isRCFile ? "cursor-pointer hover:bg-slate-700/30" : ""} transition-colors"
+                                      onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
+                                    >
+                                      ${!isRCFile && html`
+                                        <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
+                                          className="w-4 h-4 text-gray-400 flex-shrink-0"
+                                        />
+                                      `}
+                                      <div class="flex-1 min-w-0">
+                                        <div
+                                          class="font-medium text-sm flex items-center gap-2"
+                                        >
+                                          ${srv.name}
+                                          ${srv.type &&
+                                          html`
+                                            <span
+                                              class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
+                                              title="Server type for prompt matching"
+                                            >
+                                              ${srv.type}
+                                            </span>
+                                          `}
+                                          ${srv.tags &&
+                                          srv.tags.length > 0 &&
+                                          srv.tags.map(
+                                            (tag) => html`
+                                              <span
+                                                key=${tag}
+                                                class="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                                                title="Tag"
+                                              >
+                                                ${tag}
+                                              </span>
+                                            `,
+                                          )}
+                                          ${isRCFile &&
+                                          html`
+                                            <span
+                                              class="flex items-center gap-1 text-xs text-amber-400"
+                                              title="This server is defined in .mittorc and cannot be modified here"
+                                            >
+                                              <${LockIcon}
+                                                className="w-3 h-3"
+                                              />
+                                            </span>
+                                          `}
+                                          ${srv.prompts?.length > 0 &&
+                                          html`
+                                            <span
+                                              class="flex items-center gap-1 text-xs text-blue-400"
+                                              title="${srv.prompts
+                                                .length} server-specific prompt(s)"
+                                            >
+                                              <${LightningIcon}
+                                                className="w-3.5 h-3.5"
+                                              />
+                                              ${srv.prompts.length}
+                                            </span>
+                                          `}
+                                        </div>
+                                        <div
+                                          class="text-xs text-gray-500 truncate"
+                                          title=${srv.command}
+                                        >
+                                          ${srv.command}
+                                          ${isRCFile &&
+                                          html`<span
+                                            class="ml-2 text-amber-500/70"
+                                            >(from .mittorc)</span
+                                          >`}
+                                        </div>
+                                      </div>
+                                      ${!isRCFile &&
+                                      html`
+                                        <button
+                                          onClick=${(e) => {
+                                            e.stopPropagation();
+                                            duplicateServer(srv.name);
+                                          }}
+                                          class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          title="Duplicate server"
+                                        >
+                                          <${DuplicateIcon}
+                                            className="w-4 h-4"
                                           />
-                                        `
-                                      : html`
-                                          <div class="flex items-center gap-3">
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="font-medium text-sm flex items-center gap-2"
-                                              >
-                                                ${srv.name}
-                                                ${srv.type &&
-                                                html`
-                                                  <span
-                                                    class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                    title="Server type for prompt matching"
-                                                  >
-                                                    ${srv.type}
-                                                  </span>
-                                                `}
-                                                ${srv.tags &&
-                                                srv.tags.length > 0 &&
-                                                srv.tags.map(
-                                                  (tag) => html`
-                                                    <span
-                                                      key=${tag}
-                                                      class="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
-                                                      title="Tag"
-                                                    >
-                                                      ${tag}
-                                                    </span>
-                                                  `,
-                                                )}
-                                                ${isRCFile &&
-                                                html`
-                                                  <span
-                                                    class="flex items-center gap-1 text-xs text-amber-400"
-                                                    title="This server is defined in .mittorc and cannot be modified here"
-                                                  >
-                                                    <${LockIcon}
-                                                      className="w-3 h-3"
-                                                    />
-                                                  </span>
-                                                `}
-                                                ${srv.prompts?.length > 0 &&
-                                                html`
-                                                  <span
-                                                    class="flex items-center gap-1 text-xs text-blue-400"
-                                                    title="${srv.prompts
-                                                      .length} server-specific prompt(s)"
-                                                  >
-                                                    <${LightningIcon}
-                                                      className="w-3.5 h-3.5"
-                                                    />
-                                                    ${srv.prompts.length}
-                                                  </span>
-                                                `}
-                                              </div>
-                                              <div
-                                                class="text-xs text-gray-500 truncate"
-                                                title=${srv.command}
-                                              >
-                                                ${srv.command}
-                                                ${isRCFile &&
-                                                html`<span
-                                                  class="ml-2 text-amber-500/70"
-                                                  >(from .mittorc)</span
-                                                >`}
-                                              </div>
-                                            </div>
-                                            ${!isRCFile &&
-                                            html`
-                                              <button
-                                                onClick=${() =>
-                                                  duplicateServer(srv.name)}
-                                                class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Duplicate server"
-                                              >
-                                                <${DuplicateIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                              <button
-                                                onClick=${() =>
-                                                  setEditingServer(srv.name)}
-                                                class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Edit server"
-                                              >
-                                                <${EditIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                              <button
-                                                onClick=${() =>
-                                                  removeServer(srv.name)}
-                                                class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Remove server"
-                                              >
-                                                <${TrashIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                            `}
-                                          </div>
-                                        `}
+                                        </button>
+                                        <button
+                                          onClick=${(e) => {
+                                            e.stopPropagation();
+                                            removeServer(srv.name);
+                                          }}
+                                          class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          title="Remove server"
+                                        >
+                                          <${TrashIcon}
+                                            className="w-4 h-4"
+                                          />
+                                        </button>
+                                      `}
+                                    </div>
+                                    <!-- Expanded edit form -->
+                                    ${isExpanded && html`
+                                      <div class="px-3 pb-3 border-t border-slate-600/30">
+                                        <${ServerEditForm}
+                                          server=${srv}
+                                          agentTypes=${agentTypes}
+                                          onChange=${(name, cmd, type, autoApprove, env, tags, constraints) =>
+                                            updateServer(
+                                              srv.name,
+                                              name,
+                                              cmd,
+                                              type,
+                                              autoApprove,
+                                              env,
+                                              tags,
+                                              constraints,
+                                            )}
+                                        />
+                                      </div>
+                                    `}
                                   </div>
                                 `;
                               })}
@@ -3335,6 +3139,81 @@ export function SettingsDialog({
                         </div>
                       </div>
 
+                      <!-- Suspend Settings -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Suspend Settings
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Suspend periodic conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Automatically suspend idle periodic conversations
+                                when their next run is farther away than this
+                                timeout. Saves memory by stopping ACP and MCP
+                                processes. Conversations resume transparently
+                                when focused.
+                              </div>
+                            </div>
+                            <select
+                              value=${periodicSuspendTimeout}
+                              onInput=${(e) =>
+                                setPeriodicSuspendTimeout(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="">After 30 minutes</option>
+                              <option value="15m">After 15 minutes</option>
+                              <option value="30m">After 30 minutes</option>
+                              <option value="1h">After 1 hour</option>
+                              <option value="2h">After 2 hours</option>
+                              <option value="disabled">Disabled</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Memory Recycling -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Memory Recycling
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Recycle bloated idle conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Recycle an idle agent process when its memory
+                                usage grows beyond this size, reclaiming memory
+                                from bloated conversations. Only fully-idle
+                                conversations are affected and they resume
+                                transparently when focused.
+                              </div>
+                            </div>
+                            <select
+                              value=${memoryRecycleThreshold}
+                              onInput=${(e) =>
+                                setMemoryRecycleThreshold(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="">Disabled</option>
+                              <option value="3g">Above 3 GB</option>
+                              <option value="4g">Above 4 GB</option>
+                              <option value="6g">Above 6 GB</option>
+                              <option value="8g">Above 8 GB</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
                       <!-- Conversation History Limits -->
                       <div class="space-y-3">
                         <h4 class="text-sm font-medium text-gray-300">
@@ -3642,7 +3521,14 @@ export function SettingsDialog({
                                       value=${authPassword}
                                       onInput=${(e) => {
                                         setAuthPassword(e.target.value);
-                                        setAuthPasswordUnchanged(false);
+                                        if (e.target.value === "" && hasExistingPassword) {
+                                          // User cleared the field while a keychain password exists
+                                          // → revert to "keep existing" mode
+                                          setAuthPasswordUnchanged(true);
+                                        } else if (e.target.value !== "") {
+                                          // User typed a new password → mark as changed
+                                          setAuthPasswordUnchanged(false);
+                                        }
                                       }}
                                       placeholder=${authPasswordUnchanged
                                         ? "••••••••"
@@ -3920,31 +3806,41 @@ export function SettingsDialog({
                                 Input box font
                               </div>
                               <div class="text-xs text-gray-500">
-                                Font family for the message compose area
+                                Font family and size for the message compose area
                               </div>
                             </div>
-                            <select
-                              value=${inputFontFamily}
-                              onChange=${(e) =>
-                                setInputFontFamily(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
-                            >
-                              <option value="system">System Default</option>
-                              <option value="sans-serif">Sans-Serif</option>
-                              <option value="serif">Serif</option>
-                              <option value="monospace">Monospace</option>
-                              <option value="menlo">Menlo</option>
-                              <option value="monaco">Monaco</option>
-                              <option value="consolas">Consolas</option>
-                              <option value="courier-new">Courier New</option>
-                              <option value="jetbrains-mono">
-                                JetBrains Mono
-                              </option>
-                              <option value="sf-mono">SF Mono</option>
-                              <option value="cascadia-code">
-                                Cascadia Code
-                              </option>
-                            </select>
+                            <div class="flex items-center gap-2">
+                              <select
+                                value=${inputFontFamily}
+                                onChange=${(e) =>
+                                  setInputFontFamily(e.target.value)}
+                                class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              >
+                                <option value="system">System Default</option>
+                                <option value="sans-serif">Sans-Serif</option>
+                                <option value="serif">Serif</option>
+                                <option value="monospace">Monospace</option>
+                                <option value="menlo">Menlo</option>
+                                <option value="monaco">Monaco</option>
+                                <option value="consolas">Consolas</option>
+                                <option value="courier-new">Courier New</option>
+                                <option value="jetbrains-mono">JetBrains Mono</option>
+                                <option value="sf-mono">SF Mono</option>
+                                <option value="cascadia-code">Cascadia Code</option>
+                              </select>
+                              <select
+                                value=${inputFontSize}
+                                onChange=${(e) =>
+                                  setInputFontSize(e.target.value)}
+                                class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              >
+                                <option value="small">Small</option>
+                                <option value="default">Default</option>
+                                <option value="medium">Medium</option>
+                                <option value="large">Large</option>
+                                <option value="xl">Extra Large</option>
+                              </select>
+                            </div>
                           </div>
                         </div>
                         <div
@@ -4189,53 +4085,61 @@ export function SettingsDialog({
                             </label>
                           `}
 
-                          <!-- Badge Click Action -->
-                          <label
-                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          <!-- Open Folder Action -->
+                          <div
+                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
                           >
-                            <input
-                              type="checkbox"
-                              checked=${badgeClickEnabled}
-                              onChange=${(e) =>
-                                setBadgeClickEnabled(e.target.checked)}
-                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                            />
-                            <div class="flex-1">
-                              <div class="font-medium text-sm">
-                                Workspace badge click action
-                              </div>
-                              <div class="text-xs text-gray-500">
-                                Click workspace badge in conversation list to
-                                run a command
-                              </div>
+                            <div class="font-medium text-sm">
+                              Open folder command
                             </div>
-                          </label>
-                          ${badgeClickEnabled &&
-                          html`
-                            <div
-                              class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
-                            >
-                              <div class="flex items-center gap-2">
-                                <label class="text-sm text-gray-400 w-20"
-                                  >Command</label
-                                >
-                                <input
-                                  type="text"
-                                  value=${badgeClickCommand}
-                                  onInput=${(e) =>
-                                    setBadgeClickCommand(e.target.value)}
-                                  placeholder="open \${MITTO_WORKING_DIR}"
-                                  class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                                />
-                              </div>
-                              <p class="text-xs text-gray-500">
-                                Use${" "}
-                                <code class="bg-slate-600 px-1 rounded"
-                                  >\${MITTO_WORKING_DIR}</code
-                                >${" "} as placeholder for the workspace path
-                              </p>
+                            <div class="text-xs text-gray-500 mb-2">
+                              Command to open workspace folder from badges and group header buttons. Leave empty to disable.
                             </div>
-                          `}
+                            <div class="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value=${badgeClickCommand}
+                                onInput=${(e) =>
+                                  setBadgeClickCommand(e.target.value)}
+                                placeholder="open \${MITTO_WORKING_DIR}"
+                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
+                            <p class="text-xs text-gray-500">
+                              Use${" "}
+                              <code class="bg-slate-600 px-1 rounded"
+                                >\${MITTO_WORKING_DIR}</code
+                              >${" "} as placeholder for the workspace path
+                            </p>
+                          </div>
+
+                          <!-- Terminal Action -->
+                          <div
+                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
+                          >
+                            <div class="font-medium text-sm">
+                              Open terminal command
+                            </div>
+                            <div class="text-xs text-gray-500 mb-2">
+                              Command to open a terminal at the workspace folder from group header buttons. Leave empty to disable.
+                            </div>
+                            <div class="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value=${terminalActionCommand}
+                                onInput=${(e) =>
+                                  setTerminalActionCommand(e.target.value)}
+                                placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
+                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
+                            <p class="text-xs text-gray-500">
+                              Use${" "}
+                              <code class="bg-slate-600 px-1 rounded"
+                                >\${MITTO_WORKING_DIR}</code
+                              >${" "} as placeholder for the workspace path
+                            </p>
+                          </div>
                         </div>
                       `}
 
@@ -4261,14 +4165,6 @@ export function SettingsDialog({
               class="mb-3 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg text-yellow-400 text-sm"
             >
               ${warning}
-            </div>
-          `}
-          ${success &&
-          html`
-            <div
-              class="mb-3 p-3 bg-green-500/20 border border-green-500/50 rounded-lg text-green-400 text-sm"
-            >
-              ${success}
             </div>
           `}
           <div class="flex justify-end gap-3">
@@ -4308,6 +4204,7 @@ export function SettingsDialog({
           const existingNames = new Set(acpServers.map((s) => s.name.toLowerCase()));
           const toAdd = newAgents.filter((a) => !existingNames.has(a.name.toLowerCase()));
           if (toAdd.length > 0) {
+            toAdd.forEach(assignStableKey);
             setAcpServers([...acpServers, ...toAdd]);
           }
           setShowDiscoverAgents(false);

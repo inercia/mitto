@@ -1,5 +1,7 @@
 ---
+icon: "chat-bubble"
 name: "Explain"
+menus: prompts
 description: "Explain the code or concept we just discussed"
 group: "Documentation"
 backgroundColor: "#E1BEE7"

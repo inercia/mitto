@@ -237,7 +237,7 @@ Global prompt files use markdown with YAML front-matter:
 name: "Code Review"
 description: "Review code for bugs and improvements"
 backgroundColor: "#E8F5E9"
-icon: "code"
+icon: "search"
 tags: ["review", "quality"]
 enabled: true
 ---
@@ -259,8 +259,10 @@ Provide specific suggestions with code examples where applicable.
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
+| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
+| `requires`        | No       | string   | Comma-separated list of capabilities the menu must provide for this prompt to appear. See [below](#requires-capability-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
-| `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
+| `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
@@ -268,6 +270,23 @@ Provide specific suggestions with code examples where applicable.
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.md` →
 "code-review").
+
+### icon (Names)
+
+The optional `icon` field shows an icon next to the prompt in menus. The value is the
+name of one of Mitto's built-in icons (matched case-insensitively). If the name is
+empty or unknown, the prompt falls back to the default lightning/insert icon.
+
+Available names:
+
+`beads`, `settings`, `sliders`, `search`, `edit`, `trash`, `broom`, `save`,
+`magic-wand`, `lightning`, `robot`, `person`, `image`, `folder`, `folder-open`,
+`terminal`, `server`, `globe`, `chat-bubble`, `shield`, `layers`, `list`, `tag`,
+`check`, `question`, `error`, `plus`, `hourglass`, `refresh`, `sync`, `keyboard`,
+`duplicate`, `pin`, `archive`, `periodic`, `queue`, `play`.
+
+The registry is defined in `web/static/components/Icons.js` (`PROMPT_ICONS`); add an
+entry there to expose additional icons by name.
 
 ### Conditional Enablement Overview
 
@@ -329,6 +348,238 @@ Please analyze the code with the following criteria:
 - Suggest refactoring opportunities
 ```
 
+## Menus
+
+The `menus` attribute is a **comma-separated list** that controls which UI menus a
+prompt appears in. The available menu values are:
+
+| Menu           | Where it appears                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| `prompts`      | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
+| `conversation` | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
+| `beadsIssues`  | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
+| `beadsList`    | The **list-level prompts button** — the dropdown next to the `+` button in the Beads list footer.   |
+
+If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
+dropup only). To make a prompt appear in both menus, list both values:
+
+```markdown
+---
+name: "Summarize Progress"
+description: "Ask the agent to summarize what has been done so far"
+group: "Workflow"
+menus: prompts, conversation
+---
+
+Summarize everything we've accomplished in this conversation so far.
+```
+
+Whitespace around each entry is ignored. Because `menus` is an explicit list, a
+prompt with `menus: conversation` (without `prompts`) appears **only** in the
+conversation context menu and is **excluded** from the ChatInput dropup.
+
+### Conversation Context Menu
+
+In the conversation context menu, these prompts appear **after** the standard
+**Archive**, **Properties**, and **Delete** entries. They are organized into
+submenus by their `group` attribute, so the example above renders as:
+
+```
+Archive
+Properties
+Delete
+Workflow ›
+    Summarize Progress
+```
+
+Prompts without a `group` are collected under an **"Other"** submenu.
+
+### Behavior
+
+- **Only prompts whose `menus` list includes `conversation`** appear in the context
+  menu. Prompts without it are excluded (they appear in the ChatInput dropup instead,
+  provided their `menus` includes `prompts` or omits the attribute).
+- Clicking a prompt **enqueues its text** to that conversation via the message
+  queue. The agent processes it as soon as the conversation is idle, so this works
+  for **any** conversation — not just the currently active one.
+- `enabledWhen` and `enabled` are honored, but — unlike the dropup, which is
+  evaluated for the **active** conversation — the context menu evaluates each
+  prompt's `enabledWhen` against the **conversation you right-clicked**. The menu
+  is populated on demand for that specific conversation, so context-dependent
+  prompts (e.g. `enabledWhen: "session.isChild"` for "Report to parent", or
+  `enabledWhen: "children.exists"` for "Continue in existing") appear
+  only on the conversations where they apply.
+- `@mitto:` [variable substitution](#variable-substitution-in-prompts) is applied
+  to the enqueued text in the target conversation's context before it reaches the
+  agent.
+
+### Beads Context Menu
+
+Prompts whose `menus` list includes `beadsIssues` appear in the **per-issue context
+menu** of the Beads list view — the menu shown when you right-click an issue.
+Alongside common bead actions (e.g. **Delete**), the menu includes a **New**
+submenu listing every `menus: beadsIssues` prompt.
+
+Selecting one of these prompts starts a new conversation seeded with the prompt
+text, and the menu supplies the selected issue's ID as an `ISSUE_ID` argument. The
+prompt body should reference it via `${ISSUE_ID}` and load its own context with
+`bd show ${ISSUE_ID}` rather than relying on a pre-built context block:
+
+```markdown
+---
+name: "Start work"
+group: "Beads"
+menus: beadsIssues
+requires: parameters
+---
+
+The target bead is `${ISSUE_ID}`.
+
+Load its full detail:
+
+    bd show ${ISSUE_ID} --long --json
+
+then claim it and propose a plan.
+```
+
+Because the `beadsIssues` menu always provides the `parameters` capability (it
+passes `{ ISSUE_ID: <issue.id> }`), issue-scoped prompts set `requires: parameters`
+so they appear **only** in this menu and not in the generic `prompts` dropup, where
+no `ISSUE_ID` would be available. See [Prompt Arguments](#prompt-arguments) and
+[requires (Capability Gating)](#requires-capability-gating) for the underlying
+mechanism.
+
+### Beads List Menu
+
+Prompts whose `menus` list includes `beadsList` appear in the **list-level prompts
+button** of the Beads list view — the dropdown next to the `+` button in the footer
+toolbar. Unlike `beadsIssues` prompts, these operate on the whole issue list (e.g.
+cleaning up old issues or triaging the backlog) rather than a single issue, so they
+**take no parameters**. Selecting one creates a new conversation seeded with the
+prompt text alone.
+
+```markdown
+---
+name: "Beads: cleanup old issues"
+group: "Beads"
+menus: beadsList
+---
+```
+
+## Prompt Arguments
+
+Prompt text supports bash-style `${VAR}` placeholder syntax for argument substitution.
+This lets a caller supply named values that are interpolated into the prompt before it
+is sent to the agent.
+
+### Syntax
+
+| Placeholder           | Behaviour                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `${VAR}`              | Replaced with the supplied value, or an empty string if `VAR` was not provided.                                    |
+| `${VAR:-default}`     | Replaced with the supplied value if present **and non-empty**, otherwise with `default` (bash `:-` semantics).     |
+| `\${VAR}`             | The leading backslash is an escape: the literal text `${VAR}` is emitted without substitution.                     |
+
+Surrounding single or double quotes around the default are stripped automatically:
+`${VAR:-"a value"}` → `a value`, `${VAR:-'other'}` → `other`.
+
+### When substitution is applied
+
+Argument substitution is applied **only** when the caller explicitly supplies an
+`arguments` map alongside the prompt — for example:
+
+- Prompts run from a **context menu** (conversation or Beads issue) that passes
+  structured arguments.
+- Prompts sent via the MCP `mitto_conversation_send_prompt` tool's `arguments`
+  parameter.
+
+**Ad-hoc user-typed messages are never substituted.** If a user types or pastes
+text containing `${...}` into the chat input it reaches the agent verbatim — no
+substitution is performed, so shell scripts and code snippets are safe.
+
+The transcript always shows the **substituted** text, not the original template.
+
+### Example
+
+```markdown
+---
+name: "Beads: start work"
+group: "Beads"
+menus: beadsIssues
+requires: parameters
+---
+
+You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
+
+${ISSUE_BODY}
+
+Please begin by reading the full issue description above, then propose a plan.
+```
+
+Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls back to
+`"Untitled"` if omitted, and `${ISSUE_BODY}` expands to empty string if not supplied.
+
+## requires (Capability Gating)
+
+The `requires` front-matter field lets a prompt declare which **capabilities** a menu
+must provide before the prompt is shown in that menu. This is the counterpart to the
+`menus` field: `menus` says *where* a prompt can appear; `requires` says *what the
+menu must supply* for it to be usable there.
+
+### Syntax
+
+```yaml
+requires: capability1, capability2
+```
+
+The value is a **comma-separated list** of capability names (parsed identically to
+`menus`). Whitespace around each entry is ignored.
+
+### Frontmatter example
+
+```markdown
+---
+name: "Beads: start work"
+group: "Beads"
+menus: beadsIssues
+requires: parameters
+---
+```
+
+### Visibility rule
+
+A prompt appears in menu **M** if and only if **both** conditions hold:
+
+1. The prompt's `menus` list includes `M` (or `menus` is omitted and M is `prompts`).
+2. Menu `M` provides **every** capability listed in `requires`.
+
+If a prompt has no `requires` field (or an empty one), condition 2 is vacuously true
+and the prompt appears in any menu it targets via `menus`.
+
+### Provided capabilities per menu
+
+| Menu | Provided capabilities |
+| ---- | --------------------- |
+| `prompts` (ChatInput dropup) | *(none)* |
+| `conversation` (per-conversation context menu) | *(none)* |
+| `beadsIssues` (Beads issue context menu) | `parameters` |
+| `beadsList` (Beads list-level prompts button) | *(none)* |
+
+The `parameters` capability means the menu always passes a structured `arguments` map
+when it invokes a prompt. Prompts that are **useless without arguments** (i.e., they
+have required `${VAR}` placeholders with no meaningful default) should set
+`requires: parameters` so they are hidden from menus that cannot supply them.
+
+Prompts that can degrade gracefully — because all placeholders have sensible defaults
+via `${VAR:-default}` — should **omit** `requires` and let the defaults handle the
+missing arguments instead.
+
+### Why a list, not a boolean?
+
+`requires` is designed as a list (rather than `requires_parameters: true`) so that
+future capability types can be added without changing the field semantics. For now
+`parameters` is the only defined capability.
+
 ## Variable Substitution in Prompts
 
 Prompt text supports `@mitto:variable` placeholders that are automatically replaced with
@@ -346,6 +597,7 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:working_dir`           | Session working directory                                                    |
 | `@mitto:acp_server`            | ACP server name (e.g., "claude-code")                                        |
 | `@mitto:workspace_uuid`        | Workspace identifier                                                         |
+| `@mitto:beads_issue`           | Linked beads issue ID (e.g. "bd-123"), empty if none                         |
 | `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
@@ -469,6 +721,9 @@ Information about the current conversation/session.
 | `session.isAutoChild` | bool   | `true` if created automatically by parent                |
 | `session.parentId`    | string | Parent session ID (empty if not a child)                 |
 | `session.isPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
+| `session.isPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
+| `session.hasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
+| `session.beadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
 
 #### Parent Context (`parent.*`)
 

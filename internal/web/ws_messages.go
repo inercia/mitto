@@ -88,6 +88,13 @@ const (
 	// Sent when the user clicks a button in response to a ui_prompt message.
 	// Data: { "request_id": string, "option_id": string, "label": string }
 	WSMsgTypeUIPromptAnswer = "ui_prompt_answer"
+
+	// WSMsgTypeEnsureResumed requests the server to ensure the session's ACP connection is running.
+	// Sent by the frontend when the user focuses on or navigates to a conversation.
+	// If the session is not running and not archived, the server will resume it immediately,
+	// bypassing any startup stagger delay.
+	// Data: none
+	WSMsgTypeEnsureResumed = "ensure_resumed"
 )
 
 // =============================================================================
@@ -146,6 +153,13 @@ const (
 	// Data: { "session_id": string, "is_waiting": bool }
 	WSMsgTypeSessionUIPrompt = "session_ui_prompt"
 
+	// WSMsgTypeBackgroundUIPromptTimeout notifies all clients that a blocking UI prompt
+	// timed out in a session the user was not actively viewing.
+	// This triggers a native OS notification so the user knows the session needed input.
+	// Sent on /api/events to all connected clients.
+	// Data: { "session_id": string, "session_name": string, "question": string }
+	WSMsgTypeBackgroundUIPromptTimeout = "background_ui_prompt_timeout"
+
 	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }
@@ -157,6 +171,7 @@ const (
 	//   "session_id": string,
 	//   "periodic_configured": bool,
 	//   "periodic_enabled": bool,
+	//   "fresh_context": bool,  // if configured; each run starts with a clean agent context
 	//   "frequency": { "value": number, "unit": string, "at"?: string },  // if configured
 	//   "next_scheduled_at": string  // ISO 8601, if enabled and scheduled
 	// }
@@ -257,6 +272,13 @@ const (
 	// WSMsgTypeRunnerFallback notifies that a configured runner is not supported and fell back to exec.
 	// Data: { "session_id": string, "requested_type": string, "fallback_type": string, "reason": string }
 	WSMsgTypeRunnerFallback = "runner_fallback"
+
+	// WSMsgTypeMemoryRecycled notifies that the GC's memory-recycle tier (Tier 4) stopped
+	// a memory-bloated idle shared ACP process to reclaim memory. Affected conversations
+	// resume transparently on next focus. Broadcast on /api/events to all connected clients.
+	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string,
+	//         "rss_bytes": uint64, "threshold_bytes": uint64, "session_count": int }
+	WSMsgTypeMemoryRecycled = "memory_recycled"
 
 	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
 	// Sent when messages are added, removed, or the queue is cleared.

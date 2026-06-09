@@ -132,8 +132,10 @@ func TestToWebPrompt(t *testing.T) {
 		Name:            "Test",
 		Content:         "Content here",
 		BackgroundColor: "#FF0000",
+		Icon:            "beads",
 		Description:     "Test description",
 		Group:           "Testing",
+		Menus:           "conversation",
 		EnabledWhen:     `acp.matchesServerType(["auggie", "claude-code"])`,
 	}
 
@@ -148,11 +150,17 @@ func TestToWebPrompt(t *testing.T) {
 	if wp.BackgroundColor != "#FF0000" {
 		t.Errorf("WebPrompt.BackgroundColor = %q, want %q", wp.BackgroundColor, "#FF0000")
 	}
+	if wp.Icon != "beads" {
+		t.Errorf("WebPrompt.Icon = %q, want %q", wp.Icon, "beads")
+	}
 	if wp.Description != "Test description" {
 		t.Errorf("WebPrompt.Description = %q, want %q", wp.Description, "Test description")
 	}
 	if wp.Group != "Testing" {
 		t.Errorf("WebPrompt.Group = %q, want %q", wp.Group, "Testing")
+	}
+	if wp.Menus != "conversation" {
+		t.Errorf("WebPrompt.Menus = %q, want %q", wp.Menus, "conversation")
 	}
 	// File-based prompts should have Source=PromptSourceFile
 	if wp.Source != PromptSourceFile {
@@ -360,6 +368,75 @@ This is a test prompt with a group.
 	}
 	if prompt.Description != "A test prompt" {
 		t.Errorf("Description = %q, want %q", prompt.Description, "A test prompt")
+	}
+}
+
+func TestParsePromptFile_WithMenus(t *testing.T) {
+	data := []byte(`---
+name: "Context Prompt"
+group: "Workflow"
+menus: conversation
+---
+
+This prompt appears in the conversation context menu.
+`)
+
+	prompt, err := ParsePromptFile("context.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Name != "Context Prompt" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "Context Prompt")
+	}
+	if prompt.Group != "Workflow" {
+		t.Errorf("Group = %q, want %q", prompt.Group, "Workflow")
+	}
+	if prompt.Menus != "conversation" {
+		t.Errorf("Menus = %q, want %q", prompt.Menus, "conversation")
+	}
+
+	// The menus field must survive conversion to WebPrompt for the API response.
+	wp := prompt.ToWebPrompt()
+	if wp.Menus != "conversation" {
+		t.Errorf("WebPrompt.Menus = %q, want %q", wp.Menus, "conversation")
+	}
+}
+
+func TestParsePromptFile_WithMultipleMenus(t *testing.T) {
+	data := []byte(`---
+name: "Multi Menu Prompt"
+menus: "conversation, group"
+---
+
+This prompt appears in multiple menus.
+`)
+
+	prompt, err := ParsePromptFile("multi.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Menus != "conversation, group" {
+		t.Errorf("Menus = %q, want %q", prompt.Menus, "conversation, group")
+	}
+}
+
+func TestParsePromptFile_WithoutMenus(t *testing.T) {
+	data := []byte(`---
+name: "Plain Prompt"
+---
+
+A prompt without a menus attribute.
+`)
+
+	prompt, err := ParsePromptFile("plain.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Menus != "" {
+		t.Errorf("Menus = %q, want empty", prompt.Menus)
 	}
 }
 

@@ -149,7 +149,7 @@ type SessionManager interface {
 	// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string)
 	// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
-	BroadcastSessionArchived(sessionID string, archived bool)
+	BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason)
 	// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
 	BroadcastSessionDeleted(sessionID string)
 	// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
@@ -173,6 +173,8 @@ type SessionManager interface {
 	GetWorkspaceRCLastModified(workingDir string) time.Time
 	// GetWorkspace returns the first workspace matching the working directory.
 	GetWorkspace(workingDir string) *config.WorkspaceSettings
+	// InvalidateWorkspaceRC clears the cached .mittorc for a workspace dir.
+	InvalidateWorkspaceRC(workingDir string)
 }
 
 // PeriodicRunner interface for triggering immediate periodic prompt delivery.
@@ -192,6 +194,14 @@ type BackgroundSession interface {
 	// Returns true if the prompt completed within the timeout, false if it timed out.
 	// If no prompt is in progress, returns immediately with true.
 	WaitForResponseComplete(timeout time.Duration) bool
+	// TriggerTitleGeneration triggers async title generation if the session has no title yet.
+	// Used by MCP tools and API handlers to generate titles for sessions that received
+	// prompts via paths that don't normally trigger title generation (e.g., periodic config).
+	TriggerTitleGeneration(message string)
+	// RequestSelfDestruct marks the conversation for deletion once the current turn
+	// completes. Used by the mitto_conversation_delete tool when an agent requests
+	// deletion of its own conversation.
+	RequestSelfDestruct()
 }
 
 // Config holds the configuration for the MCP server.
@@ -867,13 +877,16 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		SessionID:       meta.SessionID,
 		Title:           meta.Name,
 		Description:     meta.Description,
+		BeadsIssue:      meta.BeadsIssue,
 		ACPServer:       meta.ACPServer,
 		WorkingDir:      meta.WorkingDir,
 		MessageCount:    meta.EventCount,
 		Status:          string(meta.Status),
 		Archived:        meta.Archived,
+		ArchiveReason:   string(meta.ArchiveReason),
 		SessionFolder:   sessionFolder,
 		ParentSessionID: meta.ParentSessionID,
+		ChildOrigin:     string(meta.ChildOrigin),
 	}
 
 	// Format dates as ISO 8601 strings
@@ -905,6 +918,24 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		// Check if conversation has an active periodic prompt
 		if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
 			details.IsPeriodic = p.Enabled
+		}
+
+		// Load message queue
+		if msgs, err := store.Queue(meta.SessionID).List(); err == nil && len(msgs) > 0 {
+			details.QueuedPrompts = make([]QueuedPrompt, 0, len(msgs))
+			for _, msg := range msgs {
+				qp := QueuedPrompt{
+					ID:       msg.ID,
+					Message:  truncateForError(msg.Message, 200),
+					QueuedAt: msg.QueuedAt.Format("2006-01-02T15:04:05Z07:00"),
+					ClientID: msg.ClientID,
+					Title:    msg.Title,
+				}
+				if msg.ScheduledTime != nil {
+					qp.ScheduledTime = msg.ScheduledTime.Format("2006-01-02T15:04:05Z07:00")
+				}
+				details.QueuedPrompts = append(details.QueuedPrompts, qp)
+			}
 		}
 	}
 
@@ -992,11 +1023,28 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Name: "mitto_workspace_list",
 		Description: "List all configured workspaces with their settings and metadata. " +
 			"Returns workspace UUID, display name, working directory, ACP server, " +
+			"an is_default flag (the preferred workspace for its folder when several share the same directory), " +
 			"and optional metadata from the workspace .mittorc file (description, URL, group, user data schema). " +
 			"Optionally filter by activity: 'active' returns only workspaces with at least one non-archived conversation, " +
 			"'archived' returns only workspaces where all conversations are archived (excludes workspaces with zero conversations). " +
 			"Omit filter to return all workspaces. Always available.",
 	}, s.createListWorkspacesHandler())
+
+	// mitto_workspace_update tool - always available
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_workspace_update",
+		Description: "Update a workspace's .mittorc configuration: the descriptive metadata (description, url, group) " +
+			"and/or the user_data schema (the field definitions for per-conversation user data). " +
+			"Supports partial updates — only provided fields change. For description/url/group, omit a field to leave it unchanged, " +
+			"or pass an empty string to clear it. " +
+			"user_data_schema is a list of {name, description, type} where type is one of 'string' (default), 'url', or 'filename'. " +
+			"Set user_data_schema_merge to true (default) to merge fields by name with the existing schema, " +
+			"or false to replace the whole schema (an empty list clears it). " +
+			"By default targets the caller's own workspace; specify 'workspace' (a UUID from mitto_workspace_list) " +
+			"to target another workspace (requires the 'Can interact with other workspaces' flag and user confirmation). " +
+			"Note: .mittorc is a version-controlled file in the workspace root. " +
+			selfIDNote,
+	}, s.handleWorkspaceUpdate)
 }
 
 // selfIDNote is the standard note about self_id for tools that require session identification.
@@ -1027,6 +1075,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
+			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
+			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
+			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the prompt text when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -1094,11 +1145,18 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
+			"Instead of an inline 'initial_prompt', you may provide 'prompt_name' to use a predefined prompt by name (resolved the same way as 'mitto_prompt_get', case-insensitive) as the initial prompt — 'prompt_name' and 'initial_prompt' are mutually exclusive. " +
+			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the initial prompt when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. This pairs with 'prompt_name' to fill a predefined prompt's parameters without fetching it first. " +
+			"Optionally provide 'initial_prompt_delay' to delay the initial prompt delivery instead of sending it immediately. " +
+			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
+			"Requires 'initial_prompt' or 'prompt_name' to be set. " +
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
+			"Optionally provide 'beads_issue' to link the new conversation to a beads issue ID (e.g. 'mitto-123'). " +
 			"Optionally configure the conversation as periodic by providing 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit'. " +
 			"This is equivalent to configuring periodic via 'mitto_conversation_update' after creation, but done in one step. " +
 			"For periodic with days, optionally specify 'periodic_frequency_at' (HH:MM in UTC). " +
 			"Set 'periodic_enabled' to false to create the periodic configuration in a paused state. " +
+			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
@@ -1109,7 +1167,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get",
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
-			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
+			"Returns metadata, status, runtime info including whether the agent is currently replying, " +
+			"and the list of queued prompts (with scheduled delivery times, if any). " +
+			"Also returns parent-child relationship info (parent_session_id, child_origin). " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
@@ -1138,13 +1198,14 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleArchiveConversation)
 
-	// mitto_conversation_delete - Delete (archive) a child conversation
+	// mitto_conversation_delete - Permanently delete a child conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_delete",
-		Description: "Delete a child conversation. " +
-			"This archives the child conversation, gracefully stopping any active agent response and closing its ACP connection. " +
-			"The caller MUST be the parent of the target conversation (verified via the parent-child relationship). " +
-			"Deleted conversations become read-only and will no longer accept prompts. " +
+		Description: "Delete a conversation. " +
+			"This permanently deletes the conversation, gracefully stopping any active agent response and closing its ACP connection. " +
+			"To delete a CHILD conversation, pass its conversation_id; the caller MUST be the parent of the target conversation (verified via the parent-child relationship). " +
+			"To delete YOUR OWN conversation (self-destruct), pass \"self\" (or your own conversation ID) as conversation_id; the deletion happens automatically once your current response finishes. " +
+			"Deleted conversations are permanently removed and cannot be recovered. " +
 			selfIDNote,
 	}, s.handleDeleteConversation)
 
@@ -1154,6 +1215,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Update properties of a conversation. " +
 			"Supports partial updates — only specified fields are changed, others are left untouched. " +
 			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes), " +
+			"'beads_issue' (linked beads issue ID, e.g. \"mitto-123\"; empty string clears it), " +
 			"'periodic' (periodic prompt configuration). " +
 			"User data is validated against the workspace's schema defined in .mittorc. " +
 			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
@@ -1161,6 +1223,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"to configure or update periodic prompts. Use 'periodic_frequency_at' (HH:MM UTC) for daily schedules. " +
 			"Set 'periodic_enabled' to false to pause periodic execution without deleting the configuration. " +
 			"To disable periodic entirely, set 'periodic_enabled' to false. " +
+			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
 
@@ -1171,6 +1234,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Currently supports: 'agent_responded' — blocks until the agent finishes responding. " +
 			"Returns immediately if the condition is already met (e.g., agent is not currently responding). " +
 			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
+			"If the wait times out, the result includes 'timed_out: true' and 'still_prompting' indicating whether the agent is still responding — you do NOT need to separately check the prompting status. " +
 			selfIDNote,
 	}, s.handleConversationWait)
 
@@ -1251,6 +1315,7 @@ type WorkspaceInfo struct {
 	Name       string                    `json:"name,omitempty"`
 	WorkingDir string                    `json:"working_dir"`
 	ACPServer  string                    `json:"acp_server"`
+	IsDefault  bool                      `json:"is_default,omitempty"` // True if this is the default workspace for its folder
 	Metadata   *config.WorkspaceMetadata `json:"metadata,omitempty"`
 }
 
@@ -1262,6 +1327,36 @@ type WorkspaceListInput struct {
 // WorkspaceListOutput is the output for the mitto_workspace_list tool.
 type WorkspaceListOutput struct {
 	Workspaces []WorkspaceInfo `json:"workspaces"`
+}
+
+// WorkspaceUserDataField is a single field definition for the user_data schema.
+type WorkspaceUserDataField struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"` // "string" (default), "url", or "filename"
+}
+
+// WorkspaceUpdateInput is the input for the mitto_workspace_update tool.
+// UserDataSchema uses a plain slice: nil means absent (leave schema untouched);
+// a non-nil empty slice (JSON []) means "provided but empty" (clears schema when merge=false).
+type WorkspaceUpdateInput struct {
+	SelfID              string                   `json:"self_id"`
+	Workspace           string                   `json:"workspace,omitempty"`
+	Description         *string                  `json:"description,omitempty"`
+	URL                 *string                  `json:"url,omitempty"`
+	Group               *string                  `json:"group,omitempty"`
+	UserDataSchema      []WorkspaceUserDataField `json:"user_data_schema,omitempty"`
+	UserDataSchemaMerge *bool                    `json:"user_data_schema_merge,omitempty"`
+}
+
+// WorkspaceUpdateOutput is the output for the mitto_workspace_update tool.
+type WorkspaceUpdateOutput struct {
+	Success       bool                      `json:"success"`
+	Error         string                    `json:"error,omitempty"`
+	WorkspaceUUID string                    `json:"workspace_uuid,omitempty"`
+	WorkingDir    string                    `json:"working_dir,omitempty"`
+	Updated       []string                  `json:"updated,omitempty"`
+	Metadata      *config.WorkspaceMetadata `json:"metadata,omitempty"`
 }
 
 // createListWorkspacesHandler creates the handler for mitto_workspace_list tool.
@@ -1327,6 +1422,7 @@ func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListI
 				Name:       ws.Name,
 				WorkingDir: ws.WorkingDir,
 				ACPServer:  ws.ACPServer,
+				IsDefault:  ws.IsDefault,
 			}
 
 			// Load .mittorc metadata if workspace has a working directory
@@ -1347,6 +1443,205 @@ func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListI
 
 		return nil, WorkspaceListOutput{Workspaces: infos}, nil
 	}
+}
+
+func (s *Server) handleWorkspaceUpdate(ctx context.Context, req *mcp.CallToolRequest, input WorkspaceUpdateInput) (*mcp.CallToolResult, WorkspaceUpdateOutput, error) {
+	if input.SelfID == "" {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "self_id is required"}, nil
+	}
+
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
+		}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	sm := s.sessionManager
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "session store not available"}, nil
+	}
+	if sm == nil {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "session manager not available"}, nil
+	}
+
+	callerMeta, err := store.GetMetadata(realSessionID)
+	if err != nil {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("failed to get caller session metadata: %v", err),
+		}, nil
+	}
+
+	// Resolve target workspace directory and UUID.
+	var targetDir, targetUUID string
+	if input.Workspace != "" {
+		targetWS := sm.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, WorkspaceUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("workspace not found: %s", input.Workspace),
+			}, nil
+		}
+		targetDir = targetWS.WorkingDir
+		targetUUID = targetWS.UUID
+		if targetWS.WorkingDir != callerMeta.WorkingDir {
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, WorkspaceUpdateOutput{
+					Success: false,
+					Error: fmt.Sprintf("cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+						session.FlagCanInteractOtherWorkspaces),
+				}, nil
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "modify workspace configuration", targetWS); err != nil {
+				return nil, WorkspaceUpdateOutput{Success: false, Error: err.Error()}, nil
+			}
+		}
+	} else {
+		targetDir = callerMeta.WorkingDir
+		for _, ws := range sm.GetWorkspaces() {
+			if ws.WorkingDir == targetDir {
+				targetUUID = ws.UUID
+				break
+			}
+		}
+	}
+
+	if targetDir == "" {
+		return nil, WorkspaceUpdateOutput{Success: false, Error: "target workspace has no working directory"}, nil
+	}
+
+	// Load current state.
+	curRC, _ := config.LoadWorkspaceRC(targetDir)
+	var curDesc, curURL, curGroup string
+	var curFields []config.UserDataSchemaField
+	if curRC != nil && curRC.Metadata != nil {
+		curDesc = curRC.Metadata.Description
+		curURL = curRC.Metadata.URL
+		curGroup = curRC.Metadata.Group
+		if curRC.Metadata.UserDataSchema != nil {
+			curFields = curRC.Metadata.UserDataSchema.Fields
+		}
+	}
+
+	var updated []string
+
+	// Update metadata fields if any pointer is non-nil.
+	if input.Description != nil || input.URL != nil || input.Group != nil {
+		desc := curDesc
+		if input.Description != nil {
+			desc = *input.Description
+		}
+		u := curURL
+		if input.URL != nil {
+			u = *input.URL
+		}
+		grp := curGroup
+		if input.Group != nil {
+			grp = *input.Group
+		}
+		if err := config.SaveWorkspaceMetadata(targetDir, desc, u, grp); err != nil {
+			return nil, WorkspaceUpdateOutput{Success: false, Error: fmt.Sprintf("failed to save metadata: %v", err)}, nil
+		}
+		if input.Description != nil {
+			updated = append(updated, "description")
+		}
+		if input.URL != nil {
+			updated = append(updated, "url")
+		}
+		if input.Group != nil {
+			updated = append(updated, "group")
+		}
+	}
+
+	// Update schema if user_data_schema was present in the input (nil = absent).
+	if input.UserDataSchema != nil {
+		merge := input.UserDataSchemaMerge == nil || *input.UserDataSchemaMerge
+
+		// Convert and validate provided fields.
+		newFields := make([]config.UserDataSchemaField, 0, len(input.UserDataSchema))
+		for _, f := range input.UserDataSchema {
+			t := config.UserDataAttributeType(f.Type).DefaultType()
+			if !t.IsValid() {
+				return nil, WorkspaceUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("invalid user_data field type %q for field %q (allowed: string, url, filename)", f.Type, f.Name),
+				}, nil
+			}
+			newFields = append(newFields, config.UserDataSchemaField{
+				Name:        f.Name,
+				Description: f.Description,
+				Type:        t,
+			})
+		}
+
+		var finalFields []config.UserDataSchemaField
+		if merge {
+			// Start from existing fields; replace by name or append.
+			finalFields = make([]config.UserDataSchemaField, len(curFields))
+			copy(finalFields, curFields)
+			for _, nf := range newFields {
+				replaced := false
+				for i, ef := range finalFields {
+					if ef.Name == nf.Name {
+						finalFields[i] = nf
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					finalFields = append(finalFields, nf)
+				}
+			}
+		} else {
+			finalFields = newFields
+		}
+
+		if err := config.SaveWorkspaceUserDataSchema(targetDir, finalFields); err != nil {
+			return nil, WorkspaceUpdateOutput{Success: false, Error: fmt.Sprintf("failed to save user_data schema: %v", err)}, nil
+		}
+		updated = append(updated, "user_data_schema")
+	}
+
+	if len(updated) == 0 {
+		return nil, WorkspaceUpdateOutput{
+			Success: false,
+			Error:   "no properties to update: specify at least one of 'description', 'url', 'group', or 'user_data_schema'",
+		}, nil
+	}
+
+	sm.InvalidateWorkspaceRC(targetDir)
+
+	var outMeta *config.WorkspaceMetadata
+	if newRC, _ := config.LoadWorkspaceRC(targetDir); newRC != nil {
+		outMeta = newRC.Metadata
+	}
+
+	s.logger.Info("Workspace updated via MCP",
+		"source_session", realSessionID,
+		"target_dir", targetDir,
+		"updated", updated)
+
+	return nil, WorkspaceUpdateOutput{
+		Success:       true,
+		WorkspaceUUID: targetUUID,
+		WorkingDir:    targetDir,
+		Updated:       updated,
+		Metadata:      outMeta,
+	}, nil
 }
 
 // createListConversationsHandler creates the handler for list_conversations tool.
@@ -1463,6 +1758,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				SessionID:         meta.SessionID,
 				Title:             meta.Name,
 				Description:       meta.Description,
+				BeadsIssue:        meta.BeadsIssue,
 				ACPServer:         meta.ACPServer,
 				WorkingDir:        meta.WorkingDir,
 				CreatedAt:         meta.CreatedAt,
@@ -1471,7 +1767,9 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				MessageCount:      meta.EventCount,
 				Status:            string(meta.Status),
 				Archived:          meta.Archived,
+				ArchiveReason:     string(meta.ArchiveReason),
 				SessionFolder:     store.SessionDir(meta.SessionID),
+				ChildOrigin:       string(meta.ChildOrigin),
 			}
 
 			// D) Enrich with workspace identity using composite key, falling back to working-dir-only lookup.
@@ -1633,10 +1931,12 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 
 // SendPromptToConversationInput is the input for send_prompt_to_conversation tool.
 type SendPromptToConversationInput struct {
-	SelfID         string `json:"self_id"`         // YOUR session ID (the caller), not the target
-	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
-	Prompt         string `json:"prompt"`
-	Workspace      string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace operations
+	SelfID         string            `json:"self_id"`         // YOUR session ID (the caller), not the target
+	ConversationID string            `json:"conversation_id"` // Target conversation ID to send prompt to
+	Prompt         string            `json:"prompt"`
+	Workspace      string            `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
+	ScheduleTime   string            `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
+	Arguments      map[string]string `json:"arguments,omitempty"`     // Optional: ${VAR}/${VAR:-default} substitution values applied to the prompt text when sent
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1738,11 +2038,24 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		}
 	}
 
+	// Parse optional scheduled time (supports RFC 3339 or relative duration like "5m", "1h")
+	var scheduledTime *time.Time
+	if input.ScheduleTime != "" {
+		t, err := session.ParseScheduleTime(input.ScheduleTime)
+		if err != nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   err.Error(),
+			}, nil
+		}
+		scheduledTime = &t
+	}
+
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
 	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, 0)
+	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -1757,28 +2070,32 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		"source_session", realSessionID,
 		"target_session", input.ConversationID,
 		"message_id", msg.ID,
-		"queue_position", queueLen)
+		"queue_position", queueLen,
+		"scheduled", scheduledTime != nil)
 
 	// Try to process the queued message immediately if agent is idle.
-	// If the session is not running (stored), auto-resume it first.
-	if s.sessionManager != nil {
-		bs := s.sessionManager.GetSession(input.ConversationID)
-		if bs == nil && !targetMeta.Archived && targetMeta.Status != session.SessionStatusCompleted {
-			// Session is stored (not running) — try to resume it so the queue gets processed.
-			s.logger.Info("Auto-resuming stored session to process queued prompt",
-				"target_session", input.ConversationID,
-				"source_session", realSessionID)
-			resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
-			if resumeErr != nil {
-				s.logger.Warn("Failed to auto-resume stored session",
+	// Skip for scheduled messages — the periodic runner will deliver them when due.
+	if scheduledTime == nil {
+		if s.sessionManager != nil {
+			bs := s.sessionManager.GetSession(input.ConversationID)
+			if bs == nil && !targetMeta.Archived {
+				// Session is stored or completed (e.g., GC-closed) — try to resume it so the queue gets processed.
+				s.logger.Info("Auto-resuming session to process queued prompt",
 					"target_session", input.ConversationID,
-					"error", resumeErr)
-			} else {
-				bs = resumed
+					"source_session", realSessionID,
+					"target_status", string(targetMeta.Status))
+				resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
+				if resumeErr != nil {
+					s.logger.Warn("Failed to auto-resume stored session",
+						"target_session", input.ConversationID,
+						"error", resumeErr)
+				} else {
+					bs = resumed
+				}
 			}
-		}
-		if bs != nil {
-			go bs.TryProcessQueuedMessage()
+			if bs != nil {
+				go bs.TryProcessQueuedMessage()
+			}
 		}
 	}
 
@@ -2337,17 +2654,22 @@ func computeUnifiedDiff(original, edited, originalName, editedName string) strin
 
 // ConversationStartInput is the input for mitto_conversation_new tool.
 type ConversationStartInput struct {
-	SelfID        string `json:"self_id"`                  // YOUR session ID (the caller)
-	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
-	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
-	ACPServer     string `json:"acp_server,omitempty"`     // Optional ACP server name (defaults to parent's server)
-	Workspace     string `json:"workspace,omitempty"`      // Optional workspace UUID for cross-workspace operations
+	SelfID             string            `json:"self_id"`                        // YOUR session ID (the caller)
+	Title              string            `json:"title,omitempty"`                // Optional title for the new conversation
+	InitialPrompt      string            `json:"initial_prompt,omitempty"`       // Optional initial message to queue
+	PromptName         string            `json:"prompt_name,omitempty"`          // Optional: name of a predefined prompt to use as the initial prompt (mutually exclusive with initial_prompt)
+	InitialPromptDelay string            `json:"initial_prompt_delay,omitempty"` // Optional: delay initial prompt delivery (RFC 3339 timestamp or relative duration like "5m", "1h")
+	Arguments          map[string]string `json:"arguments,omitempty"`            // Optional: ${VAR}/${VAR:-default} substitution values applied to the initial prompt when sent
+	ACPServer          string            `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
+	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
+	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
 	// Periodic configuration (optional) - creates the conversation as periodic
 	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
 	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
 	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
 	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
 	PeriodicEnabled        *bool  `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
+	PeriodicFreshContext   *bool  `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -2442,6 +2764,29 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// Resolve the effective initial prompt. A named prompt (prompt_name) is
+	// mutually exclusive with an inline initial_prompt: when prompt_name is set,
+	// its full text is looked up from the merged prompt list (same resolution as
+	// mitto_prompt_get) and used as the initial prompt. Optional 'arguments' are
+	// applied as ${VAR}/${VAR:-default} substitution when the prompt is sent.
+	initialPromptText := input.InitialPrompt
+	if input.PromptName != "" {
+		if input.InitialPrompt != "" {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"cannot specify both 'prompt_name' and 'initial_prompt' — use one or the other")
+		}
+		promptWorkingDir, err := s.resolvePromptWorkingDir(realSessionID, input.Workspace)
+		if err != nil {
+			return nil, ConversationStartOutput{}, err
+		}
+		p, found := s.findPromptByName(promptWorkingDir, input.PromptName)
+		if !found {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"prompt not found: no prompt named %q is available in this workspace", input.PromptName)
+		}
+		initialPromptText = p.Prompt
+	}
+
 	// Check max child conversations limit
 	// This prevents a single session from spawning too many children and exhausting resources.
 	// Auto-children (from workspace config) are excluded from the count.
@@ -2474,9 +2819,18 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 		for _, existingMeta := range allSessions {
 			if existingMeta.Name == input.Title {
-				return nil, ConversationStartOutput{}, fmt.Errorf(
-					"a conversation with the title '%s' already exists (session_id: %s). Please choose a different title",
+				errMsg := fmt.Sprintf(
+					"a conversation with the title '%s' already exists (conversation_id: %s)",
 					input.Title, existingMeta.SessionID)
+				if initialPromptText != "" {
+					errMsg += fmt.Sprintf(
+						". To send a prompt to it, use 'mitto_conversation_send_prompt' with conversation_id='%s' and prompt='%s'",
+						existingMeta.SessionID, truncateForError(initialPromptText, 200))
+					if input.InitialPromptDelay != "" {
+						errMsg += fmt.Sprintf(" and schedule_time='%s'", input.InitialPromptDelay)
+					}
+				}
+				return nil, ConversationStartOutput{}, fmt.Errorf("%s", errMsg)
 			}
 		}
 	}
@@ -2557,6 +2911,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		ParentSessionID:  realSessionID,          // Mark this session as a child
 		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
+		BeadsIssue:       input.BeadsIssue,
 	}
 
 	// Create the session
@@ -2642,10 +2997,16 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			enabled = *input.PeriodicEnabled
 		}
 
+		freshContext := false
+		if input.PeriodicFreshContext != nil {
+			freshContext = *input.PeriodicFreshContext
+		}
+
 		periodic := &session.PeriodicPrompt{
-			Prompt:    input.PeriodicPrompt,
-			Frequency: freq,
-			Enabled:   enabled,
+			Prompt:       input.PeriodicPrompt,
+			Frequency:    freq,
+			Enabled:      enabled,
+			FreshContext: freshContext,
 		}
 
 		periodicStore := store.Periodic(newSessionID)
@@ -2669,6 +3030,12 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// If no explicit title was provided and periodic was configured, trigger title
+	// generation from the periodic prompt text so the conversation has a name right away.
+	if input.Title == "" && periodicConfigured && bs != nil {
+		bs.TriggerTitleGeneration(input.PeriodicPrompt)
+	}
+
 	// Build unified conversation details
 	output := ConversationStartOutput{
 		ConversationDetails: s.buildConversationDetails(createdMeta, store.SessionDir(newSessionID)),
@@ -2680,10 +3047,25 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		output.IsRunning = true
 	}
 
+	// Validate initial_prompt_delay requires an initial prompt (inline or named)
+	if input.InitialPromptDelay != "" && initialPromptText == "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf("initial_prompt_delay requires initial_prompt or prompt_name to be set")
+	}
+
 	// If initial prompt provided, add it to the queue
-	if input.InitialPrompt != "" {
+	if initialPromptText != "" {
+		// Parse optional initial prompt delay
+		var scheduledTime *time.Time
+		if input.InitialPromptDelay != "" {
+			t, err := session.ParseScheduleTime(input.InitialPromptDelay)
+			if err != nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf("invalid initial_prompt_delay: %v", err)
+			}
+			scheduledTime = &t
+		}
+
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, 0)
+		_, err := queue.Add(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -2692,8 +3074,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			queueLen, _ := queue.Len()
 			output.QueuePosition = queueLen
 
-			// Try to process the queued message immediately if agent is idle
-			if bs != nil {
+			// Try to process the queued message immediately if agent is idle (skip if scheduled for later)
+			if bs != nil && scheduledTime == nil {
 				go bs.TryProcessQueuedMessage()
 			}
 		}
@@ -3001,8 +3383,10 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		if archived {
 			archivedAt = time.Now()
 			m.ArchivedAt = archivedAt
+			m.ArchiveReason = session.ArchiveReasonManual
 		} else {
 			m.ArchivedAt = time.Time{}
+			m.ArchiveReason = ""
 		}
 	})
 	if err != nil {
@@ -3012,9 +3396,12 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
-	// Broadcast the archived state change to all connected WebSocket clients
-	if s.sessionManager != nil {
-		s.sessionManager.BroadcastSessionArchived(input.ConversationID, archived)
+	// Broadcast the archived state change to all connected WebSocket clients.
+	// For archive: broadcast immediately so clients know to disconnect.
+	// For unarchive: broadcast AFTER ResumeSession so the session is already in
+	// sm.sessions when clients reconnect (prevents pendingResumes race).
+	if archived && s.sessionManager != nil {
+		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true, session.ArchiveReasonManual)
 	}
 
 	// Delete all child sessions when parent is archived
@@ -3022,7 +3409,7 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		go s.sessionManager.DeleteChildSessions(input.ConversationID)
 	}
 
-	// Handle unarchive lifecycle: restart ACP session
+	// Handle unarchive lifecycle: restart ACP session FIRST, then broadcast
 	if !archived && sessionManager != nil {
 		_, err := sessionManager.ResumeSession(input.ConversationID, meta.Name, meta.WorkingDir)
 		if err != nil {
@@ -3033,6 +3420,10 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		} else {
 			s.logger.Info("Resumed ACP session after unarchive via MCP",
 				"session_id", input.ConversationID)
+		}
+		// Broadcast AFTER resume — session is now in sm.sessions
+		if s.sessionManager != nil {
+			s.sessionManager.BroadcastSessionArchived(input.ConversationID, false)
 		}
 	}
 
@@ -3091,6 +3482,32 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 	store := s.store
 	sessionManager := s.sessionManager
 	s.mu.RUnlock()
+
+	// Self-deletion: the agent requests deletion of its OWN conversation by passing
+	// "self" or its actual conversation ID. We cannot delete synchronously here —
+	// the agent is mid-turn and the ACP connection is in use — and the parent-only
+	// security check below would also reject it. Instead, set an in-memory flag on
+	// the calling session; the backend deletes the conversation once the turn
+	// completes (see BackgroundSession.PromptWithMeta).
+	if input.ConversationID == "self" || input.ConversationID == realSessionID {
+		if sessionManager == nil {
+			return nil, DeleteConversationOutput{Success: false, Error: "session manager not available"}, nil
+		}
+		bs := sessionManager.GetSession(realSessionID)
+		if bs == nil {
+			return nil, DeleteConversationOutput{
+				Success: false,
+				Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
+			}, nil
+		}
+		bs.RequestSelfDestruct()
+		s.logger.Info("Conversation marked for self-destruction via MCP",
+			"session_id", realSessionID)
+		return nil, DeleteConversationOutput{
+			Success:        true,
+			ConversationID: realSessionID,
+		}, nil
+	}
 
 	if store == nil {
 		return nil, DeleteConversationOutput{Success: false, Error: "session store not available"}, nil
@@ -3237,6 +3654,19 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			"new_name", *input.Name)
 	}
 
+	// Update beads_issue if provided
+	if input.BeadsIssue != nil {
+		if err := store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
+			m.BeadsIssue = *input.BeadsIssue
+		}); err != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to update beads_issue: %v", err),
+			}, nil
+		}
+		updated = append(updated, "beads_issue")
+	}
+
 	// Update user data if provided
 	if len(input.UserData) > 0 {
 		// Determine merge mode (default: true)
@@ -3281,10 +3711,11 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 
 		userData := &session.UserData{Attributes: finalAttrs}
 
-		// Validate against workspace schema
+		// Validate against workspace schema. Relative filename paths are resolved
+		// against the conversation's working directory.
 		if sm != nil {
 			schema := sm.GetUserDataSchema(meta.WorkingDir)
-			if err := userData.Validate(schema); err != nil {
+			if err := userData.Validate(schema, meta.WorkingDir); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("user_data validation error: %v", err),
@@ -3309,7 +3740,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Update periodic configuration if any periodic fields provided
-	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil {
+	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil {
 		periodicStore := store.Periodic(input.ConversationID)
 
 		// Check if this is an update to existing periodic config or a new setup
@@ -3371,10 +3802,16 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				enabled = *input.PeriodicEnabled
 			}
 
+			freshContext := false
+			if input.PeriodicFreshContext != nil {
+				freshContext = *input.PeriodicFreshContext
+			}
+
 			periodic := &session.PeriodicPrompt{
-				Prompt:    *input.PeriodicPrompt,
-				Frequency: freq,
-				Enabled:   enabled,
+				Prompt:       *input.PeriodicPrompt,
+				Frequency:    freq,
+				Enabled:      enabled,
+				FreshContext: freshContext,
 			}
 
 			if err := periodicStore.Set(periodic); err != nil {
@@ -3424,7 +3861,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				enabled = input.PeriodicEnabled
 			}
 
-			if err := periodicStore.Update(prompt, nil, freq, enabled); err != nil {
+			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update periodic: %v", err),
@@ -3433,6 +3870,28 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		}
 
 		updated = append(updated, "periodic")
+
+		// If the session has no title and a periodic prompt was set, trigger title generation.
+		if input.Name == nil && meta.Name == "" && sm != nil {
+			promptText := ""
+			if input.PeriodicPrompt != nil {
+				promptText = *input.PeriodicPrompt
+			}
+			if promptText == "" {
+				// Get prompt text from the updated periodic config
+				if p, getErr := periodicStore.Get(); getErr == nil && p != nil {
+					promptText = p.Prompt
+					if promptText == "" {
+						promptText = p.PromptName
+					}
+				}
+			}
+			if promptText != "" {
+				if bs := sm.GetSession(input.ConversationID); bs != nil {
+					bs.TriggerTitleGeneration(promptText)
+				}
+			}
+		}
 
 		s.logger.Info("Periodic configuration updated via MCP",
 			"source_session", realSessionID,
@@ -3444,7 +3903,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if len(updated) == 0 {
 		return nil, ConversationUpdateOutput{
 			Success: false,
-			Error:   "no properties to update: specify at least one of 'name', 'user_data', or periodic fields",
+			Error:   "no properties to update: specify at least one of 'name', 'beads_issue', 'user_data', or periodic fields",
 		}, nil
 	}
 
@@ -3455,9 +3914,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		Updated:        updated,
 	}
 
-	// Read back current name
+	// Read back current name and beads_issue
 	if currentMeta, err := store.GetMetadata(input.ConversationID); err == nil {
 		output.Name = currentMeta.Name
+		output.BeadsIssue = currentMeta.BeadsIssue
 	}
 
 	// Read back current user data
@@ -3474,6 +3934,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		output.PeriodicFrequencyUnit = string(p.Frequency.Unit)
 		output.PeriodicFrequencyAt = p.Frequency.At
 		output.PeriodicEnabled = p.Enabled
+		output.PeriodicFreshContext = p.FreshContext
 		if p.NextScheduledAt != nil {
 			output.PeriodicNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 		}
@@ -3637,15 +4098,25 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 			}, nil
 		}
 		// Timed out
+		stillPrompting := targetBS.IsPrompting()
+		var msg string
+		if stillPrompting {
+			msg = fmt.Sprintf("timed out after %s; the agent is still responding", timeout)
+		} else {
+			msg = fmt.Sprintf("timed out after %s; the agent has finished responding", timeout)
+		}
 		s.logger.Warn("Conversation wait timed out",
 			"source_session", realSessionID,
 			"target_conversation", input.ConversationID,
 			"what", input.What,
-			"timeout", timeout)
+			"timeout", timeout,
+			"still_prompting", stillPrompting)
 		return nil, ConversationWaitOutput{
-			Success:  true,
-			What:     input.What,
-			TimedOut: true,
+			Success:        true,
+			What:           input.What,
+			TimedOut:       true,
+			StillPrompting: stillPrompting,
+			Message:        msg,
 		}, nil
 	case <-ctx.Done():
 		return nil, ConversationWaitOutput{
@@ -3757,11 +4228,12 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		// Check if the child is currently running (registered with MCP server).
 		// If not running and not archived, try to auto-resume it.
 		childReg := s.getSession(childID)
-		if childReg == nil && !childMeta.Archived && childMeta.Status != session.SessionStatusCompleted && s.sessionManager != nil {
-			// Session is stored (not running) — try to resume it.
-			s.logger.Info("Auto-resuming stored child session",
+		if childReg == nil && !childMeta.Archived && s.sessionManager != nil {
+			// Session is stored or completed (e.g., GC-closed) — try to resume it.
+			s.logger.Info("Auto-resuming child session",
 				"parent_session", realSessionID,
-				"child_session", childID)
+				"child_session", childID,
+				"child_status", string(childMeta.Status))
 			resumed, resumeErr := s.sessionManager.ResumeSession(childID, childMeta.Name, childMeta.WorkingDir)
 			if resumeErr != nil {
 				s.logger.Warn("Failed to auto-resume child session",
@@ -3772,12 +4244,6 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				// Re-check registration after resume
 				childReg = s.getSession(childID)
 			}
-		} else if childReg == nil && childMeta.Status == session.SessionStatusCompleted {
-			// Session completed (e.g. GC-closed after idle timeout) — skip auto-resume to avoid
-			// creating a new BackgroundSession that would record a duplicate session_end event.
-			s.logger.Info("Skipping auto-resume of completed child session",
-				"parent_session", realSessionID,
-				"child_session", childID)
 		}
 		if childReg == nil {
 			notRunningChildren = append(notRunningChildren, childID)
@@ -3881,7 +4347,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				continue
 			}
 
-			msg, err := queue.Add(promptText, nil, nil, realSessionID, 0)
+			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0, nil, "")
 			if err != nil {
 				s.logger.Warn("Failed to enqueue prompt to child",
 					"parent_session", realSessionID,
@@ -4574,4 +5040,12 @@ func historyTruncateDataStr(s string) string {
 		return s
 	}
 	return s[:historyMaxDataStr-3] + "..."
+}
+
+// truncateForError truncates a string for inclusion in error messages.
+func truncateForError(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

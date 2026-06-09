@@ -134,6 +134,11 @@ export const KEYBOARD_SHORTCUTS = [
     macOnly: true,
     section: "Conversations",
   },
+  {
+    keys: "⌘⇧A",
+    description: "Archive conversation",
+    section: "Conversations",
+  },
   // Web shortcuts (work in both macOS app and browser)
   {
     keys: "⌘1-9",
@@ -153,6 +158,13 @@ export const KEYBOARD_SHORTCUTS = [
     section: "Conversations",
   },
   { keys: "⌘,", description: "Settings", section: "Navigation" },
+  // Tasks (beads) shortcuts (work in both macOS app and browser)
+  {
+    keys: "⌘⇧N",
+    description: "New task",
+    hint: "Opens the task properties panel for the current workspace",
+    section: "Tasks",
+  },
   // View menu shortcuts (native menu in macOS app, not available in browser)
   {
     keys: "⌘L",

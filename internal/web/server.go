@@ -10,11 +10,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	builtinConfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/beads"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
@@ -70,6 +72,10 @@ type Config struct {
 	// DisableAuxiliaryPrewarm disables auxiliary session pre-warming on process creation.
 	// Used in tests to avoid interference with mock ACP servers.
 	DisableAuxiliaryPrewarm bool
+
+	// Logger overrides the default logger (logging.Web()). When nil, the global
+	// web logger is used. Primarily used by tests to capture log output.
+	Logger *slog.Logger
 }
 
 // GetWorkspaces returns the effective list of workspaces.
@@ -83,10 +89,12 @@ func (c *Config) GetWorkspaces() []configPkg.WorkspaceSettings {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
+	// ACPCommandOverride is set from ACPCommand if it's a legacy override value.
+	// For the CLI legacy path, ACPCommand on Config is the user-provided command.
 	return []configPkg.WorkspaceSettings{{
-		ACPServer:  c.ACPServer,
-		ACPCommand: c.ACPCommand,
-		WorkingDir: workDir,
+		ACPServer:          c.ACPServer,
+		ACPCommandOverride: c.ACPCommand, // Legacy: CLI-provided command becomes an override
+		WorkingDir:         workDir,
 	}}
 }
 
@@ -109,9 +117,9 @@ func (c *Config) GetWorkspaceByDir(dir string) *configPkg.WorkspaceSettings {
 	// Check legacy fields
 	if len(c.Workspaces) == 0 && c.DefaultWorkingDir == dir {
 		return &configPkg.WorkspaceSettings{
-			ACPServer:  c.ACPServer,
-			ACPCommand: c.ACPCommand,
-			WorkingDir: dir,
+			ACPServer:          c.ACPServer,
+			ACPCommandOverride: c.ACPCommand, // Legacy: CLI-provided command becomes an override
+			WorkingDir:         dir,
 		}
 	}
 	return nil
@@ -122,8 +130,7 @@ type Server struct {
 	config     Config
 	httpServer *http.Server
 	logger     *slog.Logger
-	mu         sync.Mutex
-	shutdown   bool
+	shutdown   atomic.Bool
 
 	// apiPrefix is the URL prefix for all API and WebSocket endpoints.
 	// Static assets and root landing page are not prefixed.
@@ -187,12 +194,23 @@ type Server struct {
 	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
 	negativeSessionCache *NegativeSessionCache
 
+	// beads is the injectable Client for bd operations.
+	// When nil, beadsClient() falls back to beads.NewClient() (real bd binary).
+	beads beads.Client
+
 	// Health monitor for external address reachability checking
 	healthMonitor          *hooks.HealthMonitor
 	healthMonitorMu        sync.Mutex
 	hookPort               int                        // Port used for hook commands
 	onHookProcessChanged   func(*hooks.Process)       // Callback to update shutdown manager when hooks restart
 	onHealthMonitorChanged func(*hooks.HealthMonitor) // Callback to update shutdown manager when health monitor changes
+
+	// recentStartFails deduplicates BroadcastACPStartFailed calls for the same session.
+	// When multiple goroutines coalesce on a single resume failure they all receive the
+	// error and each tries to broadcast; only the first broadcast per session per window
+	// is emitted, followers are suppressed.
+	recentStartFailsMu sync.Mutex
+	recentStartFails   map[string]time.Time
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -203,8 +221,10 @@ func (s *Server) APIPrefix() string {
 
 // NewServer creates a new web server.
 func NewServer(config Config) (*Server, error) {
-	// Use the global logger from the logging package
-	logger := logging.Web()
+	logger := config.Logger
+	if logger == nil {
+		logger = logging.Web()
+	}
 
 	// Create session store for persistence
 	store, err := session.DefaultStore()
@@ -259,17 +279,9 @@ func NewServer(config Config) (*Server, error) {
 		apiPrefix = config.MittoConfig.Web.APIPrefix
 	}
 
-	// Reconcile workspace ACPEnv from server definitions.
-	// workspaces.json may not have ACPEnv if it was saved before this feature existed,
-	// so we resolve it from the current ACP server configuration on every startup.
+	// ACP command/cwd/env are always resolved from global config at runtime —
+	// they are never stored on the workspace struct (those fields were removed).
 	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
-	if config.MittoConfig != nil && len(workspaces) > 0 {
-		for i := range workspaces {
-			if srv, err := config.MittoConfig.GetServer(workspaces[i].ACPServer); err == nil {
-				workspaces[i].ACPEnv = srv.Env
-			}
-		}
-	}
 
 	// Create session manager with workspace support
 	var sessionMgr *SessionManager
@@ -290,8 +302,14 @@ func NewServer(config Config) (*Server, error) {
 	}
 	sessionMgr.SetStore(store)
 
-	// Create shared ACP process manager for workspace-level process sharing
+	// Create shared ACP process manager for workspace-level process sharing.
+	// Clean up orphaned ACP processes from any previous Mitto instance that crashed
+	// without running its shutdown sequence (not done in tests to avoid killing
+	// the developer's live ACP servers when running the test suite).
 	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
+	if os.Getenv("MITTO_TEST_MODE") == "" {
+		acpProcessMgr.CleanupOrphanedProcesses()
+	}
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
 	// Set workspace config provider so process manager can resolve auxiliary config.
 	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
@@ -303,7 +321,25 @@ func NewServer(config Config) (*Server, error) {
 	// The GC periodically checks for sessions with no observers, no active prompts,
 	// and no pending work, and stops shared ACP processes that have no active sessions.
 	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
-		acpProcessMgr.StartGC(GCConfig{}, func() map[string][]SessionInfo {
+		gcConfig := GCConfig{}
+		// Apply periodic suspend threshold from settings if configured.
+		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+			if d, enabled := config.MittoConfig.Session.ParsePeriodicSuspendTimeout(); enabled {
+				gcConfig.PeriodicSuspendThreshold = d
+			} else {
+				// Explicitly disabled — set to 0 so StartGC doesn't apply default.
+				// We need to bypass StartGC's "apply default for <= 0" logic.
+				gcConfig.PeriodicSuspendThreshold = -1
+			}
+		}
+		// Apply memory recycle threshold from settings if configured (opt-in).
+		// 0/disabled needs no action since the GCConfig default is 0 = disabled.
+		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+			if bytes, enabled := config.MittoConfig.Session.ParseMemoryRecycleThreshold(); enabled {
+				gcConfig.MemoryRecycleThreshold = bytes
+			}
+		}
+		acpProcessMgr.StartGC(gcConfig, func() map[string][]SessionInfo {
 			return sessionMgr.GetSessionInfoByWorkspace()
 		}, func(sessionID string) {
 			sessionMgr.CloseIdleSession(sessionID)
@@ -501,10 +537,25 @@ func NewServer(config Config) (*Server, error) {
 		acpProcessManager:    acpProcessMgr,
 		auxiliaryManager:     auxiliaryManager,
 		negativeSessionCache: NewNegativeSessionCache(),
+		recentStartFails:     make(map[string]time.Time),
+		beads:                beads.NewClient(),
 	}
 
 	// Set events manager in session manager for broadcasting
 	sessionMgr.SetEventsManager(eventsManager)
+
+	// Surface a toast when the GC's memory-recycle tier (Tier 4) restarts a
+	// memory-bloated idle agent process. Resolve a friendly workspace name here
+	// (the GC only knows the workspace UUID).
+	acpProcessMgr.onMemoryRecycled = func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
+	}
 
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
@@ -530,7 +581,16 @@ func NewServer(config Config) (*Server, error) {
 		} else {
 			s.mcpServer = mcpSrv
 			if err := mcpSrv.Start(context.Background()); err != nil {
-				logger.Warn("Failed to start MCP server", "error", err)
+				// A common cause is another Mitto instance already listening on the
+				// configured MCP port (default 5757). Surface that hypothesis in the
+				// log message so users / ops can quickly diagnose port-collision
+				// situations.
+				msg := "Failed to start MCP server"
+				errStr := err.Error()
+				if strings.Contains(errStr, "address already in use") || strings.Contains(errStr, "bind:") {
+					msg = "Failed to start MCP server — port already in use (another Mitto instance may be running). Mitto will continue without MCP; session-scoped tools, prompts, and stdio proxies will be unavailable until this is resolved."
+				}
+				logger.Warn(msg, "error", err, "host", mcpHost, "port", mcpPort)
 			} else {
 				logger.Info("MCP server started", "port", mcpSrv.Port())
 				// Set MCP URL on process manager so auxiliary processor sessions
@@ -563,6 +623,26 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastSessionArchived(sessionID, true)
 	})
 
+	// Configure startup delay for periodic runner to avoid thundering herd.
+	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
+	startupPeriodicDelay := configPkg.DefaultStartupPeriodicDelay
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		startupPeriodicDelay = config.MittoConfig.Session.GetStartupPeriodicDelay()
+	}
+	if startupPeriodicDelay > 0 {
+		s.periodicRunner.SetStartupDelay(startupPeriodicDelay)
+	}
+
+	// Configure stagger delay between consecutive periodic session resumes.
+	// Uses the same startup_stagger_ms config as the queue's ProcessPendingQueues.
+	staggerMs := configPkg.DefaultStartupStaggerMs
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		staggerMs = config.MittoConfig.Session.GetStartupStaggerMs()
+	}
+	if staggerMs > 0 {
+		s.periodicRunner.SetResumeStagger(time.Duration(staggerMs) * time.Millisecond)
+	}
+
 	// Initialize callback index and rate limiter
 	s.callbackIndex = NewCallbackIndex()
 	s.callbackRateLimiter = NewCallbackRateLimiter()
@@ -585,10 +665,15 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
-	// Set prompt resolver for periodic runner — resolves prompt names to text at execution time
-	s.periodicRunner.SetPromptResolver(func(promptName string, workingDir string) (string, error) {
+	// Set prompt resolver for periodic runner and session manager — resolves prompt names to text at execution time.
+	// Both use the same resolver: PeriodicRunner for scheduled prompts, SessionManager for interactive prompt-by-name.
+	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
-	})
+	}
+	s.periodicRunner.SetPromptResolver(promptResolverFunc)
+	if s.sessionManager != nil {
+		s.sessionManager.SetPromptResolver(promptResolverFunc)
+	}
 
 	s.periodicRunner.Start()
 
@@ -638,6 +723,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.handleWorkspaceProcessorsToggleEnabled)
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.handleWorkspaceMCPTools)
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.handleWorkspaceMCPInstall)
+	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.handleWorkspaceMCPRemove)
 	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
@@ -645,10 +731,23 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.handleScanAgents)
 	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.handleConfirmAgents)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
+	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.handleRunnerDefaults)
 	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
+	mux.HandleFunc(apiPrefix+"/api/beads/list", s.handleBeadsList)
+	mux.HandleFunc(apiPrefix+"/api/beads/show", s.handleBeadsShow)
+	mux.HandleFunc(apiPrefix+"/api/beads/create", s.handleBeadsCreate)
+	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.handleBeadsCleanup)
+	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.handleBeadsDelete)
+	mux.HandleFunc(apiPrefix+"/api/beads/status", s.handleBeadsStatus)
+	mux.HandleFunc(apiPrefix+"/api/beads/update", s.handleBeadsUpdate)
+	mux.HandleFunc(apiPrefix+"/api/beads/comment", s.handleBeadsComment)
+	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.handleBeadsDep)
+	mux.HandleFunc(apiPrefix+"/api/beads/config", s.handleBeadsConfig)
+	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.handleBeadsUpstream)
+	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.handleBeadsSync)
 	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
 
 	// File save endpoints - restricted to localhost only (used by native macOS app)
@@ -792,12 +891,15 @@ func (s *Server) Handler() http.Handler {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.shutdown = true
+	// Use CompareAndSwap as a guard: return early if already shut down.
+	// This also sets the flag atomically before we start any blocking work,
+	// so IsShutdown() (called by in-flight handlers) does not need s.mu.
+	if !s.shutdown.CompareAndSwap(false, true) {
+		return nil
+	}
 
-	// Stop external listener if running
-	s.stopExternalListenerLocked()
+	// Stop external listener if running (uses its own externalMu internally)
+	s.StopExternalListener()
 
 	// Close all background sessions
 	if s.sessionManager != nil {
@@ -862,14 +964,22 @@ func (s *Server) Shutdown() error {
 		s.promptsWatcher.Close()
 	}
 
-	return s.httpServer.Shutdown(context.Background())
+	// Shut down the HTTP server with a timeout so we don't hang indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("HTTP server shutdown timed out or errored", "error", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // IsShutdown returns whether the server has been shut down.
 func (s *Server) IsShutdown() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.shutdown
+	return s.shutdown.Load()
 }
 
 // Logger returns the server's logger.
@@ -1022,11 +1132,15 @@ func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
 }
 
 // BroadcastSessionArchived notifies all connected clients that a session's archived state changed.
-func (s *Server) BroadcastSessionArchived(sessionID string, archived bool) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+func (s *Server) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+	data := map[string]interface{}{
 		"session_id": sessionID,
 		"archived":   archived,
-	})
+	}
+	if len(reason) > 0 && reason[0] != "" {
+		data["archive_reason"] = string(reason[0])
+	}
+	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, data)
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session archived", "session_id", sessionID, "archived", archived,
@@ -1079,6 +1193,8 @@ func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.Pe
 		data["periodic_configured"] = true
 		// periodic_enabled: true means periodic runs are active (locked state)
 		data["periodic_enabled"] = periodic.Enabled
+		// fresh_context: true means each scheduled run starts with a clean agent context
+		data["fresh_context"] = periodic.FreshContext
 		data["frequency"] = map[string]interface{}{
 			"value": periodic.Frequency.Value,
 			"unit":  periodic.Frequency.Unit,
@@ -1145,13 +1261,43 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 	}
 }
 
+// acpStartFailWindow is the minimum interval between duplicate BroadcastACPStartFailed
+// calls for the same session. Concurrent goroutines that coalesce on the same resume
+// failure all receive the shared error and each tries to broadcast; only the first
+// broadcast per session within this window is emitted.
+const acpStartFailWindow = 5 * time.Second
+
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
 // If err is an *ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
+// Duplicate calls for the same session within acpStartFailWindow are suppressed so that
+// coalesced resume waiters do not each emit an error toast.
 func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err error, command string) {
 	if s.eventsManager == nil {
 		return
 	}
+
+	// Suppress duplicate broadcasts emitted by coalesced follower goroutines.
+	now := time.Now()
+	s.recentStartFailsMu.Lock()
+	if s.recentStartFails == nil {
+		s.recentStartFails = make(map[string]time.Time)
+	}
+	if last, ok := s.recentStartFails[sessionID]; ok && now.Sub(last) < acpStartFailWindow {
+		s.recentStartFailsMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("Suppressed duplicate ACP start-failed broadcast", "session_id", sessionID)
+		}
+		return
+	}
+	// Evict stale entries to keep the map bounded, then record this broadcast.
+	for id, t := range s.recentStartFails {
+		if now.Sub(t) >= acpStartFailWindow {
+			delete(s.recentStartFails, id)
+		}
+	}
+	s.recentStartFails[sessionID] = now
+	s.recentStartFailsMu.Unlock()
 
 	data := map[string]interface{}{
 		"session_id":   sessionID,
@@ -1231,6 +1377,29 @@ func (s *Server) BroadcastHookRestarted(attempt int) {
 	if s.logger != nil {
 		s.logger.Info("Broadcast hook restarted",
 			"attempt", attempt,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastMemoryRecycled notifies all connected clients that the GC's memory-recycle
+// tier (Tier 4) stopped a memory-bloated idle agent process to reclaim memory. This
+// lets the frontend show a toast. Affected conversations resume transparently on next focus.
+func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir string, rssBytes, threshold uint64, sessionCount int) {
+	s.eventsManager.Broadcast(WSMsgTypeMemoryRecycled, map[string]interface{}{
+		"workspace_uuid":  workspaceUUID,
+		"workspace_name":  workspaceName,
+		"working_dir":     workingDir,
+		"rss_bytes":       rssBytes,
+		"threshold_bytes": threshold,
+		"session_count":   sessionCount,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast memory recycled",
+			"workspace_uuid", workspaceUUID,
+			"rss_bytes", rssBytes,
+			"threshold_bytes", threshold,
+			"session_count", sessionCount,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -1350,8 +1519,8 @@ func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServ
 }
 
 // BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
-func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archived bool) {
-	a.sm.BroadcastSessionArchived(sessionID, archived)
+func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+	a.sm.BroadcastSessionArchived(sessionID, archived, reason...)
 }
 
 // BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
@@ -1407,6 +1576,11 @@ func (a *sessionManagerAdapter) GetWorkspaceRCLastModified(workingDir string) ti
 // GetWorkspace returns the first workspace matching the working directory.
 func (a *sessionManagerAdapter) GetWorkspace(workingDir string) *configPkg.WorkspaceSettings {
 	return a.sm.GetWorkspace(workingDir)
+}
+
+// InvalidateWorkspaceRC clears the cached .mittorc for a workspace dir.
+func (a *sessionManagerAdapter) InvalidateWorkspaceRC(workingDir string) {
+	a.sm.InvalidateWorkspaceRC(workingDir)
 }
 
 // =============================================================================

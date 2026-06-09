@@ -1,5 +1,7 @@
 ---
+icon: "save"
 name: "Commit changes"
+menus: prompts
 description: "Stage and commit changes with descriptive messages"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"

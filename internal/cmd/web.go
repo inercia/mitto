@@ -21,6 +21,7 @@ var (
 	webStaticDir    string
 	webAccessLog    string
 	workspacesFile  string
+	foldersFile     string
 )
 
 // webCmd represents the web command
@@ -40,7 +41,8 @@ Example:
   mitto web --port 0                     # Use random port (auto-selected)
   mitto web --port-external 8443         # Set external access port
   mitto web --static-dir ./web/static    # Serve from filesystem (for development)
-  mitto web --workspaces config/workspaces.yaml  # Load workspaces from file`,
+  mitto web --workspaces config/workspaces.yaml  # Load workspaces from file
+  mitto web --folders config/folders.yaml        # Overlay folder settings from file`,
 	RunE: runWeb,
 }
 
@@ -53,6 +55,7 @@ func init() {
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
 	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
 	webCmd.Flags().StringVar(&workspacesFile, "workspaces", "", "Path to workspaces file (JSON or YAML)")
+	webCmd.Flags().StringVar(&foldersFile, "folders", "", "Path to folders file (JSON or YAML); overlays folder-level settings onto loaded workspaces (changes not persisted)")
 }
 
 func runWeb(cmd *cobra.Command, args []string) error {
@@ -82,9 +85,8 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		for i, ws := range cliWorkspaces {
 			webWorkspaces[i] = config.WorkspaceSettings{
 				ACPServer:  ws.ServerName,
-				ACPCommand: ws.Server.Command,
-				ACPEnv:     ws.Server.Env,
 				WorkingDir: ws.Dir,
+				// ACP command/cwd/env are resolved from global config at runtime
 			}
 			// Ensure workspace has a UUID for auxiliary sessions
 			webWorkspaces[i].EnsureUUID()
@@ -112,6 +114,18 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		// If no saved workspaces, webWorkspaces will be empty
 		// The frontend will show the Settings dialog
 		workspaceSource = "workspaces.json (changes will be saved)"
+	}
+
+	// --folders overlays folder-level settings (name/color/code/auto_children/beads)
+	// onto whatever workspaces were loaded, regardless of source. Like --workspaces,
+	// these changes are not persisted.
+	if foldersFile != "" {
+		folders, err := config.LoadFoldersFromFile(foldersFile)
+		if err != nil {
+			return fmt.Errorf("failed to load folders from file: %w", err)
+		}
+		config.ApplyFolderDefaults(webWorkspaces, folders)
+		workspaceSource += fmt.Sprintf("; folders overlay %s", foldersFile)
 	}
 
 	// Determine local port: CLI flag > config > default (8080)

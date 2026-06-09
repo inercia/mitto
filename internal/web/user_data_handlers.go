@@ -83,9 +83,10 @@ func (s *Server) handlePutSessionUserData(w http.ResponseWriter, r *http.Request
 		Attributes: req.Attributes,
 	}
 
-	// Validate against workspace schema if available
+	// Validate against workspace schema if available. Relative filename paths are
+	// resolved against the conversation's working directory.
 	schema := s.sessionManager.GetUserDataSchema(meta.WorkingDir)
-	if err := userData.Validate(schema); err != nil {
+	if err := userData.Validate(schema, meta.WorkingDir); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}

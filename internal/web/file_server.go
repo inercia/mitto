@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -36,23 +37,36 @@ func NewFileServer(sessionManager *SessionManager, logger *slog.Logger) *FileSer
 // ServeHTTP handles file serving requests.
 // URL format: /api/files?ws={workspace_uuid}&path={relative_path}
 func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Get path from query parameters
 	relativePath := r.URL.Query().Get("path")
 	if relativePath == "" {
 		http.Error(w, "Missing path parameter", http.StatusBadRequest)
 		return
 	}
 
+	workspacePath, ok := fs.resolveWorkspace(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		fs.serveFile(w, r, workspacePath, relativePath)
+	case http.MethodPut:
+		fs.writeFile(w, r, workspacePath, relativePath)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// resolveWorkspace extracts and validates the workspace path from the request.
+// Returns ("", false) if resolution fails (error response already written).
+func (fs *FileServer) resolveWorkspace(w http.ResponseWriter, r *http.Request) (workspacePath string, ok bool) {
+	relativePath := r.URL.Query().Get("path")
+
 	// Get workspace - support both UUID (ws) and legacy path (workspace) parameters
 	wsUUID := r.URL.Query().Get("ws")
 	legacyWorkspace := r.URL.Query().Get("workspace")
 
-	var workspacePath string
 	if wsUUID != "" {
 		// New format: resolve UUID to workspace path
 		var found bool
@@ -60,27 +74,26 @@ func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			fs.logSecurityEvent("invalid_workspace_uuid", wsUUID, relativePath, r)
 			http.Error(w, "Invalid workspace", http.StatusForbidden)
-			return
+			return "", false
 		}
+		return workspacePath, true
 	} else if legacyWorkspace != "" {
-		// Legacy format: use workspace path directly (will be validated in serveFile)
-		workspacePath = legacyWorkspace
-	} else {
-		http.Error(w, "Missing ws or workspace parameter", http.StatusBadRequest)
-		return
+		// Legacy format: use workspace path directly (will be validated later)
+		return legacyWorkspace, true
 	}
 
-	// Validate and serve the file
-	fs.serveFile(w, r, workspacePath, relativePath)
+	http.Error(w, "Missing ws or workspace parameter", http.StatusBadRequest)
+	return "", false
 }
 
-// serveFile validates the request and serves the file if allowed.
-func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspace, relativePath string) {
+// validateFilePath performs security checks and returns the resolved real path and file info.
+// Returns empty string if validation fails (error response already written to w).
+func (fs *FileServer) validateFilePath(w http.ResponseWriter, r *http.Request, workspace, relativePath string) (realPath string, info os.FileInfo, ok bool) {
 	// Security check 1: Validate workspace is registered
 	if !fs.isValidWorkspace(workspace) {
 		fs.logSecurityEvent("invalid_workspace", workspace, relativePath, r)
 		http.Error(w, "Invalid workspace", http.StatusForbidden)
-		return
+		return "", nil, false
 	}
 
 	// Security check 2: Clean and validate the relative path
@@ -88,7 +101,7 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
 		fs.logSecurityEvent("path_traversal_attempt", workspace, relativePath, r)
 		http.Error(w, "Invalid path", http.StatusForbidden)
-		return
+		return "", nil, false
 	}
 
 	// Construct the full path
@@ -103,7 +116,7 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 			fs.logSecurityEvent("symlink_resolution_failed", workspace, relativePath, r)
 			http.Error(w, "Invalid path", http.StatusForbidden)
 		}
-		return
+		return "", nil, false
 	}
 
 	// Resolve workspace symlinks too for consistent comparison
@@ -111,44 +124,54 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 	if err != nil {
 		fs.logSecurityEvent("workspace_resolution_failed", workspace, relativePath, r)
 		http.Error(w, "Invalid workspace", http.StatusForbidden)
-		return
+		return "", nil, false
 	}
 
 	// Verify the resolved path is within the resolved workspace
 	if !strings.HasPrefix(realPath, realWorkspace+string(filepath.Separator)) && realPath != realWorkspace {
 		fs.logSecurityEvent("symlink_escape_attempt", workspace, relativePath, r)
 		http.Error(w, "Access denied", http.StatusForbidden)
-		return
+		return "", nil, false
 	}
 
 	// Security check 4: Get file info and validate
-	info, err := os.Stat(realPath)
+	info, err = os.Stat(realPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "File not found", http.StatusNotFound)
 		} else {
 			http.Error(w, "Error accessing file", http.StatusInternalServerError)
 		}
-		return
+		return "", nil, false
 	}
 
 	// Security check 5: Don't serve directories
 	if info.IsDir() {
 		http.Error(w, "Cannot serve directories", http.StatusForbidden)
-		return
+		return "", nil, false
 	}
 
 	// Security check 6: Don't serve executable files
 	if info.Mode()&0111 != 0 {
 		fs.logSecurityEvent("executable_file_blocked", workspace, relativePath, r)
 		http.Error(w, "Cannot serve executable files", http.StatusForbidden)
-		return
+		return "", nil, false
 	}
 
 	// Security check 7: Don't serve sensitive files
 	if isSensitiveFile(realPath) {
 		fs.logSecurityEvent("sensitive_file_blocked", workspace, relativePath, r)
 		http.Error(w, "Access denied", http.StatusForbidden)
+		return "", nil, false
+	}
+
+	return realPath, info, true
+}
+
+// serveFile validates the request and serves the file if allowed.
+func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspace, relativePath string) {
+	realPath, info, ok := fs.validateFilePath(w, r, workspace, relativePath)
+	if !ok {
 		return
 	}
 
@@ -163,12 +186,13 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 		wsUUID := r.URL.Query().Get("ws")
 		// Derive API prefix from the request path (e.g., "/mitto/api/files" → "/mitto")
 		apiPrefix := strings.TrimSuffix(r.URL.Path, "/api/files")
-		fs.serveRenderedMarkdown(w, realPath, relativePath, wsUUID, apiPrefix)
+		fs.serveRenderedMarkdown(w, realPath, relativePath, wsUUID, apiPrefix, info.ModTime())
 		return
 	}
 
 	// Check for diff parameter - return git diff output for the file
 	if r.URL.Query().Get("diff") == "true" {
+		cleanPath := filepath.Clean(relativePath)
 		fs.serveGitDiff(w, r, workspace, cleanPath)
 		return
 	}
@@ -198,6 +222,10 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 
+	// Compute ETag from file size + mtime (like nginx/Apache — avoids reading entire file)
+	etag := fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano())
+	w.Header().Set("ETag", etag)
+
 	// For HTML files, use a more permissive CSP to allow the content to render properly
 	// with its own styles and scripts. For other files, use strict CSP.
 	if ext == ".html" || ext == ".htm" {
@@ -209,6 +237,94 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 
 	// Serve the file
 	http.ServeContent(w, r, filepath.Base(realPath), info.ModTime(), file)
+}
+
+// maxWriteFileSize is the maximum size for file write requests (1MB).
+const maxWriteFileSize = 1 << 20
+
+// writeFile handles PUT requests to write file content with optimistic concurrency.
+func (fs *FileServer) writeFile(w http.ResponseWriter, r *http.Request, workspace, relativePath string) {
+	// 1. Validate the path (reuse validateFilePath)
+	realPath, currentInfo, ok := fs.validateFilePath(w, r, workspace, relativePath)
+	if !ok {
+		return
+	}
+
+	// 2. Optimistic concurrency: require If-Match header
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "" {
+		http.Error(w, "If-Match header is required for file writes", http.StatusPreconditionRequired)
+		return
+	}
+	// Special value "*" means "force save regardless of current state" (used by "Keep Mine" conflict resolution)
+	if ifMatch != "*" {
+		currentETag := fmt.Sprintf(`"%x-%x"`, currentInfo.Size(), currentInfo.ModTime().UnixNano())
+		if ifMatch != currentETag {
+			// File changed since client loaded it
+			writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+				"error":                 "precondition_failed",
+				"message":               "File has been modified since it was loaded",
+				"current_etag":          currentETag,
+				"current_last_modified": currentInfo.ModTime().UTC().Format(http.TimeFormat),
+			})
+			return
+		}
+	}
+
+	// 3. Read request body with size limit
+	body := http.MaxBytesReader(w, r.Body, maxWriteFileSize)
+	content, err := io.ReadAll(body)
+	if err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, "File content exceeds 1MB limit", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "Error reading request body", http.StatusBadRequest)
+		}
+		return
+	}
+
+	// 4. Write atomically: temp file + rename
+	tmpPath := realPath + ".mitto-tmp"
+	if err := os.WriteFile(tmpPath, content, 0644); err != nil {
+		os.Remove(tmpPath)
+		if fs.logger != nil {
+			fs.logger.Error("Failed to write temp file", "path", tmpPath, "error", err)
+		}
+		http.Error(w, "Error writing file", http.StatusInternalServerError)
+		return
+	}
+
+	// Sync to disk before rename
+	if f, err := os.Open(tmpPath); err == nil {
+		_ = f.Sync()
+		f.Close()
+	}
+
+	if err := os.Rename(tmpPath, realPath); err != nil {
+		os.Remove(tmpPath)
+		if fs.logger != nil {
+			fs.logger.Error("Failed to rename temp file", "path", realPath, "error", err)
+		}
+		http.Error(w, "Error writing file", http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Stat the new file and return updated metadata
+	newInfo, err := os.Stat(realPath)
+	if err != nil {
+		http.Error(w, "File written but stat failed", http.StatusInternalServerError)
+		return
+	}
+
+	newETag := fmt.Sprintf(`"%x-%x"`, newInfo.Size(), newInfo.ModTime().UnixNano())
+	w.Header().Set("ETag", newETag)
+	w.Header().Set("Last-Modified", newInfo.ModTime().UTC().Format(http.TimeFormat))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"size":          newInfo.Size(),
+		"etag":          newETag,
+		"last_modified": newInfo.ModTime().UTC().Format(http.TimeFormat),
+	})
 }
 
 // isValidWorkspace checks if the given path is a registered workspace or
@@ -317,60 +433,13 @@ func (fs *FileServer) ServeFileContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get workspace - support both UUID (ws) and legacy path (workspace) parameters
-	wsUUID := r.URL.Query().Get("ws")
-	legacyWorkspace := r.URL.Query().Get("workspace")
-
-	var workspace string
-	if wsUUID != "" {
-		// New format: resolve UUID to workspace path
-		var found bool
-		workspace, found = fs.sessionManager.ResolveWorkspaceIdentifier(wsUUID)
-		if !found {
-			http.Error(w, "Invalid workspace", http.StatusForbidden)
-			return
-		}
-	} else if legacyWorkspace != "" {
-		// Legacy format: use workspace path directly (will be validated below)
-		workspace = legacyWorkspace
-	} else {
-		http.Error(w, "Missing ws or workspace parameter", http.StatusBadRequest)
+	workspace, ok := fs.resolveWorkspace(w, r)
+	if !ok {
 		return
 	}
 
-	// Reuse the same security checks
-	if !fs.isValidWorkspace(workspace) {
-		http.Error(w, "Invalid workspace", http.StatusForbidden)
-		return
-	}
-
-	cleanPath := filepath.Clean(relativePath)
-	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
-		http.Error(w, "Invalid path", http.StatusForbidden)
-		return
-	}
-
-	fullPath := filepath.Join(workspace, cleanPath)
-	realPath, err := filepath.EvalSymlinks(fullPath)
-	if err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
-
-	realWorkspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		http.Error(w, "Invalid workspace", http.StatusForbidden)
-		return
-	}
-
-	if !strings.HasPrefix(realPath, realWorkspace+string(filepath.Separator)) && realPath != realWorkspace {
-		http.Error(w, "Access denied", http.StatusForbidden)
-		return
-	}
-
-	info, err := os.Stat(realPath)
-	if err != nil || info.IsDir() || info.Mode()&0111 != 0 || isSensitiveFile(realPath) {
-		http.Error(w, "Access denied", http.StatusForbidden)
+	realPath, _, ok := fs.validateFilePath(w, r, workspace, relativePath)
+	if !ok {
 		return
 	}
 
@@ -419,7 +488,7 @@ const maxMarkdownRenderSize = 10 * 1024 * 1024
 // When wsUUID is non-empty, relative image src paths are rewritten to use the
 // /api/files endpoint so they resolve correctly regardless of the page URL.
 // apiPrefix is the URL prefix (e.g., "/mitto") prepended to rewritten image URLs.
-func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath, wsUUID, apiPrefix string) {
+func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath, wsUUID, apiPrefix string, modTime time.Time) {
 	// Read markdown content
 	content, err := os.ReadFile(realPath)
 	if err != nil {
@@ -459,6 +528,7 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	w.Header().Set("Last-Modified", modTime.UTC().Format(http.TimeFormat))
 
 	// Wrap in a full HTML document so it renders correctly when viewed directly.
 	// The viewer.html extracts <article> content when it detects a full HTML doc.

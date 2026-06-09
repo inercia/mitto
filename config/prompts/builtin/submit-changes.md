@@ -1,5 +1,7 @@
 ---
+icon: "globe"
 name: "Submit changes"
+menus: prompts
 description: "Submit changes"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"

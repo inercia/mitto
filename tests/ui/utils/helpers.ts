@@ -164,12 +164,19 @@ export async function navigateToSession(
 }
 
 /**
- * Wait for the Mitto app to be fully loaded and ready
+ * Wait for the Mitto app to be fully loaded and ready.
+ * Accepts two ready states:
+ *   1. The chat textarea is visible (regular active session).
+ *   2. The "Conversations" sidebar heading is visible (periodic session selected,
+ *      or no session — both hide the textarea but still render the sidebar).
+ * Using an OR condition prevents waitForAppReady from timing out when a previous
+ * test has left a periodic session as the active session.
+ * `.first()` avoids a Playwright strict-mode violation when both elements exist.
  */
 export async function waitForAppReady(page: Page): Promise<void> {
-  // Wait for chat input to be visible (may be disabled if no session)
-  // This is a more reliable indicator that the app is ready than checking for spinner
-  await expect(page.locator(selectors.chatInput)).toBeVisible({
+  await expect(
+    page.locator(selectors.chatInput).or(page.locator(selectors.sessionsHeader)).first()
+  ).toBeVisible({
     timeout: timeouts.appReady,
   });
 }
@@ -185,16 +192,38 @@ export async function waitForActiveSession(page: Page): Promise<void> {
 }
 
 /**
- * Ensure there's an active session by creating one if needed.
+ * Ensure there's an active REGULAR session by creating one if needed.
  * Returns the session ID.
+ *
+ * This also handles the case where the currently active session is a
+ * PERIODIC session: periodic sessions hide the textarea entirely (they show a
+ * different prompt-configuration UI). `locator.isDisabled()` returns false for
+ * a non-existent element, so we must also check the element count to detect
+ * the absent-textarea case.
  */
 export async function ensureActiveSession(page: Page): Promise<string> {
   const textarea = page.locator(selectors.chatInput);
 
-  // Check if textarea is disabled (no active session)
-  const isDisabled = await textarea.isDisabled();
-  if (isDisabled) {
-    // Create a new session
+  // Determine whether we need a new session:
+  //   • textarea absent → periodic session is active (no regular input area)
+  //   • textarea disabled → session exists but ACP is not ready yet
+  const textareaCount = await textarea.count();
+  const needsNewSession = textareaCount === 0 || (await textarea.isDisabled());
+
+  if (needsNewSession) {
+    // Ensure we are on the Conversations tab before creating a new session.
+    // If the Periodic tab is active, clicking "New Conversation" would create
+    // a periodic session (which also hides the textarea), perpetuating the
+    // problem.  Switching to Conversations first guarantees a regular session.
+    const conversationsTab = page.getByRole("tab", { name: "Conversations" });
+    if (await conversationsTab.isVisible()) {
+      const isSelected = await conversationsTab.getAttribute("aria-selected");
+      if (isSelected !== "true") {
+        await conversationsTab.click();
+      }
+    }
+
+    // Create a new regular session
     const newButton = page.locator(selectors.newSessionButton);
     await expect(newButton).toBeVisible({ timeout: timeouts.shortAction });
     await newButton.click();
@@ -271,17 +300,32 @@ export function uniqueMessage(prefix: string = "Test"): string {
 }
 
 /**
- * Navigate to the app and wait for it to be ready
+ * Navigate to the app and wait for it to be ready.
+ * Resets the conversation filter tab to "Conversations" before loading so the
+ * app always starts on the expected tab regardless of what a previous test left.
  */
 export async function navigateAndWait(page: Page): Promise<void> {
+  // Clear the filter tab key BEFORE the page loads so the React app reads the
+  // default (Conversations) on initialization. Without this a test such as
+  // periodic-prompt-pill.spec.ts can leave the Periodic tab selected in
+  // localStorage, causing subsequent tests to see the wrong tab.
+  await page.addInitScript(() => {
+    localStorage.removeItem("mitto_conversation_filter_tab");
+  });
   await page.goto("/");
   await waitForAppReady(page);
 }
 
 /**
- * Navigate to the app, wait for it to be ready, and ensure there's an active session
+ * Navigate to the app, wait for it to be ready, and ensure there's an active session.
+ * Resets the conversation filter tab to "Conversations" before loading so the
+ * app always starts on the expected tab regardless of what a previous test left.
  */
 export async function navigateAndEnsureSession(page: Page): Promise<void> {
+  // Clear the filter tab key BEFORE the page loads (same reason as navigateAndWait).
+  await page.addInitScript(() => {
+    localStorage.removeItem("mitto_conversation_filter_tab");
+  });
   await page.goto("/");
   await waitForAppReady(page);
   await ensureActiveSession(page);

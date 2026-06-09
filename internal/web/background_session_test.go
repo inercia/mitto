@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -123,6 +124,123 @@ func TestResumeBackgroundSession_EmptyACPCommand(t *testing.T) {
 	}
 }
 
+// TestLookupACPServerConstraints is a regression test for the bug where
+// ResumeBackgroundSession did not pass MittoConfig in BackgroundSessionConfig,
+// causing bs.acpServerConstraints to stay empty on resume and the conversation
+// to ignore the configured auto-selection criteria (e.g. model pattern).
+//
+// The fix wires the lookup through lookupACPServerConstraints; this test pins
+// down the helper's behavior so both the new-session and resume call sites
+// produce a populated constraint map when MittoConfig is provided, and an empty
+// one (sanity check of the regression) when MittoConfig is nil.
+func TestLookupACPServerConstraints(t *testing.T) {
+	modelConstraint := &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}
+	cfg := &config.Config{
+		ACPServers: []config.ACPServer{
+			{
+				Name: "claude-code",
+				Constraints: map[string]*config.ACPServerConstraint{
+					"model": modelConstraint,
+				},
+			},
+			{Name: "other-server"},
+		},
+	}
+
+	t.Run("nil config returns nil (regression case)", func(t *testing.T) {
+		got := lookupACPServerConstraints(nil, "claude-code")
+		if got != nil {
+			t.Errorf("expected nil constraints when cfg is nil, got %v", got)
+		}
+	})
+
+	t.Run("matching server returns its constraints", func(t *testing.T) {
+		got := lookupACPServerConstraints(cfg, "claude-code")
+		if got == nil {
+			t.Fatal("expected non-nil constraints for matching server")
+		}
+		c, ok := got["model"]
+		if !ok {
+			t.Fatalf("expected 'model' constraint, got keys: %v", got)
+		}
+		if c.MatchMode != "lookAlike" || c.Pattern != "Opus 4.8" {
+			t.Errorf("unexpected constraint: %+v", c)
+		}
+		if c != modelConstraint {
+			t.Errorf("expected same constraint pointer, got different one")
+		}
+	})
+
+	t.Run("server with no constraints returns nil", func(t *testing.T) {
+		got := lookupACPServerConstraints(cfg, "other-server")
+		if got != nil {
+			t.Errorf("expected nil constraints for server without any, got %v", got)
+		}
+	})
+
+	t.Run("unknown server returns nil", func(t *testing.T) {
+		got := lookupACPServerConstraints(cfg, "does-not-exist")
+		if got != nil {
+			t.Errorf("expected nil constraints for unknown server, got %v", got)
+		}
+	})
+}
+
+// TestBackgroundSessionConfig_PopulatesConstraintsFromMittoConfig verifies the
+// end-to-end wiring through the constructor field: given a MittoConfig with a
+// matching ACPServer entry, the constraint-lookup logic invoked by both
+// constructors must populate bs.acpServerConstraints. This pins down the
+// behavior expected at the ResumeBackgroundSession call site in
+// session_manager.go, which previously omitted MittoConfig.
+func TestBackgroundSessionConfig_PopulatesConstraintsFromMittoConfig(t *testing.T) {
+	modelConstraint := &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}
+	mittoCfg := &config.Config{
+		ACPServers: []config.ACPServer{
+			{
+				Name: "claude-code",
+				Constraints: map[string]*config.ACPServerConstraint{
+					"model": modelConstraint,
+				},
+			},
+		},
+	}
+
+	// Mirror what the constructors do (NewBackgroundSession ~line 360 and
+	// ResumeBackgroundSession ~line 552): assign acpServerConstraints from the
+	// helper given cfg.MittoConfig and cfg.ACPServer. The bug was that the
+	// resume call site in session_manager.go never set MittoConfig, so this
+	// helper received nil and the field stayed empty.
+	t.Run("with MittoConfig set", func(t *testing.T) {
+		cfg := BackgroundSessionConfig{
+			ACPServer:   "claude-code",
+			MittoConfig: mittoCfg,
+		}
+		bs := &BackgroundSession{}
+		bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
+
+		got, ok := bs.acpServerConstraints["model"]
+		if !ok {
+			t.Fatalf("expected 'model' constraint to be loaded, got: %v", bs.acpServerConstraints)
+		}
+		if got.Pattern != "Opus 4.8" {
+			t.Errorf("expected Pattern=%q, got %q", "Opus 4.8", got.Pattern)
+		}
+	})
+
+	t.Run("with MittoConfig nil (regression scenario)", func(t *testing.T) {
+		cfg := BackgroundSessionConfig{
+			ACPServer:   "claude-code",
+			MittoConfig: nil, // <- the buggy state on resume before the fix
+		}
+		bs := &BackgroundSession{}
+		bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
+
+		if len(bs.acpServerConstraints) != 0 {
+			t.Errorf("expected empty constraints when MittoConfig is nil, got %v", bs.acpServerConstraints)
+		}
+	})
+}
+
 func TestBackgroundSession_GetSessionID(t *testing.T) {
 	bs := &BackgroundSession{
 		persistedID: "test-session-id",
@@ -154,6 +272,23 @@ func TestBackgroundSession_IsClosed(t *testing.T) {
 
 	if !bs.IsClosed() {
 		t.Error("BackgroundSession should be closed after setting closed flag")
+	}
+}
+
+// TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
+// in-memory flag and IsSelfDestructRequested reflects it. The flag drives the
+// deferred deletion triggered at the end of a turn in PromptWithMeta.
+func TestBackgroundSession_SelfDestruct(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	if bs.IsSelfDestructRequested() {
+		t.Error("New BackgroundSession should not have self-destruct requested")
+	}
+
+	bs.RequestSelfDestruct()
+
+	if !bs.IsSelfDestructRequested() {
+		t.Error("BackgroundSession should have self-destruct requested after RequestSelfDestruct")
 	}
 }
 
@@ -294,7 +429,7 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
-func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string) {
+func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
 	// No-op for tests
 }
 
@@ -770,7 +905,7 @@ func TestBackgroundSession_ProcessNextQueuedMessage_Disabled(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-disabled-queue")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -822,7 +957,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_IsPrompting(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-prompting")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -871,7 +1006,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_IsClosed(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-closed")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -918,7 +1053,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_DelayNotElapsed(t *testing.T)
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-delay")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -971,7 +1106,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_DelayElapsed(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-delay-elapsed")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1034,7 +1169,7 @@ func TestBackgroundSession_TryProcessQueuedMessage_ZeroDelayNoLastResponse(t *te
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-zero-delay")
-	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	_, err = queue.Add("Test message", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1126,7 +1261,7 @@ func TestQueueTitleWorker_MessageRemovedBeforeTitleGenerated(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-title-race")
-	msg, err := queue.Add("Test message for title", nil, nil, "client1", 0)
+	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1166,7 +1301,7 @@ func TestQueueTitleWorker_UpdateTitleSuccess(t *testing.T) {
 
 	// Add a message to the queue
 	queue := store.Queue("test-session-title-success")
-	msg, err := queue.Add("Test message for title", nil, nil, "client1", 0)
+	msg, err := queue.Add("Test message for title", nil, nil, "client1", nil, 0, nil, "")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
@@ -1843,7 +1978,7 @@ func (o *trackingObserver) OnPlan(seq int64, entries []PlanEntry)             {}
 func (o *trackingObserver) OnFileWrite(seq int64, path string, size int)      {}
 func (o *trackingObserver) OnFileRead(seq int64, path string, size int)       {}
 func (o *trackingObserver) OnPromptComplete(eventCount int)                   {}
-func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string) {
+func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
 }
 func (o *trackingObserver) OnError(message string)                                   {}
 func (o *trackingObserver) OnQueueUpdated(queueLength int, action, messageID string) {}
@@ -2674,6 +2809,43 @@ func TestFormatACPError(t *testing.T) {
 			name:     "maximum context length",
 			errMsg:   "This model's maximum context length is 200000 tokens",
 			contains: "too large",
+		},
+		// ---
+		// --- HTTP status extraction from -32603 errors ---
+		{
+			name:     "HTTP 408 request timeout",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 408 Request Timeout","data":{"httpStatus":408}}`,
+			contains: "timed out",
+		},
+		{
+			name:     "HTTP 500 server error",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 500 Internal Server Error","data":{"httpStatus":500}}`,
+			contains: "server error",
+		},
+		{
+			name:     "HTTP 502 bad gateway",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 502 Bad Gateway","data":{"httpStatus":502}}`,
+			contains: "temporarily unavailable",
+		},
+		{
+			name:     "HTTP 503 service unavailable",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 503 Service Unavailable","data":{"httpStatus":503}}`,
+			contains: "temporarily unavailable",
+		},
+		{
+			name:     "HTTP 504 gateway timeout",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 504 Gateway Timeout","data":{"httpStatus":504}}`,
+			contains: "gateway timed out",
+		},
+		{
+			name:     "unknown HTTP status in -32603",
+			errMsg:   `{"code":-32603,"message":"Internal error: HTTP error: 422 Unprocessable Entity","data":{"httpStatus":422}}`,
+			contains: "HTTP 422",
+		},
+		{
+			name:     "generic internal error without HTTP status",
+			errMsg:   `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`,
+			contains: "internal error",
 		},
 		// ---
 		{
@@ -3829,5 +4001,623 @@ func TestPromptWithMeta_ClosedSession_ErrorMessage(t *testing.T) {
 	// Closed session returns a different error
 	if !strings.Contains(err.Error(), "session is closed") {
 		t.Errorf("Error message for closed session should contain 'session is closed', got: %q", err.Error())
+	}
+}
+
+// TestRestartACPProcess_SharedProcess_PreservesReference verifies that when
+// restartACPProcess fails for a shared-process session, the sharedProcess
+// reference is preserved (not nilled out). Without this, the session becomes
+// a permanent zombie where every prompt returns "still starting up".
+func TestRestartACPProcess_SharedProcess_PreservesReference(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a minimal shared process (not actually running — Restart will fail)
+	processCtx, processCancel := context.WithCancel(context.Background())
+	defer processCancel()
+	sharedProc := &SharedACPProcess{
+		ctx:       processCtx,
+		ctxCancel: processCancel,
+	}
+
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		persistedID:   "test-zombie-fix",
+		sharedProcess: sharedProc,
+		workingDir:    "/tmp/test",
+		observers:     make(map[SessionObserver]struct{}),
+	}
+
+	// restartACPProcess should fail (shared process has no real connection)
+	err := bs.restartACPProcess(RestartReasonCrashDuringStream)
+	if err == nil {
+		t.Fatal("Expected restartACPProcess to fail on a process with no connection")
+	}
+
+	// The critical assertion: sharedProcess must NOT be nil after a failed restart.
+	// If it's nil, PromptWithMeta would return "still starting up" permanently.
+	if bs.sharedProcess == nil {
+		t.Fatal("sharedProcess was nilled out after failed restart — session would become a permanent zombie")
+	}
+
+	// Verify PromptWithMeta doesn't return the "still starting up" zombie error.
+	// We can't call PromptWithMeta here because it spawns goroutines that need
+	// fully initialized fields (promptCond, etc.), but we can verify the guard
+	// condition directly: the check is (acpConn == nil && sharedProcess == nil).
+	if bs.acpConn == nil && bs.sharedProcess == nil {
+		t.Error("Session is in zombie state: acpConn==nil && sharedProcess==nil — PromptWithMeta would return 'still starting up'")
+	}
+}
+
+// TestMatchConstraintOption tests the constraint matching logic for all match modes.
+func TestMatchConstraintOption(t *testing.T) {
+	// Common set of model options for testing (ordered by version, as ACP servers typically provide)
+	modelOptions := []SessionConfigOptionValue{
+		{Value: "opus-4.5", Name: "opus-4.5"},
+		{Value: "opus-4.6", Name: "opus-4.6"},
+		{Value: "opus-4.6-500k", Name: "opus-4.6 (500K context)"},
+		{Value: "opus-4.7", Name: "opus-4.7"},
+		{Value: "opus-4.7-500k", Name: "opus-4.7 (500K context)"},
+		{Value: "opus-4.8", Name: "opus-4.8"},
+		{Value: "sonnet-4.6", Name: "sonnet-4.6"},
+		{Value: "gpt-4o", Name: "GPT-4o"},
+	}
+
+	tests := []struct {
+		name       string
+		constraint *config.ACPServerConstraint
+		options    []SessionConfigOptionValue
+		want       string
+	}{
+		// contains mode
+		{
+			name:       "contains picks last match",
+			constraint: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "opus"},
+			options:    modelOptions,
+			want:       "opus-4.8",
+		},
+		{
+			name:       "contains case insensitive",
+			constraint: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "OPUS"},
+			options:    modelOptions,
+			want:       "opus-4.8",
+		},
+		{
+			name:       "contains specific version picks last variant",
+			constraint: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "opus-4.6"},
+			options:    modelOptions,
+			want:       "opus-4.6-500k",
+		},
+		{
+			name:       "contains no match",
+			constraint: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "claude"},
+			options:    modelOptions,
+			want:       "",
+		},
+		// exact mode
+		{
+			name:       "exact match",
+			constraint: &config.ACPServerConstraint{MatchMode: "exact", Pattern: "opus-4.7"},
+			options:    modelOptions,
+			want:       "opus-4.7",
+		},
+		{
+			name:       "exact match case insensitive",
+			constraint: &config.ACPServerConstraint{MatchMode: "exact", Pattern: "GPT-4o"},
+			options:    modelOptions,
+			want:       "gpt-4o",
+		},
+		{
+			name:       "exact no match for partial",
+			constraint: &config.ACPServerConstraint{MatchMode: "exact", Pattern: "opus"},
+			options:    modelOptions,
+			want:       "",
+		},
+		// startsWith mode
+		{
+			name:       "startsWith picks last match",
+			constraint: &config.ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"},
+			options:    modelOptions,
+			want:       "opus-4.8",
+		},
+		{
+			name:       "startsWith no match",
+			constraint: &config.ACPServerConstraint{MatchMode: "startsWith", Pattern: "claude"},
+			options:    modelOptions,
+			want:       "",
+		},
+		// regex mode
+		{
+			name:       "regex picks last match",
+			constraint: &config.ACPServerConstraint{MatchMode: "regex", Pattern: "opus-4\\.[67]"},
+			options:    modelOptions,
+			want:       "opus-4.7-500k",
+		},
+		{
+			name:       "regex no match",
+			constraint: &config.ACPServerConstraint{MatchMode: "regex", Pattern: "^claude"},
+			options:    modelOptions,
+			want:       "",
+		},
+		// lookAlike mode
+		{
+			name:       "lookAlike single word picks last",
+			constraint: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "opus"},
+			options:    modelOptions,
+			want:       "opus-4.8",
+		},
+		{
+			name:       "lookAlike two words",
+			constraint: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"},
+			options:    modelOptions,
+			want:       "opus-4.8",
+		},
+		{
+			name:       "lookAlike matches mixed case and separators",
+			constraint: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.7"},
+			options: []SessionConfigOptionValue{
+				{Value: "v1", Name: "opus-4.5"},
+				{Value: "v2", Name: "OPUS-Pro-4.7"},
+				{Value: "v3", Name: "Opus 4.7"},
+			},
+			want: "v3",
+		},
+		{
+			name:       "lookAlike no match when word missing",
+			constraint: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "opus 5.0"},
+			options:    modelOptions,
+			want:       "",
+		},
+		{
+			name:       "lookAlike empty pattern returns empty",
+			constraint: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: ""},
+			options:    modelOptions,
+			want:       "",
+		},
+		// edge cases
+		{
+			name:       "unknown match mode returns empty",
+			constraint: &config.ACPServerConstraint{MatchMode: "unknown", Pattern: "opus"},
+			options:    modelOptions,
+			want:       "",
+		},
+		{
+			name:       "empty options returns empty",
+			constraint: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "opus"},
+			options:    nil,
+			want:       "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchConstraintOption(tt.constraint, tt.options)
+			if got != tt.want {
+				t.Errorf("matchConstraintOption() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildACPProcessEnv verifies env-layering for ACP subprocess startup.
+// Layering: os.Environ() < server-specific Env < MITTO_* vars.
+func TestBuildACPProcessEnv(t *testing.T) {
+	t.Setenv("MITTO_TEST_BASE_ENV", "from-base")
+
+	t.Run("includes os.Environ", func(t *testing.T) {
+		env := buildACPProcessEnv(nil, nil)
+		if !envContainsKV(env, "MITTO_TEST_BASE_ENV", "from-base") {
+			t.Errorf("expected MITTO_TEST_BASE_ENV=from-base in env, got %v entries", len(env))
+		}
+	})
+
+	t.Run("appends server-specific env", func(t *testing.T) {
+		env := buildACPProcessEnv(map[string]string{"FOO": "bar", "BAZ": "qux"}, nil)
+		if !envContainsKV(env, "FOO", "bar") {
+			t.Error("expected FOO=bar in env")
+		}
+		if !envContainsKV(env, "BAZ", "qux") {
+			t.Error("expected BAZ=qux in env")
+		}
+	})
+
+	t.Run("appends mitto env after server env (mitto wins)", func(t *testing.T) {
+		// Same key in both — later append wins by os.Exec semantics.
+		env := buildACPProcessEnv(
+			map[string]string{"OVERLAP": "from-server"},
+			map[string]string{"OVERLAP": "from-mitto", "MITTO_SESSION_ID": "abc"},
+		)
+		// Find the LAST occurrence of OVERLAP=...
+		lastOverlap := ""
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "OVERLAP=") {
+				lastOverlap = kv
+			}
+		}
+		if lastOverlap != "OVERLAP=from-mitto" {
+			t.Errorf("expected final OVERLAP=from-mitto (mitto wins), got %q", lastOverlap)
+		}
+		if !envContainsKV(env, "MITTO_SESSION_ID", "abc") {
+			t.Error("expected MITTO_SESSION_ID=abc in env")
+		}
+	})
+}
+
+func envContainsKV(env []string, key, value string) bool {
+	want := key + "=" + value
+	for _, kv := range env {
+		if kv == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestStartACPStartupWatchdog_FiresWhenNoActivity verifies the watchdog emits a WARN log
+// when neither stderr activity nor handshake completion is observed within the warn window.
+func TestStartACPStartupWatchdog_FiresWhenNoActivity(t *testing.T) {
+	// Shorten the timers for the test
+	origWarn := acpStartupWatchdogWarnDelay
+	origErr := acpStartupWatchdogErrorDelay
+	acpStartupWatchdogWarnDelay = 30 * time.Millisecond
+	acpStartupWatchdogErrorDelay = 90 * time.Millisecond
+	defer func() {
+		acpStartupWatchdogWarnDelay = origWarn
+		acpStartupWatchdogErrorDelay = origErr
+	}()
+
+	rec := newCapturingLogHandler()
+	logger := slog.New(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_ = startACPStartupWatchdog(ctx, logger, "auggie", "Augment", 42)
+
+	// Wait long enough for both timers to fire.
+	time.Sleep(200 * time.Millisecond)
+
+	warns := rec.entriesAt(slog.LevelWarn)
+	errs := rec.entriesAt(slog.LevelError)
+
+	if len(warns) == 0 {
+		t.Fatalf("expected at least one WARN log entry, got none")
+	}
+	if !strings.Contains(warns[0].msg, "unresponsive") {
+		t.Errorf("WARN log should mention 'unresponsive', got: %q", warns[0].msg)
+	}
+	if len(errs) == 0 {
+		t.Fatalf("expected at least one ERROR log entry, got none")
+	}
+	if !strings.Contains(errs[0].msg, "unresponsive") {
+		t.Errorf("ERROR log should mention 'unresponsive', got: %q", errs[0].msg)
+	}
+}
+
+// TestStartACPStartupWatchdog_SilentWhenSignaled verifies the watchdog does NOT log when
+// signalActivity is invoked before the warn window elapses.
+func TestStartACPStartupWatchdog_SilentWhenSignaled(t *testing.T) {
+	origWarn := acpStartupWatchdogWarnDelay
+	origErr := acpStartupWatchdogErrorDelay
+	acpStartupWatchdogWarnDelay = 50 * time.Millisecond
+	acpStartupWatchdogErrorDelay = 150 * time.Millisecond
+	defer func() {
+		acpStartupWatchdogWarnDelay = origWarn
+		acpStartupWatchdogErrorDelay = origErr
+	}()
+
+	rec := newCapturingLogHandler()
+	logger := slog.New(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	signalActivity := startACPStartupWatchdog(ctx, logger, "auggie", "Augment", -1)
+
+	// Signal activity well before the warn window.
+	time.Sleep(10 * time.Millisecond)
+	signalActivity()
+
+	// Wait beyond the warn window to confirm no log fires.
+	time.Sleep(200 * time.Millisecond)
+
+	if got := len(rec.entriesAt(slog.LevelWarn)); got != 0 {
+		t.Errorf("expected 0 WARN entries when signaled early, got %d", got)
+	}
+	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
+		t.Errorf("expected 0 ERROR entries when signaled early, got %d", got)
+	}
+}
+
+// TestStartACPStartupWatchdog_NilLoggerNoop ensures the helper is a no-op when logger is nil.
+func TestStartACPStartupWatchdog_NilLoggerNoop(t *testing.T) {
+	// Should not panic, should return a callable no-op.
+	signal := startACPStartupWatchdog(context.Background(), nil, "cmd", "svr", 1)
+	signal()
+	signal() // Idempotent
+}
+
+// TestStartPromptInactivityWatchdog_FiresWhenIdle verifies the watchdog cancels the
+// prompt and sets the fired flag when no streamed activity is observed within the
+// configured timeout, emitting both a WARN and an ERROR log along the way.
+func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 60 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-idle"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fired atomic.Bool
+
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	deadline := time.After(2 * time.Second)
+	for !fired.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("watchdog did not fire within deadline")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if ctx.Err() == nil {
+		t.Error("expected prompt context to be cancelled after watchdog fired")
+	}
+	if len(rec.entriesAt(slog.LevelWarn)) == 0 {
+		t.Error("expected a WARN log before the timeout")
+	}
+	if len(rec.entriesAt(slog.LevelError)) == 0 {
+		t.Error("expected an ERROR log when the watchdog fired")
+	}
+}
+
+// TestStartPromptInactivityWatchdog_SilentWhenActive verifies the watchdog stays quiet
+// and does not fire while streamed activity continues to arrive.
+func TestStartPromptInactivityWatchdog_SilentWhenActive(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 40 * time.Millisecond
+	promptInactivityWatchdogTimeout = 80 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-active"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Bool
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	// Signal activity faster than the warn window for well beyond the timeout.
+	stop := time.After(250 * time.Millisecond)
+loop:
+	for {
+		select {
+		case <-stop:
+			break loop
+		case <-time.After(10 * time.Millisecond):
+			bs.signalAgentActivity()
+		}
+	}
+
+	if fired.Load() {
+		t.Error("watchdog fired despite continuous activity")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while activity continues")
+	}
+	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
+		t.Errorf("expected 0 ERROR entries while active, got %d", got)
+	}
+	cancel()
+}
+
+// TestStartPromptInactivityWatchdog_PausesDuringUIPrompt verifies the watchdog does not
+// fire while a UI prompt (permission dialog or MCP tool question) is pending, since the
+// agent is legitimately blocked waiting on user input.
+func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-uiprompt"}
+	// Simulate a pending UI prompt (e.g. a permission dialog awaiting the user).
+	bs.activePrompt = &activeUIPrompt{request: UIPromptRequest{RequestID: "p1"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Bool
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	time.Sleep(250 * time.Millisecond)
+
+	if fired.Load() {
+		t.Error("watchdog fired while a UI prompt was active (it should pause)")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while a UI prompt is active")
+	}
+	cancel()
+}
+
+// TestStartPromptInactivityWatchdog_DisabledWhenZero verifies the watchdog is a no-op
+// when both the warn delay and timeout are non-positive.
+func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 0
+	promptInactivityWatchdogTimeout = 0
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-disabled"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fired atomic.Bool
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if fired.Load() {
+		t.Error("watchdog fired while disabled")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while disabled")
+	}
+	if got := len(rec.entriesAt(slog.LevelError)) + len(rec.entriesAt(slog.LevelWarn)); got != 0 {
+		t.Errorf("expected no WARN/ERROR entries while disabled, got %d", got)
+	}
+}
+
+// TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero locks in the production
+// default behavior: with a positive warn delay but timeout == 0, the watchdog emits a
+// WARN log when the agent goes idle but NEVER cancels the prompt (fired stays false and
+// the context is not cancelled). This guards the WARN-only default from regressing back
+// to an automatic cancel that could kill a legitimate long-running, silent tool call.
+func TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 0 // production default: cancellation disabled
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-warn-only"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fired atomic.Bool
+
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+
+	// Wait well past the warn delay so the idle WARN must have fired.
+	deadline := time.After(2 * time.Second)
+	for len(rec.entriesAt(slog.LevelWarn)) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected a WARN log when idle past the warn delay")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Give the watchdog ample additional time to (incorrectly) cancel if it were going to.
+	time.Sleep(150 * time.Millisecond)
+
+	if fired.Load() {
+		t.Error("watchdog cancelled the prompt despite timeout == 0 (should be WARN-only)")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled when timeout == 0")
+	}
+	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
+		t.Errorf("expected 0 ERROR entries in WARN-only mode, got %d", got)
+	}
+}
+
+// capturingLogHandler is a minimal slog.Handler that records emitted records for tests.
+type capturingLogHandler struct {
+	mu      sync.Mutex
+	records []capturedLogEntry
+}
+
+type capturedLogEntry struct {
+	level slog.Level
+	msg   string
+}
+
+func newCapturingLogHandler() *capturingLogHandler {
+	return &capturingLogHandler{}
+}
+
+func (h *capturingLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *capturingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, capturedLogEntry{level: r.Level, msg: r.Message})
+	return nil
+}
+
+func (h *capturingLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingLogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *capturingLogHandler) entriesAt(level slog.Level) []capturedLogEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]capturedLogEntry, 0)
+	for _, r := range h.records {
+		if r.level == level {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func TestBuildACPProcessEnv_ReplacesExistingKey(t *testing.T) {
+	// Ensure NODE_OPTIONS exists in os.Environ() with a different value.
+	t.Setenv("NODE_OPTIONS", "--max-old-space-size=2048")
+
+	serverEnv := map[string]string{
+		"NODE_OPTIONS": "--max-old-space-size=6144",
+	}
+	result := buildACPProcessEnv(serverEnv, nil)
+
+	var found []string
+	for _, kv := range result {
+		if strings.HasPrefix(kv, "NODE_OPTIONS=") {
+			found = append(found, kv)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly one NODE_OPTIONS entry, got %d: %v", len(found), found)
+	}
+	if found[0] != "NODE_OPTIONS=--max-old-space-size=6144" {
+		t.Errorf("expected NODE_OPTIONS=--max-old-space-size=6144, got %s", found[0])
+	}
+}
+
+func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
+	serverEnv := map[string]string{
+		"MITTO_TEST_VAR": "from-server",
+	}
+	mittoEnv := map[string]string{
+		"MITTO_TEST_VAR": "from-mitto",
+	}
+	result := buildACPProcessEnv(serverEnv, mittoEnv)
+
+	var found []string
+	for _, kv := range result {
+		if strings.HasPrefix(kv, "MITTO_TEST_VAR=") {
+			found = append(found, kv)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly one MITTO_TEST_VAR entry, got %d: %v", len(found), found)
+	}
+	if found[0] != "MITTO_TEST_VAR=from-mitto" {
+		t.Errorf("expected MITTO_TEST_VAR=from-mitto, got %s", found[0])
 	}
 }

@@ -60,6 +60,14 @@ func (h *Processor) GetOutput() OutputType {
 	return h.Output
 }
 
+// GetOutputFormat returns the processor's output format, using the default (json) if not set.
+func (h *Processor) GetOutputFormat() OutputFormat {
+	if h.OutputFormat == "" {
+		return DefaultOutputFormat
+	}
+	return h.OutputFormat
+}
+
 // GetWorkingDir returns the processor's working directory type, using the default if not set.
 func (h *Processor) GetWorkingDir() WorkingDirType {
 	if h.WorkingDir == "" {
@@ -102,15 +110,16 @@ const (
 
 // ShouldApply returns true if the processor should apply given the message context.
 // When it returns false, the SkipReason describes why.
-// Note: PhaseAgentResponded processors are always skipped here — they run in a separate path (Task 3).
+// Note: PhaseAgentResponded and PhaseAgentIdle processors are always skipped here —
+// they run in a separate path via Manager.ApplyAfter.
 func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (bool, SkipReason) {
 	if !h.IsEnabled() {
 		return false, SkipReasonDisabled
 	}
 
-	// agentResponded processors are always skipped in the userPrompt pipeline.
+	// agentResponded / agentIdle processors are always skipped in the userPrompt pipeline.
 	// They are executed exclusively via Manager.ApplyAfter after the agent responds.
-	if h.When.On == PhaseAgentResponded {
+	if h.When.On == PhaseAgentResponded || h.When.On == PhaseAgentIdle {
 		return false, SkipReasonAgentRespondedPhase
 	}
 
@@ -170,6 +179,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.IsChild = input.ParentSessionID != ""
 	ctx.Session.ParentID = input.ParentSessionID
 	ctx.Session.IsPeriodic = input.IsPeriodic
+	ctx.Session.BeadsIssue = input.BeadsIssue
+	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer
@@ -207,7 +218,11 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		if child.ChildOrigin == "mcp" {
 			ctx.Children.MCPCount++
 		}
+		if child.IsPrompting {
+			ctx.Children.PromptingCount++
+		}
 	}
+	ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
 
 	// Tools context
 	if len(input.MCPToolNames) > 0 {

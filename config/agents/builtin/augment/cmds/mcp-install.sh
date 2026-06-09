@@ -27,6 +27,7 @@ if ! command -v auggie &>/dev/null; then
 fi
 
 WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
+SCOPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
 
 # Build base auggie command args with optional workspace folder
 AUGGIE_ARGS=()
@@ -34,15 +35,23 @@ if [ -n "$WORKSPACE_PATH" ]; then
     AUGGIE_ARGS+=("--workspace-root=$WORKSPACE_PATH")
 fi
 
-# Build and run the mcp add command
+# Map scope to auggie flag
+SCOPE_ARGS=()
+case "$SCOPE" in
+    project) SCOPE_ARGS+=("--project") ;;
+    local)   SCOPE_ARGS+=("--local") ;;
+    # "user" or empty = default (no flag needed)
+esac
+
+# Build and run the mcp add command (suppress auggie text output from stdout)
 if [ -n "$URL" ]; then
-    auggie "${AUGGIE_ARGS[@]}" mcp add "$NAME" --transport http --url "$URL" --replace 2>&1
+    auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --transport http --url "$URL" --replace >/dev/null 2>&1
 elif [ -n "$COMMAND" ]; then
     ARGS=$(echo "$INPUT" | python3 -c "import sys,json; args=json.load(sys.stdin).get('args',[]); print(' '.join(args))" 2>/dev/null)
     if [ -n "$ARGS" ]; then
-        auggie "${AUGGIE_ARGS[@]}" mcp add "$NAME" --command "$COMMAND" --args "$ARGS" --replace 2>&1
+        auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --command "$COMMAND" --args "$ARGS" --replace >/dev/null 2>&1
     else
-        auggie "${AUGGIE_ARGS[@]}" mcp add "$NAME" --command "$COMMAND" --replace 2>&1
+        auggie "${AUGGIE_ARGS[@]}" mcp add "${SCOPE_ARGS[@]}" "$NAME" --command "$COMMAND" --replace >/dev/null 2>&1
     fi
 fi
 

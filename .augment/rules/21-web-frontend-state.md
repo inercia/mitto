@@ -74,19 +74,7 @@ useLayoutEffect(() => {
 }, [activeSessionId, messages.length]);
 ```
 
-### Separating Concerns: Session Switch vs Streaming
-
-```javascript
-// useLayoutEffect: Session switch - instant scroll, before paint
-useLayoutEffect(() => {
-  if (sessionJustChanged) scrollToBottomInstant();
-}, [activeSessionId, messages.length]);
-
-// useEffect: Streaming updates - smooth scroll, after paint is fine
-useEffect(() => {
-  if (isStreaming && isUserAtBottom) scrollToBottom(true);
-}, [messages.length, isStreaming]);
-```
+**Separate concerns**: `useLayoutEffect` for session switch (instant), `useEffect` for streaming (smooth scroll).
 
 ## Adding New Session Properties (Checklist)
 
@@ -124,14 +112,33 @@ const [configReadonly, setConfigReadonly] = useState(false);
 if (configReadonly) return; // Don't open settings dialog
 ```
 
-## Cross-Workspace Child Sessions: Folder Group Key Resolution
+## Per-Tab Active Conversation State
 
-**Anti-pattern**: In `expandGroupForSession` (`useWebSocket.js`), when `groupingMode === "folder"`, using the child session's own `working_dir` as the folder group key collapses the parent's folder group because the child is *displayed* under the parent's folder group (via `resolveRootParent` in `app.js`).
+**Pattern**: Each filter tab (Conversations, Periodic, Archived) remembers its own last-focused conversation separately.
 
-**Rule**: When a session has `parent_session_id`, resolve the root parent's `working_dir` through the parent chain and use that for the folder group key — not the child's own `working_dir`.
+**Storage helpers** (`web/static/utils/storage.js`):
+```javascript
+getLastActiveSessionIdForTab(tab)    // key: "mitto_last_session_id_<tab>"
+setLastActiveSessionIdForTab(tab, id)
+```
+
+**Recording** (in `App` effect in `app.js`):
+- When `activeSessionId` changes, compute the tab via `getFilterTabForSession(session)`
+- Record the conversation under that tab using `setLastActiveSessionIdForTab(tab, id)`
+- Use a guard ref `(prevTab, prevSession)` to avoid redundant localStorage writes during streaming re-renders
+
+**Restoring** (in `SessionList.handleFilterTabChange` click handler):
+- On user tab click, fetch the last-focused conversation for that tab via `getLastActiveSessionIdForTab(tab)`
+- Only restore if the session still exists AND still belongs to that tab (categories can change: archived → unarchived)
+- Programmatic tab changes (e.g., unarchive which explicitly selects a session) skip restoration — only user clicks trigger restore
+
+**Design rationale**: Restore logic lives *only* in the user-click handler (not the global filter-change event) to avoid races with programmatic tab switches that have their own session selection logic.
+
+## Cross-Workspace Child Sessions: Folder Group Key
+
+When `groupingMode === "folder"` and session has `parent_session_id`, resolve the root parent's `working_dir` through the parent chain — not the child's own dir (would collapse the parent's folder group).
 
 ```javascript
-// In expandGroupForSession — after computing initial groupKey from working_dir:
 if (storedSession?.parent_session_id && groupingMode === "folder") {
   const rootParent = resolveRootParentFromList(storedSessions, storedSession.parent_session_id);
   if (rootParent?.working_dir) groupKey = rootParent.working_dir || "Unknown";

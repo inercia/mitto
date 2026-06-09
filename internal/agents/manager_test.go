@@ -344,3 +344,91 @@ echo "{\"success\": true, \"message\": \"Installed $NAME\", \"name\": \"$NAME\"}
 		t.Errorf("name = %q, want %q", output.Name, "my-mcp-server")
 	}
 }
+
+// TestAgentMetadataDefaults_Parse verifies that a metadata.yaml with a `defaults` block
+// is parsed correctly into AgentMetadata.Defaults.
+func TestAgentMetadataDefaults_Parse(t *testing.T) {
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "builtin", "fancy-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := `name: "Fancy Agent"
+displayName: "Fancy Agent"
+acpId: "fancy"
+description: "An agent with defaults"
+defaults:
+  env:
+    NODE_OPTIONS: "--max-old-space-size=8192"
+    MY_VAR: "hello"
+  constraints:
+    model:
+      matchMode: contains
+      pattern: "Opus"
+  tags:
+    - coding
+    - smart
+  autoApprove: true
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	agent, err := m.GetAgent("fancy-agent", "builtin")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+
+	d := agent.Metadata.Defaults
+	if d == nil {
+		t.Fatal("expected Defaults to be non-nil")
+	}
+
+	// Env
+	if got := d.Env["NODE_OPTIONS"]; got != "--max-old-space-size=8192" {
+		t.Errorf("Env[NODE_OPTIONS] = %q, want %q", got, "--max-old-space-size=8192")
+	}
+	if got := d.Env["MY_VAR"]; got != "hello" {
+		t.Errorf("Env[MY_VAR] = %q, want %q", got, "hello")
+	}
+
+	// Constraints
+	mc, ok := d.Constraints["model"]
+	if !ok {
+		t.Fatal("expected Constraints[model] to be present")
+	}
+	if mc.MatchMode != "contains" {
+		t.Errorf("Constraints[model].MatchMode = %q, want %q", mc.MatchMode, "contains")
+	}
+	if mc.Pattern != "Opus" {
+		t.Errorf("Constraints[model].Pattern = %q, want %q", mc.Pattern, "Opus")
+	}
+
+	// Tags
+	if len(d.Tags) != 2 || d.Tags[0] != "coding" || d.Tags[1] != "smart" {
+		t.Errorf("Tags = %v, want [coding smart]", d.Tags)
+	}
+
+	// AutoApprove
+	if !d.AutoApprove {
+		t.Error("expected AutoApprove to be true")
+	}
+}
+
+// TestAgentMetadataDefaults_Absent verifies that agents without a `defaults` block
+// still load successfully with Defaults == nil.
+func TestAgentMetadataDefaults_Absent(t *testing.T) {
+	agentsDir := setupTestAgent(t, "builtin", "test-agent")
+
+	m := NewManager(agentsDir, nil)
+	agent, err := m.GetAgent("test-agent", "builtin")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+
+	if agent.Metadata.Defaults != nil {
+		t.Errorf("expected Defaults to be nil for agent without defaults block, got %+v", agent.Metadata.Defaults)
+	}
+}

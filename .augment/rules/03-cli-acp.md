@@ -130,12 +130,22 @@ install:
 
 **MCP scope values**: `user` (global config), `project` (per-repo), `local` (local-only, not committed).
 
+### Agent Commands
+
+| Command | Script | Input/Output Types | Purpose |
+|---------|--------|--------------------|---------|
+| `CommandMCPList` | `mcp-list.sh` | `MCPListInput`/`MCPListOutput` | List MCP servers |
+| `CommandMCPInstall` | `mcp-install.sh` | `MCPInstallInput`/`MCPInstallOutput` | Install MCP server |
+| `CommandMCPRemove` | `mcp-remove.sh` | `MCPRemoveInput`/`MCPRemoveOutput` | Remove MCP server |
+
+`MCPRemoveInput` includes `Scope` field — must match one of `metadata.yaml`'s `mcp.scopes`.
+
 ### Adding a new agent
 
 1. Create `config/agents/builtin/<name>/metadata.yaml`
-2. Add `cmds/` scripts: `install.sh`, `status.sh`, `mcp-list.sh`, `mcp-install.sh`
-3. Set `mcp.scopes` in metadata to reflect what `mcp-install.sh` supports
+2. Add `cmds/` scripts: `install.sh`, `status.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`
+3. Set `mcp.scopes` in metadata to reflect what MCP scripts support
 
 ### ACP Connection Testing
 
-Test each method of `internal/acp/`: `NewConnection`, `Initialize`, `NewSession`, `Prompt`, `Cancel`, `Close`, `Done`, `HasImageSupport`. Cover error paths (empty/invalid command, prompt without session, double-close).
+Test each `internal/acp/` method. Cover error paths (empty command, prompt without session, double-close).

@@ -53,17 +53,24 @@ make clean clean-mac-app
 ## Testing
 
 ```bash
-# Run all tests
+# Run all unit tests (Go + JS)
 make test
 
-# Run tests with verbose output
-go test -v ./...
+# Run Go unit tests only
+make test-go
 
-# Run tests for a specific package
-go test -v ./internal/session/...
+# Run JavaScript unit tests
+make test-js
 
-# Run integration tests
-./tests/integration/run-all.sh
+# Run integration tests (requires mock ACP server)
+make build-mock-acp
+make test-integration
+
+# Run Playwright UI tests
+make test-ui
+
+# Run linter
+make lint
 ```
 
 ### Test Patterns
@@ -85,7 +92,10 @@ func TestSomething(t *testing.T) {
 # Format code
 make fmt
 
-# Run linter (if configured)
+# Run linter (golangci-lint)
+make lint
+
+# Run go vet directly
 go vet ./...
 ```
 
@@ -97,17 +107,27 @@ cmd/mitto-app/      → macOS app entry point
 config/             → Embedded default configuration
 internal/           → Internal packages
 ├── acp/            → ACP protocol client
+├── agents/         → Agent definitions and manager
 ├── appdir/         → Platform-native directories
-├── auxiliary/      → Background ACP session
+├── auxiliary/      → Background ACP session for utility tasks
+├── client/         → Go client for Mitto REST API + WebSocket (used in tests)
 ├── cmd/            → CLI commands (Cobra)
 ├── config/         → Configuration loading
+├── conversion/     → Markdown-to-HTML conversion, file link detection
+├── defense/        → Scanner defense, blocklist, IP metrics
 ├── fileutil/       → JSON file utilities
-├── session/        → Session persistence
+├── hooks/          → Lifecycle hooks (startup, shutdown)
+├── logging/        → Structured logging utilities
+├── mcpserver/      → MCP protocol server
+├── processors/     → Message processors (text, command, prompt modes)
+├── runner/         → Restricted runner, sandbox execution
+├── secrets/        → Secure credential storage (Keychain)
+├── session/        → Session persistence (Store/Recorder/Player/Queue/Flags)
 └── web/            → Web server and API
 platform/mac/       → macOS resources (icons, plist)
 web/                → Embedded frontend assets
 docs/               → Documentation
-tests/              → Integration tests
+tests/              → Integration and UI tests
 ```
 
 ## Running Locally
@@ -147,7 +167,18 @@ open Mitto.app
 # With environment overrides
 MITTO_ACP_SERVER=claude-code open Mitto.app
 MITTO_WORK_DIR=/path/to/project open Mitto.app
+
+# Serve static files from disk for hot-reloading (frontend development)
+MITTO_STATIC_DIR=./web/static ./Mitto.app/Contents/MacOS/mitto-app
 ```
+
+The native app does not accept CLI flags. Use the `MITTO_STATIC_DIR`
+environment variable (the app's equivalent of the CLI `mitto web --static-dir`)
+to serve static assets from a directory instead of the embedded assets. This
+lets you edit files in `web/static/` and see changes on refresh, without
+rebuilding the app. Resolution priority is `MITTO_STATIC_DIR` > config
+(`web.static_dir`) > embedded assets. Paths are resolved relative to the app's
+working directory, so prefer an absolute path when launching via `open`.
 
 ## Debugging
 

@@ -11,6 +11,8 @@ import {
   FolderIcon,
   PeriodicFilledIcon,
   ChevronDownIcon,
+  SettingsIcon,
+  SlidersIcon,
 } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -189,15 +191,17 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
 export function SessionPanel({
   isOpen,
   onClose,
-  activeTab = "changes",
+  activeTab = "properties",
   onTabChange,
   sessionId,
   sessionInfo,
   onRename,
+  onOpenBeadsIssue,
   isStreaming = false,
   configOptions = [],
   onSetConfigOption,
   mcpTools = [],
+  showToast,
 }) {
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
@@ -227,7 +231,7 @@ export function SessionPanel({
       }, 150);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, shouldRender]);
+  }, [isOpen]);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -625,28 +629,33 @@ export function SessionPanel({
           <!-- Tab switcher -->
           <div class="flex border-b border-slate-700 flex-shrink-0">
             <button
-              class="flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${currentTab === "changes" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
-              onClick=${() => handleTabChange("changes")}
-            >
-              Changes
-            </button>
-            <button
-              class="flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${currentTab === "properties" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
+              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "properties" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
               onClick=${() => handleTabChange("properties")}
+              title="Properties"
             >
-              Properties
+              <${SettingsIcon} className="w-4 h-4" />
             </button>
             <button
-              class="flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${currentTab === "userdata" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
-              onClick=${() => handleTabChange("userdata")}
+              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "changes" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
+              onClick=${() => handleTabChange("changes")}
+              title="Changes"
             >
-              User Data
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+              </svg>
+            </button>
+            <button
+              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "advanced" ? "text-blue-400 border-b-2 border-blue-400" : "text-slate-400 hover:text-slate-300"}"
+              onClick=${() => handleTabChange("advanced")}
+              title="Advanced"
+            >
+              <${SlidersIcon} className="w-4 h-4" />
             </button>
           </div>
 
-          <!-- Tab content -->
-          <div class="flex-1 overflow-y-auto">
-            ${currentTab === "changes" ? renderChangesContent() : currentTab === "properties" ? renderPropertiesContent() : renderUserDataContent()}
+          <!-- Tab content (key forces Preact to fully remount on tab switch) -->
+          <div class="flex-1 overflow-y-auto" key=${currentTab}>
+            ${currentTab === "properties" ? renderPropertiesContent() : currentTab === "changes" ? renderChangesContent() : renderAdvancedTabContent()}
           </div>
         </div>
       </div>
@@ -668,21 +677,35 @@ export function SessionPanel({
   // Changes tab content
   // ---------------------------------------------------------------------------
   function renderChangesContent() {
-    // Helper to build viewer URL with diff mode
-    const buildDiffViewerUrl = (filePath) => {
+    // Helper to build viewer URL with diff mode.
+    // Resolve against the conversation's own working dir, not the globally-selected
+    // workspace — the panel can inspect conversations from other workspaces. We
+    // prefer working_dir (via the legacy `workspace=` param) over workspace_uuid
+    // because CLI-spawned sessions inherit the default workspace UUID, which
+    // resolves to the server's directory rather than the conversation's. The
+    // viewer/backend prefer `ws=` when present, so we intentionally omit it when
+    // a working dir is available.
+    const buildDiffViewerUrl = (filePath, status) => {
       const apiPrefix = window.mittoApiPrefix || "";
-      const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
       const wsPath = sessionInfo?.working_dir || window.mittoCurrentWorkspace || "";
+      const workspaceUUID = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
       const relativePath = filePath.replace(/^\.\//, "");
-      if (!workspaceUUID) return null;
-      let url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}&view=diff`;
+      let url;
+      if (wsPath) {
+        url = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relativePath)}`;
+      } else if (workspaceUUID) {
+        url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+      } else {
+        return null;
+      }
+      if (status !== "?") url += "&view=diff";
       if (wsPath) url += `&ws_path=${encodeURIComponent(wsPath)}`;
       return url;
     };
 
-    const openFileInViewer = (filePath, e) => {
+    const openFileInViewer = (filePath, e, status) => {
       if (e) { e.preventDefault(); e.stopPropagation(); }
-      const viewerUrl = buildDiffViewerUrl(filePath);
+      const viewerUrl = buildDiffViewerUrl(filePath, status);
       if (!viewerUrl) return;
       if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
         const fullUrl = new URL(viewerUrl, window.location.origin).href;
@@ -698,7 +721,7 @@ export function SessionPanel({
       "D": "bg-red-600 text-white",
       "R": "bg-blue-600 text-white",
       "C": "bg-purple-600 text-white",
-      "?": "bg-slate-500 text-white",
+      "?": "bg-slate-700 text-slate-300 ring-1 ring-slate-500",
     };
 
     const handleRefreshChanges = async () => {
@@ -788,13 +811,13 @@ export function SessionPanel({
                       key=${file.path}
                       href="#"
                       class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700/50 transition-colors cursor-pointer group no-underline"
-                      onClick=${(e) => openFileInViewer(file.path, e)}
+                      onClick=${(e) => openFileInViewer(file.path, e, file.status)}
                       title=${file.old_path ? file.old_path + " → " + file.path : file.path}
                     >
                       <span
                         class="flex-shrink-0 w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${statusColors[file.status] || "bg-slate-600 text-white"}"
                       >${file.status}</span>
-                      <span class="flex-1 text-sm text-slate-300 truncate group-hover:text-slate-100">${file.path}</span>
+                      <span class="flex-1 text-sm truncate ${file.status === '?' ? 'text-slate-400 italic' : 'text-slate-300'} group-hover:text-slate-100">${file.path}</span>
                       ${(file.additions > 0 || file.deletions > 0) &&
                       html`
                         <span class="flex-shrink-0 text-xs font-mono whitespace-nowrap">
@@ -942,7 +965,151 @@ export function SessionPanel({
           </div>
         </div>
 
-        <!-- Session Config Options -->
+        <!-- Beads Issue Section -->
+        ${sessionInfo?.beads_issue && html`
+          <div>
+            <label class="block text-sm font-medium text-slate-400 mb-2">Linked beads issue</label>
+            <div class="flex items-center gap-2">
+              ${onOpenBeadsIssue
+                ? html`<button
+                    type="button"
+                    class="text-sm font-mono text-blue-400 hover:text-blue-300 hover:underline transition-colors cursor-pointer"
+                    onClick=${() => onOpenBeadsIssue(sessionInfo.beads_issue, sessionInfo.working_dir)}
+                    title="Open beads issue ${sessionInfo.beads_issue}"
+                  >${sessionInfo.beads_issue}</button>`
+                : html`<span class="text-sm font-mono">${sessionInfo.beads_issue}</span>`}
+            </div>
+          </div>
+        `}
+
+        <!-- Periodic Prompts Section -->
+        ${periodicConfig?.enabled && html`
+          <div>
+            <label class="block text-sm font-medium text-slate-400 mb-2">Periodic Prompts</label>
+            <div class="flex items-center gap-2 text-sm text-slate-300">
+              <${PeriodicFilledIcon} className="w-4 h-4 flex-shrink-0 text-blue-400" />
+              <span>${formatFrequency(periodicConfig.frequency)}</span>
+            </div>
+            ${periodicConfig.last_sent_at && html`<p class="mt-1 text-xs text-slate-500">Last run: ${new Date(periodicConfig.last_sent_at).toLocaleString()}</p>`}
+            ${periodicConfig.next_scheduled_at && html`
+              <p class="mt-1 text-xs text-slate-500">
+                Next run: ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+                <span class="text-slate-400 ml-1">(${formatRelativeTime(periodicConfig.next_scheduled_at)})</span>
+              </p>
+            `}
+          </div>
+        `}
+
+        <!-- User Data Section -->
+        ${(() => {
+          const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
+          if (isLoadingUserData) return html`<div class="text-sm text-slate-500">Loading user data...</div>`;
+          if (!hasSchema) return null;
+          return html`
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-2">User Data</label>
+              ${userDataError && html`<div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1 mb-2">${userDataError}</div>`}
+              <div class="space-y-3">
+                ${userDataSchema.fields.map((field) => {
+                  const value = getAttributeValue(field.name);
+                  const isEditing = editingAttribute === field.name;
+                  return html`
+                    <div key=${field.name}>
+                      <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>${field.name}</label>
+                      ${isEditing
+                        ? html`
+                            <div class="flex items-center gap-2">
+                              <input
+                                ref=${attributeInputRef}
+                                type=${field.type === "url" ? "url" : "text"}
+                                class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                                value=${editedAttributeValue}
+                                onInput=${(e) => setEditedAttributeValue(e.target.value)}
+                                onKeyDown=${handleAttributeKeyDown}
+                                onBlur=${() => { setTimeout(() => { if (editingAttribute && !isSavingAttribute) setEditingAttribute(null); }, 150); }}
+                                disabled=${isSavingAttribute}
+                              />
+                              <button class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400" onClick=${handleSaveAttribute} title="Save" disabled=${isSavingAttribute}>
+                                <${CheckIcon} className="w-4 h-4" />
+                              </button>
+                            </div>
+                          `
+                        : html`
+                            <div class="flex items-center gap-2 group">
+                              ${field.type === "filename" && value
+                                ? (() => {
+                                    const apiPrefix = window.mittoApiPrefix || "";
+                                    // Resolve against the conversation's own working dir, not the
+                                    // globally-selected workspace. Prefer working_dir (legacy
+                                    // `workspace=` param) over workspace_uuid: CLI-spawned
+                                    // sessions inherit the default workspace UUID, which resolves
+                                    // to the server's directory. The viewer prefers `ws=` when
+                                    // present, so omit it when a working dir is available.
+                                    const wsPath = sessionInfo?.working_dir || window.mittoCurrentWorkspace || "";
+                                    const workspaceUUID = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
+                                    const relativePath = value.replace(/^\.\//, "");
+                                    let viewerUrl = null;
+                                    if (wsPath) {
+                                      viewerUrl = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relativePath)}&ws_path=${encodeURIComponent(wsPath)}`;
+                                    } else if (workspaceUUID) {
+                                      viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+                                    }
+                                    return html`
+                                      <a
+                                        href=${viewerUrl || "#"}
+                                        class="file-link flex-1 text-sm text-blue-400 hover:underline truncate"
+                                        title=${value}
+                                        onClick=${(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          if (!viewerUrl) return;
+                                          if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+                                            const fullUrl = new URL(viewerUrl, window.location.origin).href;
+                                            window.mittoOpenViewer(fullUrl);
+                                          } else {
+                                            window.open(viewerUrl, "_blank", "noopener,noreferrer");
+                                          }
+                                        }}
+                                      >${value}</a>
+                                    `;
+                                  })()
+                                : html`
+                                    <span
+                                      class="flex-1 text-sm truncate ${value ? "text-slate-300" : "text-slate-600 italic"} ${field.type === "url" && value ? "cursor-pointer hover:text-blue-400" : ""}"
+                                      onClick=${() => {
+                                        if (field.type === "url" && value) window.open(value, "_blank", "noopener,noreferrer");
+                                      }}
+                                      title=${value || "(not set)"}
+                                    >${value || "(not set)"}</span>
+                                  `}
+                              <button
+                                class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
+                                onClick=${() => handleStartEditAttribute({ name: field.name, value })}
+                                title="Edit"
+                              >
+                                <${EditIcon} className="w-3 h-3" />
+                              </button>
+                            </div>
+                          `}
+                    </div>
+                  `;
+                })}
+              </div>
+            </div>
+          `;
+        })()}
+      </div>
+    `;
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Advanced tab content (MCP Tools + Permissions)
+  // ---------------------------------------------------------------------------
+  function renderAdvancedTabContent() {
+    return html`
+      <div class="p-4 space-y-6">
+        <!-- Session Config Options (Mode, Model) -->
         ${configOptions?.length > 0 && configOptions.map((configOption) => html`
           <div key=${configOption.id}>
             <label class="block text-sm font-medium text-slate-400 mb-2">${configOption.name}</label>
@@ -973,24 +1140,12 @@ export function SessionPanel({
           </div>
         `)}
 
-        <!-- Periodic Prompts Section -->
-        ${periodicConfig?.enabled && html`
+        <!-- Callback URL Section (only for periodic conversations) -->
+        ${periodicConfig && html`
           <div>
-            <label class="block text-sm font-medium text-slate-400 mb-2">Periodic Prompts</label>
-            <div class="flex items-center gap-2 text-sm text-slate-300">
-              <${PeriodicFilledIcon} className="w-4 h-4 flex-shrink-0 text-blue-400" />
-              <span>${formatFrequency(periodicConfig.frequency)}</span>
-            </div>
-            ${periodicConfig.last_sent_at && html`<p class="mt-1 text-xs text-slate-500">Last run: ${new Date(periodicConfig.last_sent_at).toLocaleString()}</p>`}
-            ${periodicConfig.next_scheduled_at && html`
-              <p class="mt-1 text-xs text-slate-500">
-                Next run: ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
-                <span class="text-slate-400 ml-1">(${formatRelativeTime(periodicConfig.next_scheduled_at)})</span>
-              </p>
-            `}
-            ${callbackConfig?.callback_url && html`
-              <div class="mt-3 pt-3 border-t border-slate-700/50">
-                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
+            <label class="block text-sm font-medium text-slate-400 mb-2">Callback URL</label>
+            ${periodicConfig.enabled ? html`
+              ${callbackConfig?.callback_url ? html`
                 <div class="flex items-center gap-1.5">
                   <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Copy callback URL to clipboard">
                     ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
@@ -998,34 +1153,28 @@ export function SessionPanel({
                   <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
                   <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
                 </div>
-              </div>
-            `}
-            ${!callbackConfig?.callback_url && html`
-              <div class="mt-3 pt-3 border-t border-slate-700/50">
-                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
+              ` : html`
                 <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
                   🔗 Enable Callback URL
                 </button>
-              </div>
+              `}
+            ` : html`
+              ${callbackConfig?.callback_url ? html`
+                <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
+                <div class="flex items-center gap-1.5">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">✕ Revoke</button>
+                </div>
+              ` : html`
+                <p class="text-xs text-slate-500">No callback URL configured.</p>
+              `}
             `}
-          </div>
-        `}
-
-        <!-- Callback URL when periodic is disabled -->
-        ${!periodicConfig?.enabled && callbackConfig?.callback_url && html`
-          <div class="mt-2">
-            <label class="block text-xs font-medium text-slate-500 mb-1">Callback URL</label>
-            <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
-            <div class="flex items-center gap-1.5">
-              <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
-              <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">✕ Revoke</button>
-            </div>
           </div>
         `}
 
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools && mcpTools.length > 0 && html`
-          <div class="pt-4">
+          <div>
             <button type="button" class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors" style="background: transparent; border: none; padding: 0; cursor: pointer;" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
               <span class="transition-transform ${isMcpToolsExpanded ? "" : "-rotate-90"}">
                 <${ChevronDownIcon} className="w-4 h-4" />
@@ -1046,17 +1195,17 @@ export function SessionPanel({
           </div>
         `}
 
-        <!-- Advanced Section (Collapsible) -->
-        ${renderAdvancedSection()}
+        <!-- Permissions Section (Collapsible) -->
+        ${renderPermissionsSection()}
       </div>
     `;
   }
 
 
   // ---------------------------------------------------------------------------
-  // Advanced section (feature flags)
+  // Permissions section (feature flags)
   // ---------------------------------------------------------------------------
-  function renderAdvancedSection() {
+  function renderPermissionsSection() {
     if (!availableFlags || availableFlags.length === 0) return null;
 
     return html`
@@ -1070,7 +1219,7 @@ export function SessionPanel({
           <span class="transition-transform ${isAdvancedExpanded ? "" : "-rotate-90"}">
             <${ChevronDownIcon} className="w-4 h-4" />
           </span>
-          <span>Advanced</span>
+          <span>Permissions</span>
         </button>
 
         ${isAdvancedExpanded && html`
@@ -1108,100 +1257,5 @@ export function SessionPanel({
     `;
   }
 
-  // ---------------------------------------------------------------------------
-  // User Data tab content
-  // ---------------------------------------------------------------------------
-  function renderUserDataContent() {
-    const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
-
-    if (isLoadingUserData) {
-      return html`<div class="p-4 text-sm text-slate-500">Loading...</div>`;
-    }
-
-    if (!hasSchema) {
-      return html`
-        <div class="p-4 text-sm text-slate-500 italic">
-          No user data schema configured for this workspace.
-        </div>
-      `;
-    }
-
-    return html`
-      <div class="p-4 space-y-3">
-        ${userDataError && html`<div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1">${userDataError}</div>`}
-        ${userDataSchema.fields.map((field) => {
-          const value = getAttributeValue(field.name);
-          const isEditing = editingAttribute === field.name;
-
-          return html`
-            <div key=${field.name}>
-              <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>${field.name}</label>
-              ${isEditing
-                ? html`
-                    <div class="flex items-center gap-2">
-                      <input
-                        ref=${attributeInputRef}
-                        type=${field.type === "url" ? "url" : "text"}
-                        class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
-                        value=${editedAttributeValue}
-                        onInput=${(e) => setEditedAttributeValue(e.target.value)}
-                        onKeyDown=${handleAttributeKeyDown}
-                        onBlur=${() => { setTimeout(() => { if (editingAttribute === field.name && !isSavingAttribute) setEditingAttribute(null); }, 150); }}
-                        disabled=${isSavingAttribute}
-                        placeholder=${field.description ? field.description : field.type === "url" ? "https://..." : "Enter value..."}
-                      />
-                      <button class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400" onClick=${handleSaveAttribute} title="Save" disabled=${isSavingAttribute}>
-                        <${CheckIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `
-                : html`
-                    <div class="flex items-center gap-2 group">
-                      ${field.type === "url" && value
-                        ? html`<a href=${value} target="_blank" rel="noopener noreferrer" class="flex-1 text-sm text-blue-400 hover:underline truncate" title=${value}>${value}</a>`
-                        : (() => {
-                            if (value && looksLikeFilePath(value)) {
-                              const apiPrefix = getAPIPrefix();
-                              const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
-                              const wsPath = window.mittoCurrentWorkspace || "";
-                              const relativePath = value.replace(/^\.\//, "");
-                              let viewerUrl = null;
-                              if (workspaceUUID) {
-                                viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
-                                if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
-                              }
-                              const href = viewerUrl || "#";
-                              return html`
-                                <a
-                                  href=${href}
-                                  class="file-link flex-1 text-sm text-blue-400 hover:underline truncate"
-                                  title=${value}
-                                  onClick=${(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    if (!viewerUrl) return;
-                                    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
-                                      const fullUrl = new URL(viewerUrl, window.location.origin).href;
-                                      window.mittoOpenViewer(fullUrl);
-                                    } else {
-                                      window.open(viewerUrl, "_blank", "noopener,noreferrer");
-                                    }
-                                  }}
-                                >${value}</a>
-                              `;
-                            }
-                            return html`<span class="flex-1 text-sm truncate ${!value ? "text-slate-500 italic" : ""}" title=${value}>${value || "Not set"}</span>`;
-                          })()}
-                      <button class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100" onClick=${() => handleStartEditAttribute({ name: field.name, value })} title="Edit">
-                        <${EditIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `}
-            </div>
-          `;
-        })}
-      </div>
-    `;
-  }
 
 }

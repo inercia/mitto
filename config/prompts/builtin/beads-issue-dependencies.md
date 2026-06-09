@@ -1,0 +1,147 @@
+---
+icon: "beads"
+name: "Recalculate dependencies"
+menus: beadsIssues
+requires: parameters
+description: "Map and wire this bead's relationships: what blocks it, what it blocks, related beads, and its parent"
+backgroundColor: "#FFCCBC"
+group: "Tasks"
+enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+# Beads: Manage a Bead's Dependencies & Links
+
+Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+The **target bead** is `${ISSUE_ID}`. Your job is to get its **relationships** right so the tracker
+can sequence work correctly. This matters because `bd ready` only surfaces **unblocked** beads —
+missing or wrong dependencies hide work that is actually ready, or expose work that is not.
+
+There are four relationship kinds:
+- **blocked-by / depends-on**: `${ISSUE_ID}` cannot start until another bead is done.
+- **blocks**: another bead cannot start until `${ISSUE_ID}` is done.
+- **related**: a non-blocking association (bidirectional).
+- **parent**: `${ISSUE_ID}` is a child of a larger bead (epic/feature).
+
+## Step 1 — Load the bead and its current relationships
+
+```bash
+bd show ${ISSUE_ID} --long --json   # description, parent, labels, metadata
+bd dep tree ${ISSUE_ID}             # current blockers and what it blocks
+bd dep list ${ISSUE_ID}             # flat list of dependencies and dependents
+```
+
+Note what relationships already exist so you do not duplicate or contradict them.
+
+## Step 2 — Survey the tracker for candidate relationships
+
+Find other beads that plausibly relate to this one. Match on shared components, files, labels,
+features, or sequencing ("X must land before this").
+
+```bash
+bd list --json                    # all beads: scan titles/labels/types for overlap
+bd ready --json                   # currently-actionable beads (potential blockers/related)
+```
+
+Cross-check against the **codebase** when sequencing is technical (e.g. this bead touches an API
+that another bead is still defining → this is blocked-by that one).
+
+## Step 3 — Analyze and propose relationships
+
+Build a proposed relationship set for `${ISSUE_ID}`. For each, capture the **direction**, the
+**other bead's ID + title**, the **kind** (blocked-by / blocks / related / parent), and a one-line
+**rationale grounded in evidence**. Also flag any **existing** relationship that looks wrong and
+should be removed.
+
+Be conservative: only propose a blocking edge when there is a real ordering constraint. Use
+**related** for soft associations. Never propose an edge that would create a **cycle**.
+
+## Step 4 — Confirm before writing
+
+This is **read-only until you confirm**. Present the proposed changes as a clear list (additions
+and any removals), then confirm via `mitto_ui_options_mitto(self_id: "@mitto:session_id",
+allow_free_text: true)`, e.g. "Apply these dependency changes to `${ISSUE_ID}`?" with options:
+
+- **"Apply all proposed changes"**
+- **"Apply additions only — skip removals"**
+- **"Make no changes"**
+- (free text) — to adjust, drop, or add specific edges first.
+
+Honour the choice exactly; do not create or remove any edge the user did not approve. If nothing
+needs changing, say so, then skip to the final **Clean up this conversation** step.
+
+## Step 5 — Apply the approved relationships
+
+Use the correct command for each kind. The blocked bead is always the **first** argument to
+`bd dep add`:
+
+```bash
+# ${ISSUE_ID} is blocked by / depends on <blocker>:
+bd dep add ${ISSUE_ID} --blocked-by <blocker-id>
+
+# ${ISSUE_ID} blocks <blocked> (it must be done first):
+bd dep ${ISSUE_ID} --blocks <blocked-id>
+
+# Non-blocking, bidirectional association:
+bd dep relate ${ISSUE_ID} <other-id>
+
+# Reparent under an epic/feature (empty string removes the parent):
+bd update ${ISSUE_ID} --parent <parent-id>
+```
+
+To remove an incorrect relationship the user approved removing:
+
+```bash
+bd dep remove <blocked-id> <blocker-id>   # remove a blocking edge
+bd dep unrelate ${ISSUE_ID} <other-id>    # remove a related link
+```
+
+After wiring, **verify no cycles were introduced**:
+
+```bash
+bd dep cycles
+```
+
+If a cycle is reported, undo the offending edge and tell the user which relationship caused it.
+
+Finally, append an audit note to the bead recording what changed and why:
+
+```bash
+bd update ${ISSUE_ID} --append-notes "Dependencies updated: <edges added/removed, reparenting> — <why, grounded in the analysis above>."
+```
+
+## Step 6 — Final summary
+
+Show the updated relationship graph and confirm the bead's readiness:
+
+```bash
+bd dep tree ${ISSUE_ID}
+bd show ${ISSUE_ID} --json   # confirm parent and status
+```
+
+Summarise what changed (edges added/removed, reparenting) and state whether `${ISSUE_ID}` is now
+**ready** (unblocked) or still **blocked**, and by which beads. If it is now ready, suggest the
+**"Start work"** prompt.
+
+## Step 7 — Clean up this conversation
+
+This conversation was spawned solely to wire up `${ISSUE_ID}`'s relationships, and that work is now
+complete (the durable record lives in the bead and its dependency graph). Tidy up so the
+conversation list does not accumulate finished one-off tasks:
+
+1. Notify the user of the outcome so they still get feedback after the conversation disappears:
+
+   `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Dependencies: ${ISSUE_ID}", message: "<edges added/removed and whether the bead is now ready or still blocked>", style: "success")`
+
+2. Self-destruct this conversation:
+
+   `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
+
+Run this on **every** completion path — whether edges were changed or nothing needed changing —
+because the conversation has served its single purpose. The deletion is deferred until your turn
+finishes, so the notification is delivered first. If the delete tool is unavailable, skip this step
+silently.

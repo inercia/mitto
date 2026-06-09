@@ -281,9 +281,13 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 			return // Not a security-relevant event, skip logging
 		}
 
-		// Extract username from session if available
+		// Extract username: prefer identity set in context by auth middleware
+		// (covers IP allow list and Cloudflare JWT paths), then fall back to
+		// reading the session cookie directly.
 		username := ""
-		if a.authMgr != nil {
+		if ctxUser, ok := r.Context().Value(contextKeyAuthUser).(string); ok && ctxUser != "" {
+			username = ctxUser
+		} else if a.authMgr != nil {
 			if session, valid := a.authMgr.GetSessionFromRequest(r); valid {
 				username = session.Username
 			}

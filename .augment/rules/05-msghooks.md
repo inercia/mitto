@@ -9,6 +9,8 @@ globs:
 
 The `internal/processors` package provides three processor modes for message pre/post-processing. Processors are loaded from YAML in `MITTO_DIR/processors/` and the embedded `config/processors/builtin/` directory.
 
+**Multi-document files:** A single `.yaml`/`.yml` file may contain multiple `---`-separated processor documents. Each document is validated and loaded independently; invalid or empty documents are skipped with a warning. For workspace processors in multi-document files, the per-workspace enable/disable toggle is recorded in `.mittorc` (processors override list) rather than edited in place — `UpdateProcessorFileEnabled` refuses multi-document files; use `SaveWorkspaceRCProcessorEnabled` instead. `IsMultiDocFile(path)` detects this case.
+
 > Full schema and CEL reference: `docs/config/processors.md`
 
 ## Three Processor Modes
@@ -32,16 +34,16 @@ Prompt-mode processor auxiliary sessions have access to Mitto's MCP tools (e.g.,
 ```yaml
 name: my-processor
 when:                  # required block — BOTH on: and match: are required
-  on: userPrompt       # required: userPrompt | agentResponded
+  on: userPrompt       # required: userPrompt | agentResponded | agentIdle
   match: first         # required: first | all | allExceptFirst (NOT all-except-first)
   rerun:               # optional; only valid with on:userPrompt + match:first
     afterSentMsgs: 15
     afterTokens: 50000
     afterTime: 1h
-  # agentResponded-only (forbidden on userPrompt):
+  # agentResponded/agentIdle-only (forbidden on userPrompt):
   stopReasons: [end_turn]   # default ["end_turn"]; valid: end_turn max_tokens max_turn_requests refusal cancelled
   excludeOrigins: []        # origins to skip: user queue periodic-runner mcp-send-prompt
-  cadence:             # optional throttle; only valid with on:agentResponded + match:all/allExceptFirst
+  cadence:             # optional throttle; only valid with on:agentResponded|agentIdle + match:all/allExceptFirst
     everyNTurns: 3     # fire every N agent responses (pre-increment; everyNTurns:3 → turns 3,6,9,…)
     everyNTokens: 15000 # AND: after N cumulative tokens since last firing
     afterInterval: 5m  # AND: after this wall-clock duration since last firing
@@ -50,7 +52,7 @@ enabled: true          # false = never loads (build-time gate)
 enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'  # CEL runtime gate
 on_error: skip         # skip | fail
 
-# Text-mode only (forbidden for agentResponded):
+# Text-mode only (forbidden for agentResponded/agentIdle):
 text: "static text"
 mutate: prepend        # prepend | append — REQUIRED when text: is set
 
@@ -58,7 +60,8 @@ mutate: prepend        # prepend | append — REQUIRED when text: is set
 command: ./script.sh
 input: message         # message | conversation | none
 output: prepend        # transform | prepend | append | discard
-                       # transform/prepend/append FORBIDDEN for agentResponded
+                       # transform/prepend/append FORBIDDEN for agentResponded/agentIdle
+outputFormat: json     # json | raw — raw uses stdout verbatim (trimmed); command-mode only
 
 # Prompt-mode only:
 prompt: |
@@ -68,8 +71,10 @@ timeout: 300s
 
 ## Phase/Field Rules
 
-| Field / output              | `on: userPrompt`      | `on: agentResponded`         |
-| --------------------------- | --------------------- | ---------------------------- |
+`agentResponded` and `agentIdle` share **identical** field/output rules (column below). They differ only in *when* they fire: `agentResponded` fires after every turn; `agentIdle` fires only on the turn where the agent drains its queue and goes idle.
+
+| Field / output              | `on: userPrompt`      | `on: agentResponded` / `on: agentIdle` |
+| --------------------------- | --------------------- | -------------------------------------- |
 | `text:`                     | ✅                    | ❌ forbidden                 |
 | `mutate:` (req w/ text)     | ✅                    | ❌ forbidden                 |
 | `command:` / `prompt:`      | ✅                    | ✅                           |
@@ -82,7 +87,9 @@ timeout: 300s
 | `output: actionButtons`     | ❌                    | ✅ JSON `[{label,prompt},…]` |
 | `output: userData`          | ❌                    | ✅ JSON `{key:value}` patch  |
 
-`Manager.ApplyAfter()` runs agentResponded processors; results (`ApplyAfterResult`) are consumed by `BackgroundSession.applyAfterProcessors()` → notifications via `OnNotification`, action buttons via the existing store, user-data via atomic write.
+`Manager.ApplyAfter()` runs both `agentResponded` and `agentIdle` processors; results (`ApplyAfterResult`) are consumed by `BackgroundSession.applyAfterProcessors()` → notifications via `OnNotification`, action buttons via the existing store, user-data via atomic write.
+
+**`agentIdle` gating**: `BackgroundSession.processNextQueuedMessage()` returns `dispatched bool`; the prompt loop passes `sessionIdle = !dispatched` into `applyAfterProcessors` → `AfterProcessorInput.SessionIdle`. In `ApplyAfter`, an `agentIdle` processor is skipped when `!SessionIdle`, but its cadence counters are still pre-incremented (NOT reset), so a queued burst accumulates toward cadence and the processor fires once at the idle breakpoint. Use `agentIdle` for memory/insight processors that need the full exchange; use `agentResponded` for per-turn side effects.
 
 **Enable layers**: `enabled: false` → never loaded; `enabledWhen` (CEL) → loaded but skipped at runtime. Both together = never loaded.
 
@@ -106,10 +113,16 @@ processors:
 | `delegate-to-coder`   | text    | _(varies)_                                                      | Delegate work to coder session     |
 | `delegate-playwright` | text    | _(varies)_                                                      | Delegate Playwright tests          |
 | `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
-| `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic`       | Maintain `.augment/rules/` files   |
-| `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic`   | Maintain `CLAUDE.md` / `.claude/`  |
-| `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md` (agentResponded, cadence: every 5 turns/30k tokens/5m) |
-| `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields (agentResponded, cadence: every 3 turns/15k tokens) |
+| `use-ui-tools`        | text    | `tools.hasPattern("mitto_ui_*")`                                | Remind agent to use Mitto UI tools |
+| `beads-track-tasks`   | text    | `commandExists("bd")`                                           | Remind agent to track tasks in beads |
+| `beads-ready-tasks`   | text    | `commandExists("bd") && dirExists(".beads")`                    | Remind agent to review ready beads tasks |
+| `beads-prime`         | command | `commandExists("bd") && dirExists(".beads")`                    | Inject `bd prime --memories-only` memories at conversation start (output: prepend, outputFormat: raw) |
+| `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")` | Generate initial `.augment/rules/` files |
+| `auggie-update-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")`  | Update rules from conversation insights (agentIdle, cadence: every 6 turns/15k tokens/5m) |
+| `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")` | Generate initial memory files |
+| `claude-update-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && (fileExists("CLAUDE.md") \|\| dirExists(".claude"))` | Update memory from conversation insights (agentIdle, cadence: every 6 turns/15k tokens/5m) |
+| `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md` (agentIdle, cadence: every 3 turns/8k tokens/3m) |
+| `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields (agentIdle, cadence: every 2 turns/6k tokens) |
 | `identify-workspace-metadata` | prompt | `workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic` | Auto-fill `metadata.description` and `metadata.url` in `.mittorc` |
 
 ## CEL Context for `enabledWhen`
@@ -121,6 +134,7 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | `acp.*`                 | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
 | `session.*`             | `session.isPeriodic`, `session.isChild`, `session.id`                       |
 | `workspace.*`           | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
+| `children.*`            | `children.exists`, `children.count`, `children.mcp_count`, `children.promptingCount`, `children.idleCount` |
 | `tools.*`               | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
 | `commandExists(cmd)`    | `commandExists("git")`, `commandExists("docker")` — checks system PATH |
 | `fileExists(path)`    | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
@@ -140,15 +154,15 @@ Common mistakes rejected by the loader:
 - **`all-except-first`** (kebab) — use `allExceptFirst` (camelCase)
 - **Text-mode without `mutate:`** — required; `prepend` or `append`
 - **`rerun:` with `match: all`** — only valid with `match: first`
-- **`cadence:` with `on: userPrompt`** — only valid with `agentResponded` (rule 12)
+- **`cadence:` with `on: userPrompt`** — only valid with `agentResponded`/`agentIdle` (rule 12)
 - **`cadence:` with `match: first`** — not valid; firing once needs no cadence (rule 13)
 - **`cadence:` with no threshold fields** — at least one must be set (rule 14)
 - **Negative `everyNTurns`/`everyNTokens`** — must be non-negative (rule 15)
 - **Unparseable `afterInterval`** — must be a valid Go duration string like `"5m"` (rule 16)
 
 `cadence` and `rerun` are mutually exclusive by construction: `rerun` only applies to `on:
-userPrompt` and `cadence` only applies to `on: agentResponded`.
+userPrompt` and `cadence` only applies to `on: agentResponded` / `on: agentIdle`.
 
 ## Defaults
 
-`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `working_dir=session`, `on_error=skip`.
+`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `outputFormat=json`, `working_dir=session`, `on_error=skip`.

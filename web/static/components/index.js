@@ -4,15 +4,17 @@
 export { Message } from "./Message.js";
 export { ChatInput } from "./ChatInput.js";
 export { SettingsDialog } from "./SettingsDialog.js";
-export { WorkspacesDialog } from "./WorkspacesDialog.js";
 export { ConfirmDialog } from "./ConfirmDialog.js";
 export { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
-export { UserDataPanel } from "./UserDataPanel.js";
-export { SessionPanel } from "./SessionPanel.js";
-export { ToastContainer } from "./ToastContainer.js";
+export { WorkspaceBadge, WorkspacePill } from "./WorkspaceBadge.js";
+export { DeleteDialog } from "./DeleteDialog.js";
+export { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog.js";
+export { NewSessionWorkspaceDialog } from "./NewSessionWorkspaceDialog.js";
+export { SessionItem } from "./SessionItem.js";
+export { SessionList } from "./SessionList.js";
 
 // Icon components
 export {
@@ -32,8 +34,6 @@ export {
   MagicWandIcon,
   ImageIcon,
   LightningIcon,
-  RobotIcon,
-  PersonIcon,
   StopIcon,
   ErrorIcon,
   ServerIcon,
@@ -47,5 +47,6 @@ export {
   ArchiveIcon,
   ArchiveFilledIcon,
   SearchIcon,
-  TagIcon,
+  LinkIcon,
+  RobotIcon,
 } from "./Icons.js";

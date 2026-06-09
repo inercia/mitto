@@ -411,6 +411,57 @@ export function ConversationPropertiesPanel({
     };
   }, [isOpen, sessionId]);
 
+  // Listen for WebSocket periodic_updated events so the periodic section (and the
+  // fresh-context toggle) stays in sync when changed from another panel/client.
+  useEffect(() => {
+    if (!isOpen || !sessionId) return;
+
+    const handlePeriodicUpdated = (event) => {
+      const {
+        sessionId: updatedSessionId,
+        periodicConfigured,
+        periodicEnabled,
+        frequency,
+        nextScheduledAt,
+        freshContext,
+      } = event.detail || {};
+      if (updatedSessionId !== sessionId) return;
+
+      // Periodic config was deleted — clear local state.
+      if (periodicConfigured === false) {
+        setPeriodicConfig(null);
+        return;
+      }
+
+      // Merge into existing config (the panel fetches the full config on open).
+      setPeriodicConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              enabled: periodicEnabled,
+              frequency: frequency || prev.frequency,
+              next_scheduled_at: nextScheduledAt ?? prev.next_scheduled_at,
+              fresh_context:
+                typeof freshContext === "boolean"
+                  ? freshContext
+                  : prev.fresh_context,
+            }
+          : prev,
+      );
+    };
+
+    window.addEventListener(
+      "mitto:periodic_config_updated",
+      handlePeriodicUpdated,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto:periodic_config_updated",
+        handlePeriodicUpdated,
+      );
+    };
+  }, [isOpen, sessionId]);
+
   // Handle title edit start
   const handleStartEditTitle = useCallback(() => {
     setEditedTitle(sessionInfo?.name || "");
@@ -482,6 +533,40 @@ export function ConversationPropertiesPanel({
         setFlagsError("Failed to save setting");
       } finally {
         setSavingFlags((prev) => ({ ...prev, [flagName]: false }));
+      }
+    },
+    [sessionId],
+  );
+
+  // Toggle "fresh context" for a periodic conversation. PATCHes the periodic
+  // config so each scheduled run starts with a clean agent context (no history
+  // injection, new ACP session). Updates local state optimistically from the
+  // server-authoritative response.
+  const handleFreshContextChange = useCallback(
+    async (e) => {
+      const newValue = e.target.checked;
+      if (!sessionId) return;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fresh_context: newValue }),
+          },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setPeriodicConfig((prev) =>
+            prev
+              ? { ...prev, fresh_context: data.fresh_context ?? newValue }
+              : prev,
+          );
+        } else {
+          console.error("Failed to update fresh_context");
+        }
+      } catch (err) {
+        console.error("Failed to update fresh_context:", err);
       }
     },
     [sessionId],
@@ -1006,69 +1091,22 @@ export function ConversationPropertiesPanel({
                 </span>
               </p>
             `}
-            ${callbackConfig?.callback_url && html`
-              <div class="mt-3 pt-3 border-t border-slate-700/50">
-                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
-                <div class="flex items-center gap-1.5">
-                  <button
-                    onClick=${handleCopyCallbackUrl}
-                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-                    title="Copy callback URL to clipboard"
-                  >
-                    ${callbackCopied ? '✓ Copied!' : '📋 Copy URL'}
-                  </button>
-                  <button
-                    onClick=${handleRotateCallback}
-                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-                    title="Generate new callback URL (invalidates old one)"
-                  >
-                    🔄 Rotate
-                  </button>
-                  <button
-                    onClick=${handleRevokeCallback}
-                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors"
-                    title="Revoke callback URL"
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            `}
-            ${!callbackConfig?.callback_url && html`
-              <div class="mt-3 pt-3 border-t border-slate-700/50">
-                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
-                <button
-                  onClick=${handleEnableCallback}
-                  class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
-                  title="Generate a callback URL for triggering this periodic conversation externally"
-                >
-                  🔗 Enable Callback URL
-                </button>
-              </div>
-            `}
-          </div>
-        `}
-
-        <!-- Callback URL when periodic is disabled -->
-        ${!periodicConfig?.enabled && callbackConfig?.callback_url && html`
-          <div class="mt-2">
-            <label class="block text-xs font-medium text-slate-500 mb-1">Callback URL</label>
-            <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
-            <div class="flex items-center gap-1.5">
-              <button
-                onClick=${handleCopyCallbackUrl}
-                class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors"
-                title="Copy callback URL"
+            <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
+            <div class="mt-3 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                id="properties-fresh-context-checkbox-${sessionId}"
+                checked=${!!periodicConfig.fresh_context}
+                onInput=${handleFreshContextChange}
+                class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0"
+                data-testid="properties-fresh-context-checkbox"
+              />
+              <label
+                for="properties-fresh-context-checkbox-${sessionId}"
+                class="text-slate-300 cursor-pointer select-none"
               >
-                ${callbackCopied ? '✓ Copied!' : '📋 Copy URL'}
-              </button>
-              <button
-                onClick=${handleRevokeCallback}
-                class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors"
-                title="Revoke callback URL"
-              >
-                ✕ Revoke
-              </button>
+                Start each run with a fresh context
+              </label>
             </div>
           </div>
         `}
@@ -1117,13 +1155,45 @@ export function ConversationPropertiesPanel({
   }
 
   function renderAdvancedSection() {
-    // Only show if there are available flags
-    if (!availableFlags || availableFlags.length === 0) {
+    // Only show if there are available flags or periodic config (for callback URL)
+    if ((!availableFlags || availableFlags.length === 0) && !periodicConfig) {
       return null;
     }
 
     return html`
       <div class="pt-4">
+        <!-- Callback URL Section (only for periodic conversations) -->
+        ${periodicConfig && html`
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Callback URL</label>
+            ${periodicConfig.enabled ? html`
+              ${callbackConfig?.callback_url ? html`
+                <div class="flex items-center gap-1.5">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Copy callback URL to clipboard">
+                    ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
+                  </button>
+                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
+                </div>
+              ` : html`
+                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
+                  🔗 Enable Callback URL
+                </button>
+              `}
+            ` : html`
+              ${callbackConfig?.callback_url ? html`
+                <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
+                <div class="flex items-center gap-1.5">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">✕ Revoke</button>
+                </div>
+              ` : html`
+                <p class="text-xs text-slate-500">No callback URL configured.</p>
+              `}
+            `}
+          </div>
+        `}
+
         <!-- Collapsible Header -->
         <button
           type="button"

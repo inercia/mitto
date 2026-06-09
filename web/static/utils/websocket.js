@@ -136,6 +136,39 @@ export function calculateReconnectDelay(attempt, options = {}) {
   return Math.floor(exponentialDelay + jitter);
 }
 
+// Exponential backoff configuration for session creation failures
+// Higher base delay than reconnect (2s vs 1s) since each failed POST blocks an ACP queue slot
+const SESSION_CREATION_BASE_DELAY_MS = 2000; // Initial delay: 2 seconds
+const SESSION_CREATION_MAX_DELAY_MS = 30000; // Maximum delay: 30 seconds
+const SESSION_CREATION_JITTER_FACTOR = 0.3; // Add up to 30% random jitter
+
+/**
+ * Calculate session creation retry delay with exponential backoff and jitter.
+ * Uses the same algorithm as calculateReconnectDelay but with a higher base delay
+ * to account for the heavier cost of each failed session creation request.
+ * @param {number} attempt - The attempt number (0-based)
+ * @param {object} options - Optional configuration overrides for testing
+ * @param {number} options.baseDelay - Base delay in ms (default: 2000)
+ * @param {number} options.maxDelay - Max delay in ms (default: 30000)
+ * @param {number} options.jitterFactor - Jitter factor 0-1 (default: 0.3)
+ * @param {function} options.random - Random function for testing (default: Math.random)
+ * @returns {number} Delay in milliseconds
+ */
+export function calculateSessionCreationDelay(attempt, options = {}) {
+  const baseDelay = options.baseDelay ?? SESSION_CREATION_BASE_DELAY_MS;
+  const maxDelay = options.maxDelay ?? SESSION_CREATION_MAX_DELAY_MS;
+  const jitterFactor = options.jitterFactor ?? SESSION_CREATION_JITTER_FACTOR;
+  const random = options.random ?? Math.random;
+
+  // Exponential backoff: base * 2^attempt, capped at max
+  const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+
+  // Add jitter to prevent thundering herd
+  const jitter = exponentialDelay * jitterFactor * random();
+
+  return Math.floor(exponentialDelay + jitter);
+}
+
 // =============================================================================
 // Reconnect Debounce
 // =============================================================================
@@ -320,4 +353,7 @@ export const WEBSOCKET_CONSTANTS = {
   RECONNECT_JITTER_FACTOR,
   RECONNECT_DEBOUNCE_MS,
   MAX_SESSION_RECONNECT_ATTEMPTS,
+  SESSION_CREATION_BASE_DELAY_MS,
+  SESSION_CREATION_MAX_DELAY_MS,
+  SESSION_CREATION_JITTER_FACTOR,
 };

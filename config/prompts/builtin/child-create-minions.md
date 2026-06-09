@@ -1,9 +1,11 @@
 ---
-name: "Distribute work among children"
+icon: "layers"
+name: "Distribute among children"
 description: "Break down a complex problem into parallel tasks, coordinate workers, and iterate until solved"
 group: "Work flow"
+menus: prompts, conversation
 backgroundColor: "#FFF9C4"
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation'
 ---
 
 Decompose the current problem into parallel subtasks, dispatch to child conversations,

@@ -37,6 +37,9 @@ const (
 
 	// CommandMCPInstall installs an MCP server for the agent.
 	CommandMCPInstall AgentCommand = "mcp-install.sh"
+
+	// CommandMCPRemove removes an MCP server from the agent's configuration.
+	CommandMCPRemove AgentCommand = "mcp-remove.sh"
 )
 
 // KnownCommands is the list of all well-known agent commands.
@@ -45,6 +48,7 @@ var KnownCommands = []AgentCommand{
 	CommandStatus,
 	CommandMCPList,
 	CommandMCPInstall,
+	CommandMCPRemove,
 }
 
 // DefaultTimeout is the default timeout for running agent commands.
@@ -64,6 +68,33 @@ type MCPMetadata struct {
 	Scopes []string `yaml:"scopes" json:"scopes"`
 }
 
+// ConstraintSpec defines a pattern-matching rule for auto-selecting a config option value.
+// It mirrors config.ACPServerConstraint but is defined here to avoid an import cycle
+// (internal/config must not import internal/agents). Mapping from ConstraintSpec to
+// config.ACPServerConstraint happens in the web layer when seeding discovered agents.
+type ConstraintSpec struct {
+	// MatchMode determines how Pattern is matched against option names.
+	// Valid values: "contains", "exact", "startsWith", "regex", "lookAlike"
+	MatchMode string `yaml:"matchMode" json:"matchMode"`
+	// Pattern is the text to match against option names (e.g., "Opus").
+	Pattern string `yaml:"pattern" json:"pattern"`
+}
+
+// AgentDefaults holds the default values that should be seeded into ACPServerSettings
+// when a new ACP server is discovered for this agent. All fields are optional.
+type AgentDefaults struct {
+	// Env is a map of environment variables to set by default when starting this agent.
+	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	// Constraints is an optional map of config option auto-selection rules keyed by
+	// option category (e.g., "model"). Mirrors ACPServer.Constraints.
+	Constraints map[string]*ConstraintSpec `yaml:"constraints,omitempty" json:"constraints,omitempty"`
+	// Tags is a list of categorization tags applied to the ACP server by default.
+	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	// AutoApprove sets whether the agent auto-approves tool-call permission requests
+	// by default.
+	AutoApprove bool `yaml:"autoApprove" json:"autoApprove"`
+}
+
 // AgentMetadata holds the parsed content of a metadata.yaml file.
 type AgentMetadata struct {
 	Name        string         `yaml:"name" json:"name"`
@@ -75,6 +106,10 @@ type AgentMetadata struct {
 	License     string         `yaml:"license,omitempty" json:"license,omitempty"`
 	Install     *InstallMethod `yaml:"install,omitempty" json:"install,omitempty"`
 	MCP         *MCPMetadata   `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	// Defaults holds optional values that are seeded into ACPServerSettings at
+	// agent-discovery time. When absent (nil) the ACP server is created with no
+	// pre-filled defaults, preserving existing behaviour.
+	Defaults *AgentDefaults `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 }
 
 // AgentDefinition represents a fully resolved agent definition with its
@@ -175,6 +210,23 @@ type InstallOutput struct {
 
 // MCPInstallOutput is the expected JSON output from mcp-install.sh.
 type MCPInstallOutput struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Name    string `json:"name,omitempty"`
+}
+
+// MCPRemoveInput is the expected JSON input for mcp-remove.sh.
+type MCPRemoveInput struct {
+	// Name is the MCP server name to remove
+	Name string `json:"name"`
+	// Scope is the MCP scope (e.g., "user", "project")
+	Scope string `json:"scope,omitempty"`
+	// Path is the workspace path (for project-scoped removal)
+	Path string `json:"path,omitempty"`
+}
+
+// MCPRemoveOutput is the expected JSON output from mcp-remove.sh.
+type MCPRemoveOutput struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Name    string `json:"name,omitempty"`

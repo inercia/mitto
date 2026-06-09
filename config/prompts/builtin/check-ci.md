@@ -1,5 +1,7 @@
 ---
+icon: "check"
 name: "Check CI"
+menus: prompts
 description: "Check CI pipeline status and report results"
 group: "CI"
 backgroundColor: "#BBDEFB"

@@ -60,7 +60,7 @@ export function ConfirmDialog({
 
   return html`
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50"
       onClick=${handleBackdropClick}
       data-testid="confirm-dialog-backdrop"
     >

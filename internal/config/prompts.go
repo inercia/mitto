@@ -33,6 +33,17 @@ type PromptFile struct {
 	// If empty, the prompt will appear in an "Other" section.
 	Group string `yaml:"group,omitempty" json:"group,omitempty"`
 
+	// Menus is a comma-separated list of UI menus this prompt should appear in
+	// (beyond the default ChatInput dropup). For example, "conversation" makes the
+	// prompt available in the per-conversation context menu. Multiple values may be
+	// combined, e.g. "conversation,group".
+	Menus string `yaml:"menus,omitempty" json:"menus,omitempty"`
+
+	// Requires is a comma-separated list of capability names this prompt needs
+	// (parsed like Menus). A menu only shows the prompt if the menu provides every
+	// capability the prompt requires. Empty means no requirements.
+	Requires string `yaml:"requires,omitempty" json:"requires,omitempty"`
+
 	// BackgroundColor is an optional hex color for the prompt button (e.g., "#E8F5E9").
 	BackgroundColor string `yaml:"backgroundColor,omitempty" json:"backgroundColor,omitempty"`
 
@@ -92,8 +103,11 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Name:            p.Name,
 		Prompt:          p.Content,
 		BackgroundColor: p.BackgroundColor,
+		Icon:            p.Icon,
 		Description:     p.Description,
 		Group:           p.Group,
+		Menus:           p.Menus,
+		Requires:        p.Requires,
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,

@@ -1,0 +1,115 @@
+---
+icon: "beads"
+name: "Discuss"
+menus: beadsIssues
+requires: parameters
+description: "Talk through a bead: resolve pending decisions or explore an aspect, then capture the conclusions back into the tracker"
+backgroundColor: "#F8BBD0"
+group: "Tasks"
+enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+# Beads: Discuss a Bead
+
+Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+The **target bead** is `${ISSUE_ID}`. Your job is to help the user **think through** this bead and
+reach actionable conclusions — by resolving decisions that are blocking progress, or by exploring an
+aspect of the bead in depth — then **capture the outcome back into the tracker**.
+
+> **Scope:** this is a *discussion and refinement* prompt. Do **not** implement the work, write
+> code, or change anything outside the beads tracker. You may only investigate, discuss, and — with
+> the user's confirmation — update this bead or create new beads.
+
+## Step 1 — Load the bead and its context
+
+```bash
+bd show ${ISSUE_ID} --long --json     # description, acceptance, design, notes, labels, status
+bd dep tree ${ISSUE_ID}               # blockers and what it blocks
+bd show ${ISSUE_ID} --children --json # existing child beads (if any)
+bd comments ${ISSUE_ID}               # prior discussion, if any
+```
+
+Read everything carefully. Where the bead references code or features, investigate the **codebase**
+just enough to discuss it knowledgeably — but remember you are not here to implement it.
+
+## Step 2 — Detect pending decisions
+
+Scan the bead for **decisions that are blocking progress or awaiting input**, e.g.:
+
+- Open questions in the description, notes, or comments ("should we…?", "TBD", "decide whether…")
+- Unresolved trade-offs between approaches, or an undefined acceptance criterion
+- A `blocked` / `deferred` status, or labels such as `needs-decision` / `question` / `discuss`
+- Ambiguity that would force an implementer to guess
+
+Decide: **are there pending decisions?** Then follow the matching branch below.
+
+## Step 3a — If decisions ARE pending
+
+1. **Present** each pending decision clearly: what must be decided, the options you see, and the
+   trade-offs / your recommendation for each.
+2. **Ask the user** to settle them: batch related decisions into a single
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)` call, offering your
+   best-guess option plus free text so they can confirm, pick, or override. Iterate until every
+   decision is resolved.
+3. **Confirm before writing** (Step 4), then **record the conclusions** — capturing the rationale,
+   not just the verdict:
+
+```bash
+bd comment ${ISSUE_ID} "Decision: <what was decided> — rationale: <why>"
+bd update ${ISSUE_ID} --append-notes "<decisions + rationale>"
+bd update ${ISSUE_ID} --body-file /tmp/bead-desc.md       # if the description needs revising
+bd update ${ISSUE_ID} --acceptance "<now-clear criteria>" # if a decision sharpened "done"
+```
+
+4. **Reflect the new state**: clear the flags the decision removed and set the bead's real status:
+
+```bash
+bd update ${ISSUE_ID} --remove-label needs-decision   # drop a resolved "needs-decision" label
+bd update ${ISSUE_ID} -s open                          # un-block now that it can proceed
+bd update ${ISSUE_ID} -p <0-4>                         # if the decision changed its priority
+```
+
+## Step 3b — If NO decisions are pending
+
+1. **Ask what to discuss**: use `mitto_ui_options_mitto(self_id: "@mitto:session_id",
+   allow_free_text: true)` to let the user pick a focus — e.g. *scope*, *approach / design*,
+   *acceptance criteria*, *risks & edge cases*, *priority*, *alternatives* — or describe their own.
+2. **Discuss it**, grounding the conversation in evidence: investigate the codebase, related beads,
+   and history as needed so your input is concrete rather than speculative. Ask follow-up questions
+   via `mitto_ui_options_mitto` and converge toward **actionable conclusions**.
+3. **Capture the insights** (after confirming, Step 4) into the bead:
+
+```bash
+bd comment ${ISSUE_ID} "<key insight or conclusion from the discussion>"
+bd update ${ISSUE_ID} --append-notes "<enriched understanding, decisions, references>"
+bd update ${ISSUE_ID} --body-file /tmp/bead-desc.md       # if the description should be enriched
+bd update ${ISSUE_ID} --design-file /tmp/bead-design.md   # if an approach emerged
+```
+
+4. **Optionally decompose**: if the discussion reveals separable work, propose sub-issues (title,
+   one-line scope, type/priority, and any sibling dependency). For a full breakdown defer to the
+   **"Decompose issue"** prompt; otherwise, after confirmation, create them:
+
+```bash
+bd create "<child title>" --parent ${ISSUE_ID} --type <type> --priority <0-4> --body-file /tmp/child.md
+bd dep add <blocked-child-id> --blocked-by <blocker-child-id>   # only if one must precede another
+```
+
+## Step 4 — Confirm before any write
+
+Everything above is **read-only until the user confirms**. Before updating the bead or creating any
+new bead, present exactly what you intend to change and get approval via
+`mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g. "Apply these
+updates to `${ISSUE_ID}`?" with options like **"Apply all"**, **"Apply some"** (free text), and
+**"Make no changes"**. Never write anything the user did not approve.
+
+## Step 5 — Final summary
+
+Summarise the discussion: the decisions resolved (with rationale) or the topic explored, which bead
+fields / labels / status changed, and any sub-issues created (IDs + titles). Reiterate that **no
+implementation was done** — point the user to the **"Start work"** prompt when the bead is ready.

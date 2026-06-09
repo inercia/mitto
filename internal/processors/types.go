@@ -86,14 +86,27 @@ const (
 	ErrorFail ErrorHandling = "fail"
 )
 
+// OutputFormat defines how command-mode stdout is interpreted.
+type OutputFormat string
+
+const (
+	// OutputFormatJSON (default) parses stdout as JSON ProcessorOutput.
+	OutputFormatJSON OutputFormat = "json"
+	// OutputFormatRaw uses trimmed stdout directly as both Message and Text.
+	// Useful when the command outputs plain text (e.g. markdown) rather than JSON.
+	// Command-mode only.
+	OutputFormatRaw OutputFormat = "raw"
+)
+
 // Default values for processor configuration.
 const (
-	DefaultTimeout     = 5 * time.Second
-	DefaultPriority    = 100
-	DefaultInput       = InputMessage
-	DefaultOutput      = OutputTransform
-	DefaultWorkingDir  = WorkingDirSession
-	DefaultErrorHandle = ErrorSkip
+	DefaultTimeout      = 5 * time.Second
+	DefaultPriority     = 100
+	DefaultInput        = InputMessage
+	DefaultOutput       = OutputTransform
+	DefaultWorkingDir   = WorkingDirSession
+	DefaultErrorHandle  = ErrorSkip
+	DefaultOutputFormat = OutputFormatJSON
 )
 
 // PromptFunc is a callback for executing prompt-mode processors.
@@ -111,6 +124,12 @@ const (
 	// PhaseAgentResponded fires processors after the agent has finished responding.
 	// Only command-mode and prompt-mode processors are allowed for this phase.
 	PhaseAgentResponded Phase = "agentResponded"
+	// PhaseAgentIdle fires processors after the agent has finished responding AND the
+	// message queue has been drained (the session goes idle). Within a burst of queued
+	// messages it fires once, at the idle breakpoint, so the processor sees the full
+	// exchange instead of a partial mid-burst turn. Same execution rules as
+	// agentResponded (only command-mode and prompt-mode processors are allowed).
+	PhaseAgentIdle Phase = "agentIdle"
 )
 
 // Match defines which messages in the sequence a processor applies to.
@@ -219,6 +238,12 @@ type Processor struct {
 	Input InputType `yaml:"input,omitempty" json:"input,omitempty"`
 	// Output defines how to use stdout: "transform", "prepend", "append", "discard".
 	Output OutputType `yaml:"output,omitempty" json:"output,omitempty"`
+	// OutputFormat defines how command-mode stdout is interpreted:
+	//   - "json" (default): stdout is parsed as JSON ProcessorOutput.
+	//   - "raw": trimmed stdout is used directly as both Message and Text,
+	//     enabling plain-text (e.g. markdown) output without a JSON wrapper.
+	// Command-mode only; ignored for text-mode and prompt-mode processors.
+	OutputFormat OutputFormat `yaml:"outputFormat,omitempty" json:"output_format,omitempty"`
 
 	// Timeout is the maximum execution time. Default: 5s.
 	Timeout Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
@@ -334,13 +359,16 @@ func (d Duration) Duration() time.Duration {
 
 // AfterProcessorInput captures the agent's completed turn for agentResponded processors.
 // Fields are serialized to JSON (camelCase) for the processor's stdin payload.
-// SessionDir is excluded from JSON serialization — it is used internally for state persistence.
+// SessionDir and WorkspaceUUID are excluded from JSON serialization — they are used internally.
 type AfterProcessorInput struct {
 	// SessionID is the current session identifier.
 	SessionID string `json:"sessionId"`
 	// SessionDir is the on-disk directory for this session (used for processor state persistence).
 	// This field is NOT serialized to JSON — it is for internal use only.
 	SessionDir string `json:"-"`
+	// WorkspaceUUID is the workspace identifier used to route prompt-mode processor dispatches.
+	// This field is NOT serialized to JSON — it is for internal use only.
+	WorkspaceUUID string `json:"-"`
 	// WorkingDir is the session's working directory (used for WorkingDirSession processors).
 	WorkingDir string `json:"workingDir,omitempty"`
 	// Origin is the source of the prompt: "user", "queue", or "periodic-runner".
@@ -360,6 +388,10 @@ type AfterProcessorInput struct {
 	StartedAt time.Time `json:"startedAt"`
 	// EndedAt is when the agent's response was fully received.
 	EndedAt time.Time `json:"endedAt"`
+	// SessionIdle is true when no further queued message was dispatched after this turn,
+	// i.e. the agent has drained its queue and gone idle. Used to gate agentIdle processors.
+	// This field is NOT serialized to JSON — it is for internal gating only.
+	SessionIdle bool `json:"-"`
 }
 
 // AfterToolCallSnapshot is a lightweight snapshot of one tool call from an agent turn.

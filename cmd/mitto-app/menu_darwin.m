@@ -2,6 +2,7 @@
 // This file is compiled separately to avoid duplicate symbol issues with CGO
 
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 
 // Forward declaration of Go callback functions
 extern void goMenuActionCallback(char* action);
@@ -13,6 +14,9 @@ extern void goAppDidBecomeActiveCallback(void);
 + (instancetype)sharedHandler;
 - (void)newConversation:(id)sender;
 - (void)closeConversation:(id)sender;
+- (void)archiveConversation:(id)sender;
+- (void)prevConversation:(id)sender;
+- (void)nextConversation:(id)sender;
 - (void)focusInput:(id)sender;
 - (void)toggleSidebar:(id)sender;
 - (void)showSettings:(id)sender;
@@ -35,7 +39,37 @@ extern void goAppDidBecomeActiveCallback(void);
 }
 
 - (void)closeConversation:(id)sender {
+    // If a viewer window has focus, close it instead of closing the conversation
+    NSWindow *keyWindow = [[NSApplication sharedApplication] keyWindow];
+    if (keyWindow && [keyWindow.delegate isKindOfClass:NSClassFromString(@"MittoViewerWindowDelegate")]) {
+        [keyWindow close];
+        return;
+    }
     goMenuActionCallback((char*)"close_conversation");
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(closeConversation:)) {
+        NSWindow *keyWindow = [[NSApplication sharedApplication] keyWindow];
+        if (keyWindow && [keyWindow.delegate isKindOfClass:NSClassFromString(@"MittoViewerWindowDelegate")]) {
+            menuItem.title = @"Close Window";
+        } else {
+            menuItem.title = @"Close Conversation";
+        }
+    }
+    return YES;
+}
+
+- (void)archiveConversation:(id)sender {
+    goMenuActionCallback((char*)"archive_conversation");
+}
+
+- (void)prevConversation:(id)sender {
+    goMenuActionCallback((char*)"prev_conversation");
+}
+
+- (void)nextConversation:(id)sender {
+    goMenuActionCallback((char*)"next_conversation");
 }
 
 - (void)focusInput:(id)sender {
@@ -272,6 +306,32 @@ void setupMacOSMenu(const char* appName) {
         [closeConvoItem setTarget:handler];
         [fileMenu addItem:closeConvoItem];
 
+        // Add "Archive Conversation" menu item with Cmd+Shift+A shortcut
+        NSMenuItem *archiveConvoItem = [[NSMenuItem alloc] initWithTitle:@"Archive Conversation"
+                                                                  action:@selector(archiveConversation:)
+                                                           keyEquivalent:@"a"];
+        [archiveConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift];
+        [archiveConvoItem setTarget:handler];
+        [fileMenu addItem:archiveConvoItem];
+
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+
+        // Add "Previous Conversation" menu item with Ctrl+Cmd+Up Arrow shortcut
+        NSMenuItem *prevConvoItem = [[NSMenuItem alloc] initWithTitle:@"Previous Conversation"
+                                                               action:@selector(prevConversation:)
+                                                        keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey]];
+        [prevConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagControl];
+        [prevConvoItem setTarget:handler];
+        [fileMenu addItem:prevConvoItem];
+
+        // Add "Next Conversation" menu item with Ctrl+Cmd+Down Arrow shortcut
+        NSMenuItem *nextConvoItem = [[NSMenuItem alloc] initWithTitle:@"Next Conversation"
+                                                               action:@selector(nextConversation:)
+                                                        keyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey]];
+        [nextConvoItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagControl];
+        [nextConvoItem setTarget:handler];
+        [fileMenu addItem:nextConvoItem];
+
         // Create Edit menu (for copy/paste support in WebView)
         NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
         [menuBar addItem:editMenuItem];
@@ -439,14 +499,20 @@ static BOOL gSwipeInProgress = NO;
 // The implementation tracks accumulated scroll delta during a gesture and only
 // triggers navigation when the gesture ends with a significant horizontal
 // displacement and minimal vertical displacement.
+//
+// Swipe events from viewer windows (identified by a MittoViewerWindowDelegate
+// window delegate) are ignored so that horizontal scrolling in the viewer does
+// not inadvertently switch conversations.
 void setupSwipeGestureRecognizer(void) {
     @autoreleasepool {
         // Monitor scroll wheel events to detect two-finger swipe gestures
         // We track the full gesture from start to end to accumulate the total delta
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel handler:^NSEvent *(NSEvent *event) {
-            // Only process events from the main window to avoid interfering with viewer windows
-            NSWindow *mainWindow = [NSApplication sharedApplication].mainWindow;
-            if (!mainWindow || ![event.window isEqual:mainWindow]) {
+            // Skip swipe navigation for viewer windows — viewer windows use
+            // MittoViewerWindowDelegate, so checking the delegate class is the
+            // most reliable way to distinguish them from the main window.
+            NSWindow *eventWindow = event.window;
+            if (!eventWindow || [eventWindow.delegate isKindOfClass:NSClassFromString(@"MittoViewerWindowDelegate")]) {
                 return event;
             }
 
@@ -519,6 +585,76 @@ void setupSwipeGestureRecognizer(void) {
             return event;
         }];
     }
+}
+
+// setupKeyboardShortcutMonitor installs a local event monitor that intercepts
+// Ctrl+Cmd+Arrow key events to prevent the macOS system beep.
+// WKWebView's responder chain can produce a beep for unrecognized key combinations
+// even when a native menu item or JavaScript handler processes the shortcut.
+// By intercepting keyDown events and returning nil for our shortcuts, the event
+// is consumed before it reaches the responder chain.
+void setupKeyboardShortcutMonitor(void) {
+    @autoreleasepool {
+        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
+            // Check for Ctrl+Cmd modifier (no Shift, no Option)
+            NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+            NSEventModifierFlags required = NSEventModifierFlagCommand | NSEventModifierFlagControl;
+            NSEventModifierFlags unwanted = NSEventModifierFlagShift | NSEventModifierFlagOption;
+
+            if ((flags & required) == required && !(flags & unwanted)) {
+                unsigned short keyCode = event.keyCode;
+                // keyCode 125 = Down Arrow, keyCode 126 = Up Arrow
+                if (keyCode == 126) {
+                    goMenuActionCallback((char*)"prev_conversation");
+                    return nil;  // Consume event — no beep
+                }
+                if (keyCode == 125) {
+                    goMenuActionCallback((char*)"next_conversation");
+                    return nil;  // Consume event — no beep
+                }
+            }
+            return event;
+        }];
+    }
+}
+
+// suppressTextEditingBeeps swizzles NSWindow's noResponderFor: method to
+// suppress the macOS system beep for text editing selectors.
+// WKWebView handles text editing (Delete, Forward Delete, etc.) in its web
+// process, but the key events can also propagate up the native responder chain.
+// When no native responder handles selectors like deleteBackward:, macOS calls
+// NSBeep(). This swizzle silently ignores those selectors instead of beeping.
+void suppressTextEditingBeeps(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class windowClass = [NSWindow class];
+        SEL originalSel = @selector(noResponderFor:);
+        Method originalMethod = class_getInstanceMethod(windowClass, originalSel);
+
+        // Store the original implementation
+        typedef void (*NoResponderForIMP)(id, SEL, SEL);
+        __block NoResponderForIMP originalIMP = (NoResponderForIMP)method_getImplementation(originalMethod);
+
+        // Replace with our implementation that suppresses beeps for text editing
+        IMP newIMP = imp_implementationWithBlock(^(NSWindow *self, SEL eventSelector) {
+            // Suppress beep for text editing selectors that WKWebView handles internally
+            if (eventSelector == @selector(deleteBackward:) ||
+                eventSelector == @selector(deleteForward:) ||
+                eventSelector == @selector(insertNewline:) ||
+                eventSelector == @selector(insertTab:) ||
+                eventSelector == @selector(cancelOperation:) ||
+                eventSelector == @selector(moveUp:) ||
+                eventSelector == @selector(moveDown:) ||
+                eventSelector == @selector(moveLeft:) ||
+                eventSelector == @selector(moveRight:)) {
+                return;
+            }
+            // Call original implementation for all other selectors
+            originalIMP(self, originalSel, eventSelector);
+        });
+
+        method_setImplementation(originalMethod, newIMP);
+    });
 }
 
 // Window delegate to prevent fullscreen and handle zoom button clicks
@@ -637,6 +773,19 @@ void disableWindowFullscreen(void) {
                       dispatch_get_main_queue(), applyToAllWindows);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                       dispatch_get_main_queue(), applyToAllWindows);
+    }
+}
+
+// setWindowFrameAutosaveName enables automatic saving/restoring of the main window's
+// frame (position and size) across app launches. Uses NSUserDefaults internally.
+// Must be called after the window is created (use w.Dispatch).
+void setWindowFrameAutosaveName(void) {
+    @autoreleasepool {
+        NSWindow *window = [[NSApplication sharedApplication] mainWindow];
+        if (window) {
+            [window setFrameAutosaveName:@"MittoMainWindow"];
+            NSLog(@"[Mitto] Window frame autosave enabled");
+        }
     }
 }
 

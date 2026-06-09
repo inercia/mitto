@@ -9,60 +9,16 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 )
 
-// ---- WorkspaceSettings helper method tests ----
+// ---- WorkspaceSettings AuxiliaryModelSelection tests ----
 
-func TestWorkspaceSettings_HasDedicatedAuxiliary(t *testing.T) {
-	tests := []struct {
-		name     string
-		server   string
-		wantTrue bool
-	}{
-		{"empty string", "", false},
-		{"none lowercase", "none", false},
-		{"none uppercase", "NONE", false},
-		{"none mixed", "None", false},
-		{"real server name", "Auggie (Sonnet 4.6)", true},
-		{"another server", "claude", true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			w := &WorkspaceSettings{AuxiliaryACPServer: tc.server}
-			if got := w.HasDedicatedAuxiliary(); got != tc.wantTrue {
-				t.Errorf("HasDedicatedAuxiliary() = %v, want %v (server=%q)", got, tc.wantTrue, tc.server)
-			}
-		})
-	}
-}
-
-func TestWorkspaceSettings_IsAuxiliaryDisabled(t *testing.T) {
-	tests := []struct {
-		name     string
-		server   string
-		wantTrue bool
-	}{
-		{"empty string", "", false},
-		{"none lowercase", "none", true},
-		{"none uppercase", "NONE", true},
-		{"none mixed", "None", true},
-		{"real server name", "Auggie (Sonnet 4.6)", false},
-		{"another server", "claude", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			w := &WorkspaceSettings{AuxiliaryACPServer: tc.server}
-			if got := w.IsAuxiliaryDisabled(); got != tc.wantTrue {
-				t.Errorf("IsAuxiliaryDisabled() = %v, want %v (server=%q)", got, tc.wantTrue, tc.server)
-			}
-		})
-	}
-}
-
-func TestWorkspaceSettings_AuxiliaryACPServer_JSONRoundTrip(t *testing.T) {
+func TestWorkspaceSettings_AuxiliaryModelSelection_JSONRoundTrip(t *testing.T) {
 	w := WorkspaceSettings{
-		ACPServer:          "auggie",
-		ACPCommand:         "auggie --acp",
-		WorkingDir:         "/proj",
-		AuxiliaryACPServer: "Auggie (Sonnet 4.6)",
+		ACPServer:  "auggie",
+		WorkingDir: "/proj",
+		AuxiliaryModelSelection: &ACPServerConstraint{
+			MatchMode: "contains",
+			Pattern:   "Haiku",
+		},
 	}
 	data, err := json.Marshal(w)
 	if err != nil {
@@ -72,19 +28,21 @@ func TestWorkspaceSettings_AuxiliaryACPServer_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if got.AuxiliaryACPServer != w.AuxiliaryACPServer {
-		t.Errorf("AuxiliaryACPServer = %q, want %q", got.AuxiliaryACPServer, w.AuxiliaryACPServer)
+	if got.AuxiliaryModelSelection == nil {
+		t.Fatal("AuxiliaryModelSelection should not be nil after round-trip")
 	}
-	if !got.HasDedicatedAuxiliary() {
-		t.Error("HasDedicatedAuxiliary() should be true after round-trip")
+	if got.AuxiliaryModelSelection.MatchMode != "contains" {
+		t.Errorf("MatchMode = %q, want %q", got.AuxiliaryModelSelection.MatchMode, "contains")
+	}
+	if got.AuxiliaryModelSelection.Pattern != "Haiku" {
+		t.Errorf("Pattern = %q, want %q", got.AuxiliaryModelSelection.Pattern, "Haiku")
 	}
 }
 
-func TestWorkspaceSettings_AuxiliaryACPServer_JSONOmitempty(t *testing.T) {
-	// When AuxiliaryACPServer is empty, it should be omitted from JSON
+func TestWorkspaceSettings_AuxiliaryModelSelection_JSONOmitempty(t *testing.T) {
+	// When AuxiliaryModelSelection is nil, it should be omitted from JSON
 	w := WorkspaceSettings{
 		ACPServer:  "auggie",
-		ACPCommand: "auggie --acp",
 		WorkingDir: "/proj",
 	}
 	data, err := json.Marshal(w)
@@ -95,8 +53,12 @@ func TestWorkspaceSettings_AuxiliaryACPServer_JSONOmitempty(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
+	if _, ok := raw["auxiliary_model_selection"]; ok {
+		t.Error("auxiliary_model_selection should be omitted from JSON when nil")
+	}
+	// Also confirm old field is gone
 	if _, ok := raw["auxiliary_acp_server"]; ok {
-		t.Error("auxiliary_acp_server should be omitted from JSON when empty")
+		t.Error("auxiliary_acp_server should not appear in serialized workspace JSON")
 	}
 }
 
@@ -106,8 +68,8 @@ func TestLoadWorkspacesFromFile_JSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.json")
 	content := `{"workspaces":[
-		{"acp_server":"auggie","acp_command":"auggie --acp","working_dir":"/proj1"},
-		{"acp_server":"claude","acp_command":"claude --acp","working_dir":"/proj2"}
+		{"acp_server":"auggie","working_dir":"/proj1"},
+		{"acp_server":"claude","working_dir":"/proj2"}
 	]}`
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -130,7 +92,7 @@ func TestLoadWorkspacesFromFile_JSON(t *testing.T) {
 func TestLoadWorkspacesFromFile_YAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.yaml")
-	content := "workspaces:\n  - acp_server: auggie\n    acp_command: auggie --acp\n    working_dir: /proj1\n"
+	content := "workspaces:\n  - acp_server: auggie\n    working_dir: /proj1\n"
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -149,7 +111,7 @@ func TestLoadWorkspacesFromFile_YAML(t *testing.T) {
 func TestLoadWorkspacesFromFile_YML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.yml")
-	content := "workspaces:\n  - acp_server: claude\n    acp_command: claude --acp\n    working_dir: /proj2\n"
+	content := "workspaces:\n  - acp_server: claude\n    working_dir: /proj2\n"
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -211,7 +173,7 @@ func TestLoadWorkspacesFromFile_UnsupportedExtension(t *testing.T) {
 func TestLoadWorkspacesFromFile_UUIDGeneration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.json")
-	content := `{"workspaces":[{"acp_server":"auggie","acp_command":"auggie --acp","working_dir":"/proj1"}]}`
+	content := `{"workspaces":[{"acp_server":"auggie","working_dir":"/proj1"}]}`
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -230,7 +192,7 @@ func TestLoadWorkspacesFromFile_UUIDGeneration(t *testing.T) {
 func TestLoadWorkspacesFromFile_InvalidRunner(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.json")
-	content := `{"workspaces":[{"acp_server":"auggie","acp_command":"auggie --acp","working_dir":"/proj1","restricted_runner":"invalid-runner"}]}`
+	content := `{"workspaces":[{"acp_server":"auggie","working_dir":"/proj1","restricted_runner":"invalid-runner"}]}`
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -284,8 +246,8 @@ func TestLoadWorkspaces_ExistingFile(t *testing.T) {
 	workspacesPath := filepath.Join(tmpDir, appdir.WorkspacesFileName)
 	workspacesJSON := `{
 		"workspaces": [
-			{"acp_server": "auggie", "acp_command": "auggie --acp", "working_dir": "/path/to/project1"},
-			{"acp_server": "claude", "acp_command": "claude --acp", "working_dir": "/path/to/project2"}
+			{"acp_server": "auggie", "working_dir": "/path/to/project1"},
+			{"acp_server": "claude", "working_dir": "/path/to/project2"}
 		]
 	}`
 	if err := os.WriteFile(workspacesPath, []byte(workspacesJSON), 0644); err != nil {
@@ -325,7 +287,7 @@ func TestSaveWorkspaces(t *testing.T) {
 
 	// Save workspaces
 	workspaces := []WorkspaceSettings{
-		{ACPServer: "test-server", ACPCommand: "test-cmd", WorkingDir: "/test/path"},
+		{ACPServer: "test-server", WorkingDir: "/test/path"},
 	}
 	if err := SaveWorkspaces(workspaces); err != nil {
 		t.Fatalf("SaveWorkspaces() returned error: %v", err)
@@ -353,37 +315,51 @@ func TestSaveWorkspaces(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSettings_ACPEnv_JSONRoundTrip(t *testing.T) {
-	w := WorkspaceSettings{
-		ACPServer:  "auggie",
-		ACPCommand: "auggie --acp",
-		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192", "FOO": "bar"},
-		WorkingDir: "/proj",
-	}
-	data, err := json.Marshal(w)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	var got WorkspaceSettings
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if len(got.ACPEnv) != 2 {
-		t.Fatalf("ACPEnv has %d entries, want 2", len(got.ACPEnv))
-	}
-	if got.ACPEnv["NODE_OPTIONS"] != "--max-old-space-size=8192" {
-		t.Errorf("ACPEnv[NODE_OPTIONS] = %q, want %q", got.ACPEnv["NODE_OPTIONS"], "--max-old-space-size=8192")
-	}
-	if got.ACPEnv["FOO"] != "bar" {
-		t.Errorf("ACPEnv[FOO] = %q, want %q", got.ACPEnv["FOO"], "bar")
-	}
+func TestNormalizeDefaultWorkspaces(t *testing.T) {
+	t.Run("keeps first default and clears later ones in same folder", func(t *testing.T) {
+		ws := []WorkspaceSettings{
+			{ACPServer: "auggie", WorkingDir: "/proj", IsDefault: true},
+			{ACPServer: "claude", WorkingDir: "/proj", IsDefault: true},
+			{ACPServer: "gemini", WorkingDir: "/proj", IsDefault: true},
+		}
+		NormalizeDefaultWorkspaces(ws)
+		if !ws[0].IsDefault {
+			t.Errorf("ws[0].IsDefault = false, want true (first default should be kept)")
+		}
+		if ws[1].IsDefault || ws[2].IsDefault {
+			t.Errorf("later defaults in same folder should be cleared: ws[1]=%v ws[2]=%v", ws[1].IsDefault, ws[2].IsDefault)
+		}
+	})
+
+	t.Run("defaults in different folders are independent", func(t *testing.T) {
+		ws := []WorkspaceSettings{
+			{ACPServer: "auggie", WorkingDir: "/a", IsDefault: true},
+			{ACPServer: "claude", WorkingDir: "/b", IsDefault: true},
+		}
+		NormalizeDefaultWorkspaces(ws)
+		if !ws[0].IsDefault || !ws[1].IsDefault {
+			t.Errorf("defaults in different folders should both be kept: ws[0]=%v ws[1]=%v", ws[0].IsDefault, ws[1].IsDefault)
+		}
+	})
+
+	t.Run("no defaults remain untouched", func(t *testing.T) {
+		ws := []WorkspaceSettings{
+			{ACPServer: "auggie", WorkingDir: "/proj"},
+			{ACPServer: "claude", WorkingDir: "/proj"},
+		}
+		NormalizeDefaultWorkspaces(ws)
+		if ws[0].IsDefault || ws[1].IsDefault {
+			t.Errorf("workspaces without defaults should stay non-default")
+		}
+	})
 }
 
-func TestWorkspaceSettings_ACPEnv_JSONOmitempty(t *testing.T) {
-	// When ACPEnv is nil, it should be omitted from JSON
+// TestWorkspaceSettings_RedundantFields_NotSerialized verifies that removed fields
+// (acp_command, acp_cwd, acp_env) are NOT present in the serialized JSON output.
+// These fields were removed in favour of runtime resolution from global ACP server config.
+func TestWorkspaceSettings_RedundantFields_NotSerialized(t *testing.T) {
 	w := WorkspaceSettings{
 		ACPServer:  "auggie",
-		ACPCommand: "auggie --acp",
 		WorkingDir: "/proj",
 	}
 	data, err := json.Marshal(w)
@@ -394,12 +370,17 @@ func TestWorkspaceSettings_ACPEnv_JSONOmitempty(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if _, ok := raw["acp_env"]; ok {
-		t.Error("acp_env should be omitted from JSON when nil")
+	for _, forbidden := range []string{"acp_command", "acp_cwd", "acp_env"} {
+		if _, ok := raw[forbidden]; ok {
+			t.Errorf("%q should not appear in serialized workspace JSON", forbidden)
+		}
 	}
 }
 
-func TestLoadWorkspacesFromFile_WithACPEnv(t *testing.T) {
+// TestLoadWorkspacesFromFile_OldFormatIgnored verifies that workspaces.json files
+// containing the legacy acp_command/acp_env fields (from before the runtime-resolution
+// refactor) load without error and those fields are silently ignored.
+func TestLoadWorkspacesFromFile_OldFormatIgnored(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.json")
 	content := `{"workspaces":[{
@@ -413,15 +394,16 @@ func TestLoadWorkspacesFromFile_WithACPEnv(t *testing.T) {
 	}
 	workspaces, err := LoadWorkspacesFromFile(path)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("old-format JSON must load without error: %v", err)
 	}
 	if len(workspaces) != 1 {
 		t.Fatalf("got %d workspaces, want 1", len(workspaces))
 	}
-	if workspaces[0].ACPEnv == nil {
-		t.Fatal("ACPEnv should not be nil")
+	// The important fields are preserved; the legacy cached fields are discarded.
+	if workspaces[0].ACPServer != "auggie" {
+		t.Errorf("ACPServer = %q, want %q", workspaces[0].ACPServer, "auggie")
 	}
-	if workspaces[0].ACPEnv["NODE_OPTIONS"] != "--max-old-space-size=8192" {
-		t.Errorf("ACPEnv[NODE_OPTIONS] = %q, want %q", workspaces[0].ACPEnv["NODE_OPTIONS"], "--max-old-space-size=8192")
+	if workspaces[0].WorkingDir != "/proj1" {
+		t.Errorf("WorkingDir = %q, want %q", workspaces[0].WorkingDir, "/proj1")
 	}
 }

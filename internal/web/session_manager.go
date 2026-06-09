@@ -24,6 +24,13 @@ import (
 // This limits running sessions (those with an active ACP process), not stored/archived sessions.
 const MaxSessions = 64
 
+// maxConcurrentSessionResumes is the maximum number of sessions that can be simultaneously
+// resuming their ACP process (calling LoadSession/NewSession). Without this limit, when the
+// app starts with many sessions and the browser connects to all of them simultaneously,
+// 17+ concurrent goroutines each call LoadSession on the ACP process, overwhelming it and
+// causing cascade failures (26-second RPC times, context deadline exceeded, process crashes).
+const maxConcurrentSessionResumes = 5
+
 // ACPStartFailureThreshold is the number of consecutive ACP start failures after which
 // a session is automatically archived to prevent infinite retry loops on app restart.
 const ACPStartFailureThreshold = 3
@@ -151,16 +158,29 @@ type SessionManager struct {
 	// mcpToolsFetchedWorkspaces tracks which workspaces have had MCP tools fetched.
 	mcpToolsFetchedWorkspaces   map[string]bool
 	mcpToolsFetchedWorkspacesMu sync.RWMutex
+
+	// promptResolver resolves a named workspace prompt to its full text at send time.
+	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
+	promptResolver PromptResolverFunc
+
+	// resumeSemaphore limits the number of sessions that can simultaneously resume their
+	// ACP process (start the OS subprocess and/or call LoadSession/NewSession).
+	// Initialized as a buffered channel of size maxConcurrentSessionResumes.
+	// The primary goroutine for each session acquires a slot before the expensive ACP
+	// startup work and releases it when done.  Secondary goroutines that coalesce onto
+	// the same session via pendingResumes never need to acquire the semaphore.
+	resumeSemaphore chan struct{}
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
 // This is used when running from CLI with explicit --acp-command and --acp-server flags.
 func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *slog.Logger) *SessionManager {
-	// Create a default workspace from the provided configuration
+	// Create a default workspace from the provided configuration.
+	// CLI-supplied command is stored as ACPCommandOverride since it acts as a user override.
 	defaultWS := &config.WorkspaceSettings{
-		ACPCommand: acpCommand,
-		ACPServer:  acpServer,
-		WorkingDir: "", // Will be set at session creation time
+		ACPCommandOverride: acpCommand, // CLI command acts as an override
+		ACPServer:          acpServer,
+		WorkingDir:         "", // Will be set at session creation time
 	}
 	return &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
@@ -174,6 +194,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
+		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
 }
 
@@ -212,6 +233,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
+		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
 
 	for i := range opts.Workspaces {
@@ -287,7 +309,7 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 
 	if len(sm.workspaces) == 0 {
 		// Return default workspace if it has valid configuration
-		if sm.defaultWorkspace != nil && sm.defaultWorkspace.ACPCommand != "" {
+		if sm.defaultWorkspace != nil && (sm.defaultWorkspace.ACPServer != "" || sm.defaultWorkspace.ACPCommandOverride != "") {
 			return []config.WorkspaceSettings{*sm.defaultWorkspace}
 		}
 		// No valid workspace configuration - return empty slice
@@ -301,19 +323,26 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 	return result
 }
 
-// GetWorkspace returns the first workspace matching the given directory.
+// GetWorkspace returns a workspace matching the given directory.
 // If multiple workspaces share the same directory (with different ACP servers),
-// this returns the first one found. Use GetWorkspaceByDirAndACP for a specific match.
+// the one marked IsDefault is preferred; otherwise the first one found is
+// returned. Use GetWorkspaceByDirAndACP for a specific ACP server match.
 func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	var first *config.WorkspaceSettings
 	for _, ws := range sm.workspaces {
 		if ws.WorkingDir == workingDir {
-			return ws
+			if ws.IsDefault {
+				return ws
+			}
+			if first == nil {
+				first = ws
+			}
 		}
 	}
-	return nil
+	return first
 }
 
 // GetWorkspaceByDirAndACP returns the workspace matching both directory and ACP server.
@@ -327,16 +356,24 @@ func (sm *SessionManager) GetWorkspaceByDirAndACP(workingDir, acpServer string) 
 }
 
 // getWorkspaceByDirAndACPLocked returns the workspace matching both directory and ACP server.
+// When acpServer is empty and multiple workspaces share the directory, the one marked
+// IsDefault is preferred; otherwise the first match wins.
 // Caller must hold sm.mu.
 func (sm *SessionManager) getWorkspaceByDirAndACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
+	var first *config.WorkspaceSettings
 	for _, ws := range sm.workspaces {
 		if ws.WorkingDir == workingDir {
 			if acpServer == "" || ws.ACPServer == acpServer {
-				return ws
+				if acpServer == "" && ws.IsDefault {
+					return ws
+				}
+				if first == nil {
+					first = ws
+				}
 			}
 		}
 	}
-	return nil
+	return first
 }
 
 // resolveWorkspaceForACPLocked returns the workspace to use for a given directory/server pair.
@@ -986,26 +1023,40 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 	sm.auxiliaryManager = am
 }
 
-// resolveACPCommand resolves an ACP server name to its shell command.
-// Returns empty string if the server name cannot be resolved.
-func (sm *SessionManager) resolveACPCommand(serverName string) string {
-	sm.mu.RLock()
-	cfg := sm.mittoConfig
-	sm.mu.RUnlock()
+// SetPromptResolver sets the function used to resolve named workspace prompts to their full text.
+// The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetPromptResolver(resolver PromptResolverFunc) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.promptResolver = resolver
+}
 
-	if cfg == nil {
-		return serverName // fallback: use name as command
+// resolveWorkspaceACPLocked resolves the effective ACP command, cwd, and env for a workspace.
+// Resolution priority:
+//  1. ACPCommandOverride (per-workspace user override) — for command only
+//  2. Global ACP server config (looked up by workspace.ACPServer name)
+//
+// Returns empty values if the server cannot be resolved.
+// Caller MUST hold sm.mu (at least for read).
+func (sm *SessionManager) resolveWorkspaceACPLocked(ws *config.WorkspaceSettings) (acpCommand, acpCwd string, acpEnv map[string]string) {
+	if ws == nil {
+		return "", "", nil
 	}
-	srv, err := cfg.GetServer(serverName)
-	if err != nil {
-		if sm.logger != nil {
-			sm.logger.Warn("Failed to resolve ACP server command",
-				"server_name", serverName,
-				"error", err)
+
+	if ws.ACPServer != "" && sm.mittoConfig != nil {
+		if server, err := sm.mittoConfig.GetServer(ws.ACPServer); err == nil {
+			acpCommand = server.Command
+			acpCwd = server.Cwd
+			acpEnv = server.Env
 		}
-		return ""
 	}
-	return srv.Command
+
+	// Apply per-workspace command override (takes priority over server config)
+	if ws.ACPCommandOverride != "" {
+		acpCommand = ws.ACPCommandOverride
+	}
+
+	return
 }
 
 // EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
@@ -1032,39 +1083,14 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 		r = nil
 	}
 
-	p := sm.getSharedProcess(ws, r)
+	// Resolve ACP command/cwd/env from global config (must not hold sm.mu here)
+	sm.mu.RLock()
+	acpCommand, acpCwd, acpEnv := sm.resolveWorkspaceACPLocked(ws)
+	sm.mu.RUnlock()
+
+	p := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
-	}
-
-	// If workspace has a dedicated auxiliary ACP server, ensure its process exists.
-	if ws.HasDedicatedAuxiliary() && sm.acpProcessManager != nil {
-		auxCommand := sm.resolveACPCommand(ws.AuxiliaryACPServer)
-		if auxCommand != "" {
-			auxRunner, auxRunnerErr := sm.createRunner(ws.WorkingDir, ws.AuxiliaryACPServer, ws)
-			if auxRunnerErr != nil {
-				if sm.logger != nil {
-					sm.logger.Warn("Failed to create runner for dedicated auxiliary, proceeding without restriction",
-						"workspace_uuid", workspaceUUID,
-						"aux_acp_server", ws.AuxiliaryACPServer,
-						"error", auxRunnerErr)
-				}
-				auxRunner = nil
-			}
-			if _, auxErr := sm.acpProcessManager.GetOrCreateAuxProcess(ws, auxCommand, auxRunner); auxErr != nil {
-				if sm.logger != nil {
-					sm.logger.Error("Failed to create dedicated auxiliary process",
-						"workspace_uuid", workspaceUUID,
-						"aux_acp_server", ws.AuxiliaryACPServer,
-						"error", auxErr)
-				}
-				// Non-fatal: auxiliary will fall back to main process
-			} else if sm.logger != nil {
-				sm.logger.Info("Dedicated auxiliary process ready",
-					"workspace_uuid", workspaceUUID,
-					"aux_acp_server", ws.AuxiliaryACPServer)
-			}
-		}
 	}
 
 	return nil
@@ -1072,8 +1098,10 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 
 // getSharedProcess returns the shared ACP process for the given workspace,
 // or nil if shared process management is not enabled.
+// acpCommand, acpCwd, acpEnv are the resolved ACP connection parameters
+// (from resolveWorkspaceACPLocked or directly from global config).
 // The caller must NOT hold sm.mu when calling this method.
-func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, r *runner.Runner) *SharedACPProcess {
+func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) *SharedACPProcess {
 	sm.mu.RLock()
 	pm := sm.acpProcessManager
 	sm.mu.RUnlock()
@@ -1082,7 +1110,7 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 		return nil
 	}
 
-	process, err := pm.GetOrCreateProcess(workspace, r, true)
+	process, err := pm.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		if sm.logger != nil {
 			sm.logger.Warn("Failed to get shared ACP process, falling back to per-session",
@@ -1137,7 +1165,8 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 
 // BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
 // This is called when a session is archived or unarchived (via HTTP API or MCP tools).
-func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bool) {
+// The optional reason parameter specifies why the session was archived (omit for unarchive).
+func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -1146,10 +1175,14 @@ func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bo
 		return
 	}
 
-	em.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+	data := map[string]interface{}{
 		"session_id": sessionID,
 		"archived":   archived,
-	})
+	}
+	if len(reason) > 0 && reason[0] != "" {
+		data["archive_reason"] = string(reason[0])
+	}
+	em.Broadcast(WSMsgTypeSessionArchived, data)
 
 	if sm.logger != nil {
 		sm.logger.Debug("Broadcast session archived",
@@ -1316,6 +1349,56 @@ func (sm *SessionManager) DeleteChildSessions(parentID string) {
 	}
 }
 
+// deleteSessionAndChildren permanently deletes a session and all of its
+// descendants: it closes their ACP processes, removes the data from disk
+// (store.Delete cascade-deletes auto-children), and broadcasts the deletions
+// to all connected clients. Used by the self-destruct path when an agent
+// requests deletion of its own conversation.
+func (sm *SessionManager) deleteSessionAndChildren(sessionID, reason string) {
+	sm.mu.RLock()
+	store := sm.store
+	sm.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+
+	// Find all descendants BEFORE deletion so we can close their ACP processes
+	// and broadcast their removal (store.Delete cascade-deletes them on disk).
+	descendantIDs, err := store.FindAllChildrenRecursive(sessionID)
+	if err != nil && sm.logger != nil {
+		sm.logger.Warn("Failed to find descendants for self-destruct deletion",
+			"session_id", sessionID,
+			"error", err)
+	}
+
+	// Close ACP processes for the session and all descendants.
+	sm.CloseSession(sessionID, reason)
+	for _, descendantID := range descendantIDs {
+		sm.CloseSession(descendantID, "ancestor_self_destructed")
+	}
+
+	if err := store.Delete(sessionID); err != nil {
+		if sm.logger != nil {
+			sm.logger.Error("Failed to delete self-destructed session",
+				"session_id", sessionID,
+				"error", err)
+		}
+		return
+	}
+
+	sm.BroadcastSessionDeleted(sessionID)
+	for _, descendantID := range descendantIDs {
+		sm.BroadcastSessionDeleted(descendantID)
+	}
+
+	if sm.logger != nil {
+		sm.logger.Info("Self-destructed conversation deleted",
+			"session_id", sessionID,
+			"descendants_deleted", len(descendantIDs))
+	}
+}
+
 // SetGlobalMCPServer sets the global MCP server for session registration.
 // Sessions will register with this server to enable session-scoped MCP tools.
 func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {
@@ -1393,13 +1476,17 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 // CreateSession creates a new background session and registers it.
 // Returns ErrTooManySessions if the session limit is reached.
 // Uses the workspace configuration for the given working directory, or the default if not found.
-func (sm *SessionManager) CreateSession(name, workingDir string) (*BackgroundSession, error) {
-	return sm.CreateSessionWithWorkspace(name, workingDir, nil)
+// ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
+// so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
+func (sm *SessionManager) CreateSession(ctx context.Context, name, workingDir string) (*BackgroundSession, error) {
+	return sm.CreateSessionWithWorkspace(ctx, name, workingDir, nil)
 }
 
 // CreateSessionWithWorkspace creates a new session using the specified workspace configuration.
 // If workspace is nil, looks up the workspace by workingDir or uses the default.
-func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
+// ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
+// so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
+func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
 	createStart := time.Now()
 
 	sm.mu.Lock()
@@ -1411,13 +1498,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	globalConv := sm.globalConversations
 	procMgr := sm.processorManager
 
-	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
+	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration.
+	// Command/cwd/env are always resolved from global ACP server config at runtime.
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
+	var acpEnv map[string]string
 	var foundWs *config.WorkspaceSettings // Track which workspace is used for later auto-approve check
 
 	if workspace != nil {
-		acpCommand = workspace.ACPCommand
-		acpCwd = workspace.ACPCwd
+		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(workspace)
 		acpServer = workspace.ACPServer
 		workspaceUUID = workspace.UUID
 		if workingDir == "" {
@@ -1432,13 +1520,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 			}
 		}
 		if foundWs != nil {
-			acpCommand = foundWs.ACPCommand
-			acpCwd = foundWs.ACPCwd
+			acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
 			acpServer = foundWs.ACPServer
 			workspaceUUID = foundWs.UUID
 		} else if sm.defaultWorkspace != nil {
-			acpCommand = sm.defaultWorkspace.ACPCommand
-			acpCwd = sm.defaultWorkspace.ACPCwd
+			acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(sm.defaultWorkspace)
 			acpServer = sm.defaultWorkspace.ACPServer
 			workspaceUUID = sm.defaultWorkspace.UUID
 		}
@@ -1563,8 +1649,17 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		effectiveWs = sm.defaultWorkspace
 	}
 	sharedProcessStart := time.Now()
-	sharedProcess := sm.getSharedProcess(effectiveWs, r)
+	sharedProcess := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
 	sharedProcessDuration := time.Since(sharedProcessStart)
+
+	// Ensure auxiliary sessions (title-gen, follow-up, etc.) are pre-warmed for
+	// this workspace. Pre-warming runs when a shared process is first created, but
+	// auxiliary sessions can be lost (server restart, process recreation, idle
+	// reaping). Without this, title generation on the first prompt can block for
+	// minutes waiting for a NewSession RPC while the agent does extended thinking.
+	if sharedProcess != nil && sm.acpProcessManager != nil {
+		sm.acpProcessManager.EnsurePrewarmed(workspaceUUID, sm.logger)
+	}
 
 	configDuration := time.Since(createStart)
 
@@ -1576,8 +1671,10 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
+		CreationCtx:         ctx, // Propagate caller's context for the initial NewSession RPC
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
+		Env:                 acpEnv,
 		ACPServer:           acpServer,
 		WorkingDir:          workingDir,
 		AutoApprove:         autoApprove,
@@ -1595,8 +1692,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		AvailableACPServers: availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
+		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -1610,6 +1708,20 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
 					"session_id": sessionID,
 					"is_waiting": isWaiting,
+				})
+			}
+		},
+		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
+			if sm.eventsManager != nil {
+				question := req.Question
+				if len([]rune(question)) > 200 {
+					runes := []rune(question)
+					question = string(runes[:197]) + "..."
+				}
+				sm.eventsManager.Broadcast(WSMsgTypeBackgroundUIPromptTimeout, map[string]interface{}{
+					"session_id":   sessionID,
+					"session_name": sessionName,
+					"question":     question,
 				})
 			}
 		},
@@ -1632,6 +1744,18 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 					"name":       title,
 				})
 			}
+		},
+		IsChildPrompting: func(childSessionID string) bool {
+			sm.mu.RLock()
+			childBS := sm.sessions[childSessionID]
+			sm.mu.RUnlock()
+			if childBS != nil {
+				return childBS.IsPrompting()
+			}
+			return false
+		},
+		OnSelfDestruct: func(sessionID string) {
+			sm.deleteSessionAndChildren(sessionID, "self_destructed")
 		},
 	})
 	if err != nil {
@@ -1761,7 +1885,7 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 	// Not running - create new session
 	// Note: We can't truly "resume" an ACP session, but we can start a new one
 	// with the same persisted ID for continuity
-	bs, err := sm.CreateSession("", workingDir)
+	bs, err := sm.CreateSession(context.Background(), "", workingDir)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1775,6 +1899,13 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+	// Clear GC-suspended flag — any explicit resume (ensure_resumed, periodic runner,
+	// queue processing) should allow the session to run. This must happen before the
+	// "already running" check to avoid stale flags.
+	if sm.acpProcessManager != nil {
+		sm.acpProcessManager.ClearGCSuspended(sessionID)
+	}
+
 	// Check if already running
 	if bs := sm.GetSession(sessionID); bs != nil {
 		return bs, nil
@@ -1821,21 +1952,22 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	globalConv := sm.globalConversations
 	procMgr := sm.processorManager
 
-	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
+	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration.
+	// Command/cwd/env are always resolved from global ACP server config at runtime via
+	// resolveWorkspaceACPLocked; ACPCommandOverride (per-workspace) takes priority.
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
+	var acpEnv map[string]string
 	// Try to find a workspace by working directory. If the session metadata later
 	// identifies a specific ACP server, this provisional choice will be replaced
 	// with the exact workspace for that server.
 	var foundWs *config.WorkspaceSettings
 	foundWs = sm.getWorkspaceByDirAndACPLocked(workingDir, "")
 	if foundWs != nil {
-		acpCommand = foundWs.ACPCommand
-		acpCwd = foundWs.ACPCwd
+		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
 		acpServer = foundWs.ACPServer
 		workspaceUUID = foundWs.UUID
 	} else if sm.defaultWorkspace != nil {
-		acpCommand = sm.defaultWorkspace.ACPCommand
-		acpCwd = sm.defaultWorkspace.ACPCwd
+		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(sm.defaultWorkspace)
 		acpServer = sm.defaultWorkspace.ACPServer
 		workspaceUUID = sm.defaultWorkspace.UUID
 	}
@@ -1846,6 +1978,18 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		if meta, err := store.GetMetadata(sessionID); err == nil {
 			// Get ACP session ID for potential resumption
 			acpSessionID = meta.ACPSessionID
+
+			// On the final retry attempt before archiving, skip ACP session resume
+			// and try a fresh session instead. The resume itself may be causing the failure.
+			if meta.ACPStartFailureCount >= ACPStartFailureThreshold-1 && acpSessionID != "" {
+				if sm.logger != nil {
+					sm.logger.Info("Final retry: skipping ACP resume, trying fresh session",
+						"session_id", sessionID,
+						"failure_count", meta.ACPStartFailureCount,
+						"threshold", ACPStartFailureThreshold)
+				}
+				acpSessionID = ""
+			}
 
 			// IMPORTANT: Use ACP server from session metadata, not workspace config.
 			// The session was created with a specific ACP server, and resuming it
@@ -1861,67 +2005,93 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				foundWs = sm.resolveWorkspaceForACPLocked(workingDir, acpServer)
 				if foundWs != nil {
 					workspaceUUID = foundWs.UUID
-					if foundWs.ACPCommand != "" {
-						acpCommand = foundWs.ACPCommand
-					}
-					if foundWs.ACPCwd != "" {
-						acpCwd = foundWs.ACPCwd
+					// Resolve command/cwd/env from the re-resolved workspace.
+					// resolveWorkspaceACPLocked applies ACPCommandOverride if set,
+					// otherwise looks up from global config.
+					acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
+					if sm.logger != nil && foundWs.ACPCommandOverride != "" {
+						sm.logger.Debug("Using workspace command override",
+							"session_id", sessionID,
+							"acp_server", acpServer,
+							"acp_command", acpCommand,
+							"acp_command_override", foundWs.ACPCommandOverride)
+					} else if sm.logger != nil {
+						sm.logger.Debug("Using ACP command from session metadata server",
+							"session_id", sessionID,
+							"acp_server", acpServer,
+							"acp_command", acpCommand)
 					}
 				} else {
-					// No compatible workspace exists for this ACP server. Do NOT keep a
-					// mismatched workspace from the same directory, otherwise shared ACP
-					// process lookup can mix different agents.
+					// No workspace matches the session's stored ACP server. Two cases:
+					//   1. The server still exists in global config but no workspace
+					//      references it — resolve the command directly from config and
+					//      keep the stored agent (but disable shared workspace resolution,
+					//      since no workspace owns it).
+					//   2. The server was renamed or removed (orphaned conversation) —
+					//      rescue it by adopting a workspace configured for the same
+					//      working directory, so the conversation remains resumable
+					//      instead of failing with "empty command".
 					workspaceUUID = ""
-					acpCommand = ""
-					acpCwd = ""
-					if sm.logger != nil {
-						sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
 
-							"session_id", sessionID,
-							"working_dir", workingDir,
-							"acp_server", acpServer)
-					}
-				}
-
-				// IMPORTANT: Look up the correct command for the session's ACP server.
-				// The workspace loop above may have found a different workspace (same dir,
-				// different ACP server), so we must update the command to match.
-				// However, if the workspace has a user-provided command override, prefer that.
-				if foundWs == nil || foundWs.ACPCommandOverride == "" {
+					var serverExists bool
 					if sm.mittoConfig != nil {
 						if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
 							acpCommand = server.Command
 							acpCwd = server.Cwd
+							acpEnv = server.Env
+							serverExists = true
+						}
+					}
+
+					if serverExists {
+						// Case 1: stored server still configured, just no workspace owns
+						// it. Do NOT keep a mismatched workspace from the same directory,
+						// otherwise shared ACP process lookup can mix different agents.
+						if sm.logger != nil {
+							sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
+								"session_id", sessionID,
+								"working_dir", workingDir,
+								"acp_server", acpServer)
+						}
+					} else {
+						// Case 2: orphaned conversation — the stored ACP server no longer
+						// exists in config. Rescue it by adopting any workspace configured
+						// for the same working directory. We fully adopt the rescue
+						// workspace's identity (server name + command), so shared ACP
+						// process lookup stays consistent and does not mix agents.
+						rescueWs := sm.resolveWorkspaceForACPLocked(workingDir, "")
+						var rescueCmd, rescueCwd string
+						var rescueEnv map[string]string
+						if rescueWs != nil {
+							rescueCmd, rescueCwd, rescueEnv = sm.resolveWorkspaceACPLocked(rescueWs)
+						}
+						if rescueWs != nil && rescueCmd != "" {
+							foundWs = rescueWs
+							workspaceUUID = rescueWs.UUID
+							acpCommand, acpCwd, acpEnv = rescueCmd, rescueCwd, rescueEnv
 							if sm.logger != nil {
-								sm.logger.Debug("Using ACP command from session metadata server",
+								sm.logger.Warn("Orphaned conversation: stored ACP server not found in config; rescuing with a workspace for the same folder",
 									"session_id", sessionID,
-									"acp_server", acpServer,
-									"acp_command", acpCommand)
+									"working_dir", workingDir,
+									"missing_acp_server", acpServer,
+									"rescued_acp_server", rescueWs.ACPServer)
+							}
+							acpServer = rescueWs.ACPServer
+						} else {
+							// Nothing to rescue with — no workspace for this folder.
+							// Leave the command empty; resume will fail with a clear error.
+							acpCommand = ""
+							acpCwd = ""
+							acpEnv = nil
+							if sm.logger != nil {
+								sm.logger.Warn("Orphaned conversation: stored ACP server not found and no workspace for folder; cannot resume",
+									"session_id", sessionID,
+									"working_dir", workingDir,
+									"acp_server", acpServer)
 							}
 						}
 					}
-				} else if sm.logger != nil {
-					sm.logger.Debug("Using workspace command override",
-						"session_id", sessionID,
-						"acp_server", acpServer,
-						"acp_command", acpCommand,
-						"acp_command_override", foundWs.ACPCommandOverride)
 				}
-			}
-		}
-	}
-
-	// If we still have an ACP server name but no command, look it up from global config
-	// This handles cases where workspace config didn't provide a command
-	if acpCommand == "" && acpServer != "" && sm.mittoConfig != nil {
-		if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
-			acpCommand = server.Command
-			acpCwd = server.Cwd // Also get cwd from server config
-			if sm.logger != nil {
-				sm.logger.Debug("Using ACP command from global config",
-					"session_id", sessionID,
-					"acp_server", acpServer,
-					"acp_command", acpCommand)
 			}
 		}
 	}
@@ -2040,11 +2210,33 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		}
 	}
 
+	// Acquire the startup semaphore before the expensive ACP work (getSharedProcess may start
+	// a new OS subprocess; ResumeBackgroundSession calls LoadSession/NewSession RPC).
+	// Without this limit, when the app starts with many sessions and the browser connects to
+	// all of them simultaneously, N goroutines each call LoadSession concurrently, overwhelming
+	// the ACP process and causing cascade failures (26-second RPCs, context deadlines, crashes).
+	//
+	// The semaphore is released as soon as ResumeBackgroundSession returns, so the next queued
+	// goroutine can start immediately — the fast post-startup bookkeeping runs concurrently.
+	//
+	// Only the "primary" goroutine for each session reaches this point; secondary goroutines
+	// that coalesce via pendingResumes return early above and never acquire the semaphore.
+	if sm.logger != nil {
+		sm.logger.Debug("Acquiring session-resume semaphore",
+			"session_id", sessionID,
+			"max_concurrent", maxConcurrentSessionResumes)
+	}
+	sm.resumeSemaphore <- struct{}{}
+	if sm.logger != nil {
+		sm.logger.Debug("Acquired session-resume semaphore, starting ACP",
+			"session_id", sessionID)
+	}
+
 	// Resolve shared ACP process for this workspace (if shared mode is enabled).
 	// IMPORTANT: Do NOT fall back to an arbitrary default workspace here. For resumed
 	// sessions, foundWs has already been resolved against the session's ACP server.
 	// Falling back again would risk mixing different ACP servers on the same folder.
-	sharedProcess := sm.getSharedProcess(foundWs, r)
+	sharedProcess := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
 
 	// Build pruning configuration from global settings (with default)
 	pruneConfig := sm.buildPruneConfig()
@@ -2055,9 +2247,15 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+		// CreationCtx: use a background context with the default timeout. ResumeSession is
+		// called from a goroutine (session_ws.go), not directly from an HTTP handler, so
+		// there is no request context to propagate. The 25s timeout in creationRPCCtx()
+		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
+		// agent is busy.
 		PersistedID:         sessionID,
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
+		Env:                 acpEnv,
 		ACPServer:           acpServer,
 		ACPSessionID:        acpSessionID,
 		WorkingDir:          workingDir,
@@ -2072,11 +2270,13 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		MittoConfig:         sm.mittoConfig,         // Pass config for default flags
 		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
+		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -2090,6 +2290,20 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
 					"session_id": sessionID,
 					"is_waiting": isWaiting,
+				})
+			}
+		},
+		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
+			if sm.eventsManager != nil {
+				question := req.Question
+				if len([]rune(question)) > 200 {
+					runes := []rune(question)
+					question = string(runes[:197]) + "..."
+				}
+				sm.eventsManager.Broadcast(WSMsgTypeBackgroundUIPromptTimeout, map[string]interface{}{
+					"session_id":   sessionID,
+					"session_name": sessionName,
+					"question":     question,
 				})
 			}
 		},
@@ -2113,7 +2327,30 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
+		IsChildPrompting: func(childSessionID string) bool {
+			sm.mu.RLock()
+			childBS := sm.sessions[childSessionID]
+			sm.mu.RUnlock()
+			if childBS != nil {
+				return childBS.IsPrompting()
+			}
+			return false
+		},
+		OnSelfDestruct: func(sessionID string) {
+			sm.deleteSessionAndChildren(sessionID, "self_destructed")
+		},
 	})
+	// Release the startup semaphore now that the expensive ACP work is done.
+	// This happens on BOTH the success and error paths (both are immediately below).
+	// Releasing here (rather than at the end of the function) lets the next queued
+	// goroutine start its ACP session while we do fast post-startup bookkeeping.
+	<-sm.resumeSemaphore
+	if sm.logger != nil {
+		sm.logger.Debug("Released session-resume semaphore",
+			"session_id", sessionID,
+			"success", err == nil)
+	}
+
 	if err != nil {
 		// Persist the failure count and auto-archive if threshold is reached.
 		if store != nil {
@@ -2124,6 +2361,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				if failureCount >= ACPStartFailureThreshold {
 					m.Archived = true
 					m.ArchivedAt = time.Now()
+					m.ArchiveReason = session.ArchiveReasonACPFailures
 				}
 			})
 			if updateErr != nil && sm.logger != nil {
@@ -2137,7 +2375,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 						"failure_count", failureCount,
 						"threshold", ACPStartFailureThreshold)
 				}
-				sm.BroadcastSessionArchived(sessionID, true)
+				sm.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonACPFailures)
 			} else if sm.logger != nil {
 				sm.logger.Warn("ACP start failed, incremented failure count",
 					"session_id", sessionID,
@@ -2182,6 +2420,12 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()
 
+	// Signal completion immediately after registration — this clears the pendingResumes
+	// entry so concurrent callers unblock and find the session via GetSession.
+	// Must happen before ensureMCPToolsFetch (which can block) to minimize the window
+	// where the session is in sm.sessions but pendingResumes hasn't been cleared yet.
+	signalDone(bs, nil)
+
 	if sm.logger != nil {
 		sm.logger.Debug("Resumed background session",
 			"session_id", bs.GetSessionID(),
@@ -2194,7 +2438,6 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Trigger early MCP tools fetch to warm the cache before the first message.
 	sm.ensureMCPToolsFetch(workspaceUUID)
 
-	signalDone(bs, nil)
 	return bs, nil
 }
 
@@ -2647,16 +2890,18 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 		}
 
 		result[uuid] = append(result[uuid], SessionInfo{
-			SessionID:             bs.GetSessionID(),
-			WorkspaceUUID:         uuid,
-			IsPrompting:           bs.IsPrompting(),
-			HasObservers:          bs.HasObservers(),
-			HasConnectedClients:   bs.HasConnectedClients(),
-			QueueLength:           queueLen,
-			NextPeriodicAt:        nextPeriodic,
-			ResumedAt:             bs.StartedAt(),
-			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
-			LastActivityAt:        bs.LastActivityAt(),
+			SessionID:              bs.GetSessionID(),
+			WorkspaceUUID:          uuid,
+			IsPrompting:            bs.IsPrompting(),
+			HasObservers:           bs.HasObservers(),
+			HasConnectedClients:    bs.HasConnectedClients(),
+			IsChild:                bs.HasParent(),
+			QueueLength:            queueLen,
+			NextPeriodicAt:         nextPeriodic,
+			ResumedAt:              bs.StartedAt(),
+			LastObserverRemovedAt:  bs.LastObserverRemovedAt(),
+			LastActivityAt:         bs.LastActivityAt(),
+			LastResponseCompleteAt: bs.GetLastResponseCompleteTime(),
 		})
 	}
 	return result
@@ -2680,12 +2925,19 @@ func (sm *SessionManager) CloseIdleSession(sessionID string) {
 	sm.ClearCachedPlanState(sessionID)
 
 	if bs != nil {
+		// Use a distinct reason for periodic suspensions so the frontend can show
+		// a friendly "Session suspended" message instead of an error balloon.
+		reason := "gc_idle"
+		if sm.acpProcessManager != nil && sm.acpProcessManager.IsGCSuspended(sessionID) {
+			reason = "gc_suspended"
+		}
 		if sm.logger != nil {
 			sm.logger.Info("Closing idle session (GC)",
 				"session_id", sessionID,
-				"workspace_uuid", bs.GetWorkspaceUUID())
+				"workspace_uuid", bs.GetWorkspaceUUID(),
+				"reason", reason)
 		}
-		bs.Close("gc_idle")
+		bs.Close(reason)
 	}
 }
 
