@@ -149,7 +149,7 @@ import {
   BeadsIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
-import { BeadsView } from "./components/BeadsView.js";
+import { BeadsView, BeadsDetailPanel } from "./components/BeadsView.js";
 
 // Import constants
 import {
@@ -278,6 +278,11 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
+  // Quick "new task" create panel shown as an overlay over the current content
+  // (e.g. a conversation) via the New task shortcut, without switching to the
+  // beads list view. { open, workingDir } — workingDir is kept during the
+  // close animation so only `open` is flipped on dismiss.
+  const [quickCreate, setQuickCreate] = useState({ open: false, workingDir: null });
   // mainView controls what is shown in the right-side area: "conversation" or "beads"
   const [mainView, setMainView] = useState("conversation");
   // Ref mirror of mainView so native swipe-gesture handlers (registered in an effect
@@ -390,12 +395,14 @@ function App() {
     beadsWorkingDir,
     beadsInitialIssueId,
     beadsSelectNonce,
+    beadsCreateNonce,
     beadsIssueSessionMap,
     fetchBeadsPromptsForWorkspace,
     fetchBeadsListPromptsForWorkspace,
     handleRunBeadsPrompt,
     handleRunBeadsListPrompt,
     handleBeadsOpen,
+    handleBeadsCreate,
     handleOpenBeadsIssue,
   } = useBeadsIntegration({
     allSessions,
@@ -648,6 +655,23 @@ function App() {
           }
           return;
         }
+        // Command+Shift+N to create a new task in the current workspace.
+        if (e.key === "N" || e.key === "n") {
+          e.preventDefault();
+          if (mainViewRef.current === "beads" && beadsWorkingDir) {
+            // Already in the beads view: use its in-panel create so the issue
+            // list refreshes after saving (same as the list's "+" button).
+            handleBeadsCreate(beadsWorkingDir);
+          } else {
+            // Anywhere else (e.g. a conversation): open the create panel as an
+            // overlay on top of the current content, without switching views.
+            const wd = sessionInfo?.working_dir;
+            if (wd) {
+              setQuickCreate({ open: true, workingDir: wd });
+            }
+          }
+          return;
+        }
       }
 
       // Check for Command (macOS) or Ctrl (other platforms)
@@ -689,6 +713,9 @@ function App() {
     navigateToSessionAbove,
     navigateToSessionBelow,
     configReadonly,
+    handleBeadsCreate,
+    beadsWorkingDir,
+    sessionInfo?.working_dir,
   ]);
 
   // State for UI theme style (v2 = Clawdbot-inspired)
@@ -1813,6 +1840,7 @@ function App() {
               onOpenConversation=${handleSelectSession}
               initialSelectedIssueId=${beadsInitialIssueId}
               initialSelectNonce=${beadsSelectNonce}
+              initialCreateNonce=${beadsCreateNonce}
             />
           </div>
         `
@@ -2017,6 +2045,17 @@ function App() {
         configOptions=${configOptions}
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
+        showToast=${showToast}
+      />
+
+      <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the
+           current content without switching to the beads list view. Its own
+           fixed/absolute layers float over the viewport. -->
+      <${BeadsDetailPanel}
+        isCreating=${quickCreate.open}
+        workingDir=${quickCreate.workingDir}
+        onClose=${() => setQuickCreate((qc) => ({ ...qc, open: false }))}
+        onCreated=${() => {}}
         showToast=${showToast}
       />
     </div>

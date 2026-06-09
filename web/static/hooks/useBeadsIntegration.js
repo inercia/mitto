@@ -37,6 +37,10 @@ export function useBeadsIntegration({
   // the same issue again re-selects it.
   const [beadsInitialIssueId, setBeadsInitialIssueId] = useState(null);
   const [beadsSelectNonce, setBeadsSelectNonce] = useState(0);
+  // Bumped to ask the beads view to open its "create" panel for a brand-new
+  // issue (e.g. from the global "new task" keyboard shortcut). The nonce lets
+  // BeadsView re-open create even when it is already mounted.
+  const [beadsCreateNonce, setBeadsCreateNonce] = useState(0);
 
   // Map a beads issue ID → the most recently updated conversation linked to it.
   // The beads view uses this to render issue IDs as links that open the
@@ -238,6 +242,19 @@ export function useBeadsIntegration({
     setShowSidebar(false);
   }, []);
 
+  // Open the beads view in "create" mode for the given workspace, switching the
+  // main view if needed. The nonce bump tells BeadsView to open its create
+  // panel even when it is already mounted (e.g. the user is already in the
+  // beads view for this workspace).
+  const handleBeadsCreate = useCallback((workingDir) => {
+    if (!workingDir) return;
+    setBeadsWorkingDir(workingDir);
+    setBeadsCreateNonce((n) => n + 1);
+    setMainView("beads");
+    setShowSidebar(false);
+    setShowSidePanel(false);
+  }, []);
+
   // Open the beads view focused on a specific issue (used by the conversation
   // properties panel's linked-issue link). The nonce bump lets BeadsView
   // re-select even when the same issue is opened again.
@@ -255,12 +272,14 @@ export function useBeadsIntegration({
     beadsWorkingDir,
     beadsInitialIssueId,
     beadsSelectNonce,
+    beadsCreateNonce,
     beadsIssueSessionMap,
     fetchBeadsPromptsForWorkspace,
     fetchBeadsListPromptsForWorkspace,
     handleRunBeadsPrompt,
     handleRunBeadsListPrompt,
     handleBeadsOpen,
+    handleBeadsCreate,
     handleOpenBeadsIssue,
   };
 }

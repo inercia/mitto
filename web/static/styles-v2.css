@@ -893,14 +893,16 @@ a:hover {
 }
 
 /* =============================================================================
-   Beads "in-progress" status: preserve semantic blue (don't remap to accent)
+   Beads semantic blue: in-progress status + feature type (don't remap to accent)
    ============================================================================= */
 
-/* The in_progress status badge/toggle uses bg-blue-700, which the accent
-   remapping above turns red. Restore the original blue for this specific
-   marker class in both themes. */
+/* The in_progress status badge/toggle and the feature type tag use bg-blue-700,
+   which the accent remapping above turns red. Restore the original blue for
+   these specific marker classes in both themes (red stays reserved for bugs). */
 .v2-theme:not(.dark) .beads-status-inprogress,
-.v2-theme.dark .beads-status-inprogress {
+.v2-theme:not(.dark) .beads-type-feature,
+.v2-theme.dark .beads-status-inprogress,
+.v2-theme.dark .beads-type-feature {
   background: #1d4ed8 !important;  /* Original blue-700 */
 }
 

@@ -80,7 +80,7 @@ let beadsStatusToggles = { open: true, in_progress: true, closed: true };
 
 const TYPE_COLORS = {
   epic: "bg-purple-700 text-purple-100",
-  feature: "bg-blue-700 text-blue-100",
+  feature: "bg-blue-700 text-blue-100 beads-type-feature",
   bug: "bg-red-700 text-red-100",
   task: "bg-slate-600 text-white",
   chore: "bg-slate-600 text-white",
@@ -154,7 +154,7 @@ function labelValue(label, value) {
  *    dim shows through the transparent layer on the panel's left.
  * Clicking anywhere outside the panel closes it.
  */
-function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue }) {
+export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -1377,7 +1377,7 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
  * @param {function} onShowSidebar - Opens the conversations sidebar (mobile);
  *        used by the header hamburger button to return to the conversation list.
  */
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, onOpenConversation, initialSelectedIssueId, initialSelectNonce = 0 }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, onOpenConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1425,6 +1425,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // in-flight flag for the close/reopen status toggle.
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deletingIssue, setDeletingIssue] = useState(false);
+  // When deleting an epic, what to do with its descendant issues:
+  // "none" (leave unchanged), "close" (close open descendants), or
+  // "delete" (permanently delete all descendants).
+  const [childAction, setChildAction] = useState("none");
   const [statusBusy, setStatusBusy] = useState(false);
 
   // Folder upstream task system ("none"|"jira"|"github"|"gitlab"|"linear") and the
@@ -1543,6 +1547,18 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setIsCreating(true);
   }, []);
 
+  // Open the create panel when asked to from outside (e.g. the global "new
+  // task" keyboard shortcut). We apply once per nonce so repeated presses keep
+  // (re)opening it; unlike issue selection this does not depend on the list
+  // having loaded.
+  const appliedCreateNonceRef = useRef(0);
+  useEffect(() => {
+    if (!initialCreateNonce) return;
+    if (initialCreateNonce === appliedCreateNonceRef.current) return;
+    appliedCreateNonceRef.current = initialCreateNonce;
+    openCreate();
+  }, [initialCreateNonce, openCreate]);
+
   // Close the side panel, whether it is in view or create mode.
   const closePanel = useCallback(() => {
     setSelectedIssue(null);
@@ -1605,6 +1621,46 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     return counts;
   }, [issues]);
 
+  // Every descendant (children, grandchildren, ...) of the issue queued for
+  // deletion, each tagged with its depth below the target. Used to offer the
+  // recursive "close"/"delete children" actions when deleting an epic.
+  const deleteTargetDescendants = useMemo(() => {
+    if (!deleteTarget) return [];
+    // Build a parent -> children index over the whole issue set.
+    const byParent = new Map();
+    for (const i of issues) {
+      const list = byParent.get(i.parent);
+      if (list) list.push(i);
+      else byParent.set(i.parent, [i]);
+    }
+    // Walk the subtree, guarding against cycles via a seen set.
+    const out = [];
+    const seen = new Set([deleteTarget.id]);
+    const stack = [{ id: deleteTarget.id, depth: 0 }];
+    while (stack.length) {
+      const { id, depth } = stack.pop();
+      const kids = byParent.get(id) || [];
+      for (const k of kids) {
+        if (seen.has(k.id)) continue;
+        seen.add(k.id);
+        out.push({ issue: k, depth: depth + 1 });
+        stack.push({ id: k.id, depth: depth + 1 });
+      }
+    }
+    return out;
+  }, [deleteTarget, issues]);
+
+  // The still-open descendants — closing already-closed issues is a no-op, so
+  // the "close children" option only targets these.
+  const deleteTargetOpenDescendants = useMemo(
+    () => deleteTargetDescendants.filter(d => d.issue.status !== "closed"),
+    [deleteTargetDescendants],
+  );
+
+  // Reset the child-handling choice whenever the delete target changes, so it
+  // never carries over from a previous deletion.
+  useEffect(() => { setChildAction("none"); }, [deleteTarget]);
+
   const closedCount = useMemo(() => issues.filter(i => i.status === "closed").length, [issues]);
 
   // Permanently delete every closed issue, then refresh the list. The confirm
@@ -1640,18 +1696,77 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // dialog (gated on deleteTarget) calls this.
   const confirmDeleteIssue = useCallback(async () => {
     if (!deleteTarget) return;
+    const id = deleteTarget.id;
     setDeletingIssue(true);
     try {
+      // Apply the chosen recursive action to the epic's descendants first
+      // (best-effort). Each failure is counted so the final toast can report
+      // partial success without aborting the epic delete.
+      let closedCount = 0;
+      let closeFailed = 0;
+      let childDeletedCount = 0;
+      let childDeleteFailed = 0;
+
+      if (childAction === "close") {
+        for (const { issue: child } of deleteTargetOpenDescendants) {
+          try {
+            const cres = await secureFetch(apiUrl("/api/beads/status"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ working_dir: workingDir, id: child.id, action: "close" }),
+            });
+            const cdata = await readBeadsResponse(cres);
+            if (!cres.ok || cdata.error) closeFailed++;
+            else closedCount++;
+          } catch (err) {
+            closeFailed++;
+          }
+        }
+      } else if (childAction === "delete") {
+        // Delete deepest-first so a parent is never removed before its children.
+        const ordered = [...deleteTargetDescendants].sort((a, b) => b.depth - a.depth);
+        for (const { issue: child } of ordered) {
+          try {
+            const cres = await secureFetch(apiUrl("/api/beads/delete"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ working_dir: workingDir, id: child.id }),
+            });
+            const cdata = await readBeadsResponse(cres);
+            if (!cres.ok || cdata.error) childDeleteFailed++;
+            else childDeletedCount++;
+          } catch (err) {
+            childDeleteFailed++;
+          }
+        }
+      }
+
       const res = await secureFetch(apiUrl("/api/beads/delete"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: deleteTarget.id }),
+        body: JSON.stringify({ working_dir: workingDir, id }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
         showToast && showToast({ style: "error", title: data.error || "Failed to delete issue" });
       } else {
-        showToast && showToast({ style: "success", title: `Deleted ${deleteTarget.id}` });
+        let title = `Deleted ${id}`;
+        if (closedCount > 0) {
+          title += ` and closed ${closedCount} child issue${closedCount === 1 ? "" : "s"}`;
+        }
+        if (childDeletedCount > 0) {
+          title += ` and deleted ${childDeletedCount} child issue${childDeletedCount === 1 ? "" : "s"}`;
+        }
+        const failedTotal = closeFailed + childDeleteFailed;
+        if (failedTotal > 0) {
+          const verb = childAction === "delete" ? "delete" : "close";
+          showToast && showToast({
+            style: "warning",
+            title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
+          });
+        } else {
+          showToast && showToast({ style: "success", title });
+        }
         fetchList();
       }
     } catch (err) {
@@ -1660,7 +1775,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       setDeletingIssue(false);
       setDeleteTarget(null);
     }
-  }, [deleteTarget, workingDir, showToast, fetchList]);
+  }, [deleteTarget, childAction, deleteTargetOpenDescendants, deleteTargetDescendants, workingDir, showToast, fetchList]);
 
   // Close or reopen a single issue depending on its current status, then refresh.
   const handleToggleStatus = useCallback(async (issue) => {
@@ -2118,7 +2233,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
     <${ConfirmDialog}
       isOpen=${!!deleteTarget}
-      title="Delete issue"
+      title=${deleteTargetDescendants.length > 0 ? "Delete epic" : "Delete issue"}
       message=${deleteTarget ? `This will permanently delete ${deleteTarget.id} — "${deleteTarget.title}". This cannot be undone.` : ""}
       confirmLabel="Delete"
       cancelLabel="Cancel"
@@ -2126,7 +2241,57 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       isLoading=${deletingIssue}
       onConfirm=${confirmDeleteIssue}
       onCancel=${() => setDeleteTarget(null)}
-    />
+    >
+      ${deleteTargetDescendants.length > 0 && html`
+        <div class="mt-3 space-y-2">
+          <p class="text-sm text-gray-300">
+            This epic has ${deleteTargetDescendants.length} descendant issue${deleteTargetDescendants.length === 1 ? "" : "s"}. What should happen to ${deleteTargetDescendants.length === 1 ? "it" : "them"}?
+          </p>
+          <label class="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="radio"
+              name="child-action"
+              value="none"
+              checked=${childAction === "none"}
+              disabled=${deletingIssue}
+              onChange=${() => setChildAction("none")}
+              class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+            />
+            <span class="text-sm text-gray-300">Leave child issues unchanged</span>
+          </label>
+          ${deleteTargetOpenDescendants.length > 0 && html`
+            <label class="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="radio"
+                name="child-action"
+                value="close"
+                checked=${childAction === "close"}
+                disabled=${deletingIssue}
+                onChange=${() => setChildAction("close")}
+                class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              />
+              <span class="text-sm text-gray-300">
+                Close the ${deleteTargetOpenDescendants.length} open child issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}
+              </span>
+            </label>
+          `}
+          <label class="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="radio"
+              name="child-action"
+              value="delete"
+              checked=${childAction === "delete"}
+              disabled=${deletingIssue}
+              onChange=${() => setChildAction("delete")}
+              class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-red-500 focus:ring-red-500 focus:ring-offset-0"
+            />
+            <span class="text-sm text-gray-300">
+              Delete all ${deleteTargetDescendants.length} child issue${deleteTargetDescendants.length === 1 ? "" : "s"} (permanent)
+            </span>
+          </label>
+        </div>
+      `}
+    </${ConfirmDialog}>
   `;
 }
 

@@ -84,9 +84,32 @@ export function useScrollManagement({
     }
   }, []);
 
-  // Handle scroll events to track user's scroll position
+  // Handle scroll events to track user's scroll position.
+  //
+  // The messages container is conditionally rendered (it unmounts when the Beads
+  // view is shown, then remounts as a brand-new element when returning to a
+  // conversation). messagesContainerRef is a ref object, so Preact sets .current
+  // to null on unmount and to a NEW element on remount. A one-time mount effect
+  // would either never attach (container absent on mount) or stay bound to a
+  // stale/detached element after a remount, leaving isUserAtBottom frozen at
+  // true — which hides the scroll-to-bottom button and forces every streamed
+  // chunk to auto-scroll. To stay correct across remounts we re-check on every
+  // render and (re)attach whenever the container element changes identity.
+  const attachedContainerRef = useRef(null);
+  const detachScrollRef = useRef(null);
+
   useEffect(() => {
     const container = messagesContainerRef.current;
+    // Unchanged since the last attach — keep the existing listener as-is.
+    if (container === attachedContainerRef.current) return;
+
+    // The element changed (mount, unmount, or remount): detach from the previous
+    // element before binding to the new one.
+    if (detachScrollRef.current) {
+      detachScrollRef.current();
+      detachScrollRef.current = null;
+    }
+    attachedContainerRef.current = container;
     if (!container) return;
 
     const handleScroll = (source = "scroll") => {
@@ -109,8 +132,19 @@ export function useScrollManagement({
 
     const onScroll = () => handleScroll("event");
     container.addEventListener("scroll", onScroll, { passive: true });
-    return () => container.removeEventListener("scroll", onScroll);
-  }, [checkIfAtBottom]);
+    detachScrollRef.current = () =>
+      container.removeEventListener("scroll", onScroll);
+  });
+
+  // Detach the scroll listener when the hook unmounts.
+  useEffect(() => {
+    return () => {
+      if (detachScrollRef.current) {
+        detachScrollRef.current();
+        detachScrollRef.current = null;
+      }
+    };
+  }, []);
 
   // Track the active session to detect when we switch sessions
   const prevActiveSessionIdRef = useRef(activeSessionId);

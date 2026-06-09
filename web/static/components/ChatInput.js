@@ -777,6 +777,17 @@ export function ChatInput({
     }
   }, [text, textareaMinHeight, isTextareaDragging, textareaHardMax]);
 
+  // Auto-size the mitto_ui_textbox textarea to fit its content on activation.
+  // The panel uses max-height, so short content stays compact; long content is
+  // capped by the panel and scrolls within the container.
+  useEffect(() => {
+    if (activeUIPrompt?.promptType !== "textbox") return;
+    const ta = textboxRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + "px";
+  }, [activeUIPrompt?.requestId, activeUIPrompt?.promptType]);
+
   // Clean up toolbar hide timeout on unmount
   useEffect(() => {
     return () => {
@@ -1938,7 +1949,7 @@ export function ChatInput({
                     <!-- Textbox editor for mitto_ui_textbox -->
                     <div
                       class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
-                      style="height: ${uiPromptHeight}px;"
+                      style="max-height: ${uiPromptHeight}px;"
                     >
                       <!-- Resize handle at top edge -->
                       <div
@@ -1958,14 +1969,19 @@ export function ChatInput({
                         </p>
                       </div>
 
-                      <!-- Textarea (fills available space) -->
-                      <div class="px-4 pb-2 flex-1 min-h-0">
+                      <!-- Textarea (auto-sizes to content; scrolls when capped) -->
+                      <div class="px-4 pb-2 flex-1 min-h-0 overflow-y-auto">
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea w-full h-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border"
+                          class="ui-textbox-textarea block w-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border"
+                          style="min-height: 120px;"
                           maxlength=${16384}
-                          onInput=${(e) => setTextboxValue(e.target.value)}
+                          onInput=${(e) => {
+                            setTextboxValue(e.target.value);
+                            e.target.style.height = "auto";
+                            e.target.style.height = e.target.scrollHeight + "px";
+                          }}
                         >
 ${activeUIPrompt.text || ""}</textarea
                         >
@@ -2019,7 +2035,7 @@ ${activeUIPrompt.text || ""}</textarea
                       <!-- HTML Form for mitto_ui_form -->
                       <div
                         class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
-                        style="height: ${uiPromptHeight}px;"
+                        style="max-height: ${uiPromptHeight}px;"
                       >
                         <!-- Resize handle at top edge -->
                         <div
