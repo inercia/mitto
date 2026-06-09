@@ -1886,8 +1886,14 @@ func sourceOrder(src processors.ProcessorSource) int {
 }
 
 // handleWorkspaceProcessorsToggleEnabled handles PUT /api/workspace-processors/toggle-enabled.
-// If the processor YAML file is writable (workspace-local), updates enabled in-place.
-// Otherwise, records the disabled state in the workspace .mittorc file.
+//
+// Routing logic:
+//   - Workspace-local, single-document YAML file → update enabled field in-place.
+//   - Multi-document YAML file, global, or builtin processor → record override in
+//     the workspace .mittorc file (processors section), same as the global path.
+//
+// The processor is resolved by Name through the merged manager so that multi-doc
+// files (where filename ≠ processor name) are handled correctly.
 func (s *Server) handleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		methodNotAllowed(w)
@@ -1912,38 +1918,72 @@ func (s *Server) handleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter, r
 		return
 	}
 
-	// Try to find the processor YAML file in the workspace processor directories
-	workspaceProcessorDirs := s.sessionManager.GetWorkspaceAllProcessorDirs(req.Dir)
-	var filePath string
-	for _, dir := range workspaceProcessorDirs {
-		for _, ext := range []string{".yaml", ".yml"} {
-			candidate := filepath.Join(dir, req.Name+ext)
-			if _, err := os.Stat(candidate); err == nil {
-				filePath = candidate
+	// Resolve the processor by Name through the merged manager.
+	// This works correctly for multi-document files where the filename does
+	// not match the processor name.
+	var resolvedFilePath string
+	var resolvedSource processors.ProcessorSource
+	if procMgr := s.sessionManager.GetWorkspaceProcessorManager(req.Dir); procMgr != nil {
+		for _, p := range procMgr.Processors() {
+			if p.Name == req.Name {
+				resolvedFilePath = p.FilePath
+				resolvedSource = p.Source
 				break
 			}
 		}
-		if filePath != "" {
-			break
+	}
+
+	// Determine whether the processor can be edited in-place:
+	//   1. It must be workspace-local (not global/builtin).
+	//   2. Its file must be a single-document YAML file.
+	useInPlace := false
+	if resolvedFilePath != "" && resolvedSource == processors.ProcessorSourceWorkspace {
+		multi, err := processors.IsMultiDocFile(resolvedFilePath)
+		if err == nil && !multi {
+			useInPlace = true
 		}
 	}
 
-	if filePath != "" {
-		// File exists in a workspace directory — update it in-place
-		if err := processors.UpdateProcessorFileEnabled(filePath, req.Enabled); err != nil {
+	// Fall back to the old filename-based lookup when the manager couldn't
+	// resolve the processor (e.g. newly added file not yet loaded). Apply the
+	// same single-document guard before allowing an in-place write.
+	if !useInPlace && resolvedFilePath == "" {
+		workspaceProcessorDirs := s.sessionManager.GetWorkspaceAllProcessorDirs(req.Dir)
+		for _, dir := range workspaceProcessorDirs {
+			for _, ext := range []string{".yaml", ".yml"} {
+				candidate := filepath.Join(dir, req.Name+ext)
+				if _, err := os.Stat(candidate); err == nil {
+					multi, err := processors.IsMultiDocFile(candidate)
+					if err == nil && !multi {
+						resolvedFilePath = candidate
+						useInPlace = true
+					}
+					break
+				}
+			}
+			if resolvedFilePath != "" {
+				break
+			}
+		}
+	}
+
+	if useInPlace {
+		// Single-document workspace file — update enabled field in-place.
+		if err := processors.UpdateProcessorFileEnabled(resolvedFilePath, req.Enabled); err != nil {
 			http.Error(w, "failed to update processor file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if s.logger != nil {
-			s.logger.Debug("Updated processor file enabled state", "path", filePath, "enabled", req.Enabled)
+			s.logger.Debug("Updated processor file enabled state", "path", resolvedFilePath, "enabled", req.Enabled)
 		}
 	} else {
-		// Global/builtin processor — record in .mittorc processors section
+		// Multi-document file, global/builtin, or unresolvable processor —
+		// record override in the workspace .mittorc processors section.
 		if err := config.SaveWorkspaceRCProcessorEnabled(req.Dir, req.Name, req.Enabled); err != nil {
 			http.Error(w, "failed to update workspace config: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Invalidate cache so the next read picks up the change
+		// Invalidate cache so the next read picks up the change.
 		if s.sessionManager != nil {
 			s.sessionManager.InvalidateWorkspaceRC(req.Dir)
 		}
