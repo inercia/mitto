@@ -9,6 +9,8 @@ globs:
 
 The `internal/processors` package provides three processor modes for message pre/post-processing. Processors are loaded from YAML in `MITTO_DIR/processors/` and the embedded `config/processors/builtin/` directory.
 
+**Multi-document files:** A single `.yaml`/`.yml` file may contain multiple `---`-separated processor documents. Each document is validated and loaded independently; invalid or empty documents are skipped with a warning. For workspace processors in multi-document files, the per-workspace enable/disable toggle is recorded in `.mittorc` (processors override list) rather than edited in place — `UpdateProcessorFileEnabled` refuses multi-document files; use `SaveWorkspaceRCProcessorEnabled` instead. `IsMultiDocFile(path)` detects this case.
+
 > Full schema and CEL reference: `docs/config/processors.md`
 
 ## Three Processor Modes
