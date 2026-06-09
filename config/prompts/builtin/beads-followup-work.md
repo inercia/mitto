@@ -2,7 +2,7 @@
 icon: "beads"
 name: "Identify follow-up work"
 menus: prompts, conversations
-description: "Review the conversation for incomplete work, follow-up items, and edge cases, organize them (grouping related items under epics), and file them as beads"
+description: "Review the conversation for incomplete work, follow-up items, and edge cases, organize them (grouping related items under epics — new or existing), and file them as beads"
 backgroundColor: "#DCEDC8"
 group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
@@ -41,30 +41,34 @@ bd list --limit 20 --json   # recent beads: common labels, types, priorities
 bd types                    # valid issue types in this project
 ```
 
-## Step 3 — Avoid duplicates
+## Step 3 — Avoid duplicates and discover existing epics
 
-Check whether any candidate is already tracked before creating it:
+Check whether any candidate is already tracked, and learn which epics already exist so you can slot work into them:
 
 ```bash
-bd list --json             # all beads (scan titles/descriptions for overlap)
+bd list --json                            # all beads (scan titles/descriptions for overlap)
+bd list --type epic --status open --json  # open epics: candidate parents for new work
 ```
 
 Drop or merge any candidate that clearly duplicates an existing open bead. Note which existing bead it matched so you can report it.
 
+Keep the list of open epics handy — in the next step you'll prefer attaching new items to a fitting existing epic over inventing a new one. For each epic, note its **ID**, **title**, and what it covers (read its description with `bd show <epic-id>` if the title is ambiguous).
+
 ## Step 4 — Organize into a logical structure
 
-Group the surviving candidates so related work lives together instead of as a flat pile:
+Group the surviving candidates so related work lives together instead of as a flat pile. Prefer reusing existing structure over creating new structure:
 
-- **Cluster related items** that share a theme, feature, or component. When a cluster has **two or more** related items, propose an **epic** (parent bead) to hold them, and make those items its **children**. An epic needs a clear title and a one-line purpose.
-- **Keep genuinely standalone items at the top level** — do not invent an epic for a single item.
-- Within each epic, note any **ordering dependencies** between children (child B can't start until child A is done) — you'll wire these as blocking edges later.
-- For each item (and each epic), assign sensible defaults: `bug` for defects, `task`/`feature`/`chore` otherwise; `epic` for the parents; priority by real impact (P0 highest .. P4 lowest), defaulting to P2/P3 for follow-ups.
+- **Attach to an existing epic first.** For each item, check whether one of the open epics from Step 3 already covers its theme, feature, or component. If a fitting epic exists, make the item a **child of that existing epic** (record the real epic ID) rather than creating a new parent. A single item is reason enough to attach to an existing epic — you don't need a cluster to reuse one.
+- **Create a new epic only when needed.** When two or more related items share a theme that **no existing epic** covers, propose a **new epic** (parent bead) to hold them, and make those items its **children**. A new epic needs a clear title and a one-line purpose.
+- **Keep genuinely standalone items at the top level** — do not invent a new epic for a single item, and do not force an item into an existing epic that doesn't truly fit.
+- Within each epic (existing or new), note any **ordering dependencies** between children (child B can't start until child A is done) — you'll wire these as blocking edges later.
+- For each item (and each new epic), assign sensible defaults: `bug` for defects, `task`/`feature`/`chore` otherwise; `epic` for new parents; priority by real impact (P0 highest .. P4 lowest), defaulting to P2/P3 for follow-ups.
 
 Number every epic and item so each maps to a checkbox in the next step.
 
 ## Step 5 — Present the structured list and let the user accept or ignore each item
 
-This is **read-only until you confirm**. First, **print the organized list as a regular message** so the user can see the structure — epics with their children nested beneath them, then standalone items — each line formatted as:
+This is **read-only until you confirm**. First, **print the organized list as a regular message** so the user can see the structure — existing epics with their newly-attached children, then proposed new epics with their children, then standalone items — each line formatted as:
 
 > **[<type> · <priority>] <title>** — <one-line why>
 
@@ -73,27 +77,33 @@ Then present **every** epic and item in a single `mitto_ui_form_mitto(self_id: "
 ```html
 <p>Select what to file as beads. Unchecked items are skipped. Epics group their children.</p>
 
-<label><input type="checkbox" name="epic_1" checked /> [epic · P2] Parser hardening</label>
+<p><strong>[existing epic · bd-42] Parser hardening</strong> — new items will be filed under this epic:</p>
 <label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_1" checked /> [bug · P2] Crash on empty input — found while fixing X</label>
 <label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_2" checked /> [chore · P3] Add missing parser tests</label>
-<label><input type="checkbox" name="bead_3" checked /> [task · P3] Part B of the original request — not yet done</label>
+
+<label><input type="checkbox" name="epic_1" checked /> [new epic · P2] Export pipeline</label>
+<label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_3" checked /> [feature · P2] CSV export — requested but not done</label>
+<label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_4" checked /> [task · P3] JSON export tests</label>
+
+<label><input type="checkbox" name="bead_5" checked /> [task · P3] Part B of the original request — not yet done</label>
 ```
 
-Use stable names: `epic_<N>` for proposed epics and `bead_<N>` for items (matching the numbering from Step 4). Submit/Cancel buttons are added automatically.
+Use stable names: `epic_<N>` for **proposed new** epics and `bead_<N>` for items (matching the numbering from Step 4). **Existing** epics are shown as plain headers (no checkbox) — they already exist, so there's nothing to approve; only their newly-attached children get checkboxes. In your plan, remember which `bead_<N>` items belong to which existing epic ID. Submit/Cancel buttons are added automatically.
 
 Interpreting the result:
 - An epic or item is **approved** only if its key is **present** in the returned values — checked boxes are submitted, unchecked boxes are omitted entirely.
-- If an **epic is unchecked but some of its children are checked**, create those children as **standalone top-level beads** so the work is not lost.
+- If a **new epic is unchecked but some of its children are checked**, create those children as **standalone top-level beads** so the work is not lost.
+- If a child of an **existing epic** is checked, create it as a child of that existing epic. Existing epics are never created or modified beyond gaining children.
 - If the user **cancels** the form, or submits with **everything unchecked**, create nothing and report that no beads were filed.
 
 ## Step 6 — Create the approved beads
 
-Create approved **epics first** so children can reference them. For each bead, compose a well-structured Markdown description (Summary, Findings / Context, Proposed Solution if known, Acceptance Criteria), write it to a temporary file, and pass it via `--body-file` to preserve formatting and avoid shell-quoting issues:
+Create approved **new epics first** so their children can reference them; children of **existing** epics use the real epic IDs from Step 3. For each bead, compose a well-structured Markdown description (Summary, Findings / Context, Proposed Solution if known, Acceptance Criteria), write it to a temporary file, and pass it via `--body-file` to preserve formatting and avoid shell-quoting issues:
 
 ```bash
-# Epic (parent)
+# New epic (parent)
 bd create "<epic title>" --type epic --priority <priority> --labels "<labels>" --body-file /tmp/bead-epic.md
-# Child of an approved epic
+# Child of a new epic (use the ID just returned) or of an existing epic (use its Step 3 ID)
 bd create "<title>" --parent <epic-id> --type <type> --priority <priority> --body-file /tmp/bead-item.md
 # Standalone item (no epic)
 bd create "<title>" --type <type> --priority <priority> --labels "<labels>" --body-file /tmp/bead-item.md
@@ -111,7 +121,7 @@ bd link <id> <other-id> --type related        # non-blocking relationship
 bd dep cycles                                 # verify integrity
 ```
 
-For each created epic, record the grouping in its history with a terse audit note:
+For each epic that gained children — **newly created or pre-existing** — record the grouping in its history with a terse audit note:
 
 ```bash
 bd update <epic-id> --append-notes "Grouped <N> follow-ups (<child-ids>) from conversation review: <one-line rationale>."
@@ -121,7 +131,7 @@ bd update <epic-id> --append-notes "Grouped <N> follow-ups (<child-ids>) from co
 
 Finish with a short summary listing:
 
-- Each **created epic** (ID + title) with its children indented beneath it, then standalone beads — grouped for readability.
+- Each **epic** (ID + title) with its children indented beneath it — both newly created epics and existing epics that received new children — then standalone beads, grouped for readability.
 - The dependency edges created between them.
 - Any candidates **skipped** as duplicates (and which existing bead they matched).
 - Any failures or warnings from `bd`.

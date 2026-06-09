@@ -12,8 +12,9 @@ enabledWhen: 'tools.hasPattern("jira_*") && commandExists("bd")'
 Pull JIRA tickets matching this project's saved query into local beads issues,
 keeping the beads copy in sync with changes made in JIRA (description, comments,
 priority, status). This is a **one-way pull** (JIRA → beads) for now; two-way
-sync may be added later. Designed to be run periodically via
-`mitto_conversation_set_periodic`.
+sync may be added later. Run it **on demand** in a regular conversation, or
+schedule it to run periodically via `mitto_conversation_set_periodic` — it
+adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
 ## Session Context
 
@@ -24,15 +25,17 @@ Project user data (JSON):
 
 ## Interaction Mode
 
-- **Periodic run**: `@mitto:periodic` = is this a scheduled periodic execution?
-- **Force-triggered**: `@mitto:periodic_forced` = was this periodic run manually triggered?
+This prompt runs in two modes. Check these variables to decide which applies:
 
-**If this is a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
-- Use **only** `mitto_ui_notify` for communication — non-blocking notifications only.
+- `@mitto:periodic` = is this a scheduled periodic execution?
+- `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+
+**Interactive mode — a regular conversation** (`@mitto:periodic` = "false") **or a force-triggered periodic run** (`@mitto:periodic_forced` = "true"):
+- The user is present. Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+
+**Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+- Use **only** `mitto_ui_notify` — non-blocking notifications only.
 - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. The user is not watching.
-
-**If this is force-triggered** (`@mitto:periodic_forced` = "true") **or a non-periodic conversation** (`@mitto:periodic` = "false"):
-- You may use interactive tools (`mitto_ui_options`, etc.) in addition to `mitto_ui_notify`.
 
 ## Step 1 — Read the "Jira Tasks" query from project user data
 
@@ -125,8 +128,8 @@ bd update <id> --set-metadata jira_synced_comments="<previous ids + new ids>"
 
 Report counts: tickets matched, beads created, beads updated, comments mirrored, beads closed, unchanged (skipped).
 
-- Periodic run: send a single `mitto_ui_notify` only if anything changed; stay silent otherwise.
-- Interactive run: print the full summary.
+- Silent mode (scheduled periodic): send a single `mitto_ui_notify` only if anything changed; stay silent otherwise.
+- Interactive mode: print the full summary.
 
 ## Guidelines
 
