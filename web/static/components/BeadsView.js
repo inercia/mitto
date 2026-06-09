@@ -57,11 +57,26 @@ const PRIORITY_COLORS = {
 
 const STATUS_COLORS = {
   open: "bg-green-700 text-green-100",
-  in_progress: "bg-blue-700 text-blue-100",
+  in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
   closed: "bg-slate-600 text-white",
   blocked: "bg-red-700 text-red-100",
   deferred: "bg-cyan-800 text-cyan-100",
 };
+
+// Status filter toggle buttons shown in the Beads toolbar. Each button toggles
+// the visibility of issues with the matching status. `key` is the bd status
+// value; `label` is the user-facing text.
+const BEADS_STATUS_TOGGLES = [
+  { key: "open", label: "open" },
+  { key: "in_progress", label: "in-progress" },
+  { key: "closed", label: "closed" },
+];
+
+// In-memory (not persisted) status toggle state for the Beads view. Kept at
+// module scope so the user's selection survives navigating away from and back
+// to the Beads view within the same app session. It intentionally resets to
+// "all enabled" on a full reload / app restart, so all issues are shown again.
+let beadsStatusToggles = { open: true, in_progress: true, closed: true };
 
 const TYPE_COLORS = {
   epic: "bg-purple-700 text-purple-100",
@@ -231,6 +246,26 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
   const [comments, setComments] = useState([]);
   const [notes, setNotes] = useState("");
 
+  // View-mode inline notes editing (mirrors description: clicking the rendered
+  // notes switches to a textarea; blur saves via /api/beads/update when the
+  // text changed). `notesDraft` holds the in-progress text; `savingNotes` gates
+  // the in-flight request.
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [notesMinHeight, setNotesMinHeight] = useState(0);
+  const notesRef = useRef(null);
+  const notesViewRef = useRef(null);
+
+  // View-mode "add comment": a "+" button at the bottom of the comments list
+  // reveals a textarea with the same save-on-blur behaviour as notes. An empty
+  // draft on blur just closes the editor without a request; otherwise the
+  // comment is posted via /api/beads/comment and the list is refreshed.
+  const [addingComment, setAddingComment] = useState(false);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [savingComment, setSavingComment] = useState(false);
+  const commentRef = useRef(null);
+
   // Reset the form whenever create mode is (re)entered.
   useEffect(() => {
     if (isCreating) {
@@ -348,6 +383,11 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
     setSavingPriority(false);
     setEditingAssignee(false);
     setSavingAssignee(false);
+    setEditingNotes(false);
+    setSavingNotes(false);
+    setAddingComment(false);
+    setSavingComment(false);
+    setCommentDraft("");
   }, [data && data.id]);
 
   // Focus the textarea (cursor at end) when entering edit mode.
@@ -358,6 +398,22 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
       el.setSelectionRange(el.value.length, el.value.length);
     }
   }, [editingDesc]);
+
+  // Focus the notes textarea (cursor at end) when entering notes-edit mode.
+  useEffect(() => {
+    if (editingNotes && notesRef.current) {
+      const el = notesRef.current;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, [editingNotes]);
+
+  // Focus the new-comment textarea when the "add comment" editor opens.
+  useEffect(() => {
+    if (addingComment && commentRef.current) {
+      commentRef.current.focus();
+    }
+  }, [addingComment]);
 
   // Focus the title input (cursor at end) when entering edit mode.
   useEffect(() => {
@@ -418,6 +474,49 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
       setEditingDesc(false);
     }
   }, [data && data.id, data && data.description, descDraft, workingDir, showToast, onUpdated]);
+
+  // Enter inline notes-edit mode, seeding the draft from the current notes.
+  // Capture the rendered area's height first so the textarea opens at least as
+  // tall as the content it replaces.
+  const startEditNotes = useCallback(() => {
+    if (savingNotes) return;
+    if (notesViewRef.current) setNotesMinHeight(notesViewRef.current.offsetHeight);
+    setNotesDraft(notes || "");
+    setEditingNotes(true);
+  }, [notes, savingNotes]);
+
+  // Persist the edited notes on blur. Saves only when the text changed;
+  // otherwise just leaves edit mode. Uses /api/beads/update with the notes
+  // field and updates local state so the panel re-renders with the saved value.
+  const handleNotesBlur = useCallback(async () => {
+    const original = notes || "";
+    const next = notesDraft;
+    if (next === original) {
+      setEditingNotes(false);
+      return;
+    }
+    setSavingNotes(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: data.id, notes: next }),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to update notes" });
+      } else {
+        setNotes(next);
+        showToast && showToast({ style: "success", title: "Notes updated" });
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to update notes" });
+    } finally {
+      setSavingNotes(false);
+      setEditingNotes(false);
+    }
+  }, [notes, notesDraft, data && data.id, workingDir, showToast, onUpdated]);
 
   // Enter inline title-edit mode, seeding the draft from the current title.
   const startEditTitle = useCallback(() => {
@@ -592,6 +691,46 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
       setDepsLoading(false);
     }
   }, [workingDir, data && data.id]);
+
+  // Open the new-comment editor with an empty draft.
+  const startAddComment = useCallback(() => {
+    if (savingComment) return;
+    setCommentDraft("");
+    setAddingComment(true);
+  }, [savingComment]);
+
+  // Persist a new comment on blur. An empty (whitespace-only) draft just closes
+  // the editor without a request. On success the comment list is refreshed via
+  // fetchDeps and the parent list is notified via onUpdated.
+  const handleCommentBlur = useCallback(async () => {
+    const text = commentDraft.trim();
+    if (!text) {
+      setAddingComment(false);
+      return;
+    }
+    setSavingComment(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/comment"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: data.id, text }),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to add comment" });
+      } else {
+        setCommentDraft("");
+        showToast && showToast({ style: "success", title: "Comment added" });
+        await fetchDeps();
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to add comment" });
+    } finally {
+      setSavingComment(false);
+      setAddingComment(false);
+    }
+  }, [commentDraft, data && data.id, workingDir, showToast, fetchDeps, onUpdated]);
 
   // Fetch dependencies, notes, and comments whenever a (non-create) issue is opened or switched.
   useEffect(() => {
@@ -1023,20 +1162,6 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
             </div>
 
             <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Notes</div>
-              ${depsLoading
-                ? html`
-                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
-                  </div>
-                `
-                : (notes && notes.trim()
-                    ? html`<div class="border border-mitto-border rounded p-2 bg-mitto-input-box">${commentBody(notes)}</div>`
-                    : html`<div class="text-xs text-mitto-text-secondary italic">No notes.</div>`)
-              }
-            </div>
-
-            <div>
               <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Comments${comments.length ? ` (${comments.length})` : ""}</div>
               ${depsLoading
                 ? html`
@@ -1044,22 +1169,90 @@ function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, o
                     <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
                   </div>
                 `
-                : (comments.length === 0
-                    ? html`<div class="text-xs text-mitto-text-secondary italic">No comments.</div>`
-                    : html`
-                      <ul class="space-y-2">
-                        ${[...comments].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(cm => html`
-                          <li key=${cm.id} class="border border-mitto-border rounded p-2 bg-mitto-input-box">
-                            <div class="flex items-center justify-between gap-2 mb-1">
-                              <span class="text-xs font-medium text-mitto-text">${cm.author || "Unknown"}</span>
-                              <span class="text-xs text-mitto-text-secondary" title=${cm.created_at}>${cm.created_at ? new Date(cm.created_at).toLocaleString() : ""}</span>
-                            </div>
-                            ${commentBody(cm.text)}
-                          </li>
-                        `)}
-                      </ul>
-                    `)
+                : html`
+                  <${Fragment}>
+                    ${comments.length === 0
+                      ? html`<div class="text-xs text-mitto-text-secondary italic">No comments.</div>`
+                      : html`
+                        <ul class="space-y-2">
+                          ${[...comments].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(cm => html`
+                            <li key=${cm.id} class="border-l-2 border-l-blue-500/70 bg-blue-500/10 rounded-r p-2 pl-3">
+                              <div class="flex items-center justify-between gap-2 mb-1">
+                                <span class="text-xs font-medium text-mitto-text">${cm.author || "Unknown"}</span>
+                                <span class="text-xs text-mitto-text-secondary" title=${cm.created_at}>${cm.created_at ? new Date(cm.created_at).toLocaleString() : ""}</span>
+                              </div>
+                              ${commentBody(cm.text)}
+                            </li>
+                          `)}
+                        </ul>
+                      `}
+                    ${addingComment
+                      ? html`
+                        <textarea
+                          ref=${commentRef}
+                          class="${inputClass} resize-y mt-2"
+                          rows="3"
+                          placeholder="Add a comment…"
+                          value=${commentDraft}
+                          onInput=${e => setCommentDraft(e.target.value)}
+                          onBlur=${handleCommentBlur}
+                          disabled=${savingComment}
+                        ></textarea>
+                      `
+                      : html`
+                        <button
+                          type="button"
+                          onClick=${startAddComment}
+                          disabled=${savingComment}
+                          class="mt-2 flex items-center gap-1 text-xs text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          title="Add comment"
+                        >
+                          ${savingComment
+                            ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                            : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                          <span>Add comment</span>
+                        </button>
+                      `}
+                  </${Fragment}>
+                `
               }
+            </div>
+
+            <div>
+              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Notes</div>
+              ${depsLoading
+                ? html`
+                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
+                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                  </div>
+                `
+                : editingNotes
+                  ? html`
+                    <textarea
+                      ref=${notesRef}
+                      class="${inputClass} resize-y"
+                      rows="4"
+                      style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
+                      placeholder="Add notes…"
+                      value=${notesDraft}
+                      onInput=${e => setNotesDraft(e.target.value)}
+                      onBlur=${handleNotesBlur}
+                      disabled=${savingNotes}
+                    ></textarea>
+                  `
+                  : html`
+                    <div
+                      ref=${notesViewRef}
+                      class="border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative"
+                      onClick=${startEditNotes}
+                      title="Click to edit"
+                    >
+                      ${savingNotes && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
+                      ${notes && notes.trim()
+                        ? commentBody(notes)
+                        : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
+                    </div>
+                  `}
             </div>
           `}
       </div>
@@ -1191,17 +1384,32 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  // Filter state is initialized from localStorage so that the user's applied
-  // criteria are restored when they navigate away from the Beads view and
-  // return within the same session. Changes are persisted via the effect below.
-  const [statusFilter, setStatusFilter] = useState(() => getBeadsFilters().status);
+  // The type and search filters are initialized from localStorage so that the
+  // user's applied criteria are restored when they navigate away from the Beads
+  // view and return within the same session. Changes are persisted via the
+  // effect below. The status toggles are deliberately NOT persisted to
+  // localStorage — they live only in memory (see `beadsStatusToggles`).
   const [typeFilter, setTypeFilter] = useState(() => getBeadsFilters().type);
   const [search, setSearch] = useState(() => getBeadsFilters().search);
 
-  // Persist filter criteria whenever they change.
+  // Status filter toggles, seeded from the in-memory module state so the
+  // selection survives navigating away and back within the same session.
+  const [statusToggles, setStatusToggles] = useState(() => ({ ...beadsStatusToggles }));
+
+  // Toggle a single status on/off. The new state is also written back to the
+  // module-level store so it persists across remounts within the session.
+  const toggleStatus = useCallback((key) => {
+    setStatusToggles(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      beadsStatusToggles = next;
+      return next;
+    });
+  }, []);
+
+  // Persist type and search filters whenever they change.
   useEffect(() => {
-    setBeadsFilters({ status: statusFilter, type: typeFilter, search });
-  }, [statusFilter, typeFilter, search]);
+    setBeadsFilters({ type: typeFilter, search });
+  }, [typeFilter, search]);
 
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
@@ -1370,7 +1578,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
   const filtered = useMemo(() => {
     return issues.filter(issue => {
-      if (statusFilter !== "all" && issue.status !== statusFilter) return false;
+      // Hide an issue only when its status maps to a toggle that is currently
+      // off. Statuses without a toggle (e.g. blocked, deferred) are unaffected.
+      if (statusToggles[issue.status] === false) return false;
       if (typeFilter !== "all" && issue.issue_type !== typeFilter) return false;
       if (search) {
         const q = search.toLowerCase();
@@ -1380,9 +1590,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       }
       return true;
     });
-  }, [issues, statusFilter, typeFilter, search]);
+  }, [issues, statusToggles, typeFilter, search]);
 
-  const allStatuses = useMemo(() => [...new Set(issues.map(i => i.status).filter(Boolean))], [issues]);
   const allTypes = useMemo(() => [...new Set(issues.map(i => i.issue_type).filter(Boolean))], [issues]);
 
   // Map of issue id -> number of issues that name it as their parent. Computed
@@ -1647,14 +1856,19 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       </div>
 
       <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border flex-shrink-0">
-        <select
-          class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text"
-          value=${statusFilter}
-          onInput=${e => setStatusFilter(e.target.value)}
-        >
-          <option value="all">All statuses</option>
-          ${allStatuses.map(s => html`<option value=${s}>${s.replace(/_/g, " ")}</option>`)}
-        </select>
+        <div class="inline-flex rounded border border-mitto-border overflow-hidden flex-shrink-0" role="group" aria-label="Filter by status">
+          ${BEADS_STATUS_TOGGLES.map((t, i) => html`
+            <button
+              type="button"
+              onClick=${() => toggleStatus(t.key)}
+              aria-pressed=${statusToggles[t.key] ? "true" : "false"}
+              title=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
+              class="px-2 py-1 text-xs transition-colors ${i > 0 ? "border-l border-mitto-border " : ""}${statusToggles[t.key] ? `${STATUS_COLORS[t.key]} font-semibold` : "bg-transparent text-mitto-text-secondary opacity-50 hover:opacity-80 hover:text-mitto-text"}"
+            >
+              ${t.label}
+            </button>
+          `)}
+        </div>
         <select
           class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text"
           value=${typeFilter}
@@ -1693,9 +1907,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               const linkedSessionId = issueSessionMap[issue.id];
               const isSelected = selectedIssue && selectedIssue.id === issue.id;
               // Treat an issue as an epic when it is typed as one or has at
-              // least one child issue, and give it a purple tint + left accent
-              // so it reads as a distinct container row. A selected card always
-              // wins on background/border.
+              // least one child issue, and give it a purple left accent so it
+              // reads as a distinct container row. Epics share the same grey
+              // background as regular issues — only the left border differs. A
+              // selected card always wins on background/border.
               //
               // The hovered (non-selected) row gets Mitto's solid brand red
               // (bg-red-600 / #dc2626 — the same red used for the active session
@@ -1706,9 +1921,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               const isEpic = issue.issue_type === "epic" || childCount > 0;
               const bgTone = isSelected
                 ? "bg-slate-700/30"
-                : isEpic
-                  ? "bg-purple-500/5 hover:bg-red-600"
-                  : "bg-slate-700/20 hover:bg-red-600";
+                : "bg-slate-700/20 hover:bg-red-600";
               const borderTone = isSelected
                 ? "border-blue-500/60"
                 : isEpic

@@ -892,6 +892,18 @@ a:hover {
   background: #f59e0b !important;  /* Original amber-500 */
 }
 
+/* =============================================================================
+   Beads "in-progress" status: preserve semantic blue (don't remap to accent)
+   ============================================================================= */
+
+/* The in_progress status badge/toggle uses bg-blue-700, which the accent
+   remapping above turns red. Restore the original blue for this specific
+   marker class in both themes. */
+.v2-theme:not(.dark) .beads-status-inprogress,
+.v2-theme.dark .beads-status-inprogress {
+  background: #1d4ed8 !important;  /* Original blue-700 */
+}
+
 /* Toast text color: preserve white text on colored toast backgrounds
    (overrides the light-theme .text-white → near-black rule) */
 .v2-theme .toast-enter .text-white,

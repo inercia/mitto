@@ -1029,19 +1029,20 @@ export function setPromptSortMode(mode) {
 // Beads View Filters
 // =============================================================================
 //
-// Persists the Beads view filter criteria (status, type, search text) in
-// localStorage so they are restored when the user navigates away from the
-// Beads view and returns within the same session. These do not need to survive
-// app restarts, so a simple localStorage-only approach is used (no server sync).
+// Persists the Beads view filter criteria (type, search text) in localStorage
+// so they are restored when the user navigates away from the Beads view and
+// returns within the same session. These do not need to survive app restarts,
+// so a simple localStorage-only approach is used (no server sync). The status
+// filter is intentionally not persisted here — it lives only in memory.
 
 const BEADS_FILTERS_KEY = "mitto_beads_filters";
 
-const DEFAULT_BEADS_FILTERS = { status: "all", type: "all", search: "" };
+const DEFAULT_BEADS_FILTERS = { type: "all", search: "" };
 
 /**
  * Get the persisted Beads view filters from localStorage.
- * @returns {{status: string, type: string, search: string}} The filter state,
- *          falling back to defaults ("all"/"all"/"") for any missing field.
+ * @returns {{type: string, search: string}} The filter state, falling back to
+ *          defaults ("all"/"") for any missing field.
  */
 export function getBeadsFilters() {
   try {
@@ -1049,7 +1050,6 @@ export function getBeadsFilters() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        status: typeof parsed.status === "string" ? parsed.status : DEFAULT_BEADS_FILTERS.status,
         type: typeof parsed.type === "string" ? parsed.type : DEFAULT_BEADS_FILTERS.type,
         search: typeof parsed.search === "string" ? parsed.search : DEFAULT_BEADS_FILTERS.search,
       };
@@ -1062,12 +1062,11 @@ export function getBeadsFilters() {
 
 /**
  * Persist the Beads view filters to localStorage.
- * @param {{status?: string, type?: string, search?: string}} filters - Filter state to save.
+ * @param {{type?: string, search?: string}} filters - Filter state to save.
  */
 export function setBeadsFilters(filters) {
   try {
     const toStore = {
-      status: filters?.status ?? DEFAULT_BEADS_FILTERS.status,
       type: filters?.type ?? DEFAULT_BEADS_FILTERS.type,
       search: filters?.search ?? DEFAULT_BEADS_FILTERS.search,
     };
