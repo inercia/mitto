@@ -238,6 +238,12 @@ type BackgroundSession struct {
 	pendingSharedModes      *acp.SessionModeState          // Modes from NewSession, applied by applyPendingSharedModes
 	pendingSharedModels     *acp.UnstableSessionModelState // Models from NewSession, applied by applyPendingSharedModes
 
+	// handshakeMu serialises the full deferred-handshake completion (session/new
+	// RPC + store writes + mode/model application + acp_started notification) so the
+	// first-prompt goroutine and the background-prewarm goroutine never run it
+	// concurrently. See completeDeferredHandshake and PrewarmACPSession.
+	handshakeMu sync.Mutex
+
 	// resumeMethod tracks which method was used to establish the ACP session:
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
@@ -2752,6 +2758,70 @@ func (bs *BackgroundSession) applyPendingSharedModes() {
 	}
 }
 
+// completeDeferredHandshake performs the deferred session/new RPC for a shared-
+// process session, persists the ACP session ID, applies the session's modes and
+// models (which populate the config options surfaced to the UI as model/mode
+// selectors), and notifies observers that ACP is ready. It serialises these store
+// writes via handshakeMu so it is safe to call from either the first-prompt
+// goroutine or the background prewarm goroutine (see PrewarmACPSession). It returns
+// nil — without notifying — when there is nothing to do (not a deferred shared
+// session, or the handshake already completed).
+func (bs *BackgroundSession) completeDeferredHandshake() error {
+	bs.handshakeMu.Lock()
+	defer bs.handshakeMu.Unlock()
+
+	// Nothing to do if this is not a deferred shared session, or the handshake has
+	// already completed. pendingShared is flipped to false (under pendingSharedMu)
+	// by ensureSharedACPSession once the RPC succeeds.
+	bs.pendingSharedMu.Lock()
+	pending := bs.pendingShared
+	bs.pendingSharedMu.Unlock()
+	if bs.sharedProcess == nil || !pending {
+		return nil
+	}
+
+	if err := bs.ensureSharedACPSession(); err != nil {
+		return err
+	}
+
+	// Persist the ACP session ID. Done here (not inside ensureSharedACPSession) so
+	// that store writes happen from a single serialised goroutine (handshakeMu).
+	if bs.store != nil && bs.persistedID != "" && bs.acpID != "" {
+		if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			m.ACPSessionID = bs.acpID
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to persist ACP session ID after deferred handshake", "error", err)
+		}
+	}
+
+	bs.applyPendingSharedModes()
+
+	// Notify observers that ACP is now ready and config options (model, mode) are
+	// available, so the UI can render the model/mode selectors.
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnACPStarted()
+	})
+	return nil
+}
+
+// PrewarmACPSession completes the deferred ACP session/new handshake in the
+// background so the model and mode selectors become available before the first
+// prompt is sent. It is best-effort and idempotent: a no-op for non-deferred or
+// already-started sessions, and on failure it leaves the session retryable so the
+// first prompt re-attempts the handshake. Intended to be called from a goroutine.
+func (bs *BackgroundSession) PrewarmACPSession() {
+	if bs == nil || bs.sharedProcess == nil {
+		return
+	}
+	if err := bs.completeDeferredHandshake(); err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("Background ACP prewarm failed (will retry on first prompt)",
+				"session_id", bs.persistedID,
+				"error", err)
+		}
+	}
+}
+
 // resumeSharedACPSession sets up this BackgroundSession to use a session on the
 // given shared ACP process, trying to resume the specified ACP session ID first.
 // Falls back to creating a new session if resumption fails.
@@ -3573,8 +3643,11 @@ retryAfterRestart:
 		// For shared-process sessions, complete the deferred session/new handshake
 		// before the first prompt. This runs after the HTTP create path has already
 		// returned, so a busy agent delays the prompt — not conversation creation.
-		if bs.sharedProcess != nil && bs.pendingShared {
-			if err := bs.ensureSharedACPSession(); err != nil {
+		// The background prewarm (see PrewarmACPSession) may have already completed
+		// this when the client opened the conversation; completeDeferredHandshake is
+		// idempotent and a no-op in that case.
+		if bs.sharedProcess != nil {
+			if err := bs.completeDeferredHandshake(); err != nil {
 				if bs.logger != nil {
 					bs.logger.Error("Deferred session/new failed",
 						"session_id", bs.persistedID,
@@ -3593,17 +3666,6 @@ retryAfterRestart:
 				}
 				return
 			}
-			// Persist the ACP session ID and apply session modes/models.
-			// Done here (not inside ensureSharedACPSession) so that store writes
-			// happen from a single serialised goroutine, not a background one.
-			if bs.store != nil && bs.persistedID != "" && bs.acpID != "" {
-				if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
-					m.ACPSessionID = bs.acpID
-				}); err != nil && bs.logger != nil {
-					bs.logger.Warn("Failed to persist ACP session ID after deferred handshake", "error", err)
-				}
-			}
-			bs.applyPendingSharedModes()
 		}
 
 		// For fresh-context runs, create a new ACP session so the agent has no

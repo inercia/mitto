@@ -1177,6 +1177,13 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 					"session_id", c.sessionID,
 					"observer_count", c.bgSession.ObserverCount())
 			}
+			// Background-prewarm the deferred ACP session/new handshake so the
+			// model/mode selectors appear before the first prompt. This is a no-op
+			// for already-started sessions. It runs after AddObserver so this client
+			// reliably receives the acp_started broadcast (with config_options) once
+			// the handshake completes. PrewarmACPSession is idempotent and safe under
+			// concurrent callers (e.g. multiple connected clients).
+			go c.bgSession.PrewarmACPSession()
 			// Re-send any active UI prompt to the newly connected client.
 			// This handles the case where a page reload occurs while a blocking
 			// UI prompt (e.g., mitto_ui_options) is waiting for user input.
