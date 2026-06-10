@@ -2250,7 +2250,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${handleRestartAcp}
                 disabled=${restarting}
-                class="px-4 py-2 text-sm bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+                class="btn btn-warning btn-sm gap-2"
                 title="Restart ACP to apply MCP changes to active conversations"
               >
                 ${restarting
@@ -2258,12 +2258,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   : "Restart ACP"}
               </button>
             `}
-            <button onClick=${handleClose} data-testid="ws-close" class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">Close</button>
+            <button onClick=${handleClose} data-testid="ws-close" class="btn btn-ghost btn-sm">Close</button>
             <button
               onClick=${handleSave}
               data-testid="ws-save"
               disabled=${saving || loading}
-              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+              class="btn btn-primary btn-sm gap-2"
             >
               ${saving
                 ? html`<${SpinnerIcon} className="w-4 h-4" /> Saving...`
