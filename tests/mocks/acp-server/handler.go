@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -370,21 +371,62 @@ func (s *MockACPServer) handleShutdown(req JSONRPCRequest) error {
 	return s.sendResponse(req.ID, nil)
 }
 
+// findMatchingResponse selects the scripted response for a prompt.
+//
+// Mitto prepends guidance preambles to prompts (e.g. "[Session Context]", a
+// "[Mitto MCP Tools Check]" block, a Beads reminder). Those preambles contain
+// incidental phrases — e.g. "...do NOT use markdown TODO lists or ad-hoc task
+// files" — that match broad natural-language scenario patterns such as
+// file-list's "(?i)(list|show|what).*(files|directory|folder)". A given prompt
+// therefore frequently matches MULTIPLE scenarios at once.
+//
+// Two problems followed from the original implementation: it iterated
+// s.scenarios (a Go map, so iteration order is random) and returned the first
+// match, making the chosen scenario nondeterministic — the source of flaky UI
+// tests where, e.g., a "TEST:code-block-split" prompt intermittently rendered
+// the file-list response.
+//
+// Fix: iterate scenarios in a deterministic (sorted) order and choose the MOST
+// SPECIFIC match — the scenario whose pattern matches the SHORTEST span of the
+// message. Precise markers like "TEST:code-block-split" match a short exact
+// span, whereas greedy ".*" fallbacks match a longer span of boilerplate, so
+// the precise scenario wins. Ties are broken by the (sorted) scenario name.
 func (s *MockACPServer) findMatchingResponse(message string) *Response {
-	for _, scenario := range s.scenarios {
+	names := make([]string, 0, len(s.scenarios))
+	for name := range s.scenarios {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var best *Response
+	bestName := ""
+	bestSpan := -1
+	for _, name := range names {
+		scenario := s.scenarios[name]
 		for i := range scenario.Responses {
 			resp := &scenario.Responses[i]
-			if resp.Trigger.Type == "prompt" {
-				re, err := regexp.Compile(resp.Trigger.Pattern)
-				if err != nil {
-					continue
-				}
-				if re.MatchString(message) {
-					s.log("Matched scenario: %s", scenario.Name)
-					return resp
-				}
+			if resp.Trigger.Type != "prompt" {
+				continue
+			}
+			re, err := regexp.Compile(resp.Trigger.Pattern)
+			if err != nil {
+				continue
+			}
+			loc := re.FindStringIndex(message)
+			if loc == nil {
+				continue
+			}
+			span := loc[1] - loc[0]
+			if best == nil || span < bestSpan {
+				best = resp
+				bestName = name
+				bestSpan = span
 			}
 		}
+	}
+	if best != nil {
+		s.log("Matched scenario: %s (span=%d)", bestName, bestSpan)
+		return best
 	}
 	s.log("No matching scenario found")
 	return nil
