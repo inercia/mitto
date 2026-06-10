@@ -1312,7 +1312,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addWorkspace}
                 disabled=${acpServers.length === 0 || isNewFolderIncomplete}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:bg-mitto-accent-hover hover:text-mitto-text-strong"
                 title="Add folder"
               >
                 <${FolderIcon} className="w-4 h-4" />
@@ -1320,7 +1320,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
                 disabled=${!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-danger hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:bg-mitto-danger hover:text-mitto-text-strong"
                 title="Delete selected ACP server"
               >
                 <${TrashIcon} className="w-4 h-4" />
@@ -1328,7 +1328,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && duplicateWorkspace(selectedWorkspaceKey)}
                 disabled=${!selectedWorkspaceKey}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:bg-mitto-accent-hover hover:text-mitto-text-strong"
                 title="Duplicate selected workspace"
               >
                 <${DuplicateIcon} className="w-4 h-4" />
@@ -1336,7 +1336,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addServerToFolder}
                 disabled=${!selectedFolder || !folderCanAddServer}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:bg-mitto-accent-hover hover:text-mitto-text-strong"
                 title="Add ACP server to folder"
               >
                 <${ServerIcon} className="w-4 h-4" />
