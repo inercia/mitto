@@ -60,16 +60,16 @@ function ContextMenuItem({ item, onClose }) {
             e.stopPropagation();
             openSubmenu();
           }}
-          class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 text-gray-200 hover:bg-slate-700"
+          class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 text-mitto-text hover:bg-mitto-surface-hover"
         >
           ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
           <span class="flex-1">${item.label}</span>
-          <${ChevronRightIcon} className="w-4 h-4 text-gray-400" />
+          <${ChevronRightIcon} className="w-4 h-4 text-mitto-text-muted" />
         </button>
         ${submenuOpen &&
         html`
           <div
-            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px] max-h-[60vh] overflow-y-auto"
+            class="fixed z-50 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl py-1 min-w-[140px] max-h-[60vh] overflow-y-auto"
             style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
             onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
             onMouseLeave=${scheduleClose}
@@ -87,10 +87,10 @@ function ContextMenuItem({ item, onClose }) {
                   }}
                   disabled=${sub.disabled}
                   class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${sub.disabled
-                    ? "text-gray-500 cursor-not-allowed"
+                    ? "text-mitto-text-muted cursor-not-allowed"
                     : sub.danger
-                      ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-                      : "text-gray-200 hover:bg-slate-700"}"
+                      ? "text-mitto-danger hover:text-red-300 hover:bg-mitto-surface-hover"
+                      : "text-mitto-text hover:bg-mitto-surface-hover"}"
                 >
                   ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
                   ${sub.label}
@@ -114,10 +114,10 @@ function ContextMenuItem({ item, onClose }) {
       }}
       disabled=${item.disabled}
       class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
-        ? "text-gray-500 cursor-not-allowed"
+        ? "text-mitto-text-muted cursor-not-allowed"
         : item.danger
-          ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-          : "text-gray-200 hover:bg-slate-700"}"
+          ? "text-mitto-danger hover:text-red-300 hover:bg-mitto-surface-hover"
+          : "text-mitto-text hover:bg-mitto-surface-hover"}"
     >
       ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
       ${item.label}
@@ -178,7 +178,7 @@ export function ContextMenu({ x, y, items, onClose }) {
   return html`
     <div
       ref=${menuRef}
-      class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
+      class="fixed z-50 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl py-1 min-w-[140px]"
       style="left: ${position.x}px; top: ${position.y}px;"
     >
       ${items.map(

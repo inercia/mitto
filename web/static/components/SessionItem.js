@@ -493,20 +493,20 @@ export function SessionItem({
                       `
                     : session.child_origin === "mcp"
                       ? html`
-                          <span class="shrink-0 text-blue-400" title="Created by agent">
+                          <span class="shrink-0 text-mitto-accent" title="Created by agent">
                             <${RobotIcon} className="w-4 h-4" />
                           </span>
                         `
                       : session.child_origin === "human"
                         ? html`
-                            <span class="shrink-0 text-green-400" title="Manually created child">
+                            <span class="shrink-0 text-mitto-success" title="Manually created child">
                               <${PersonIcon} className="w-4 h-4" />
                             </span>
                           `
                         : null}
                   ${session.isWaitingForChildren
                     ? html`
-                        <span class="shrink-0 text-yellow-400 animate-pulse" title="Waiting for child conversations">
+                        <span class="shrink-0 text-mitto-warning animate-pulse" title="Waiting for child conversations">
                           <${HourglassIcon} className="w-4 h-4" />
                         </span>
                       `
@@ -569,7 +569,7 @@ export function SessionItem({
                 ${hasChildren && childCount > 0
                   ? html`
                       <button
-                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-slate-700'} text-gray-400 hover:text-white hover:bg-slate-600 transition-colors cursor-pointer"
+                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-mitto-surface-3'} text-mitto-text-muted hover:text-white hover:bg-mitto-surface-hover transition-colors cursor-pointer"
                         onClick=${(e) => {
                           e.stopPropagation();
                           if (onToggleExpand) onToggleExpand();
@@ -592,7 +592,7 @@ export function SessionItem({
                 ${isSpawned
                   ? html`<button
                       onClick=${handleDelete}
-                      class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+                      class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-white"
                       title="Delete"
                     >
                       <${TrashIcon} className="w-4 h-4" />
@@ -600,11 +600,11 @@ export function SessionItem({
                   : html`<button
                       onClick=${canArchive ? handleArchive : undefined}
                       disabled=${!canArchive}
-                      class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
-                        ? "opacity-50 cursor-not-allowed text-gray-500"
+                      class="p-1.5 bg-mitto-surface-3 rounded transition-colors ${!canArchive
+                        ? "opacity-50 cursor-not-allowed text-mitto-text-muted"
                         : isArchived
-                          ? "hover:bg-slate-600 text-gray-500"
-                          : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+                          ? "hover:bg-mitto-surface-hover text-mitto-text-muted"
+                          : "hover:bg-mitto-surface-hover text-mitto-text-secondary hover:text-white"}"
                       title="${!canArchive
                         ? archiveBlockedReason
                         : isArchived
@@ -618,14 +618,14 @@ export function SessionItem({
                 }
                 <button
                   onClick=${handleRename}
-                  class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
+                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-secondary hover:text-white"
                   title="Properties"
                 >
                   <${EditIcon} className="w-4 h-4" />
                 </button>
                 <button
                   onClick=${handleDelete}
-                  class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-white"
                   title="Delete"
                 >
                   <${TrashIcon} className="w-4 h-4" />

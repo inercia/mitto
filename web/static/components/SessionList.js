@@ -824,7 +824,7 @@ export function SessionList({
         return html`
           <div key=${group.key} class="group-section">
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer select-none group/header"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none group/header"
               onClick=${() => handleToggleGroup(group.key, allGroupKeys)}
               onContextMenu=${(e) => {
                 if (group.workingDir) {
@@ -871,7 +871,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(group.workingDir); }}
-                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-white"
                   title="Beads issues: ${group.workingDir}"
                 >
                   <${BeadsIcon} className="w-3.5 h-3.5" />
@@ -882,7 +882,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => !isCreatingSession && handleNewSessionInGroup(group.key, e)}
-                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-gray-500" : "hover:bg-slate-600 text-gray-500 hover:text-white"}"
+                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-mitto-text-muted" : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-white"}"
                   title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${group.label}`}
                   disabled=${isCreatingSession}
                 >
@@ -891,7 +891,7 @@ export function SessionList({
                     : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                 </button>
               `}
-              <span class="text-xs text-gray-500">${sessionCount}</span>
+              <span class="text-xs text-mitto-text-muted">${sessionCount}</span>
             </div>
             ${expanded &&
             (() => {
@@ -916,7 +916,7 @@ export function SessionList({
                 return html`
                   <div
                     key=${session.session_id}
-                    class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
+                    class="parent-session-group border-b border-mitto-border-1 ${hasChildSessions ? "has-children" : ""}"
                   >
                     ${renderSessionItem(
                       {
@@ -1028,7 +1028,7 @@ export function SessionList({
           <div key=${folder.key} class="folder-group">
             <!-- Level 1: Folder header -->
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer select-none"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none"
               onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
               onContextMenu=${(e) => {
                 if (folder.workingDir) {
@@ -1063,7 +1063,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(folder.workingDir); }}
-                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-white"
                   title="Beads issues: ${folder.workingDir}"
                 >
                   <${BeadsIcon} className="w-3.5 h-3.5" />
@@ -1073,7 +1073,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => !isCreatingSession && handleNewSessionInFolder(folder.workingDir, e)}
-                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-gray-500" : "hover:bg-slate-600 text-gray-500 hover:text-white"}"
+                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-mitto-text-muted" : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-white"}"
                   title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${folder.label}`}
                   disabled=${isCreatingSession}
                 >
@@ -1082,7 +1082,7 @@ export function SessionList({
                     : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                 </button>
               `}
-              <span class="text-xs text-gray-500">${totalSessions}</span>
+              <span class="text-xs text-mitto-text-muted">${totalSessions}</span>
             </div>
 
             <!-- Level 2: Sessions within folder (only when folder is expanded) -->
@@ -1102,7 +1102,7 @@ export function SessionList({
               return html`
                 <div
                   key=${session.session_id}
-                  class="parent-session-group border-b border-slate-700 ${hasChildren
+                  class="parent-session-group border-b border-mitto-border-1 ${hasChildren
                     ? "has-children"
                     : ""}"
                 >
@@ -1213,7 +1213,7 @@ export function SessionList({
       return html`
         <div
           key=${session.session_id}
-          class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
+          class="parent-session-group border-b border-mitto-border-1 ${hasChildSessions ? "has-children" : ""}"
         >
           ${renderSessionItem(
             {
@@ -1325,13 +1325,13 @@ export function SessionList({
       `}
       <div class="h-full flex flex-col">
       <div
-        class="p-4 border-b border-slate-700 flex items-center justify-between"
+        class="p-4 border-b border-mitto-border-1 flex items-center justify-between"
       >
         <h2 class="font-semibold text-lg">Conversations</h2>
         <div class="flex items-center gap-0.5">
           <button
             onClick=${handleToggleGrouping}
-            class="p-1.5 hover:bg-slate-700 rounded transition-colors"
+            class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors"
             title=${getGroupingTooltip()}
           >
             ${getGroupingIcon()}
@@ -1339,7 +1339,7 @@ export function SessionList({
           <button
             data-testid="new-conversation-btn"
             onClick=${() => !isCreatingSession && onNewSession(null, null, filterTab)}
-            class="p-1.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60" : "hover:bg-slate-700"}"
+            class="p-1.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60" : "hover:bg-mitto-surface-hover"}"
             title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
             disabled=${isCreatingSession}
           >
@@ -1351,7 +1351,7 @@ export function SessionList({
           html`
             <button
               onClick=${onClose}
-              class="p-1.5 hover:bg-slate-700 rounded transition-colors md:hidden"
+              class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors md:hidden"
               title="Close"
             >
               <${CloseIcon} className="w-4 h-4" />
@@ -1361,7 +1361,7 @@ export function SessionList({
       </div>
       <!-- Filter Tab Bar -->
       <div
-        class="filter-tab-bar flex border-b border-slate-700"
+        class="filter-tab-bar flex border-b border-mitto-border-1"
         role="tablist"
         aria-label="Conversation filters"
       >
@@ -1370,8 +1370,8 @@ export function SessionList({
           aria-selected=${filterTab === FILTER_TAB.CONVERSATIONS}
           class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
           FILTER_TAB.CONVERSATIONS
-            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
-            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.conversations
+            ? "filter-tab--active text-mitto-accent border-b-2 border-mitto-accent"
+            : "text-mitto-text-muted hover:text-mitto-text hover:bg-slate-700/50"} ${streamingTabs.conversations
             ? "filter-tab-streaming"
             : ""}"
           onClick=${() => handleFilterTabChange(FILTER_TAB.CONVERSATIONS)}
@@ -1386,8 +1386,8 @@ export function SessionList({
           aria-selected=${filterTab === FILTER_TAB.PERIODIC}
           class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
           FILTER_TAB.PERIODIC
-            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
-            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.periodic
+            ? "filter-tab--active text-mitto-accent border-b-2 border-mitto-accent"
+            : "text-mitto-text-muted hover:text-mitto-text hover:bg-slate-700/50"} ${streamingTabs.periodic
             ? "filter-tab-streaming"
             : ""}"
           onClick=${() => handleFilterTabChange(FILTER_TAB.PERIODIC)}
@@ -1402,8 +1402,8 @@ export function SessionList({
           aria-selected=${filterTab === FILTER_TAB.ARCHIVED}
           class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
           FILTER_TAB.ARCHIVED
-            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
-            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.archived
+            ? "filter-tab--active text-mitto-accent border-b-2 border-mitto-accent"
+            : "text-mitto-text-muted hover:text-mitto-text hover:bg-slate-700/50"} ${streamingTabs.archived
             ? "filter-tab-streaming"
             : ""}"
           onClick=${() => handleFilterTabChange(FILTER_TAB.ARCHIVED)}
@@ -1417,7 +1417,7 @@ export function SessionList({
       <div class="flex-1 overflow-y-auto scrollbar-hide">
         ${filteredSessions.length === 0 &&
         html`
-          <div class="p-4 text-gray-500 text-sm text-center">
+          <div class="p-4 text-mitto-text-muted text-sm text-center">
             ${getEmptyMessage()}
           </div>
         `}
@@ -1426,7 +1426,7 @@ export function SessionList({
           : renderGroupedSessions()}
       </div>
       <!-- Footer with settings, theme and font size toggles -->
-      <div class="p-4 border-t border-slate-700">
+      <div class="p-4 border-t border-mitto-border-1">
         <div class="flex items-center justify-center gap-3">
           <!-- Settings | Workspaces segmented button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
           ${!configReadonly
@@ -1434,14 +1434,14 @@ export function SessionList({
                 <div class="flex items-center gap-0.5">
                   <button
                     onClick=${onShowSettings}
-                    class="p-1.5 hover:bg-slate-700 rounded transition-colors text-gray-400 hover:text-white"
+                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-white"
                     title="Settings"
                   >
                     <${SettingsIcon} className="w-4 h-4" />
                   </button>
                   <button
                     onClick=${onShowWorkspaces}
-                    class="p-1.5 hover:bg-slate-700 rounded transition-colors text-gray-400 hover:text-white"
+                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-white"
                     title="Workspaces"
                   >
                     <${FolderIcon} className="w-4 h-4" />
@@ -1455,7 +1455,7 @@ export function SessionList({
                     class="p-2 rounded-lg opacity-50 cursor-not-allowed"
                     title="Using ${rcFilePath}"
                   >
-                    <${SettingsIcon} className="w-5 h-5 text-gray-400" />
+                    <${SettingsIcon} className="w-5 h-5 text-mitto-text-muted" />
                   </button>
                 `
               : null}
@@ -1504,11 +1504,11 @@ export function SessionList({
           <!-- Keyboard shortcuts button -->
           <button
             onClick=${onShowKeyboardShortcuts}
-            class="p-2 hover:bg-slate-700 rounded-lg transition-colors group"
+            class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors group"
             title="Keyboard Shortcuts"
           >
             <${KeyboardIcon}
-              className="w-4 h-4 text-gray-400 group-hover:text-white"
+              className="w-4 h-4 text-mitto-text-muted group-hover:text-white"
             />
           </button>
         </div>
