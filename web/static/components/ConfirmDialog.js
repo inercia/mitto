@@ -88,7 +88,7 @@ export function ConfirmDialog({
 
         <!-- Content -->
         <div class="p-4">
-          <p class="text-gray-300">${message}</p>
+          <p class="text-mitto-text-300">${message}</p>
           ${children}
         </div>
 

@@ -441,7 +441,7 @@ export function PeriodicFrequencyPanel({
             />`}
 
         <!-- Run every label -->
-        <span class="text-slate-600 dark:text-gray-300 shrink-0"
+        <span class="text-slate-600 dark:text-mitto-text-300 shrink-0"
           >Run every</span
         >
 
@@ -476,7 +476,7 @@ export function PeriodicFrequencyPanel({
         <!-- Time picker (only shown for daily schedules) -->
         ${localUnit === "days" &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 shrink-0"
+          <span class="text-slate-600 dark:text-mitto-text-300 shrink-0"
             >at</span
           >
           <input
@@ -498,7 +498,7 @@ export function PeriodicFrequencyPanel({
         <!-- Next run time -->
         ${nextTimeDisplay &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 text-xs shrink-0">
+          <span class="text-slate-600 dark:text-mitto-text-300 text-xs shrink-0">
             Next: ${nextTimeDisplay}
           </span>
         `}
@@ -542,7 +542,7 @@ export function PeriodicFrequencyPanel({
           />
           <label
             for="fresh-context-checkbox-${sessionId}"
-            class="text-slate-600 dark:text-gray-300 cursor-pointer select-none"
+            class="text-slate-600 dark:text-mitto-text-300 cursor-pointer select-none"
           >
             Start each run with a fresh context
           </label>

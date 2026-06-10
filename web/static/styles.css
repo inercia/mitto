@@ -47,6 +47,12 @@
   --mitto-surface-4: #475569;
   --mitto-text-strong: #ffffff;
   --mitto-text-muted: #9ca3af;
+  /* Neutral text ladder (Phase 2 Lane B): native Tailwind gray oklch so
+   * text-mitto-text-{200,300,500} are byte-identical to text-gray-* in v1
+   * (gray is theme-independent; .light inherits these). */
+  --mitto-text-200: oklch(92.8% .006 264.531);
+  --mitto-text-300: oklch(87.2% .01 258.338);
+  --mitto-text-500: oklch(55.1% .027 264.364);
   --mitto-border-1: #334155;
   --mitto-border-2: #475569;
   --mitto-border-3: #64748b;

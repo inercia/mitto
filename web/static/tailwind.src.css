@@ -57,6 +57,11 @@
   --color-mitto-surface-4: var(--mitto-surface-4);
   --color-mitto-text-strong: var(--mitto-text-strong);
   --color-mitto-text-muted: var(--mitto-text-muted);
+  /* Neutral text ladder (Phase 2 Lane B): per-level gray scale pinned to native
+   * Tailwind gray in v1 (byte-identical) and to the zinc/neutral overrides in v2. */
+  --color-mitto-text-200: var(--mitto-text-200);
+  --color-mitto-text-300: var(--mitto-text-300);
+  --color-mitto-text-500: var(--mitto-text-500);
   --color-mitto-border-1: var(--mitto-border-1);
   --color-mitto-border-2: var(--mitto-border-2);
   --color-mitto-border-3: var(--mitto-border-3);

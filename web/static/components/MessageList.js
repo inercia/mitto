@@ -240,7 +240,7 @@ export function MessageList({
                   : html`
                       <button
                         onClick=${onLoadMore}
-                        class="load-more-btn px-4 py-2 text-sm text-mitto-text-muted hover:text-gray-200 hover:bg-gray-700/50 rounded-lg transition-colors flex items-center gap-2"
+                        class="load-more-btn px-4 py-2 text-sm text-mitto-text-muted hover:text-mitto-text-200 hover:bg-gray-700/50 rounded-lg transition-colors flex items-center gap-2"
                         data-testid="load-more-button"
                       >
                         <span>↑</span>

@@ -159,6 +159,11 @@
   --mitto-surface-4: #f0f0f0;
   --mitto-text-strong: #18181b;
   --mitto-text-muted: #71717a;
+  /* Neutral text ladder (Phase 2 Lane B): v2-light gray scale — values match
+   * the former .v2-theme:not(.dark) .text-gray-* overrides. */
+  --mitto-text-200: #3f3f46;
+  --mitto-text-300: #52525b;
+  --mitto-text-500: #71717a;
   --mitto-border-1: #e4e4e7;
   --mitto-border-2: #d4d4d8;
   --mitto-border-3: #a1a1aa;
@@ -206,6 +211,11 @@
   --mitto-surface-4: #475569;
   --mitto-text-strong: #ffffff;
   --mitto-text-muted: #9ca3af;
+  /* Neutral text ladder (Phase 2 Lane B): v2-dark gray scale — values match
+   * the former .v2-theme.dark .text-gray-* overrides. */
+  --mitto-text-200: #e5e7eb;
+  --mitto-text-300: #d1d5db;
+  --mitto-text-500: #9ca3af;
   --mitto-border-1: #334155;
   --mitto-border-2: #475569;
   --mitto-border-3: #64748b;
@@ -548,16 +558,8 @@ a:hover {
 .v2-theme:not(.dark) .text-white {
   color: #18181b !important;
 }
-.v2-theme:not(.dark) .text-gray-200 {
-  color: #3f3f46 !important;
-}
-.v2-theme:not(.dark) .text-gray-300 {
-  color: #52525b !important;
-}
+/* text-gray-200/300/500 migrated to the text-mitto-text-* ladder (Phase 2 Lane B). */
 .v2-theme:not(.dark) .text-gray-400 {
-  color: #71717a !important;
-}
-.v2-theme:not(.dark) .text-gray-500 {
   color: #71717a !important;
 }
 
@@ -622,17 +624,9 @@ a:hover {
 .v2-theme.dark .text-white {
   color: #ffffff !important;
 }
-.v2-theme.dark .text-gray-200 {
-  color: #e5e7eb !important;
-}
-.v2-theme.dark .text-gray-300 {
-  color: #d1d5db !important;
-}
+/* text-gray-200/300/500 migrated to the text-mitto-text-* ladder (Phase 2 Lane B). */
 .v2-theme.dark .text-gray-400 {
   color: #a1a1aa !important;
-}
-.v2-theme.dark .text-gray-500 {
-  color: #9ca3af !important;
 }
 
 /* Allow inline styles to override text color for prompt buttons with custom backgrounds */

@@ -157,7 +157,7 @@ export function PeriodicPromptSelector({
     >
       <div class="h-full px-4 flex items-center gap-3 text-sm">
         <!-- Label -->
-        <span class="text-slate-600 dark:text-gray-300 shrink-0 font-medium">Prompt:</span>
+        <span class="text-slate-600 dark:text-mitto-text-300 shrink-0 font-medium">Prompt:</span>
 
         <!-- Dropdown trigger button -->
         <button
@@ -171,7 +171,7 @@ export function PeriodicPromptSelector({
           }"
           data-testid="periodic-prompt-selector-button"
         >
-          <span class="truncate flex-1 ${selectedPromptName ? "text-slate-900 dark:text-white" : "text-slate-400 dark:text-gray-500"}">${displayName}</span>
+          <span class="truncate flex-1 ${selectedPromptName ? "text-slate-900 dark:text-white" : "text-slate-400 dark:text-mitto-text-500"}">${displayName}</span>
           <svg class="w-4 h-4 shrink-0 text-slate-400 transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>

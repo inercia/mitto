@@ -1005,7 +1005,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   `
                   : html`
                     <div
-                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-gray-300 transition-colors flex items-center gap-2"
+                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2"
                       onClick=${startEditAssignee}
                       title="Click to edit"
                     >
@@ -2136,7 +2136,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <button
           onClick=${() => setShowCleanupConfirm(true)}
           disabled=${closedCount === 0 || cleaningUp}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-300 disabled:hover:bg-transparent"
+          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-mitto-text-300 disabled:hover:bg-transparent"
           title=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
         >
           <${BroomIcon} className="w-4 h-4" />
