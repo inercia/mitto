@@ -2010,7 +2010,7 @@ ${activeUIPrompt.text || ""}</textarea
                             type="button"
                             onClick=${() =>
                               handleUIPromptAnswer("abort", "Abort")}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-surface-4 hover:bg-slate-500 text-mitto-text-strong transition-colors"
+                            class="btn btn-ghost btn-sm"
                           >
                             Abort
                           </button>
@@ -2022,7 +2022,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 "Submit",
                                 textboxValue,
                               )}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg transition-colors"
+                            class="btn btn-primary btn-sm"
                           >
                             Submit
                           </button>
@@ -2083,7 +2083,7 @@ ${activeUIPrompt.text || ""}</textarea
                               type="button"
                               onClick=${() =>
                                 handleUIPromptAnswer("cancel", "Cancel", "")}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-secondary transition-colors"
+                              class="btn btn-ghost btn-sm"
                             >
                               Cancel
                             </button>
@@ -2119,7 +2119,7 @@ ${activeUIPrompt.text || ""}</textarea
                                   JSON.stringify(values),
                                 );
                               }}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg transition-colors"
+                              class="btn btn-primary btn-sm"
                             >
                               Submit
                             </button>
@@ -2265,7 +2265,7 @@ ${activeUIPrompt.text || ""}</textarea
       html`
         <div class="max-w-4xl mx-auto mb-2">
           <div
-            class="bg-amber-900/40 border border-amber-700/50 text-amber-200 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2"
+            class="alert alert-warning text-sm"
           >
             <span class="loading loading-spinner w-4 h-4 shrink-0"></span>
             <span>Resuming session…</span>
@@ -2287,7 +2287,7 @@ ${activeUIPrompt.text || ""}</textarea
                   key=${idx}
                   type="button"
                   onClick=${() => handleActionButtonClick(btn.response)}
-                  class="px-3 py-1.5 bg-mitto-accent hover:bg-mitto-accent-hover text-mitto-accent-fg rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 border border-mitto-accent"
+                  class="btn btn-primary btn-sm gap-1.5"
                   title=${btn.response}
                 >
                   <svg
@@ -2398,7 +2398,7 @@ ${activeUIPrompt.text || ""}</textarea
       html`
         <div class="max-w-4xl mx-auto mb-2">
           <div
-            class="bg-orange-900/50 border border-orange-700 text-orange-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+            class="alert alert-warning text-sm"
           >
             <svg
               class="w-4 h-4 shrink-0"
@@ -2414,13 +2414,13 @@ ${activeUIPrompt.text || ""}</textarea
               />
             </svg>
             <span>${sendError}</span>
-            <span class="text-orange-300 text-xs ml-1"
+            <span class="text-xs ml-1 opacity-80"
               >(Your message is preserved - click Send to retry)</span
             >
             <button
               type="button"
               onClick=${() => setSendError(null)}
-              class="ml-auto text-orange-300 hover:text-orange-100"
+              class="btn btn-ghost btn-xs btn-circle ml-auto"
             >
               <svg
                 class="w-4 h-4"
