@@ -35,6 +35,21 @@
   --color-mitto-danger-hover: var(--mitto-danger-hover);
   --color-mitto-danger-fg: var(--mitto-danger-fg);
   --color-mitto-surface-hover: var(--mitto-surface-hover);
+  /* Bulk-sweep tokens (Phase 1): surface elevation scale (replaces bg-slate-*),
+   * text tiers (text-white/gray-*), border scale (border-slate-*), and semantic
+   * status colors. Each resolves to a runtime --mitto-* variable redefined per theme. */
+  --color-mitto-surface-1: var(--mitto-surface-1);
+  --color-mitto-surface-2: var(--mitto-surface-2);
+  --color-mitto-surface-3: var(--mitto-surface-3);
+  --color-mitto-surface-4: var(--mitto-surface-4);
+  --color-mitto-text-strong: var(--mitto-text-strong);
+  --color-mitto-text-muted: var(--mitto-text-muted);
+  --color-mitto-border-1: var(--mitto-border-1);
+  --color-mitto-border-2: var(--mitto-border-2);
+  --color-mitto-border-3: var(--mitto-border-3);
+  --color-mitto-success: var(--mitto-success);
+  --color-mitto-warning: var(--mitto-warning);
+  --color-mitto-info: var(--mitto-info);
 }
 
 /* Re-implement v3 darkMode:"class" strategy for v4.

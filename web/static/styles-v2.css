@@ -141,6 +141,19 @@
   --mitto-danger-hover: #b91c1c;
   --mitto-danger-fg: #ffffff;
   --mitto-surface-hover: #f0f0f0;
+  /* Bulk-sweep tokens (Phase 1) — values match the current v2-light overrides */
+  --mitto-surface-1: #fafafa;
+  --mitto-surface-2: #f5f5f5;
+  --mitto-surface-3: #ffffff;
+  --mitto-surface-4: #f0f0f0;
+  --mitto-text-strong: #18181b;
+  --mitto-text-muted: #71717a;
+  --mitto-border-1: #e4e4e7;
+  --mitto-border-2: #d4d4d8;
+  --mitto-border-3: #a1a1aa;
+  --mitto-success: #16a34a;
+  --mitto-warning: #ca8a04;
+  --mitto-info: #2563eb;
 }
 
 .v2-theme.dark,
@@ -164,6 +177,19 @@
   --mitto-danger-hover: #f87171;
   --mitto-danger-fg: #fafafa;
   --mitto-surface-hover: #262a35;
+  /* Bulk-sweep tokens (Phase 1) — values match the current v2-dark overrides */
+  --mitto-surface-1: #0f172a;
+  --mitto-surface-2: #1e293b;
+  --mitto-surface-3: #334155;
+  --mitto-surface-4: #475569;
+  --mitto-text-strong: #ffffff;
+  --mitto-text-muted: #9ca3af;
+  --mitto-border-1: #334155;
+  --mitto-border-2: #475569;
+  --mitto-border-3: #64748b;
+  --mitto-success: #22c55e;
+  --mitto-warning: #f59e0b;
+  --mitto-info: #3b82f6;
 }
 
 /* =============================================================================
