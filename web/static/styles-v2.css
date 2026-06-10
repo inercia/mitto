@@ -685,98 +685,6 @@ a:hover {
     0 0 0 4px #ff5c5c !important;
 }
 
-/* =============================================================================
-   Accent Colors (both themes)
-   ============================================================================= */
-
-/* Light theme accent (red) */
-.v2-theme:not(.dark) .bg-blue-500 {
-  background: #dc2626 !important;
-}
-.v2-theme:not(.dark) .bg-blue-600 {
-  background: #dc2626 !important;
-}
-.v2-theme:not(.dark) .bg-blue-700 {
-  background: #b91c1c !important;
-}
-.v2-theme:not(.dark) .hover\:bg-blue-600:hover {
-  background: #ef4444 !important;
-}
-.v2-theme:not(.dark) .hover\:bg-blue-700:hover {
-  background: #b91c1c !important;
-}
-.v2-theme:not(.dark) .text-blue-400 {
-  color: #dc2626 !important;
-}
-.v2-theme:not(.dark) .text-blue-500 {
-  color: #dc2626 !important;
-}
-.v2-theme:not(.dark) .text-blue-600 {
-  color: #dc2626 !important;
-}
-.v2-theme:not(.dark) .border-blue-500 {
-  border-color: #dc2626 !important;
-}
-.v2-theme:not(.dark) .border-blue-400 {
-  border-color: #dc2626 !important;
-}
-.v2-theme:not(.dark) .border-l-blue-500 {
-  border-left-color: #dc2626 !important;
-}
-.v2-theme:not(.dark) .ring-blue-500 {
-  --tw-ring-color: #dc2626 !important;
-}
-
-/* Light theme: Active session highlight */
-.v2-theme:not(.dark) .bg-blue-900\/30 {
-  background: rgba(220, 38, 38, 0.08) !important;
-  border-left: 2px solid #dc2626 !important;
-}
-
-/* Dark theme accent (coral red) */
-.v2-theme.dark .bg-blue-500 {
-  background: #ff5c5c !important;
-}
-.v2-theme.dark .bg-blue-600 {
-  background: #ff5c5c !important;
-}
-.v2-theme.dark .bg-blue-700 {
-  background: #ef4444 !important;
-}
-.v2-theme.dark .hover\:bg-blue-600:hover {
-  background: #ff7070 !important;
-}
-.v2-theme.dark .hover\:bg-blue-700:hover {
-  background: #ef4444 !important;
-}
-.v2-theme.dark .text-blue-400 {
-  color: #ff5c5c !important;
-}
-.v2-theme.dark .text-blue-500 {
-  color: #ff5c5c !important;
-}
-.v2-theme.dark .text-blue-600 {
-  color: #ff5c5c !important;
-}
-.v2-theme.dark .border-blue-500 {
-  border-color: #ff5c5c !important;
-}
-.v2-theme.dark .border-blue-400 {
-  border-color: #ff5c5c !important;
-}
-.v2-theme.dark .border-l-blue-500 {
-  border-left-color: #ff5c5c !important;
-}
-.v2-theme.dark .ring-blue-500 {
-  --tw-ring-color: #ff5c5c !important;
-}
-
-/* Dark theme: Active session highlight */
-.v2-theme.dark .bg-blue-900\/30 {
-  background: rgba(255, 92, 92, 0.15) !important;
-  border-left: 2px solid #ff5c5c !important;
-}
-
 /* Status colors - keep these vibrant for visibility (both themes) */
 .v2-theme .bg-green-400 {
   background: #22c55e !important;
@@ -827,8 +735,6 @@ a:hover {
 .v2-theme button.bg-red-500,
 .v2-theme button.bg-red-600,
 .v2-theme button.bg-red-700,
-.v2-theme button.bg-blue-500,
-.v2-theme button.bg-blue-600,
 .v2-theme button[class*="bg-red-"],
 .v2-theme button[class*="bg-blue-"],
 .v2-theme button[class*="bg-mitto-accent"] {
@@ -837,8 +743,6 @@ a:hover {
 .v2-theme button.bg-red-500:hover,
 .v2-theme button.bg-red-600:hover,
 .v2-theme button.bg-red-700:hover,
-.v2-theme button.bg-blue-500:hover,
-.v2-theme button.bg-blue-600:hover,
 .v2-theme button[class*="hover:bg-red"]:hover,
 .v2-theme button[class*="hover:bg-blue"]:hover,
 .v2-theme button[class*="hover:bg-mitto-accent"]:hover {
@@ -848,8 +752,6 @@ a:hover {
 .v2-theme button.bg-red-500 .text-white,
 .v2-theme button.bg-red-600 .text-white,
 .v2-theme button.bg-red-700 .text-white,
-.v2-theme button.bg-blue-500 .text-white,
-.v2-theme button.bg-blue-600 .text-white,
 .v2-theme button[class*="bg-red-"] .text-white,
 .v2-theme button[class*="bg-blue-"] .text-white,
 .v2-theme button[class*="bg-mitto-accent"] .text-white,
@@ -860,7 +762,6 @@ a:hover {
 }
 /* Ensure white text on red/blue badge spans (e.g., queue badge) */
 .v2-theme span.bg-red-500.text-white,
-.v2-theme span.bg-blue-500.text-white,
 .v2-theme span[class*="bg-red-"].text-white,
 .v2-theme span[class*="bg-blue-"].text-white,
 .v2-theme span[class*="bg-mitto-accent"].text-white {
@@ -871,8 +772,9 @@ a:hover {
    Toast Notifications: preserve semantic colors (don't remap to accent)
    ============================================================================= */
 
-/* Toast background colors: override accent remapping so toasts keep their
-   semantic meaning (info=blue, success=green, error=red, warning=amber) */
+/* Toast background colors: pin the exact legacy semantic colors so toasts keep
+   their meaning (info=blue, success=green, error=red, warning=amber) regardless
+   of the v2 accent normalization. */
 .v2-theme .toast-enter .bg-blue-600 {
   background: #2563eb !important;  /* Original blue-600 */
 }
@@ -890,9 +792,9 @@ a:hover {
    Beads semantic blue: in-progress status + feature type (don't remap to accent)
    ============================================================================= */
 
-/* The in_progress status badge/toggle and the feature type tag use bg-blue-700,
-   which the accent remapping above turns red. Restore the original blue for
-   these specific marker classes in both themes (red stays reserved for bugs). */
+/* The in_progress status badge/toggle and the feature type tag use bg-blue-700.
+   Pin the original blue for these specific marker classes in both themes so the
+   v2 accent normalization never tints them (red stays reserved for bugs). */
 .v2-theme:not(.dark) .beads-status-inprogress,
 .v2-theme:not(.dark) .beads-type-feature,
 .v2-theme.dark .beads-status-inprogress,
