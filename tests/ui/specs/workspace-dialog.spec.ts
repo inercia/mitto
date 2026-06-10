@@ -54,7 +54,7 @@ test.describe("Workspace Dialog", () => {
     await page.locator(selectors.newSessionButton).click();
 
     // Wait for dialog to appear
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // Filter input should be visible (only shown when > 5 workspaces)
@@ -68,7 +68,7 @@ test.describe("Workspace Dialog", () => {
   test("should filter workspaces by name", async ({ page, selectors }) => {
     await page.locator(selectors.newSessionButton).click();
 
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
@@ -100,7 +100,7 @@ test.describe("Workspace Dialog", () => {
   test("should show 'no match' message when filter has no results", async ({ page, selectors }) => {
     await page.locator(selectors.newSessionButton).click();
 
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
@@ -112,7 +112,7 @@ test.describe("Workspace Dialog", () => {
   test("should select workspace with number key when filter is empty", async ({ page, selectors }) => {
     await page.locator(selectors.newSessionButton).click();
 
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // Wait for dialog to be fully ready (filter input may capture focus)
@@ -134,7 +134,7 @@ test.describe("Workspace Dialog", () => {
   test("should close dialog with Escape key", async ({ page, selectors }) => {
     await page.locator(selectors.newSessionButton).click();
 
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // Wait for dialog to be fully ready (filter input may capture focus)
@@ -150,7 +150,7 @@ test.describe("Workspace Dialog", () => {
   test(`should show numeric prefixes only for first ${WORKSPACE_FILTER_THRESHOLD} items`, async ({ page, selectors }) => {
     await page.locator(selectors.newSessionButton).click();
 
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // Check that numbers 1-N are visible as badges (N = WORKSPACE_FILTER_THRESHOLD)
@@ -163,7 +163,7 @@ test.describe("Workspace Dialog", () => {
   test("should select workspace with number key even when filter has text", async ({ page, selectors }) => {
     await page.locator(selectors.newSessionButton).click();
 
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
@@ -181,7 +181,7 @@ test.describe("Workspace Dialog", () => {
   test("should focus filter input when opened via mittoNewConversation", async ({ page, selectors }) => {
     // First create a session so we have a chat input to focus
     await page.locator(selectors.newSessionButton).click();
-    const dialog = page.locator("text=Select Workspace").locator("..");
+    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // Wait for dialog to be fully ready

@@ -1,13 +1,13 @@
 // Mitto Web Interface - Save Prompt Dialog Component
 // Modal dialog for saving the current prompt text as a markdown file with frontmatter
 
-const { useState, useEffect, useCallback, useRef, html } = window.preact;
+const { useState, useEffect, useCallback, useRef, html, Fragment } = window.preact;
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { CloseIcon } from "./Icons.js";
+import { Modal } from "./Modal.js";
 
 /**
  * Sanitize a prompt name into a safe filename.
@@ -230,36 +230,38 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
   const canSave = name.trim() && fullPath && !isSaving;
 
-  return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${handleBackdropClick}
-      data-testid="save-prompt-dialog-backdrop"
+  const footer = html`
+    <button
+      onClick=${handleClose}
+      disabled=${isSaving}
+      class="btn btn-sm btn-ghost"
+      data-testid="save-prompt-cancel-btn"
     >
-      <div
-        class="bg-mitto-sidebar rounded-xl w-[500px] max-w-[90vw] overflow-hidden shadow-2xl flex flex-col"
-        onClick=${(e) => e.stopPropagation()}
-        data-testid="save-prompt-dialog"
-      >
-        <!-- Header -->
-        <div
-          class="flex items-center justify-between p-4 border-b border-mitto-border-1"
-        >
-          <h3 class="text-lg font-semibold">Save Prompt</h3>
-          <button
-            onClick=${handleClose}
-            disabled=${isSaving}
-            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${isSaving
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="save-prompt-dialog-close"
-          >
-            <${CloseIcon} className="w-5 h-5" />
-          </button>
-        </div>
+      Cancel
+    </button>
+    <button
+      onClick=${handleSave}
+      disabled=${!canSave}
+      class="btn btn-sm btn-primary"
+      data-testid="save-prompt-save-btn"
+    >
+      ${isSaving && html`<span class="loading loading-spinner loading-xs"></span>`}
+      Save
+    </button>
+  `;
 
-        <!-- Content -->
-        <div class="p-4 space-y-4">
+  return html`
+    <${Fragment}>
+      <${Modal}
+        isOpen=${isOpen}
+        onClose=${handleClose}
+        title="Save Prompt"
+        testid="save-prompt-dialog"
+        backdropTestid="save-prompt-dialog-backdrop"
+        closeTestid="save-prompt-dialog-close"
+        footer=${footer}
+      >
+        <div class="space-y-4">
           <!-- Name field -->
           <div class="space-y-1.5">
             <label class="block text-sm font-medium text-mitto-text-secondary">
@@ -367,61 +369,19 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
             </div>
           `}
         </div>
+      </${Modal}>
 
-        <!-- Footer with buttons -->
-        <div class="flex justify-end gap-3 p-4 border-t border-mitto-border-1">
-          <button
-            onClick=${handleClose}
-            disabled=${isSaving}
-            class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors ${isSaving
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="save-prompt-cancel-btn"
-          >
-            Cancel
-          </button>
-          <button
-            onClick=${handleSave}
-            disabled=${!canSave}
-            class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg rounded-lg transition-colors flex items-center gap-2 ${!canSave
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="save-prompt-save-btn"
-          >
-            ${isSaving &&
-            html`
-              <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-            `}
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Overwrite confirmation dialog -->
-    <${ConfirmDialog}
-      isOpen=${showOverwriteConfirm}
-      title="File Already Exists"
-      message="A file with this name already exists at the specified location. Do you want to overwrite it?"
-      confirmLabel="Overwrite"
-      cancelLabel="Cancel"
-      confirmVariant="danger"
-      onConfirm=${handleOverwriteConfirm}
-      onCancel=${handleOverwriteCancel}
-    />
+      <!-- Overwrite confirmation dialog -->
+      <${ConfirmDialog}
+        isOpen=${showOverwriteConfirm}
+        title="File Already Exists"
+        message="A file with this name already exists at the specified location. Do you want to overwrite it?"
+        confirmLabel="Overwrite"
+        cancelLabel="Cancel"
+        confirmVariant="danger"
+        onConfirm=${handleOverwriteConfirm}
+        onCancel=${handleOverwriteCancel}
+      />
+    </${Fragment}>
   `;
 }

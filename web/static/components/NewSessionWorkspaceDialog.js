@@ -3,6 +3,7 @@ const { html, useState, useEffect, useMemo, useRef, useCallback } = window.preac
 
 import { getBasename } from "../lib.js";
 import { WorkspaceBadge } from "./WorkspaceBadge.js";
+import { Modal } from "./Modal.js";
 
 // =============================================================================
 // New Session Workspace Selection Dialog
@@ -146,13 +147,6 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
     const handleKeyDown = (e) => {
       const key = e.key;
 
-      // Escape to cancel
-      if (key === "Escape") {
-        e.preventDefault();
-        onCancel();
-        return;
-      }
-
       // Number keys 1-N for quick selection (N = WORKSPACE_FILTER_THRESHOLD)
       // Only trigger if filter is empty (so typing numbers goes to filter when there's text)
       // Check both React state and DOM value to handle race conditions with state updates
@@ -192,155 +186,146 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
   // Track global index for keyboard shortcuts
   let globalIndex = 0;
 
+  const footer = html`
+    <button type="button" onClick=${onCancel} class="btn btn-sm btn-ghost">Cancel</button>
+  `;
+
   return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${onCancel}
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${onCancel}
+      title="Select Workspace"
+      footer=${footer}
     >
-      <div
-        class="bg-mitto-sidebar rounded-xl p-6 w-[420px] max-h-[80vh] overflow-y-auto shadow-2xl"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <h3 class="text-lg font-semibold mb-2">Select Workspace</h3>
-        <p class="text-mitto-text-muted text-sm mb-4">${helpText}</p>
+      <p class="text-mitto-text-muted text-sm mb-4">${helpText}</p>
 
-        ${showFilter &&
-        html`
-          <div class="mb-4">
-            <input
-              ref=${filterInputRef}
-              type="text"
-              value=${filterText}
-              onInput=${(e) => setFilterText(e.target.value)}
-              onKeyDown=${(e) => {
-                // Intercept number keys 1-9 to select workspaces quickly
-                const num = parseInt(e.key, 10);
-                if (
-                  num >= 1 &&
-                  num <=
-                    Math.min(
-                      WORKSPACE_FILTER_THRESHOLD,
-                      flatFilteredWorkspaces.length,
-                    )
-                ) {
-                  e.preventDefault();
-                  const workspace = flatFilteredWorkspaces[num - 1];
-                  if (workspace) {
-                    onSelect(workspace);
-                  }
+      ${showFilter &&
+      html`
+        <div class="mb-4">
+          <input
+            ref=${filterInputRef}
+            type="text"
+            value=${filterText}
+            onInput=${(e) => setFilterText(e.target.value)}
+            onKeyDown=${(e) => {
+              // Intercept number keys 1-9 to select workspaces quickly
+              const num = parseInt(e.key, 10);
+              if (
+                num >= 1 &&
+                num <=
+                  Math.min(
+                    WORKSPACE_FILTER_THRESHOLD,
+                    flatFilteredWorkspaces.length,
+                  )
+              ) {
+                e.preventDefault();
+                const workspace = flatFilteredWorkspaces[num - 1];
+                if (workspace) {
+                  onSelect(workspace);
                 }
-              }}
-              placeholder="Filter workspaces..."
-              autofocus
-              autocomplete="off"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:border-mitto-accent-500 placeholder-gray-500"
-            />
-          </div>
-        `}
+              }
+            }}
+            placeholder="Filter workspaces..."
+            autofocus
+            autocomplete="off"
+            class="w-full px-3 py-2 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:border-mitto-accent-500 placeholder-gray-500"
+          />
+        </div>
+      `}
 
-        <div class="space-y-2">
-          ${filteredGroups.length === 0
-            ? html`
-                <div class="text-center py-4 text-mitto-text-muted">
-                  No workspaces match your filter.
-                </div>
-              `
-            : filteredGroups.map(
-                ({ workingDir, label, workspaces: wsArray }) => {
-                  // Auto-expand folders when filtering is active
-                  const isExpanded = filterText.trim()
-                    ? true
-                    : expandedFolders[workingDir] !== false;
-                  const showGroupHeader = filteredGroups.length > 1;
+      <div class="space-y-2">
+        ${filteredGroups.length === 0
+          ? html`
+              <div class="text-center py-4 text-mitto-text-muted">
+                No workspaces match your filter.
+              </div>
+            `
+          : filteredGroups.map(
+              ({ workingDir, label, workspaces: wsArray }) => {
+                // Auto-expand folders when filtering is active
+                const isExpanded = filterText.trim()
+                  ? true
+                  : expandedFolders[workingDir] !== false;
+                const showGroupHeader = filteredGroups.length > 1;
 
-                  return html`
-                    <div key=${workingDir} class="space-y-1">
-                      ${showGroupHeader &&
-                      html`
-                        <button
-                          onClick=${() => toggleFolder(workingDir)}
-                          class="w-full px-2 py-1 text-left text-xs text-mitto-text-muted hover:text-mitto-text-secondary hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
+                return html`
+                  <div key=${workingDir} class="space-y-1">
+                    ${showGroupHeader &&
+                    html`
+                      <button
+                        onClick=${() => toggleFolder(workingDir)}
+                        class="w-full px-2 py-1 text-left text-xs text-mitto-text-muted hover:text-mitto-text-secondary hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
+                      >
+                        <span class="font-mono"
+                          >${isExpanded ? "▼" : "▶"}</span
                         >
-                          <span class="font-mono"
-                            >${isExpanded ? "▼" : "▶"}</span
-                          >
-                          <span class="truncate" title=${workingDir}>
-                            ${label}
-                          </span>
-                          <span class="text-mitto-text-muted">(${wsArray.length})</span>
-                        </button>
-                      `}
-                      ${isExpanded &&
-                      wsArray.map((ws) => {
-                        const currentIndex = globalIndex++;
-                        return html`
-                          <button
-                            key=${ws.working_dir + "|" + ws.acp_server}
-                            onClick=${() => onSelect(ws)}
-                            class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
-                              ? "ml-4"
+                        <span class="truncate" title=${workingDir}>
+                          ${label}
+                        </span>
+                        <span class="text-mitto-text-muted">(${wsArray.length})</span>
+                      </button>
+                    `}
+                    ${isExpanded &&
+                    wsArray.map((ws) => {
+                      const currentIndex = globalIndex++;
+                      return html`
+                        <button
+                          key=${ws.working_dir + "|" + ws.acp_server}
+                          onClick=${() => onSelect(ws)}
+                          class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
+                            ? "ml-4"
+                            : ""}"
+                        >
+                          <div
+                            class="w-8 h-8 shrink-0 ${currentIndex <
+                            WORKSPACE_FILTER_THRESHOLD
+                              ? "flex items-center justify-center rounded-lg bg-mitto-surface-4 text-mitto-text-secondary font-mono text-sm"
                               : ""}"
                           >
-                            <div
-                              class="w-8 h-8 shrink-0 ${currentIndex <
-                              WORKSPACE_FILTER_THRESHOLD
-                                ? "flex items-center justify-center rounded-lg bg-mitto-surface-4 text-mitto-text-secondary font-mono text-sm"
-                                : ""}"
-                            >
-                              ${currentIndex < WORKSPACE_FILTER_THRESHOLD
-                                ? currentIndex + 1
-                                : ""}
-                            </div>
-                            <${WorkspaceBadge}
-                              path=${ws.working_dir}
-                              customColor=${ws.color}
-                              customCode=${ws.code}
-                              size="lg"
-                            />
-                            <div class="flex-1 min-w-0">
-                              ${(!showGroupHeader ||
-                                (ws.name && ws.name !== label)) &&
-                              html`
-                                <div class="text-sm font-medium">
-                                  ${ws.name || getBasename(ws.working_dir)}
-                                </div>
-                              `}
-                              ${ws.acp_server &&
-                              html`
-                                <div
-                                  class="${showGroupHeader &&
-                                  (!ws.name || ws.name === label)
-                                    ? "text-sm font-medium"
-                                    : "text-xs text-mitto-accent"}"
-                                >
-                                  ${ws.acp_server}
-                                </div>
-                              `}
-                              ${!showGroupHeader &&
-                              html`
-                                <div class="text-xs text-mitto-text-muted truncate">
-                                  ${ws.working_dir}
-                                </div>
-                              `}
-                            </div>
-                          </button>
-                        `;
-                      })}
-                    </div>
-                  `;
-                },
-              )}
-        </div>
-        <div class="flex justify-end mt-4">
-          <button
-            type="button"
-            onClick=${onCancel}
-            class="px-4 py-2 rounded-lg hover:bg-mitto-surface-hover transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
+                            ${currentIndex < WORKSPACE_FILTER_THRESHOLD
+                              ? currentIndex + 1
+                              : ""}
+                          </div>
+                          <${WorkspaceBadge}
+                            path=${ws.working_dir}
+                            customColor=${ws.color}
+                            customCode=${ws.code}
+                            size="lg"
+                          />
+                          <div class="flex-1 min-w-0">
+                            ${(!showGroupHeader ||
+                              (ws.name && ws.name !== label)) &&
+                            html`
+                              <div class="text-sm font-medium">
+                                ${ws.name || getBasename(ws.working_dir)}
+                              </div>
+                            `}
+                            ${ws.acp_server &&
+                            html`
+                              <div
+                                class="${showGroupHeader &&
+                                (!ws.name || ws.name === label)
+                                  ? "text-sm font-medium"
+                                  : "text-xs text-mitto-accent"}"
+                              >
+                                ${ws.acp_server}
+                              </div>
+                            `}
+                            ${!showGroupHeader &&
+                            html`
+                              <div class="text-xs text-mitto-text-muted truncate">
+                                ${ws.working_dir}
+                              </div>
+                            `}
+                          </div>
+                        </button>
+                      `;
+                    })}
+                  </div>
+                `;
+              },
+            )}
       </div>
-    </div>
+    </${Modal}>
   `;
 }
