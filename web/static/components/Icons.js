@@ -636,7 +636,15 @@ export function KeyboardIcon({ className = "w-4 h-4" }) {
  */
 export function SunIcon({ className = "" }) {
   return html`
-    <svg class="${className}" viewBox="0 0 24 24">
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <circle cx="12" cy="12" r="4"></circle>
       <path d="M12 2v2"></path>
       <path d="M12 20v2"></path>
@@ -656,7 +664,15 @@ export function SunIcon({ className = "" }) {
  */
 export function MoonIcon({ className = "" }) {
   return html`
-    <svg class="${className}" viewBox="0 0 24 24">
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
     </svg>
   `;

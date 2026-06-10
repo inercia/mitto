@@ -1459,26 +1459,24 @@ export function SessionList({
                   </button>
                 `
               : null}
-          <!-- Theme toggle -->
-          <div
-            class="theme-toggle-v2"
-            onClick=${onToggleTheme}
-            role="button"
-            tabindex="0"
-            title="${isLight
-              ? "Switch to dark theme"
-              : "Switch to light theme"}"
+          <!-- Theme toggle (daisyUI swap; checked = light = sun shown).
+               Controlled Preact checkbox — useTheme owns persistence / follow-system /
+               Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
+          <label
+            class="swap swap-rotate p-2 rounded-lg hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted"
+            title="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
             aria-label="Toggle between light and dark theme"
+            data-testid="theme-toggle"
           >
-            <!-- Sun icon -->
-            <div class="theme-toggle-v2__option ${isLight ? "active" : ""}">
-              <${SunIcon} />
-            </div>
-            <!-- Moon icon -->
-            <div class="theme-toggle-v2__option ${!isLight ? "active" : ""}">
-              <${MoonIcon} />
-            </div>
-          </div>
+            <input
+              type="checkbox"
+              checked=${isLight}
+              onChange=${onToggleTheme}
+              aria-label="Toggle between light and dark theme"
+            />
+            <${SunIcon} className="swap-on w-4 h-4" />
+            <${MoonIcon} className="swap-off w-4 h-4" />
+          </label>
           <!-- Font size toggle -->
           <div
             class="font-size-toggle"
