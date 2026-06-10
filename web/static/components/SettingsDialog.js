@@ -2243,13 +2243,11 @@ export function SettingsDialog({
                                 return html`
                                   <div
                                     key=${srv._key}
-                                    class="bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
-                                      ? "opacity-80"
-                                      : ""} transition-colors group"
+                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile ? "opacity-80" : ""} group"
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
-                                      class="flex items-center gap-3 p-3 ${!isRCFile ? "cursor-pointer hover:bg-slate-700/30" : ""} transition-colors"
+                                      class="collapse-title flex items-center gap-3 py-3 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-slate-700/30" : ""} transition-colors"
                                       onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
                                     >
                                       ${!isRCFile && html`
@@ -2258,12 +2256,9 @@ export function SettingsDialog({
                                         />
                                       `}
                                       <div class="flex-1 min-w-0">
-                                        <div
-                                          class="font-medium text-sm flex items-center gap-2"
-                                        >
+                                        <div class="font-medium text-sm flex items-center gap-2">
                                           ${srv.name}
-                                          ${srv.type &&
-                                          html`
+                                          ${srv.type && html`
                                             <span
                                               class="badge badge-sm bg-purple-500/20 text-purple-400"
                                               title="Server type for prompt matching"
@@ -2271,9 +2266,7 @@ export function SettingsDialog({
                                               ${srv.type}
                                             </span>
                                           `}
-                                          ${srv.tags &&
-                                          srv.tags.length > 0 &&
-                                          srv.tags.map(
+                                          ${srv.tags && srv.tags.length > 0 && srv.tags.map(
                                             (tag) => html`
                                               <span
                                                 key=${tag}
@@ -2284,27 +2277,20 @@ export function SettingsDialog({
                                               </span>
                                             `,
                                           )}
-                                          ${isRCFile &&
-                                          html`
+                                          ${isRCFile && html`
                                             <span
                                               class="flex items-center gap-1 text-xs text-amber-400"
                                               title="This server is defined in .mittorc and cannot be modified here"
                                             >
-                                              <${LockIcon}
-                                                className="w-3 h-3"
-                                              />
+                                              <${LockIcon} className="w-3 h-3" />
                                             </span>
                                           `}
-                                          ${srv.prompts?.length > 0 &&
-                                          html`
+                                          ${srv.prompts?.length > 0 && html`
                                             <span
                                               class="flex items-center gap-1 text-xs text-mitto-accent"
-                                              title="${srv.prompts
-                                                .length} server-specific prompt(s)"
+                                              title="${srv.prompts.length} server-specific prompt(s)"
                                             >
-                                              <${LightningIcon}
-                                                className="w-3.5 h-3.5"
-                                              />
+                                              <${LightningIcon} className="w-3.5 h-3.5" />
                                               ${srv.prompts.length}
                                             </span>
                                           `}
@@ -2314,15 +2300,10 @@ export function SettingsDialog({
                                           title=${srv.command}
                                         >
                                           ${srv.command}
-                                          ${isRCFile &&
-                                          html`<span
-                                            class="ml-2 text-amber-500/70"
-                                            >(from .mittorc)</span
-                                          >`}
+                                          ${isRCFile && html`<span class="ml-2 text-amber-500/70">(from .mittorc)</span>`}
                                         </div>
                                       </div>
-                                      ${!isRCFile &&
-                                      html`
+                                      ${!isRCFile && html`
                                         <button
                                           onClick=${(e) => {
                                             e.stopPropagation();
@@ -2331,9 +2312,7 @@ export function SettingsDialog({
                                           class="p-1.5 text-mitto-text-muted hover:text-mitto-success hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                           title="Duplicate server"
                                         >
-                                          <${DuplicateIcon}
-                                            className="w-4 h-4"
-                                          />
+                                          <${DuplicateIcon} className="w-4 h-4" />
                                         </button>
                                         <button
                                           onClick=${(e) => {
@@ -2343,15 +2322,13 @@ export function SettingsDialog({
                                           class="p-1.5 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                           title="Remove server"
                                         >
-                                          <${TrashIcon}
-                                            className="w-4 h-4"
-                                          />
+                                          <${TrashIcon} className="w-4 h-4" />
                                         </button>
                                       `}
                                     </div>
                                     <!-- Expanded edit form -->
-                                    ${isExpanded && html`
-                                      <div class="px-3 pb-3 border-t border-slate-600/30">
+                                    <div class="collapse-content px-3 pb-3">
+                                      ${isExpanded && html`
                                         <${ServerEditForm}
                                           server=${srv}
                                           agentTypes=${agentTypes}
@@ -2367,8 +2344,8 @@ export function SettingsDialog({
                                               constraints,
                                             )}
                                         />
-                                      </div>
-                                    `}
+                                      `}
+                                    </div>
                                   </div>
                                 `;
                               })}
