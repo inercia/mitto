@@ -1596,7 +1596,19 @@ function App() {
 
 
   return html`
-    <div class="h-screen-safe flex">
+    <div class="drawer md:drawer-open h-screen-safe">
+      <!-- Drawer toggle: Preact-controlled via showSidebar (mobile) + md:drawer-open (desktop) -->
+      <input
+        type="checkbox"
+        id="sidebar-drawer"
+        class="drawer-toggle"
+        checked=${showSidebar}
+        onChange=${(e) => setShowSidebar(e.target.checked)}
+        tabIndex=${-1}
+        aria-hidden="true"
+      />
+      <!-- drawer-content: ALL page content (header, messages, input, dialogs) -->
+      <div class="drawer-content flex flex-col h-full">
       <!-- Delete Dialog -->
       <${DeleteDialog}
         isOpen=${deleteDialog.isOpen}
@@ -1732,98 +1744,6 @@ function App() {
 
       <!-- Unified toast container -->
       <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
-
-      <!-- Sidebar (hidden on mobile by default) -->
-      <div
-        class="hidden md:block bg-mitto-sidebar border-r border-mitto-border-1 shrink-0 relative"
-        style="width: ${sidebarWidth}px;"
-      >
-        <${SessionList}
-          activeSessions=${activeSessions}
-          storedSessions=${storedSessions}
-          activeSessionId=${activeSessionId}
-          onSelect=${handleSelectSession}
-          onNewSession=${handleNewSession}
-          onRename=${handleOpenSessionProperties}
-          onDelete=${handleDeleteSession}
-          onArchive=${handleArchiveSession}
-          workspaces=${workspaces}
-          theme=${theme}
-          onToggleTheme=${toggleTheme}
-          fontSize=${fontSize}
-          onToggleFontSize=${toggleFontSize}
-          onShowSettings=${handleShowSettings}
-          onShowWorkspaces=${handleShowWorkspaces}
-          onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
-          onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
-          configReadonly=${configReadonly}
-          rcFilePath=${rcFilePath}
-          badgeClickEnabled=${badgeClickEnabled}
-          onBadgeClick=${handleBadgeClick}
-          terminalActionEnabled=${terminalActionEnabled}
-          onFolderOpen=${handleFolderOpen}
-          onTerminalClick=${handleTerminalClick}
-          onBeadsOpen=${handleBeadsOpen}
-          queueLength=${queueLength}
-          onFetchConversationPrompts=${fetchConversationPromptsForSession}
-          onSendPromptToConversation=${handleSendPromptToConversation}
-          isCreatingSession=${isCreatingSession}
-        />
-        <!-- Resize handle on right edge -->
-        <div
-          class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-mitto-accent-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-mitto-accent-500/40' : ''}"
-          style="margin-right: -2px;"
-          ...${sidebarHandleProps}
-          title="Drag to resize sidebar"
-        />
-      </div>
-
-      <!-- Mobile sidebar overlay -->
-      ${showSidebar &&
-      html`
-        <${Drawer}
-          side="start"
-          animate=${false}
-          onClose=${() => setShowSidebar(false)}
-          widthClass="w-80"
-          panelClass="bg-mitto-sidebar h-full"
-          zClass="z-40"
-          className="md:hidden"
-        >
-            <${SessionList}
-              activeSessions=${activeSessions}
-              storedSessions=${storedSessions}
-              activeSessionId=${activeSessionId}
-              onSelect=${handleSelectSession}
-              onNewSession=${handleNewSession}
-              onRename=${handleOpenSessionProperties}
-              onDelete=${handleDeleteSession}
-              onArchive=${handleArchiveSession}
-              onClose=${() => setShowSidebar(false)}
-              workspaces=${workspaces}
-              theme=${theme}
-              onToggleTheme=${toggleTheme}
-              fontSize=${fontSize}
-              onToggleFontSize=${toggleFontSize}
-              onShowSettings=${handleShowSettings}
-              onShowWorkspaces=${handleShowWorkspaces}
-              onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
-              onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
-              configReadonly=${configReadonly}
-              rcFilePath=${rcFilePath}
-              badgeClickEnabled=${badgeClickEnabled}
-              onBadgeClick=${handleBadgeClick}
-              terminalActionEnabled=${terminalActionEnabled}
-              onFolderOpen=${handleFolderOpen}
-              onTerminalClick=${handleTerminalClick}
-              onBeadsOpen=${handleBeadsOpen}
-              queueLength=${queueLength}
-              onFetchConversationPrompts=${fetchConversationPromptsForSession}
-              onSendPromptToConversation=${handleSendPromptToConversation}
-              isCreatingSession=${isCreatingSession}
-            />
-        <//>
-      `}
 
       <!-- Main content area: beads view or conversation -->
       ${mainView === "beads" && beadsWorkingDir
@@ -2059,6 +1979,66 @@ function App() {
         onCreated=${() => {}}
         showToast=${showToast}
       />
+      </div>
+      <!-- END drawer-content -->
+
+      <!-- drawer-side: single unified SessionList (desktop always-open + mobile toggled) -->
+      <div class="drawer-side z-40">
+        <!-- Backdrop: shown on mobile; click to close -->
+        <label
+          for="sidebar-drawer"
+          aria-label="Close sidebar"
+          class="drawer-overlay"
+          onClick=${() => setShowSidebar(false)}
+        ></label>
+        <!-- Panel: resizable on desktop (sidebarWidth), fixed w-80 class provides
+             fallback but inline style takes precedence when set via resize handle. -->
+        <div
+          class="bg-mitto-sidebar border-r border-mitto-border-1 h-full relative"
+          style="width: ${sidebarWidth}px;"
+        >
+          <${SessionList}
+            activeSessions=${activeSessions}
+            storedSessions=${storedSessions}
+            activeSessionId=${activeSessionId}
+            onSelect=${handleSelectSession}
+            onNewSession=${handleNewSession}
+            onRename=${handleOpenSessionProperties}
+            onDelete=${handleDeleteSession}
+            onArchive=${handleArchiveSession}
+            onClose=${() => setShowSidebar(false)}
+            workspaces=${workspaces}
+            theme=${theme}
+            onToggleTheme=${toggleTheme}
+            fontSize=${fontSize}
+            onToggleFontSize=${toggleFontSize}
+            onShowSettings=${handleShowSettings}
+            onShowWorkspaces=${handleShowWorkspaces}
+            onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
+            onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
+            configReadonly=${configReadonly}
+            rcFilePath=${rcFilePath}
+            badgeClickEnabled=${badgeClickEnabled}
+            onBadgeClick=${handleBadgeClick}
+            terminalActionEnabled=${terminalActionEnabled}
+            onFolderOpen=${handleFolderOpen}
+            onTerminalClick=${handleTerminalClick}
+            onBeadsOpen=${handleBeadsOpen}
+            queueLength=${queueLength}
+            onFetchConversationPrompts=${fetchConversationPromptsForSession}
+            onSendPromptToConversation=${handleSendPromptToConversation}
+            isCreatingSession=${isCreatingSession}
+          />
+          <!-- Resize handle on right edge (desktop: drag to resize sidebarWidth) -->
+          <div
+            class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-mitto-accent-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-mitto-accent-500/40' : ''}"
+            style="margin-right: -2px;"
+            ...${sidebarHandleProps}
+            title="Drag to resize sidebar"
+          />
+        </div>
+      </div>
+      <!-- END drawer-side -->
     </div>
   `;
 }
