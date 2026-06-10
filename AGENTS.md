@@ -99,4 +99,6 @@ bd close <id>         # Complete work
 - **UI button consistency**: All toolbar buttons and button groups must use the same size, border style, and spacing. When multiple button groups appear in a row, maintain uniform appearance across all of them.
 - **YAML enum naming**: Use camelCase (not kebab-case) for YAML enum values and field names in processor/prompt configuration (e.g., `allExceptFirst` not `all-except-first`, `afterSentMsgs` not `after-sent-msgs`).
 - **No backwards compatibility shims**: When changing configuration syntax or field names, migrate all code, tests, docs, and definitions in one pass. Do not add backwards compatibility layers or fallback parsing for old formats.
+- **Analysis-first workflow**: When evaluating UI components or architectural decisions, conduct thorough analysis and file issues for recommendations rather than implementing immediately. File issues as children of parent tasks to capture decomposed work. Only implement when explicitly instructed to do so.
+- **daisyUI as standard UI library**: Use daisyUI components (menu, modal, theme-controller, etc.) for all UI updates and refactoring. When converting existing UI markup or custom components, prefer daisyUI idioms (e.g., `menu` with `menu-title` for grouped lists, `details` element for collapsible groups).
 <!-- END USER PREFERENCES -->

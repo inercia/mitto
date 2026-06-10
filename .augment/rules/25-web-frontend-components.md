@@ -61,6 +61,25 @@ Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min:
 
 Naming: `[Name]Icon` (e.g., `TrashIcon`, `QueueIcon`). Always `CloseIcon` SVG, never `✕`. Sizes: `w-4 h-4` (toasts), `w-5 h-5` (dialogs).
 
+## daisyUI Badges (Pills / Tags)
+
+All badge/pill components use daisyUI's `badge` class family, managed via a centralized helper function.
+
+**Single-point helper pattern** (BeadsView.js):
+```javascript
+function badge(label, className = "") {
+  return html`<span class="badge badge-sm ${className}">${label}</span>`;
+}
+// Call sites: badge("P1", "bg-red-600"), badge("active", "bg-accent")
+```
+
+**Color preservation**: When migrating custom pills → daisyUI, preserve existing color schemes:
+- Solid background colors (e.g., `bg-red-600`) kept for contrast (e.g., red hover state)
+- Colored dots (status indicators) preserved separately from badge styling
+- Accent/secondary badges use semantic daisyUI colors, not custom tailwind
+
+**Scope**: Pills appear in BeadsView (priority/status), SettingsDialog (server/tags), WorkspacesDialog (source badges), side panels (status/ACP-server/runner-type).
+
 ## Side Panel Overlay Pattern
 
 `SessionPanel` is a unified tabbed panel that replaced the old separate `ConversationPropertiesPanel` and `UserDataPanel`. It has three tabs: **Changes**, **Properties**, and **User Data** (in that order). The parent (`app.js`) manages open/close state; default tab is `"changes"`.
