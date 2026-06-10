@@ -25,7 +25,7 @@ export function DeleteDialog({
         onClick=${(e) => e.stopPropagation()}
       >
         <h3 class="text-lg font-semibold mb-2">Delete Session</h3>
-        <p class="text-gray-400 text-sm mb-4">
+        <p class="text-mitto-text-muted text-sm mb-4">
           Are you sure you want to delete "${sessionName}"?
           ${isStreaming &&
           html`<br /><span class="text-orange-400"
@@ -33,7 +33,7 @@ export function DeleteDialog({
             >`}
           ${isActive &&
           !isStreaming &&
-          html`<br /><span class="text-yellow-400"
+          html`<br /><span class="text-mitto-warning"
               >This is the active session.</span
             >`}
         </p>
@@ -41,14 +41,14 @@ export function DeleteDialog({
           <button
             type="button"
             onClick=${onCancel}
-            class="px-4 py-2 rounded-lg hover:bg-slate-700 transition-colors"
+            class="px-4 py-2 rounded-lg hover:bg-mitto-surface-hover transition-colors"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick=${onConfirm}
-            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+            class="px-4 py-2 bg-mitto-danger hover:bg-mitto-danger-hover text-mitto-danger-fg rounded-lg transition-colors"
           >
             Delete
           </button>
