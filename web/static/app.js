@@ -1734,7 +1734,7 @@ function App() {
 
       <!-- Sidebar (hidden on mobile by default) -->
       <div
-        class="hidden md:block bg-mitto-sidebar border-r border-slate-700 shrink-0 relative"
+        class="hidden md:block bg-mitto-sidebar border-r border-mitto-border-1 shrink-0 relative"
         style="width: ${sidebarWidth}px;"
       >
         <${SessionList}
@@ -1851,17 +1851,17 @@ function App() {
       >
         <!-- Header -->
         <div
-          class="relative p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 shrink-0"
+          class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
         >
           <button
-            class="md:hidden p-2 hover:bg-slate-700 rounded-lg transition-colors"
+            class="md:hidden p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
             onClick=${() => setShowSidebar(true)}
           >
             <${MenuIcon} className="w-6 h-6" />
           </button>
           <h1
             class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
-              ? "text-gray-500"
+              ? "text-mitto-text-muted"
               : "cursor-pointer hover:text-blue-400 transition-colors"}"
             onClick=${activeSessionId ? handleToggleSidePanel : undefined}
             title=${activeSessionId ? "Click to view properties" : ""}
@@ -1879,7 +1879,7 @@ function App() {
             <!-- Unified side panel toggle -->
             <button
               onClick=${handleToggleSidePanel}
-              class="p-1.5 rounded hover:bg-slate-700 transition-colors ${showSidePanel ? "bg-slate-700 text-blue-400" : "text-slate-400 hover:text-slate-200"}"
+              class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-slate-400 hover:text-slate-200"}"
               title="Session details"
             >
               <${SidePanelIcon} className="w-4 h-4" />
@@ -1947,7 +1947,7 @@ function App() {
         messages.length > 0 &&
         html`
           <div
-            class="flex items-center justify-center gap-2 py-2 text-sm text-yellow-500"
+            class="flex items-center justify-center gap-2 py-2 text-sm text-mitto-warning"
           >
             <span
               class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
@@ -1963,7 +1963,7 @@ function App() {
         html`
           <div class="flex justify-center mb-3">
             <div
-              class="text-xs text-gray-500 bg-slate-800/50 px-3 py-1 rounded-full"
+              class="text-xs text-mitto-text-muted bg-slate-800/50 px-3 py-1 rounded-full"
             >
               ${getArchiveReasonText(
                 sessionInfo.archive_reason,

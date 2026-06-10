@@ -52,13 +52,13 @@ const PRIORITY_COLORS = {
   0: "bg-red-600 text-white",
   1: "bg-orange-500 text-white",
   2: "bg-yellow-500 text-black",
-  3: "bg-slate-600 text-white",
+  3: "bg-mitto-surface-4 text-mitto-text-strong",
 };
 
 const STATUS_COLORS = {
   open: "bg-green-700 text-green-100",
   in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
-  closed: "bg-slate-600 text-white",
+  closed: "bg-mitto-surface-4 text-mitto-text-strong",
   blocked: "bg-red-700 text-red-100",
   deferred: "bg-cyan-800 text-cyan-100",
 };
@@ -82,8 +82,8 @@ const TYPE_COLORS = {
   epic: "bg-purple-700 text-purple-100",
   feature: "bg-blue-700 text-blue-100 beads-type-feature",
   bug: "bg-red-700 text-red-100",
-  task: "bg-slate-600 text-white",
-  chore: "bg-slate-600 text-white",
+  task: "bg-mitto-surface-4 text-mitto-text-strong",
+  chore: "bg-mitto-surface-4 text-mitto-text-strong",
 };
 
 function badge(text, colorClass) {
@@ -97,7 +97,7 @@ function priorityBadge(p) {
 
 function statusBadge(s) {
   const label = (s || "open").replace(/_/g, " ");
-  return badge(label, STATUS_COLORS[s] ?? "bg-slate-600 text-white");
+  return badge(label, STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong");
 }
 
 function typeBadge(t) {
@@ -846,7 +846,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                panel never exceeds the beads view width.
              Desktop expanded: panel fills the whole beads view area. -->
       <div class="absolute inset-0 z-60 flex justify-end pointer-events-none">
-        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
+        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar shrink-0 shadow-2xl h-full flex flex-col border-l border-mitto-border-1 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
@@ -964,7 +964,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 </button>
                 ${savingPriority && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin inline-block ml-1 text-mitto-text-secondary align-middle" />`}
                 ${editingPriority && html`
-                  <div class="absolute left-0 top-full mt-1 z-10 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]">
+                  <div class="absolute left-0 top-full mt-1 z-10 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl py-1 min-w-[140px]">
                     ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
                       const num = Number(n);
                       const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
@@ -973,11 +973,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                           key=${n}
                           type="button"
                           onClick=${() => handleSetPriority(num)}
-                          class="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-gray-200 hover:bg-slate-700 transition-colors"
+                          class="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-mitto-text hover:bg-mitto-surface-hover transition-colors"
                         >
                           ${priorityBadge(num)}
                           <span class="flex-1">${label}</span>
-                          ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 text-gray-400" />`}
+                          ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-text-muted" />`}
                         </button>
                       `;
                     })}
@@ -1005,7 +1005,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   `
                   : html`
                     <div
-                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-secondary transition-colors flex items-center gap-2"
+                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-gray-300 transition-colors flex items-center gap-2"
                       onClick=${startEditAssignee}
                       title="Click to edit"
                     >
@@ -2136,7 +2136,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <button
           onClick=${() => setShowCleanupConfirm(true)}
           disabled=${closedCount === 0 || cleaningUp}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-mitto-text-secondary disabled:hover:bg-transparent"
+          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-300 disabled:hover:bg-transparent"
           title=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
         >
           <${BroomIcon} className="w-4 h-4" />
@@ -2244,7 +2244,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     >
       ${deleteTargetDescendants.length > 0 && html`
         <div class="mt-3 space-y-2">
-          <p class="text-sm text-gray-300">
+          <p class="text-sm text-mitto-text-secondary">
             This epic has ${deleteTargetDescendants.length} descendant issue${deleteTargetDescendants.length === 1 ? "" : "s"}. What should happen to ${deleteTargetDescendants.length === 1 ? "it" : "them"}?
           </p>
           <label class="flex items-start gap-3 cursor-pointer select-none">
@@ -2255,9 +2255,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "none"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("none")}
-              class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
             />
-            <span class="text-sm text-gray-300">Leave child issues unchanged</span>
+            <span class="text-sm text-mitto-text-secondary">Leave child issues unchanged</span>
           </label>
           ${deleteTargetOpenDescendants.length > 0 && html`
             <label class="flex items-start gap-3 cursor-pointer select-none">
@@ -2268,9 +2268,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 checked=${childAction === "close"}
                 disabled=${deletingIssue}
                 onChange=${() => setChildAction("close")}
-                class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
               />
-              <span class="text-sm text-gray-300">
+              <span class="text-sm text-mitto-text-secondary">
                 Close the ${deleteTargetOpenDescendants.length} open child issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}
               </span>
             </label>
@@ -2283,9 +2283,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "delete"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("delete")}
-              class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-red-500 focus:ring-red-500 focus:ring-offset-0"
+              class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-red-500 focus:ring-red-500 focus:ring-offset-0"
             />
-            <span class="text-sm text-gray-300">
+            <span class="text-sm text-mitto-text-secondary">
               Delete all ${deleteTargetDescendants.length} child issue${deleteTargetDescendants.length === 1 ? "" : "s"} (permanent)
             </span>
           </label>

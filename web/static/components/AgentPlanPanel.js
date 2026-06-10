@@ -19,12 +19,12 @@ import {
 function getStatusDisplay(status) {
   switch (status) {
     case "completed":
-      return { icon: "✓", colorClass: "text-green-400" };
+      return { icon: "✓", colorClass: "text-mitto-success" };
     case "in_progress":
       return { icon: "●", colorClass: "text-blue-400 animate-pulse" };
     case "pending":
     default:
-      return { icon: "○", colorClass: "text-gray-500" };
+      return { icon: "○", colorClass: "text-mitto-text-muted" };
   }
 }
 
@@ -36,12 +36,12 @@ function getStatusDisplay(status) {
 function getPriorityBadge(priority) {
   switch (priority) {
     case "high":
-      return "bg-red-500/20 text-red-400 border-red-500/30";
+      return "bg-red-500/20 text-mitto-danger border-red-500/30";
     case "medium":
-      return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+      return "bg-yellow-500/20 text-mitto-warning border-yellow-500/30";
     case "low":
     default:
-      return "bg-gray-500/20 text-gray-400 border-gray-500/30";
+      return "bg-gray-500/20 text-mitto-text-muted border-gray-500/30";
   }
 }
 
@@ -150,7 +150,7 @@ export function AgentPlanPanel({
   const totalCount = entries.length;
 
   // Panel classes - use same color scheme as QueueDropdown (bg-slate-700/95)
-  const panelClasses = `agent-plan-panel absolute top-0 left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-b border-l border-r border-slate-600 rounded-b-lg overflow-hidden z-20 ${
+  const panelClasses = `agent-plan-panel absolute top-0 left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-b border-l border-r border-mitto-border-2 rounded-b-lg overflow-hidden z-20 ${
     isDragging ? "" : "transition-all duration-300 ease-out"
   } ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none border-0"}`;
 
@@ -171,18 +171,18 @@ export function AgentPlanPanel({
     >
       <!-- Header -->
       <div
-        class="agent-plan-header px-3 py-2 border-b border-slate-700 flex items-center justify-between cursor-pointer hover:bg-slate-600/50"
+        class="agent-plan-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between cursor-pointer hover:bg-slate-600/50"
         onClick=${onToggle}
       >
         <div class="flex items-center gap-2">
           <span
-            class="text-xs font-medium text-gray-400 uppercase tracking-wide"
+            class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide"
           >
             Agent Plan
           </span>
           ${totalCount > 0 &&
           html`
-            <span class="text-xs text-gray-500">
+            <span class="text-xs text-mitto-text-muted">
               (${completedCount}/${totalCount}
               complete${inProgressCount > 0
                 ? `, ${inProgressCount} in progress`
@@ -190,7 +190,7 @@ export function AgentPlanPanel({
             </span>
           `}
         </div>
-        <${ChevronUpIcon} className="w-4 h-4 text-gray-400" />
+        <${ChevronUpIcon} className="w-4 h-4 text-mitto-text-muted" />
       </div>
 
       <!-- Task List -->
@@ -212,7 +212,7 @@ export function AgentPlanPanel({
                     >
                       ${statusDisplay.icon}
                     </span>
-                    <span class="flex-1 text-sm text-gray-200">
+                    <span class="flex-1 text-sm text-mitto-text">
                       ${entry.content}
                     </span>
                     ${entry.priority &&
@@ -233,7 +233,7 @@ export function AgentPlanPanel({
           `
         : html`
             <div
-              class="agent-plan-empty px-3 py-4 text-center text-sm text-gray-500"
+              class="agent-plan-empty px-3 py-4 text-center text-sm text-mitto-text-muted"
             >
               No plan available
             </div>
@@ -247,7 +247,7 @@ export function AgentPlanPanel({
         ...${handleProps}
         title="Drag to resize"
       >
-        <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+        <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
       </div>
     </div>
   `;
@@ -284,9 +284,9 @@ export function AgentPlanIndicator({
     >
       ${inProgressCount > 0
         ? html`<span class="text-blue-400 animate-pulse">●</span>`
-        : html`<span class="text-gray-400">○</span>`}
-      <span class="text-gray-300">${completedCount}/${totalCount}</span>
-      <${ChevronDownIcon} className="w-3 h-3 text-gray-400" />
+        : html`<span class="text-mitto-text-muted">○</span>`}
+      <span class="text-mitto-text-secondary">${completedCount}/${totalCount}</span>
+      <${ChevronDownIcon} className="w-3 h-3 text-mitto-text-muted" />
     </button>
   `;
 }

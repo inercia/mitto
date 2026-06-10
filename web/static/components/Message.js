@@ -115,8 +115,8 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
   }, [isCollapsed, isCollapsible, linkedText, firstLine]);
 
   const bubbleClass = isModelError
-    ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-amber-900/20 text-gray-400 border border-amber-700/50 border-l-4 border-l-amber-500"
-    : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-gray-400";
+    ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-amber-900/20 text-mitto-text-muted border border-amber-700/50 border-l-4 border-l-amber-500"
+    : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-mitto-text-muted";
 
   return html`
     <div class="message-enter flex justify-start mb-3">
@@ -165,7 +165,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-center mb-3">
         <div
-          class="text-xs text-gray-500 bg-slate-800/50 px-3 py-1 rounded-full"
+          class="text-xs text-mitto-text-muted bg-slate-800/50 px-3 py-1 rounded-full"
         >
           ${message.text}
         </div>
@@ -184,7 +184,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         // Green checkmark icon for completed
         return html`
           <svg
-            class="w-4 h-4 text-green-400"
+            class="w-4 h-4 text-mitto-success"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -202,7 +202,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         // Red X icon for failed
         return html`
           <svg
-            class="w-4 h-4 text-red-400"
+            class="w-4 h-4 text-mitto-danger"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -220,7 +220,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         // Spinning indicator for running
         return html`
           <svg
-            class="w-4 h-4 text-yellow-400 animate-spin"
+            class="w-4 h-4 text-mitto-warning animate-spin"
             fill="none"
             viewBox="0 0 24 24"
           >
@@ -241,7 +241,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         `;
       }
       // Default: gray text for unknown status
-      return html`<span class="text-xs text-gray-400">${message.status}</span>`;
+      return html`<span class="text-xs text-mitto-text-muted">${message.status}</span>`;
     };
 
     // Parse the title for file paths
@@ -294,9 +294,9 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-center mb-1">
         <div
-          class="text-sm text-gray-400 flex items-center gap-2 bg-slate-800/50 dark:bg-slate-800/50 px-3 py-1.5 rounded-lg"
+          class="text-sm text-mitto-text-muted flex items-center gap-2 bg-slate-800/50 dark:bg-slate-800/50 px-3 py-1.5 rounded-lg"
         >
-          <span class="text-yellow-500">🔧</span>
+          <span class="text-mitto-warning">🔧</span>
           <span class="font-medium">${renderTitle()}</span>
           ${renderStatus()}
         </div>
@@ -330,7 +330,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           ${onRetry &&
           html`<button
             type="button"
-            class="shrink-0 p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
+            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
             onClick=${onRetry}
             title="Retry — resend the last prompt"
           >
@@ -481,7 +481,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
-          class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-gray-100 rounded-bl-sm"
+          class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
         >
           <div
             ref=${agentMessageRef}

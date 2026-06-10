@@ -61,7 +61,7 @@ export function WorkspaceBadge({
       html`
         <div class="min-w-0 flex-1">
           <div class="font-medium text-sm">${displayName}</div>
-          <div class="text-xs text-gray-500 truncate" title=${path}>
+          <div class="text-xs text-mitto-text-muted truncate" title=${path}>
             ${path}
           </div>
         </div>
