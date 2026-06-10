@@ -1236,7 +1236,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   return html`
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick=${handleClose}>
-      <div class="workspaces-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col" onClick=${(e) => e.stopPropagation()}>
+      <div class="workspaces-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col" data-testid="workspaces-dialog" onClick=${(e) => e.stopPropagation()}>
 
         <!-- Header -->
         <div class="flex items-center justify-between p-4 border-b border-mitto-border shrink-0">
@@ -1382,6 +1382,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       ${folderTabs.map((tab) => html`
                         <button
                           key=${tab.id}
+                          data-testid=${`ws-tab-${tab.id}`}
                           onClick=${() => setActiveTab(tab.id)}
                           class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-mitto-accent text-mitto-accent" : "border-transparent text-mitto-text-muted hover:text-mitto-text-secondary"}"
                           style="margin-bottom: -1px"
@@ -1390,7 +1391,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                     </div>
 
                     <!-- Folder tab content -->
-                    <div class="flex-1 overflow-y-auto p-6">
+                    <div class="flex-1 overflow-y-auto p-6" data-testid="ws-tab-content">
 
                       <!-- Folder General tab -->
                       ${activeTab === "general" && html`
@@ -2039,6 +2040,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   ${workspaceTabs.map((tab) => html`
                     <button
                       key=${tab.id}
+                      data-testid=${`ws-tab-${tab.id}`}
                       onClick=${() => setActiveTab(tab.id)}
                       class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-mitto-accent text-mitto-accent" : "border-transparent text-mitto-text-muted hover:text-mitto-text-secondary"}"
                       style="margin-bottom: -1px"
@@ -2047,7 +2049,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                 </div>
 
                 <!-- Workspace tab content -->
-                <div class="flex-1 overflow-y-auto p-6">
+                <div class="flex-1 overflow-y-auto p-6" data-testid="ws-tab-content">
 
                   <!-- Workspace General tab -->
                   ${activeTab === "general" && html`
@@ -2256,9 +2258,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   : "Restart ACP"}
               </button>
             `}
-            <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">Close</button>
+            <button onClick=${handleClose} data-testid="ws-close" class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">Close</button>
             <button
               onClick=${handleSave}
+              data-testid="ws-save"
               disabled=${saving || loading}
               class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
             >
