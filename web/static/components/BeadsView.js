@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 
@@ -962,7 +962,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 >
                   ${priorityBadge(data.priority)}
                 </button>
-                ${savingPriority && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin inline-block ml-1 text-mitto-text-secondary align-middle" />`}
+                ${savingPriority && html`<span class="loading loading-spinner w-3.5 h-3.5 inline-block ml-1 text-mitto-text-secondary align-middle"></span>`}
                 ${editingPriority && html`
                   <div class="absolute left-0 top-full mt-1 z-10 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl py-1 min-w-[140px]">
                     ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
@@ -1009,7 +1009,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       onClick=${startEditAssignee}
                       title="Click to edit"
                     >
-                      ${savingAssignee && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin text-mitto-text-secondary shrink-0" />`}
+                      ${savingAssignee && html`<span class="loading loading-spinner w-3.5 h-3.5 text-mitto-text-secondary shrink-0"></span>`}
                       ${data.assignee
                         ? html`<span>${data.assignee}</span>`
                         : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
@@ -1045,7 +1045,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     onClick=${startEditDesc}
                     title="Click to edit"
                   >
-                    ${savingDesc && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
+                    ${savingDesc && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
                     ${data.description
                       ? (md
                           ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
@@ -1090,7 +1090,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
                   </div>
                 `
                 : html`
@@ -1153,7 +1153,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         title="Add dependency"
                       >
                         ${depsBusy
-                          ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                          ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
                           : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                       </button>
                     </div>
@@ -1166,7 +1166,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
                   </div>
                 `
                 : html`
@@ -1208,7 +1208,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                           title="Add comment"
                         >
                           ${savingComment
-                            ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                            ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
                             : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                           <span>Add comment</span>
                         </button>
@@ -1223,7 +1223,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
                   </div>
                 `
                 : editingNotes
@@ -1247,7 +1247,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       onClick=${startEditNotes}
                       title="Click to edit"
                     >
-                      ${savingNotes && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
+                      ${savingNotes && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
                       ${notes && notes.trim()
                         ? commentBody(notes)
                         : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
@@ -1294,7 +1294,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
                 ${promptsLoading && html`
                   <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-4 h-4"></span> Loading…
                   </div>
                 `}
                 ${!promptsLoading && prompts.length === 0 && html`
@@ -2004,7 +2004,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll">
         ${loading && html`
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary gap-2">
-            <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading issues…
+            <span class="loading loading-spinner w-4 h-4"></span> Loading issues…
           </div>
         `}
         ${!loading && error && html`
@@ -2108,7 +2108,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
               ${listPromptsLoading && html`
                 <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
-                  <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…
+                  <span class="loading loading-spinner w-4 h-4"></span> Loading…
                 </div>
               `}
               ${!listPromptsLoading && listPrompts.length === 0 && html`
@@ -2157,7 +2157,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               title=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "pull"
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
                 : html`<${ArrowDownIcon} className="w-4 h-4" />`}
             </button>
             <button
@@ -2167,7 +2167,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               title=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "push"
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
                 : html`<${ArrowUpIcon} className="w-4 h-4" />`}
             </button>
             <button
@@ -2177,7 +2177,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               title=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
             >
               ${syncAction === "sync"
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
                 : html`<${SyncIcon} className="w-4 h-4" />`}
             </button>
           </div>
