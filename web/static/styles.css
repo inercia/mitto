@@ -1,5 +1,77 @@
 /* Mitto Web Interface Styles */
 
+/* =============================================================================
+   Design Tokens (Mitto CSS Variables)
+   Moved here from the inline <style> in index.html (Phase 2b). v1 default-dark
+   on :root; .light overrides for v1 light theme. v2 overrides live in
+   styles-v2.css, which loads after this file — load order and cascade are
+   unchanged, so computed values are identical.
+   ============================================================================= */
+/* Dark theme (default) */
+:root {
+  --mitto-bg: #0f172a;
+  --mitto-sidebar: #1e293b;
+  --mitto-chat: #0f172a;
+  --mitto-input: #1e293b;
+  --mitto-input-box: #1e3a5f;
+  --mitto-user: #1e293b;
+  --mitto-user-text: #f1f5f9;
+  --mitto-user-border: #334155;
+  --mitto-agent: #1e293b;
+  --mitto-text: #f1f5f9;
+  --mitto-text-secondary: #94a3b8;
+  --mitto-border: #334155;
+  /* Semantic action tokens (Phase 1) */
+  --mitto-accent: #2563eb;
+  --mitto-accent-hover: #3b82f6;
+  --mitto-accent-fg: #ffffff;
+  --mitto-danger: #dc2626;
+  --mitto-danger-hover: #ef4444;
+  --mitto-danger-fg: #ffffff;
+  --mitto-surface-hover: #334155;
+  /* Bulk-sweep tokens (Phase 1): v1 uses raw Tailwind palette values so
+   * v1 (default-dark) is byte-identical to today; .light inherits these. */
+  --mitto-surface-1: #0f172a;
+  --mitto-surface-2: #1e293b;
+  --mitto-surface-3: #334155;
+  --mitto-surface-4: #475569;
+  --mitto-text-strong: #ffffff;
+  --mitto-text-muted: #9ca3af;
+  --mitto-border-1: #334155;
+  --mitto-border-2: #475569;
+  --mitto-border-3: #64748b;
+  --mitto-success: #22c55e;
+  --mitto-warning: #eab308;
+  --mitto-info: #2563eb;
+}
+/* Light theme */
+.light {
+  --mitto-bg: #f8fafc;
+  --mitto-sidebar: #e2e8f0;
+  --mitto-chat: #f8fafc;
+  --mitto-input: #e2e8f0;
+  --mitto-input-box: #cbd5e1;
+  --mitto-user: #e5e7eb;
+  --mitto-user-text: #1e293b;
+  --mitto-user-border: #f97316;
+  --mitto-agent: #e2e8f0;
+  --mitto-text: #1e293b;
+  --mitto-text-secondary: #64748b;
+  --mitto-border: #cbd5e1;
+  /* Semantic action tokens (Phase 1) */
+  --mitto-accent: #2563eb;
+  --mitto-accent-hover: #3b82f6;
+  --mitto-accent-fg: #ffffff;
+  --mitto-danger: #dc2626;
+  --mitto-danger-hover: #ef4444;
+  --mitto-danger-fg: #ffffff;
+  --mitto-surface-hover: #cbd5e1;
+}
+.light body,
+.light #app {
+  color: var(--mitto-text);
+}
+
 /* Safari-safe viewport height utilities
    Uses dvh (dynamic viewport height) for Safari iOS/macOS with 100vh fallback.
    This fixes issues where 100vh doesn't account for Safari's dynamic toolbar. */

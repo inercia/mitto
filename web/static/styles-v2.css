@@ -513,19 +513,10 @@ a:hover {
   background: rgba(240, 240, 240, 0.5) !important;
 }
 
-/* Light theme: Mitto custom background classes */
-.v2-theme:not(.dark) .bg-mitto-sidebar {
-  background: #ffffff !important;
-}
-.v2-theme:not(.dark) .bg-mitto-bg {
-  background: #fafafa !important;
-}
-.v2-theme:not(.dark) .bg-mitto-chat {
-  background: #f5f5f5 !important;
-}
-.v2-theme:not(.dark) .bg-mitto-input {
-  background: #ffffff !important;
-}
+/* Light theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
+   utilities already resolve to the same per-theme --mitto-* vars. Only
+   bg-mitto-input-box is kept: its background differs from the var (#f5f5f5 vs
+   #f0f0f0) and its color forces text-strong over .text-mitto-text. */
 .v2-theme:not(.dark) .bg-mitto-input-box {
   background: #f5f5f5 !important;
   color: #18181b !important;
@@ -534,9 +525,6 @@ a:hover {
 /* Light theme: Text colors */
 .v2-theme:not(.dark) .text-white {
   color: #18181b !important;
-}
-.v2-theme:not(.dark) .text-gray-100 {
-  color: #3f3f46 !important;
 }
 .v2-theme:not(.dark) .text-gray-200 {
   color: #3f3f46 !important;
@@ -552,9 +540,6 @@ a:hover {
 }
 
 /* Light theme: Placeholder text */
-.v2-theme:not(.dark) .placeholder-gray-400::placeholder {
-  color: #a1a1aa !important;
-}
 .v2-theme:not(.dark) .placeholder-gray-500::placeholder {
   color: #a1a1aa !important;
 }
@@ -603,19 +588,9 @@ a:hover {
   background: rgba(51, 65, 85, 0.5) !important;
 }
 
-/* Dark theme: Mitto custom background classes */
-.v2-theme.dark .bg-mitto-sidebar {
-  background: #1a1d25 !important;
-}
-.v2-theme.dark .bg-mitto-bg {
-  background: #12141a !important;
-}
-.v2-theme.dark .bg-mitto-chat {
-  background: #14161d !important;
-}
-.v2-theme.dark .bg-mitto-input {
-  background: #1a1d25 !important;
-}
+/* Dark theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
+   utilities already resolve to the same per-theme --mitto-* vars. Only
+   bg-mitto-input-box is kept (its color forces text-strong over .text-mitto-text). */
 .v2-theme.dark .bg-mitto-input-box {
   background: #262a35 !important;
   color: #e4e4e7 !important;
@@ -624,9 +599,6 @@ a:hover {
 /* Dark theme: Text colors - restore original light text */
 .v2-theme.dark .text-white {
   color: #ffffff !important;
-}
-.v2-theme.dark .text-gray-100 {
-  color: #f3f4f6 !important;
 }
 .v2-theme.dark .text-gray-200 {
   color: #e5e7eb !important;
@@ -657,9 +629,6 @@ a:hover {
 }
 
 /* Dark theme: Placeholder text */
-.v2-theme.dark .placeholder-gray-400::placeholder {
-  color: #9ca3af !important;
-}
 .v2-theme.dark .placeholder-gray-500::placeholder {
   color: #9ca3af !important;
 }
