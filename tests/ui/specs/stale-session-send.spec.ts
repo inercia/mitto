@@ -77,8 +77,8 @@ test.describe("Stale Session Send Recovery", () => {
       await page.locator(selectors.sendButton).click();
 
       // ACK timeout (3s) + reconnect attempt (~4s) + error shown ≈ 7-10s
-      // The error toast appears as an orange bar below the chat input
-      const errorToast = page.locator(".bg-orange-900\\/50").first();
+      // The send error appears as a daisyUI alert-warning bar below the chat input
+      const errorToast = page.locator(".alert.alert-warning").first();
       await expect(errorToast).toBeVisible({ timeout: 15000 });
 
       // The error message should reference delivery failure
@@ -115,9 +115,11 @@ test.describe("Stale Session Send Recovery", () => {
       // Retry send with preserved message text
       await page.locator(selectors.sendButton).click();
 
-      // The retried user message should appear in chat
+      // The retried user message should appear in chat. Use .first(): a
+      // send-failure + retry can leave two matching bubbles (optimistic render
+      // plus the server echo after recovery).
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: "stale connection" })
+        page.locator(selectors.userMessage).filter({ hasText: "stale connection" }).first()
       ).toBeVisible({ timeout: timeouts.agentResponse });
 
       // Agent should respond (confirms full round-trip restored)
@@ -171,7 +173,7 @@ test.describe("Stale Session Send Recovery", () => {
       await page.locator(selectors.sendButton).click();
 
       // Wait for error toast
-      const errorToast = page.locator(".bg-orange-900\\/50").first();
+      const errorToast = page.locator(".alert.alert-warning").first();
       await expect(errorToast).toBeVisible({ timeout: 15000 });
 
       // Key assertion: input text must be preserved verbatim
@@ -197,9 +199,11 @@ test.describe("Stale Session Send Recovery", () => {
       // Retry: click Send with preserved text still in input
       await page.locator(selectors.sendButton).click();
 
-      // The message should appear as a user message in the chat
+      // The message should appear as a user message in the chat. Use .first():
+      // a send-failure + retry can leave two matching bubbles (optimistic
+      // render plus the server echo after recovery).
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: "must not be lost" })
+        page.locator(selectors.userMessage).filter({ hasText: "must not be lost" }).first()
       ).toBeVisible({ timeout: timeouts.agentResponse });
     } finally {
       await cdpSession.send("Network.emulateNetworkConditions", {
@@ -264,10 +268,11 @@ test.describe("Stale Session Send Recovery", () => {
 
       // Race: which comes first — delivery error toast OR the user message bubble?
       // Both are valid outcomes depending on whether the ACK arrived in 50ms.
-      const errorToastLocator = page.locator(".bg-orange-900\\/50").first();
+      const errorToastLocator = page.locator(".alert.alert-warning").first();
       const userMsgLocator = page
         .locator(selectors.userMessage)
-        .filter({ hasText: uniqueSuffix });
+        .filter({ hasText: uniqueSuffix })
+        .first();
 
       let errorToastAppeared = false;
       try {
