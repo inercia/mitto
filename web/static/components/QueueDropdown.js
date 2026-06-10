@@ -239,6 +239,7 @@ export function QueueDropdown({
       ref=${dropdownRef}
       class=${dropdownClasses}
       data-is-open=${String(isOpen)}
+      data-testid="queue-dropdown"
       style="transform-origin: bottom; ${dropdownStyle}"
       onMouseEnter=${handleMouseEnter}
       onMouseLeave=${handleMouseLeave}
@@ -272,6 +273,8 @@ export function QueueDropdown({
                   <div
                     key=${msg.id}
                     class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0 group"
+                    data-testid="queue-item"
+                    data-queue-item-index=${index}
                   >
                     <span
                       class="queue-item-number text-xs text-mitto-text-muted font-mono w-4 shrink-0"
