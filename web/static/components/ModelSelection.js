@@ -28,7 +28,7 @@ export function ModelSelection({ matchMode, pattern, onChange }) {
       <select
         value=${matchMode}
         onInput=${handleModeChange}
-        class="select select-bordered select-sm"
+        class="select select-sm"
         style="flex: 0 0 auto; min-width: 140px; max-width: 160px;"
       >
         <option value="">-- None --</option>
@@ -44,7 +44,7 @@ export function ModelSelection({ matchMode, pattern, onChange }) {
         onInput=${handlePatternChange}
         placeholder="e.g., Opus 4.6"
         disabled=${!matchMode}
-        class="input input-bordered input-sm flex-1"
+        class="input input-sm flex-1"
       />
     </div>
   `;
