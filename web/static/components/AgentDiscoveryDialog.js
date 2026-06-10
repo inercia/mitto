@@ -5,7 +5,6 @@
 
 const { html, useState, useEffect, useCallback } = window.preact;
 
-import { SpinnerIcon } from "./Icons.js";
 import { Modal } from "./Modal.js";
 import { apiUrl, secureFetch } from "../utils/index.js";
 
@@ -215,14 +214,14 @@ export function AgentDiscoveryDialog({
 
       ${phase === "scanning" && html`
         <div class="text-center py-6">
-          <${SpinnerIcon} className="w-10 h-10 mx-auto mb-3 text-mitto-accent" />
+          <span class="loading loading-spinner loading-lg mb-3 text-mitto-accent"></span>
           <p class="text-mitto-text-secondary">Scanning for installed agents...</p>
         </div>
       `}
 
       ${phase === "confirming" && html`
         <div class="text-center py-6">
-          <${SpinnerIcon} className="w-10 h-10 mx-auto mb-3 text-mitto-accent" />
+          <span class="loading loading-spinner loading-lg mb-3 text-mitto-accent"></span>
           <p class="text-mitto-text-secondary">Saving agent configuration...</p>
         </div>
       `}
@@ -242,19 +241,23 @@ export function AgentDiscoveryDialog({
       ${phase === "results" && html`
         <div>
           <p class="text-mitto-text-secondary text-sm mb-3">Select the agents to add:</p>
-          <div class="space-y-2 max-h-64 overflow-y-auto">
+          <div class="list max-h-64 overflow-y-auto">
             ${agents.filter((a) => a.available).map((agent) => {
               const alreadyConfigured = existingCommands.has(agent.status?.command);
+              // Selectable cards on the daisyUI list: the list owns row radius +
+              // dividers, so only the two distinctive states carry their own
+              // treatment — a full accent border + tint when selected, and a
+              // dimmed/non-interactive look when already configured. Selection
+              // stays Preact-driven (selected Set + toggleAgent).
+              const stateTone = alreadyConfigured
+                ? "opacity-50 cursor-default"
+                : selected.has(agent.dir_name)
+                  ? "border border-mitto-accent-600 bg-mitto-accent-600/10 cursor-pointer hover:border-mitto-accent"
+                  : "cursor-pointer hover:bg-mitto-input-box";
               return html`
                 <div
                   key=${agent.dir_name}
-                  class="flex items-start gap-3 p-3 rounded-lg border transition-colors
-                    ${alreadyConfigured
-                      ? "border-mitto-border-1 opacity-50 cursor-default"
-                      : selected.has(agent.dir_name)
-                        ? "border-mitto-accent-600 bg-mitto-accent-600/10 cursor-pointer hover:border-mitto-accent"
-                        : "border-mitto-border-1 cursor-pointer hover:border-mitto-border-3"
-                    }"
+                  class="list-row items-start transition-colors ${stateTone}"
                   onClick=${() => !alreadyConfigured && toggleAgent(agent.dir_name)}
                 >
                   ${alreadyConfigured
@@ -264,17 +267,17 @@ export function AgentDiscoveryDialog({
                         checked=${selected.has(agent.dir_name)}
                         onChange=${() => toggleAgent(agent.dir_name)}
                         onClick=${(e) => e.stopPropagation()}
-                        class="mt-0.5 accent-mitto-accent-500 shrink-0"
+                        class="checkbox checkbox-sm checkbox-accent mt-0.5 shrink-0"
                       />`
                   }
-                  <div class="flex-1 min-w-0">
+                  <div class="list-col-grow min-w-0">
                     <div class="flex items-center gap-2 flex-wrap">
                       <span class="font-medium text-sm">${agent.metadata.display_name || agent.dir_name}</span>
                       ${agent.status?.version && html`
                         <span class="text-xs text-mitto-text-muted">${agent.status.version}</span>
                       `}
                       ${alreadyConfigured && html`
-                        <span class="text-xs text-mitto-text-muted bg-mitto-surface-3 px-1.5 py-0.5 rounded">
+                        <span class="badge badge-ghost badge-sm">
                           Already configured
                         </span>
                       `}
