@@ -1378,14 +1378,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   };
                   return html`
                     <!-- Folder tab bar -->
-                    <div class="flex border-b border-mitto-border px-4 shrink-0">
+                    <div role="tablist" class="tabs tabs-border px-4 shrink-0">
                       ${folderTabs.map((tab) => html`
                         <button
                           key=${tab.id}
+                          role="tab"
                           data-testid=${`ws-tab-${tab.id}`}
                           onClick=${() => setActiveTab(tab.id)}
-                          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-mitto-accent text-mitto-accent" : "border-transparent text-mitto-text-muted hover:text-mitto-text-secondary"}"
-                          style="margin-bottom: -1px"
+                          class="tab ${activeTab === tab.id ? "tab-active text-mitto-accent" : ""}"
                         >${tab.label}</button>
                       `)}
                     </div>
@@ -2036,14 +2036,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   </div>`
                 : html`
                 <!-- Workspace tab bar -->
-                <div class="flex border-b border-mitto-border px-4 shrink-0">
+                <div role="tablist" class="tabs tabs-border px-4 shrink-0">
                   ${workspaceTabs.map((tab) => html`
                     <button
                       key=${tab.id}
+                      role="tab"
                       data-testid=${`ws-tab-${tab.id}`}
                       onClick=${() => setActiveTab(tab.id)}
-                      class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-mitto-accent text-mitto-accent" : "border-transparent text-mitto-text-muted hover:text-mitto-text-secondary"}"
-                      style="margin-bottom: -1px"
+                      class="tab ${activeTab === tab.id ? "tab-active text-mitto-accent" : ""}"
                     >${tab.label}</button>
                   `)}
                 </div>
