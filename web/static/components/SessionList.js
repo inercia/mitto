@@ -1359,59 +1359,47 @@ export function SessionList({
           `}
         </div>
       </div>
-      <!-- Filter Tab Bar -->
+      <!-- Filter Tab Bar — daisyUI tabs tabs-box (controlled via tab-active; no radio inputs).
+           Shared mitto tabs convention (mitto-i1r.15): tabs-tabs-box container + tab/tab-active
+           per segment. Backwards-compat semantic classes (filter-tab, filter-tab--active,
+           filter-tab-streaming) are preserved for existing test selectors. -->
       <div
-        class="filter-tab-bar flex border-b border-mitto-border-1"
         role="tablist"
+        class="tabs tabs-box filter-tab-bar mx-2 my-1.5"
         aria-label="Conversation filters"
       >
         <button
           role="tab"
           aria-selected=${filterTab === FILTER_TAB.CONVERSATIONS}
-          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
-          FILTER_TAB.CONVERSATIONS
-            ? "filter-tab--active text-mitto-accent border-b-2 border-mitto-accent"
-            : "text-mitto-text-muted hover:text-mitto-text hover:bg-slate-700/50"} ${streamingTabs.conversations
-            ? "filter-tab-streaming"
-            : ""}"
+          class="tab filter-tab flex-1 gap-1.5 ${filterTab === FILTER_TAB.CONVERSATIONS ? "tab-active filter-tab--active" : ""} ${streamingTabs.conversations ? "filter-tab-streaming" : ""}"
           onClick=${() => handleFilterTabChange(FILTER_TAB.CONVERSATIONS)}
           title="Conversations"
         >
-          <${ChatBubbleIcon} className="w-5 h-5" />
+          <${ChatBubbleIcon} className="w-4 h-4" />
           ${regularSessions.filter(s => !s.parent_session_id).length > 0 &&
-          html`<span class="ml-1.5 text-xs">${regularSessions.filter(s => !s.parent_session_id).length}</span>`}
+          html`<span class="badge badge-sm ml-0.5">${regularSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
         <button
           role="tab"
           aria-selected=${filterTab === FILTER_TAB.PERIODIC}
-          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
-          FILTER_TAB.PERIODIC
-            ? "filter-tab--active text-mitto-accent border-b-2 border-mitto-accent"
-            : "text-mitto-text-muted hover:text-mitto-text hover:bg-slate-700/50"} ${streamingTabs.periodic
-            ? "filter-tab-streaming"
-            : ""}"
+          class="tab filter-tab flex-1 gap-1.5 ${filterTab === FILTER_TAB.PERIODIC ? "tab-active filter-tab--active" : ""} ${streamingTabs.periodic ? "filter-tab-streaming" : ""}"
           onClick=${() => handleFilterTabChange(FILTER_TAB.PERIODIC)}
           title="Periodic"
         >
-          <${PeriodicIcon} className="w-5 h-5" />
+          <${PeriodicIcon} className="w-4 h-4" />
           ${periodicSessions.filter(s => !s.parent_session_id).length > 0 &&
-          html`<span class="ml-1.5 text-xs">${periodicSessions.filter(s => !s.parent_session_id).length}</span>`}
+          html`<span class="badge badge-sm ml-0.5">${periodicSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
         <button
           role="tab"
           aria-selected=${filterTab === FILTER_TAB.ARCHIVED}
-          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
-          FILTER_TAB.ARCHIVED
-            ? "filter-tab--active text-mitto-accent border-b-2 border-mitto-accent"
-            : "text-mitto-text-muted hover:text-mitto-text hover:bg-slate-700/50"} ${streamingTabs.archived
-            ? "filter-tab-streaming"
-            : ""}"
+          class="tab filter-tab flex-1 gap-1.5 ${filterTab === FILTER_TAB.ARCHIVED ? "tab-active filter-tab--active" : ""} ${streamingTabs.archived ? "filter-tab-streaming" : ""}"
           onClick=${() => handleFilterTabChange(FILTER_TAB.ARCHIVED)}
           title="Archived"
         >
-          <${ArchiveIcon} className="w-5 h-5" />
+          <${ArchiveIcon} className="w-4 h-4" />
           ${archivedSessions.filter(s => !s.parent_session_id).length > 0 &&
-          html`<span class="ml-1.5 text-xs">${archivedSessions.filter(s => !s.parent_session_id).length}</span>`}
+          html`<span class="badge badge-sm ml-0.5">${archivedSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">

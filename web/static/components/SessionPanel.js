@@ -621,17 +621,20 @@ export function SessionPanel({
             </button>
           </div>
 
-          <!-- Tab switcher -->
-          <div class="flex border-b border-mitto-border-1 shrink-0">
+          <!-- Tab switcher — daisyUI tabs tabs-box (controlled via tab-active; no radio inputs).
+               Follows shared mitto tabs convention from mitto-i1r.15. -->
+          <div role="tablist" class="tabs tabs-box shrink-0 mx-2 my-1.5">
             <button
-              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "properties" ? "text-mitto-accent border-b-2 border-mitto-accent" : "text-slate-400 hover:text-slate-300"}"
+              role="tab"
+              class="tab flex-1 ${currentTab === "properties" ? "tab-active" : ""}"
               onClick=${() => handleTabChange("properties")}
               title="Properties"
             >
               <${SettingsIcon} className="w-4 h-4" />
             </button>
             <button
-              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "changes" ? "text-mitto-accent border-b-2 border-mitto-accent" : "text-slate-400 hover:text-slate-300"}"
+              role="tab"
+              class="tab flex-1 ${currentTab === "changes" ? "tab-active" : ""}"
               onClick=${() => handleTabChange("changes")}
               title="Changes"
             >
@@ -640,7 +643,8 @@ export function SessionPanel({
               </svg>
             </button>
             <button
-              class="flex-1 flex items-center justify-center py-2.5 transition-colors ${currentTab === "advanced" ? "text-mitto-accent border-b-2 border-mitto-accent" : "text-slate-400 hover:text-slate-300"}"
+              role="tab"
+              class="tab flex-1 ${currentTab === "advanced" ? "tab-active" : ""}"
               onClick=${() => handleTabChange("advanced")}
               title="Advanced"
             >
