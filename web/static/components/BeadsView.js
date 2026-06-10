@@ -1971,21 +1971,21 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       </div>
 
       <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
-        <div class="inline-flex rounded border border-mitto-border overflow-hidden shrink-0" role="group" aria-label="Filter by status">
-          ${BEADS_STATUS_TOGGLES.map((t, i) => html`
+        <div class="join shrink-0" role="group" aria-label="Filter by status">
+          ${BEADS_STATUS_TOGGLES.map(t => html`
             <button
               type="button"
               onClick=${() => toggleStatus(t.key)}
               aria-pressed=${statusToggles[t.key] ? "true" : "false"}
               title=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              class="px-2 py-1 text-xs transition-colors ${i > 0 ? "border-l border-mitto-border " : ""}${statusToggles[t.key] ? `${STATUS_COLORS[t.key]} font-semibold` : "bg-transparent text-mitto-text-secondary opacity-50 hover:opacity-80 hover:text-mitto-text"}"
+              class="btn btn-xs join-item ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
             >
               ${t.label}
             </button>
           `)}
         </div>
         <select
-          class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text"
+          class="select select-xs shrink-0"
           value=${typeFilter}
           onInput=${e => setTypeFilter(e.target.value)}
         >
@@ -1997,7 +1997,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           placeholder="Search…"
           value=${search}
           onInput=${e => setSearch(e.target.value)}
-          class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text flex-1 min-w-0 placeholder-mitto-text-secondary"
+          class="input input-xs flex-1 min-w-0"
         />
       </div>
 
