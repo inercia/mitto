@@ -133,6 +133,14 @@
   --mitto-text: #3f3f46;
   --mitto-text-secondary: #71717a;
   --mitto-border: #e4e4e7;
+  /* Semantic action tokens (Phase 1) */
+  --mitto-accent: #dc2626;
+  --mitto-accent-hover: #ef4444;
+  --mitto-accent-fg: #ffffff;
+  --mitto-danger: #dc2626;
+  --mitto-danger-hover: #b91c1c;
+  --mitto-danger-fg: #ffffff;
+  --mitto-surface-hover: #f0f0f0;
 }
 
 .v2-theme.dark,
@@ -148,6 +156,14 @@
   --mitto-text: #e4e4e7;
   --mitto-text-secondary: #71717a;
   --mitto-border: #27272a;
+  /* Semantic action tokens (Phase 1) */
+  --mitto-accent: #ff5c5c;
+  --mitto-accent-hover: #ff7070;
+  --mitto-accent-fg: #fafafa;
+  --mitto-danger: #ef4444;
+  --mitto-danger-hover: #f87171;
+  --mitto-danger-fg: #fafafa;
+  --mitto-surface-hover: #262a35;
 }
 
 /* =============================================================================

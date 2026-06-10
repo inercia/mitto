@@ -52,11 +52,11 @@ export function ConfirmDialog({
     }
   };
 
-  // Button styles based on variant
+  // Button styles based on variant (semantic tokens — theme-aware)
   const confirmButtonClass =
     confirmVariant === "danger"
-      ? "bg-red-600 hover:bg-red-500 focus:ring-red-500"
-      : "bg-blue-600 hover:bg-blue-500 focus:ring-blue-500";
+      ? "bg-mitto-danger hover:bg-mitto-danger-hover focus:ring-mitto-danger text-mitto-danger-fg"
+      : "bg-mitto-accent hover:bg-mitto-accent-hover focus:ring-mitto-accent text-mitto-accent-fg";
 
   return html`
     <div
@@ -71,13 +71,13 @@ export function ConfirmDialog({
       >
         <!-- Header -->
         <div
-          class="flex items-center justify-between p-4 border-b border-slate-700"
+          class="flex items-center justify-between p-4 border-b border-mitto-border"
         >
           <h3 class="text-lg font-semibold">${title}</h3>
           <button
             onClick=${handleCancel}
             disabled=${isLoading}
-            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isLoading
+            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${isLoading
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             data-testid="confirm-dialog-close"
@@ -93,11 +93,11 @@ export function ConfirmDialog({
         </div>
 
         <!-- Footer with buttons -->
-        <div class="flex justify-end gap-3 p-4 border-t border-slate-700">
+        <div class="flex justify-end gap-3 p-4 border-t border-mitto-border">
           <button
             onClick=${handleCancel}
             disabled=${isLoading}
-            class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors ${isLoading
+            class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors ${isLoading
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             data-testid="confirm-dialog-cancel"
@@ -107,7 +107,7 @@ export function ConfirmDialog({
           <button
             onClick=${handleConfirm}
             disabled=${isLoading}
-            class="px-4 py-2 text-sm ${confirmButtonClass} text-white rounded-lg transition-colors flex items-center gap-2 ${isLoading
+            class="px-4 py-2 text-sm ${confirmButtonClass} rounded-lg transition-colors flex items-center gap-2 ${isLoading
               ? "opacity-75"
               : ""}"
             data-testid="confirm-dialog-confirm"

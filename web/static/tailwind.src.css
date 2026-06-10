@@ -5,7 +5,37 @@
 
 @import "tailwindcss";
 @source "../static";
-@config "../../tailwind.config.js";
+
+/* Token-driven theming (Phase 1): the mitto-* color palette is defined here as
+ * @theme variables instead of in tailwind.config.js. v4 auto-generates the
+ * bg-mitto-*, text-mitto-*, border-mitto-* (etc.) utilities from the
+ * --color-mitto-* namespace. Each utility resolves to the runtime --mitto-*
+ * variable, which every theme (v1 light/dark in index.html, v2 in
+ * styles-v2.css) redefines — so theming == swapping variable values.
+ */
+@theme {
+  --color-mitto-bg: var(--mitto-bg);
+  --color-mitto-sidebar: var(--mitto-sidebar);
+  --color-mitto-chat: var(--mitto-chat);
+  --color-mitto-input: var(--mitto-input);
+  --color-mitto-input-box: var(--mitto-input-box);
+  --color-mitto-user: var(--mitto-user);
+  --color-mitto-user-text: var(--mitto-user-text);
+  --color-mitto-user-border: var(--mitto-user-border);
+  --color-mitto-agent: var(--mitto-agent);
+  --color-mitto-border: var(--mitto-border);
+  --color-mitto-text: var(--mitto-text);
+  --color-mitto-text-secondary: var(--mitto-text-secondary);
+  /* Semantic action tokens (Phase 1): accent/danger button variants + hover
+   * surface. Each resolves to a runtime --mitto-* variable redefined per theme. */
+  --color-mitto-accent: var(--mitto-accent);
+  --color-mitto-accent-hover: var(--mitto-accent-hover);
+  --color-mitto-accent-fg: var(--mitto-accent-fg);
+  --color-mitto-danger: var(--mitto-danger);
+  --color-mitto-danger-hover: var(--mitto-danger-hover);
+  --color-mitto-danger-fg: var(--mitto-danger-fg);
+  --color-mitto-surface-hover: var(--mitto-surface-hover);
+}
 
 /* Re-implement v3 darkMode:"class" strategy for v4.
  * v1 theme: :root is dark, .light overrides to light.
