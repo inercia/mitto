@@ -8,6 +8,7 @@ import { getBasename } from "../lib.js";
 import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { Drawer } from "./Drawer.js";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -835,20 +836,26 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           onClick=${handleClose}
         />
       `}
-      <!-- Panel layer scoped to the beads view area (absolute inset-0 within the
-           relative BeadsView root). It is transparent and pointer-events-none so
-           the backdrop's dim shows through on the panel's left and clicks on the
-           empty area fall through to the backdrop; only the panel is interactive
-           (pointer-events-auto). z-60 keeps the panel above the z-50 backdrop.
-           Scoping the panel here means expand fills only the beads view area and
-           the panel never covers the sidebar.
+      <!-- Scoped daisyUI drawer confined to the beads view area (drawer-scoped =
+           absolute inset-0 within the relative BeadsView root; see styles.css).
+           Its drawer-overlay is transparent so the full-window backdrop above
+           dims through on the panel's left and outside clicks close the panel;
+           z-60 keeps the panel above the z-50 backdrop. Scoping means expand
+           fills only the beads view area and the panel never covers the sidebar.
              Phone: panel is always full-width.
              Desktop normal: a doubled fixed width (40rem), capped at 85% of the
                beads view so the dim always shows on the panel's left and the
                panel never exceeds the beads view width.
              Desktop expanded: panel fills the whole beads view area. -->
-      <div class="absolute inset-0 z-60 flex justify-end pointer-events-none">
-        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar shrink-0 shadow-2xl h-full flex flex-col border-l border-mitto-border-1 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
+      <${Drawer}
+        scoped
+        side="end"
+        isClosing=${isClosing}
+        onClose=${handleClose}
+        zClass="z-60"
+        widthClass=${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"}
+        panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
+      >
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
@@ -1357,8 +1364,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           </div>
         </div>
       `}
-        </div>
-      </div>
+      <//>
     </${Fragment}>
   `;
 }

@@ -1363,6 +1363,30 @@ a.mailto-link:hover {
   animation: propertiesBackdropFadeOut 0.15s ease-in forwards;
 }
 
+/* Scoped (non-viewport) daisyUI drawer variant.
+   daisyUI's .drawer-side is position:fixed/height:100dvh so it always fills the
+   whole window. .drawer-scoped confines the drawer to its nearest positioned
+   ancestor instead (e.g. the relative BeadsView root) so the panel — and its
+   fullscreen/expand mode — covers only that area and never the conversations
+   sidebar. The caller supplies its own full-window dimming backdrop, so this
+   variant's own drawer-overlay is transparent and just catches outside clicks;
+   the caller's backdrop dims through it on the panel's left.
+   These rules are unlayered, so they win over daisyUI's layered defaults. */
+.drawer-scoped {
+  position: absolute;
+  inset: 0;
+}
+
+.drawer-scoped .drawer-side {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+
+.drawer-scoped .drawer-side > .drawer-overlay {
+  background-color: transparent;
+}
+
 /* Queue dropdown list scrollbar */
 .queue-dropdown-list::-webkit-scrollbar {
   width: 6px;

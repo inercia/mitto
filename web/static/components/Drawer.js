@@ -21,6 +21,12 @@
 //   panelClass    {string}   remaining panel classes (surface, border, layout)
 //   zClass        {string}   z-index utility for `.drawer-side` (default "z-50";
 //                            overrides daisyUI's sublayered z-10)
+//   scoped        {boolean}  confine the drawer to its nearest positioned
+//                            ancestor instead of the viewport (adds
+//                            `drawer-scoped`; see styles.css). The caller must
+//                            supply its own full-window backdrop — this variant's
+//                            drawer-overlay is transparent. Used by BeadsView so
+//                            the panel/fullscreen fills only the beads view area.
 //   className     {string}   extra classes for the `.drawer` root (e.g. md:hidden)
 //   children      {any}      panel content
 //   testid        {string}   data-testid applied to the panel element
@@ -36,6 +42,7 @@ export function Drawer({
   widthClass = "w-80",
   panelClass = "bg-mitto-sidebar border-l border-mitto-border-1",
   zClass = "z-50",
+  scoped = false,
   className = "",
   children,
   testid,
@@ -52,7 +59,7 @@ export function Drawer({
   const closing = isClosing ? "closing" : "";
 
   return html`
-    <div class="drawer ${side === "end" ? "drawer-end" : ""} ${className}">
+    <div class="drawer ${side === "end" ? "drawer-end" : ""} ${scoped ? "drawer-scoped" : ""} ${className}">
       <!-- Kept permanently checked: visibility is Preact-controlled (mount /
            unmount), the checkbox only makes daisyUI resolve the open state. -->
       <input
@@ -64,9 +71,12 @@ export function Drawer({
       />
       <div class="drawer-side ${zClass}">
         <!-- Backdrop: daisyUI provides the scrim color; properties-backdrop
-             adds the fade in/out timing (end panels only). Click to close. -->
+             adds the fade in/out timing (end panels only). Click to close.
+             Scoped drawers are transparent and rely on the caller's own
+             full-window backdrop, so they skip properties-backdrop to avoid a
+             duplicate dimming layer. -->
         <div
-          class="drawer-overlay ${animate ? "properties-backdrop" : ""} ${closing}"
+          class="drawer-overlay ${animate && !scoped ? "properties-backdrop" : ""} ${closing}"
           onClick=${onClose}
           data-testid=${overlayTestid}
         ></div>
