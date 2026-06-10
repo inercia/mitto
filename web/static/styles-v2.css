@@ -504,24 +504,13 @@ a:hover {
    Light theme overrides (default for v2-theme)
    ============================================================================= */
 
-/* Light theme: Background colors - slate palette */
-.v2-theme:not(.dark) .bg-slate-900 {
-  background: #fafafa !important;
-}
-.v2-theme:not(.dark) .bg-slate-800 {
-  background: #f5f5f5 !important;
-}
+/* Light theme: slate bg — bare classes migrated to bg-mitto-surface-*; only the
+   opacity variants remain (no mitto opacity equivalent yet) */
 .v2-theme:not(.dark) .bg-slate-800\/50 {
   background: rgba(245, 245, 245, 0.8) !important;
 }
-.v2-theme:not(.dark) .bg-slate-700 {
-  background: #ffffff !important;
-}
 .v2-theme:not(.dark) .bg-slate-700\/50 {
   background: rgba(240, 240, 240, 0.5) !important;
-}
-.v2-theme:not(.dark) .bg-slate-600 {
-  background: #f0f0f0 !important;
 }
 
 /* Light theme: Mitto custom background classes */
@@ -576,17 +565,6 @@ a:hover {
   color: #a1a1aa !important;
 }
 
-/* Light theme: Border colors */
-.v2-theme:not(.dark) .border-slate-700 {
-  border-color: #e4e4e7 !important;
-}
-.v2-theme:not(.dark) .border-slate-600 {
-  border-color: #d4d4d8 !important;
-}
-.v2-theme:not(.dark) .border-slate-500 {
-  border-color: #a1a1aa !important;
-}
-
 /* Light theme: Hover states - backgrounds */
 .v2-theme:not(.dark) .hover\:bg-slate-700:hover {
   background: #f0f0f0 !important;
@@ -616,24 +594,13 @@ a:hover {
    Applied when .v2-theme.dark is present
    ============================================================================= */
 
-/* Dark theme: Background colors - use original dark slate colors */
-.v2-theme.dark .bg-slate-900 {
-  background: #0f172a !important;
-}
-.v2-theme.dark .bg-slate-800 {
-  background: #1e293b !important;
-}
+/* Dark theme: slate bg — bare classes migrated to bg-mitto-surface-*; only the
+   opacity variants remain (no mitto opacity equivalent yet) */
 .v2-theme.dark .bg-slate-800\/50 {
   background: rgba(30, 41, 59, 0.5) !important;
 }
-.v2-theme.dark .bg-slate-700 {
-  background: #334155 !important;
-}
 .v2-theme.dark .bg-slate-700\/50 {
   background: rgba(51, 65, 85, 0.5) !important;
-}
-.v2-theme.dark .bg-slate-600 {
-  background: #475569 !important;
 }
 
 /* Dark theme: Mitto custom background classes */
@@ -701,17 +668,6 @@ a:hover {
 }
 .v2-theme.dark input::placeholder {
   color: #9ca3af !important;
-}
-
-/* Dark theme: Border colors - restore original dark borders */
-.v2-theme.dark .border-slate-700 {
-  border-color: #334155 !important;
-}
-.v2-theme.dark .border-slate-600 {
-  border-color: #475569 !important;
-}
-.v2-theme.dark .border-slate-500 {
-  border-color: #64748b !important;
 }
 
 /* Dark theme: Hover states - backgrounds */
