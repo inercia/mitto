@@ -818,7 +818,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  const inputClass = "w-full px-3 py-2 bg-mitto-input-box border border-mitto-border rounded text-sm text-mitto-text focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 placeholder-mitto-text-secondary";
+  const inputClass = "input input-sm w-full";
+  const selectClass = "select select-sm w-full";
+  const textareaClass = "textarea textarea-sm w-full";
   const labelClass = "block text-xs font-medium text-mitto-text-secondary mb-1";
 
   return html`
@@ -913,7 +915,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <div class="flex-1">
                 <label class=${labelClass}>Type</label>
                 <select
-                  class=${inputClass}
+                  class=${selectClass}
                   value=${type}
                   onInput=${e => setType(e.target.value)}
                   disabled=${submitting}
@@ -924,7 +926,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <div class="flex-1">
                 <label class=${labelClass}>Priority</label>
                 <select
-                  class=${inputClass}
+                  class=${selectClass}
                   value=${priority}
                   onInput=${e => setPriority(Number(e.target.value))}
                   disabled=${submitting}
@@ -939,7 +941,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             <div>
               <label class=${labelClass}>Description</label>
               <textarea
-                class="${inputClass} resize-none"
+                class="${textareaClass} resize-none"
                 rows="6"
                 placeholder="Optional description…"
                 value=${description}
@@ -1028,7 +1030,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 ? html`
                   <textarea
                     ref=${descRef}
-                    class="${inputClass} resize-y"
+                    class="${textareaClass} resize-y"
                     rows="6"
                     style=${descMinHeight ? `min-height:${descMinHeight}px` : null}
                     placeholder="Add a description…"
@@ -1101,7 +1103,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     ${deps.map(d => html`
                       <div key=${d.id} class="flex items-center gap-1.5">
                         <select
-                          class="bg-mitto-input-box border border-mitto-border rounded px-1.5 py-1 text-xs text-mitto-text"
+                          class="select select-xs"
                           value=${d.dependency_type || "blocks"}
                           disabled=${depsBusy}
                           onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
@@ -1128,7 +1130,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
                     <div class="flex items-center gap-1.5 pt-1">
                       <select
-                        class="bg-mitto-input-box border border-mitto-border rounded px-1.5 py-1 text-xs text-mitto-text"
+                        class="select select-xs"
                         value=${newDepType}
                         disabled=${depsBusy}
                         onInput=${e => setNewDepType(e.target.value)}
@@ -1143,7 +1145,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         disabled=${depsBusy}
                         onInput=${e => setNewDepId(e.target.value)}
                         onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
-                        class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text flex-1 min-w-0 placeholder-mitto-text-secondary"
+                        class="input input-xs flex-1 min-w-0"
                       />
                       <button
                         type="button"
@@ -1190,7 +1192,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       ? html`
                         <textarea
                           ref=${commentRef}
-                          class="${inputClass} resize-y mt-2"
+                          class="${textareaClass} resize-y mt-2"
                           rows="3"
                           placeholder="Add a comment…"
                           value=${commentDraft}
@@ -1230,7 +1232,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   ? html`
                     <textarea
                       ref=${notesRef}
-                      class="${inputClass} resize-y"
+                      class="${textareaClass} resize-y"
                       rows="4"
                       style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
                       placeholder="Add notes…"
