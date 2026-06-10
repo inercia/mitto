@@ -877,14 +877,14 @@ export function SessionPanel({
         <!-- Status Badges -->
         <div class="flex items-center gap-2 flex-wrap">
           ${isStreaming
-            ? html`<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-mitto-accent-500/20 text-mitto-accent text-xs"><span class="w-2 h-2 bg-mitto-accent-400 rounded-full streaming-indicator"></span>Streaming</span>`
+            ? html`<span class="badge badge-sm gap-1.5 bg-mitto-accent-500/20 text-mitto-accent"><span class="w-2 h-2 bg-mitto-accent-400 rounded-full streaming-indicator"></span>Streaming</span>`
             : sessionInfo?.archived
-              ? html`<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-mitto-surface-3 text-slate-400 text-xs"><span class="w-2 h-2 bg-slate-500 rounded-full"></span>Archived</span>`
+              ? html`<span class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-slate-400"><span class="w-2 h-2 bg-slate-500 rounded-full"></span>Archived</span>`
               : sessionInfo?.status === "active"
-                ? html`<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-green-500/20 text-mitto-success text-xs"><span class="w-2 h-2 bg-green-400 rounded-full"></span>Active</span>`
-                : html`<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-mitto-surface-3 text-slate-400 text-xs">Stored</span>`}
-          ${sessionInfo?.acp_server && html`<span class="inline-flex items-center px-2 py-1 rounded bg-mitto-accent-500/20 text-mitto-accent text-xs" title="ACP Server">${sessionInfo.acp_server}</span>`}
-          ${sessionInfo?.runner_type && html`<span class="inline-flex items-center px-2 py-1 rounded ${sessionInfo.runner_restricted ? "bg-yellow-500/20 text-mitto-warning" : "bg-purple-500/20 text-purple-400"} text-xs" title="${sessionInfo.runner_restricted ? "Restricted execution mode" : "Sandbox type"}">${sessionInfo.runner_type}</span>`}
+                ? html`<span class="badge badge-sm gap-1.5 bg-green-500/20 text-mitto-success"><span class="w-2 h-2 bg-green-400 rounded-full"></span>Active</span>`
+                : html`<span class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-slate-400">Stored</span>`}
+          ${sessionInfo?.acp_server && html`<span class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent" title="ACP Server">${sessionInfo.acp_server}</span>`}
+          ${sessionInfo?.runner_type && html`<span class="badge badge-sm ${sessionInfo.runner_restricted ? "bg-yellow-500/20 text-mitto-warning" : "bg-purple-500/20 text-purple-400"}" title="${sessionInfo.runner_restricted ? "Restricted execution mode" : "Sandbox type"}">${sessionInfo.runner_type}</span>`}
         </div>
 
         <!-- Statistics Section -->
