@@ -131,7 +131,7 @@ export function PeriodicPromptSelector({
         onClick=${() => handleSelect(prompt)}
         title=${prompt.description || prompt.name}
         class="w-full text-left px-4 py-2.5 text-sm transition-all flex items-center gap-2 ${isSelected
-          ? "bg-blue-600/20 text-white"
+          ? "bg-mitto-accent-600/20 text-white"
           : "text-mitto-text hover:bg-slate-600/50"}"
       >
         <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -164,10 +164,10 @@ export function PeriodicPromptSelector({
           type="button"
           onClick=${handleToggle}
           disabled=${disabled}
-          class="flex-1 h-8 px-3 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors ${
+          class="flex-1 h-8 px-3 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors ${
             disabled
               ? "opacity-50 cursor-not-allowed"
-              : "cursor-pointer hover:border-blue-500/50"
+              : "cursor-pointer hover:border-mitto-accent-500/50"
           }"
           data-testid="periodic-prompt-selector-button"
         >
@@ -220,7 +220,7 @@ export function PeriodicPromptSelector({
               value=${filterText}
               onInput=${(e) => setFilterText(e.target.value)}
               placeholder="Search prompts..."
-              class="w-full h-8 px-3 bg-mitto-surface-1 border border-mitto-border-2 rounded text-sm text-mitto-text-strong placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              class="w-full h-8 px-3 bg-mitto-surface-1 border border-mitto-border-2 rounded text-sm text-mitto-text-strong placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
               data-testid="periodic-prompt-selector-search"
             />
           </div>

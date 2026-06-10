@@ -5,6 +5,12 @@
 
 @import "tailwindcss";
 @source "../static";
+/* Exclude non-app directories from Tailwind v4's repo-wide auto content
+ * detection. Without these, v4 scans the whole project root and pulls stray
+ * utility classes from tooling/docs (e.g. .augment/skills daisyui examples,
+ * .agents) into the build. App classes live only under web/static. */
+@source not "../../.augment";
+@source not "../../.agents";
 
 /* Token-driven theming (Phase 1): the mitto-* color palette is defined here as
  * @theme variables instead of in tailwind.config.js. v4 auto-generates the
@@ -31,6 +37,13 @@
   --color-mitto-accent: var(--mitto-accent);
   --color-mitto-accent-hover: var(--mitto-accent-hover);
   --color-mitto-accent-fg: var(--mitto-accent-fg);
+  --color-mitto-accent-100: var(--mitto-accent-100);
+  --color-mitto-accent-300: var(--mitto-accent-300);
+  --color-mitto-accent-400: var(--mitto-accent-400);
+  --color-mitto-accent-500: var(--mitto-accent-500);
+  --color-mitto-accent-600: var(--mitto-accent-600);
+  --color-mitto-accent-700: var(--mitto-accent-700);
+  --color-mitto-accent-900: var(--mitto-accent-900);
   --color-mitto-danger: var(--mitto-danger);
   --color-mitto-danger-hover: var(--mitto-danger-hover);
   --color-mitto-danger-fg: var(--mitto-danger-fg);

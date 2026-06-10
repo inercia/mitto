@@ -134,13 +134,13 @@ export function SlashCommandPicker({
               data-index=${index}
               class="slash-picker-item flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${index ===
               selectedIndex
-                ? "bg-blue-600/40"
+                ? "bg-mitto-accent-600/40"
                 : "hover:bg-slate-600/50"}"
               onClick=${() => handleSelect(cmd)}
               onMouseEnter=${() => handleMouseEnter(index)}
             >
               <span
-                class="slash-command-name font-mono text-sm text-blue-300 shrink-0"
+                class="slash-command-name font-mono text-sm text-mitto-accent-300 shrink-0"
               >
                 /${cmd.name}
               </span>

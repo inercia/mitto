@@ -1770,7 +1770,7 @@ function App() {
         />
         <!-- Resize handle on right edge -->
         <div
-          class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-blue-500/40' : ''}"
+          class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-mitto-accent-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-mitto-accent-500/40' : ''}"
           style="margin-right: -2px;"
           ...${sidebarHandleProps}
           title="Drag to resize sidebar"
@@ -1862,7 +1862,7 @@ function App() {
           <h1
             class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
               ? "text-mitto-text-muted"
-              : "cursor-pointer hover:text-blue-400 transition-colors"}"
+              : "cursor-pointer hover:text-mitto-accent-400 transition-colors"}"
             onClick=${activeSessionId ? handleToggleSidePanel : undefined}
             title=${activeSessionId ? "Click to view properties" : ""}
           >
@@ -1873,7 +1873,7 @@ function App() {
           <div class="ml-auto flex items-center gap-2">
             <!-- Status indicator dot (matches session list style) -->
             <span
-              class="w-2 h-2 rounded-full shrink-0 ${isStreaming ? "bg-blue-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
+              class="w-2 h-2 rounded-full shrink-0 ${isStreaming ? "bg-mitto-accent-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
               title=${isStreaming ? "Streaming" : connected ? "Connected" : "Not connected"}
             ></span>
             <!-- Unified side panel toggle -->

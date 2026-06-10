@@ -21,7 +21,7 @@ function getStatusDisplay(status) {
     case "completed":
       return { icon: "✓", colorClass: "text-mitto-success" };
     case "in_progress":
-      return { icon: "●", colorClass: "text-blue-400 animate-pulse" };
+      return { icon: "●", colorClass: "text-mitto-accent-400 animate-pulse" };
     case "pending":
     default:
       return { icon: "○", colorClass: "text-mitto-text-muted" };
@@ -278,12 +278,12 @@ export function AgentPlanIndicator({
       type="button"
       onClick=${onClick}
       class="agent-plan-indicator flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-700/80 hover:bg-slate-600/80 transition-colors text-xs ${hasNewUpdate
-        ? "ring-2 ring-blue-400/50"
+        ? "ring-2 ring-mitto-accent-400/50"
         : ""}"
       title="View agent plan"
     >
       ${inProgressCount > 0
-        ? html`<span class="text-blue-400 animate-pulse">●</span>`
+        ? html`<span class="text-mitto-accent-400 animate-pulse">●</span>`
         : html`<span class="text-mitto-text-muted">○</span>`}
       <span class="text-mitto-text-secondary">${completedCount}/${totalCount}</span>
       <${ChevronDownIcon} className="w-3 h-3 text-mitto-text-muted" />

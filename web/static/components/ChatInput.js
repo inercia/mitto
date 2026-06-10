@@ -1854,7 +1854,7 @@ export function ChatInput({
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
       class="px-4 pt-0 pb-3 bg-mitto-input border-t border-mitto-border-1 shrink-0 relative ${isDragOver
-        ? "ring-2 ring-blue-500 ring-inset"
+        ? "ring-2 ring-mitto-accent-500 ring-inset"
         : ""}"
     >
       <!-- Resize handle for ChatInput height -->
@@ -1948,7 +1948,7 @@ export function ChatInput({
                 ? html`
                     <!-- Textbox editor for mitto_ui_textbox -->
                     <div
-                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                      class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                       style="max-height: ${uiPromptHeight}px;"
                     >
                       <!-- Resize handle at top edge -->
@@ -1974,7 +1974,7 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea block w-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border"
+                          class="ui-textbox-textarea block w-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 border"
                           style="min-height: 120px;"
                           maxlength=${16384}
                           onInput=${(e) => {
@@ -2022,7 +2022,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 "Submit",
                                 textboxValue,
                               )}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg transition-colors"
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg transition-colors"
                           >
                             Submit
                           </button>
@@ -2034,7 +2034,7 @@ ${activeUIPrompt.text || ""}</textarea
                   ? html`
                       <!-- HTML Form for mitto_ui_form -->
                       <div
-                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                        class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                         style="max-height: ${uiPromptHeight}px;"
                       >
                         <!-- Resize handle at top edge -->
@@ -2119,7 +2119,7 @@ ${activeUIPrompt.text || ""}</textarea
                                   JSON.stringify(values),
                                 );
                               }}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg transition-colors"
+                              class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg transition-colors"
                             >
                               Submit
                             </button>
@@ -2130,7 +2130,7 @@ ${activeUIPrompt.text || ""}</textarea
                   : html`
                       <!-- Unified Claude Code-style menu for yes_no, options_buttons, select -->
                       <div
-                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                        class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                         style="max-height: ${uiPromptHeight}px;"
                       >
                         <!-- Resize handle at top edge -->
@@ -2524,7 +2524,7 @@ ${activeUIPrompt.text || ""}</textarea
                       d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                     ></path>
                   </svg>
-                  <span class="text-sm text-blue-300 mt-2">Improving prompt...</span>
+                  <span class="text-sm text-mitto-accent-300 mt-2">Improving prompt...</span>
                 </div>
               `}
             </div>
@@ -2591,7 +2591,7 @@ ${activeUIPrompt.text || ""}</textarea
                         </svg>
                         <span class="text-sm text-mitto-text-secondary max-w-[150px] truncate" title=${file.name}>${file.name}</span>
                         ${file.category && html`
-                          <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-blue-900 text-blue-300"}">${file.category}</span>
+                          <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-mitto-accent-900 text-mitto-accent-300"}">${file.category}</span>
                         `}
                         ${file.uploading
                           ? html`
@@ -2877,7 +2877,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 return {
                                   label: "S",
                                   title: "Settings prompt",
-                                  bgColor: "bg-blue-600/80",
+                                  bgColor: "bg-mitto-accent-600/80",
                                 };
                               }
                             };

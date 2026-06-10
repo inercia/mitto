@@ -137,6 +137,17 @@
   --mitto-accent: #dc2626;
   --mitto-accent-hover: #ef4444;
   --mitto-accent-fg: #ffffff;
+  /* Accent ladder (Phase 2a-1+): v2-light red scale. Values preserve every
+   * current blue->red override exactly: 400/500/600 = primary (#dc2626),
+   * 300 = brighter hover (#ef4444), 700 = darker (#b91c1c). 100/900 are
+   * endpoints for completeness. */
+  --mitto-accent-100: #fee2e2;
+  --mitto-accent-300: #ef4444;
+  --mitto-accent-400: #dc2626;
+  --mitto-accent-500: #dc2626;
+  --mitto-accent-600: #dc2626;
+  --mitto-accent-700: #b91c1c;
+  --mitto-accent-900: #7f1d1d;
   --mitto-danger: #dc2626;
   --mitto-danger-hover: #b91c1c;
   --mitto-danger-fg: #ffffff;
@@ -173,6 +184,17 @@
   --mitto-accent: #ff5c5c;
   --mitto-accent-hover: #ff7070;
   --mitto-accent-fg: #fafafa;
+  /* Accent ladder (Phase 2a-1+): v2-dark coral scale. Values preserve every
+   * current blue->coral override exactly: 400/500/600 = primary (#ff5c5c),
+   * 300 = brighter hover (#ff7070), 700 = darker (#ef4444). 100/900 are
+   * endpoints for completeness. */
+  --mitto-accent-100: #ffe5e5;
+  --mitto-accent-300: #ff7070;
+  --mitto-accent-400: #ff5c5c;
+  --mitto-accent-500: #ff5c5c;
+  --mitto-accent-600: #ff5c5c;
+  --mitto-accent-700: #ef4444;
+  --mitto-accent-900: #991b1b;
   --mitto-danger: #ef4444;
   --mitto-danger-hover: #f87171;
   --mitto-danger-fg: #fafafa;
@@ -567,7 +589,7 @@ a:hover {
 }
 
 /* Light theme: Focus states */
-.v2-theme:not(.dark) .focus\:ring-blue-500:focus {
+.v2-theme:not(.dark) .focus\:ring-mitto-accent-500:focus {
   --tw-ring-color: #dc2626 !important;
   box-shadow:
     0 0 0 2px #fafafa,
@@ -656,7 +678,7 @@ a:hover {
 }
 
 /* Dark theme: Focus states */
-.v2-theme.dark .focus\:ring-blue-500:focus {
+.v2-theme.dark .focus\:ring-mitto-accent-500:focus {
   --tw-ring-color: #ff5c5c !important;
   box-shadow:
     0 0 0 2px #12141a,
@@ -808,7 +830,8 @@ a:hover {
 .v2-theme button.bg-blue-500,
 .v2-theme button.bg-blue-600,
 .v2-theme button[class*="bg-red-"],
-.v2-theme button[class*="bg-blue-"] {
+.v2-theme button[class*="bg-blue-"],
+.v2-theme button[class*="bg-mitto-accent"] {
   color: #ffffff !important;
 }
 .v2-theme button.bg-red-500:hover,
@@ -817,7 +840,8 @@ a:hover {
 .v2-theme button.bg-blue-500:hover,
 .v2-theme button.bg-blue-600:hover,
 .v2-theme button[class*="hover:bg-red"]:hover,
-.v2-theme button[class*="hover:bg-blue"]:hover {
+.v2-theme button[class*="hover:bg-blue"]:hover,
+.v2-theme button[class*="hover:bg-mitto-accent"]:hover {
   color: #ffffff !important;
 }
 /* Also ensure .text-white inside red/blue buttons stays white */
@@ -828,15 +852,18 @@ a:hover {
 .v2-theme button.bg-blue-600 .text-white,
 .v2-theme button[class*="bg-red-"] .text-white,
 .v2-theme button[class*="bg-blue-"] .text-white,
+.v2-theme button[class*="bg-mitto-accent"] .text-white,
 .v2-theme button[class*="bg-red-"].text-white,
-.v2-theme button[class*="bg-blue-"].text-white {
+.v2-theme button[class*="bg-blue-"].text-white,
+.v2-theme button[class*="bg-mitto-accent"].text-white {
   color: #ffffff !important;
 }
 /* Ensure white text on red/blue badge spans (e.g., queue badge) */
 .v2-theme span.bg-red-500.text-white,
 .v2-theme span.bg-blue-500.text-white,
 .v2-theme span[class*="bg-red-"].text-white,
-.v2-theme span[class*="bg-blue-"].text-white {
+.v2-theme span[class*="bg-blue-"].text-white,
+.v2-theme span[class*="bg-mitto-accent"].text-white {
   color: #ffffff !important;
 }
 

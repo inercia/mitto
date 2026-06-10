@@ -274,7 +274,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               onKeyDown=${handleKeyDown}
               placeholder="My Prompt"
               disabled=${isSaving}
-              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
               data-testid="save-prompt-name-input"
             />
           </div>
@@ -292,7 +292,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               placeholder="A brief description of what this prompt does..."
               disabled=${isSaving}
               rows="2"
-              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 resize-none"
+              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 resize-none"
               data-testid="save-prompt-description-input"
             />
           </div>
@@ -310,7 +310,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="my-prompt.md"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
                 data-testid="save-prompt-filename-input"
               />
             </div>
@@ -329,7 +329,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="/path/to/save/directory"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 font-mono text-xs"
+                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 font-mono text-xs"
                 data-testid="save-prompt-directory-input"
               />
               ${hasNativeFolderPicker() &&
@@ -383,7 +383,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
           <button
             onClick=${handleSave}
             disabled=${!canSave}
-            class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg rounded-lg transition-colors flex items-center gap-2 ${!canSave
+            class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg rounded-lg transition-colors flex items-center gap-2 ${!canSave
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             data-testid="save-prompt-save-btn"

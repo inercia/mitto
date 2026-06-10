@@ -862,7 +862,7 @@ export function SessionList({
               hasStreamingSession &&
               html`
                 <span
-                  class="w-2 h-2 bg-blue-400 rounded-full shrink-0 streaming-indicator"
+                  class="w-2 h-2 bg-mitto-accent-400 rounded-full shrink-0 streaming-indicator"
                   title="Agent responding in this group"
                 ></span>
               `}
@@ -1055,7 +1055,7 @@ export function SessionList({
               hasFolderStreaming &&
               html`
                 <span
-                  class="w-2 h-2 bg-blue-400 rounded-full shrink-0 streaming-indicator"
+                  class="w-2 h-2 bg-mitto-accent-400 rounded-full shrink-0 streaming-indicator"
                   title="Agent responding in this folder"
                 ></span>
               `}

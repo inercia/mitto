@@ -368,7 +368,7 @@ export function PeriodicFrequencyPanel({
           type="checkbox"
           checked=${resetTimer}
           onInput=${(e) => setResetTimer(e.target.checked)}
-          class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-blue-500 cursor-pointer"
+          class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer"
           data-testid="reset-timer-checkbox"
         />
         Reset countdown for next scheduled run
@@ -412,7 +412,7 @@ export function PeriodicFrequencyPanel({
                 ${isTriggering
                   ? html`
                       <svg
-                        class="w-4 h-4 animate-spin text-mitto-accent dark:text-blue-400"
+                        class="w-4 h-4 animate-spin text-mitto-accent dark:text-mitto-accent-400"
                         fill="none"
                         viewBox="0 0 24 24"
                       >
@@ -432,12 +432,12 @@ export function PeriodicFrequencyPanel({
                       </svg>
                     `
                   : html`<${PlayFilledIcon}
-                      className="w-4 h-4 text-mitto-accent dark:text-blue-400"
+                      className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400"
                     />`}
               </button>
             `
           : html`<${PeriodicFilledIcon}
-              className="w-4 h-4 text-mitto-accent dark:text-blue-400 shrink-0"
+              className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400 shrink-0"
             />`}
 
         <!-- Run every label -->
@@ -454,7 +454,7 @@ export function PeriodicFrequencyPanel({
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
           disabled=${isSaving}
-          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
+          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
             ? "opacity-50 cursor-not-allowed"
             : ""}"
         />
@@ -464,7 +464,7 @@ export function PeriodicFrequencyPanel({
           value=${localUnit}
           onChange=${handleUnitChange}
           disabled=${isSaving}
-          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
+          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
             ? "opacity-50 cursor-not-allowed"
             : "cursor-pointer"}"
         >
@@ -485,7 +485,7 @@ export function PeriodicFrequencyPanel({
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
             disabled=${isSaving}
-            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
+            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             placeholder="HH:MM"
@@ -537,7 +537,7 @@ export function PeriodicFrequencyPanel({
             id="fresh-context-checkbox-${sessionId}"
             checked=${freshContext}
             onInput=${handleFreshContextChange}
-            class="w-4 h-4 rounded border-slate-400 text-mitto-accent focus:ring-blue-500 cursor-pointer shrink-0"
+            class="w-4 h-4 rounded border-slate-400 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
             data-testid="fresh-context-checkbox"
           />
           <label

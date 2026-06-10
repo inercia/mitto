@@ -83,7 +83,7 @@ export function FolderListEditor({
         <select
           value=${mode}
           onChange=${(e) => onModeChange(e.target.value)}
-          class="px-2 py-0.5 bg-mitto-surface-3 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="px-2 py-0.5 bg-mitto-surface-3 rounded text-xs focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
         >
           <option value="append">Append</option>
           <option value="replace">Replace</option>
@@ -125,7 +125,7 @@ export function FolderListEditor({
                 value=${f}
                 onInput=${(e) => updateFolder(idx, e.target.value)}
                 placeholder=${placeholder || "$MITTO_WORKING_DIR"}
-                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
               />
               <button
                 type="button"
@@ -141,7 +141,7 @@ export function FolderListEditor({
         <button
           type="button"
           onClick=${addFolder}
-          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
         >
           <${PlusIcon} className="w-3 h-3" />
           Add folder
@@ -226,7 +226,7 @@ export function AutoChildrenEditor({
                       value=${child.title || ""}
                       placeholder="Child title"
                       onInput=${(e) => updateChild(idx, "title", e.target.value)}
-                      class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                       style="height: 38px; box-sizing: border-box"
                     />
                     <select
@@ -237,7 +237,7 @@ export function AutoChildrenEditor({
                           "target_workspace_uuid",
                           e.target.value,
                         )}
-                      class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                       style="height: 38px; box-sizing: border-box"
                     >
                       ${targetOptions.map(
@@ -365,7 +365,7 @@ export function RunnerRestrictionsEditor({
         ${hasConfig &&
         html`
           <span
-            class="px-2 py-0.5 bg-blue-500/20 text-mitto-accent rounded text-xs"
+            class="px-2 py-0.5 bg-mitto-accent-500/20 text-mitto-accent rounded text-xs"
           >
             Configured
           </span>
@@ -390,7 +390,7 @@ export function RunnerRestrictionsEditor({
                 id="override-networking"
                 checked=${overrideNetworking}
                 onChange=${(e) => handleNetworkingOverride(e.target.checked)}
-                class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
               />
               <label for="override-networking" class="text-sm font-medium"
                 >Override networking</label
@@ -408,7 +408,7 @@ export function RunnerRestrictionsEditor({
                           "allow_networking",
                           e.target.checked,
                         )}
-                      class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                      class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                     />
                     <span class="text-sm">Allow networking</span>
                   </label>
@@ -462,7 +462,7 @@ export function RunnerRestrictionsEditor({
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.image || ""}
                     onInput=${(e) => updateDocker("image", e.target.value)}
-                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                     placeholder="alpine:latest"
                   />
                 </div>
@@ -474,7 +474,7 @@ export function RunnerRestrictionsEditor({
                     ""}
                     onInput=${(e) =>
                       updateDocker("memory_limit", e.target.value)}
-                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                     placeholder="4g"
                   />
                 </div>
@@ -484,7 +484,7 @@ export function RunnerRestrictionsEditor({
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.cpu_limit || ""}
                     onInput=${(e) => updateDocker("cpu_limit", e.target.value)}
-                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                     placeholder="2.0"
                   />
                 </div>
@@ -608,7 +608,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           type="text"
           value=${name}
           onInput=${(e) => { setName(e.target.value); emitChange({ name: e.target.value }); }}
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
         />
       </div>
       <div>
@@ -617,7 +617,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           type="text"
           value=${command}
           onInput=${(e) => { setCommand(e.target.value); emitChange({ command: e.target.value }); }}
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
         />
       </div>
       <!-- Model Selection -->
@@ -644,7 +644,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         <select
           value=${type}
           onChange=${(e) => { setType(e.target.value); emitChange({ type: e.target.value }); }}
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
         >
           <option value="">-- Select agent type --</option>
           ${agentTypes.map(
@@ -667,7 +667,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           value=${tags}
           onInput=${(e) => { setTags(e.target.value); emitChange({ tags: e.target.value }); }}
           placeholder="e.g., coding, fast-model, production"
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
         />
         <p class="text-xs text-mitto-text-muted mt-1">
           Comma-separated tags for categorization
@@ -682,7 +682,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           type="checkbox"
           checked=${autoApprove}
           onChange=${(e) => { setAutoApprove(e.target.checked); emitChange({ autoApprove: e.target.checked }); }}
-          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
         />
         <div class="flex-1">
           <div class="font-medium text-sm">Auto-approve Permissions</div>
@@ -725,7 +725,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                         value=${env.key}
                         placeholder="NAME"
                         onInput=${(e) => updateEnvVar(idx, "key", e.target.value)}
-                        class="flex-1 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                        class="flex-1 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 font-mono"
                       />
                       <span class="text-mitto-text-muted">=</span>
                       <input
@@ -734,7 +734,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                         placeholder="value"
                         onInput=${(e) =>
                           updateEnvVar(idx, "value", e.target.value)}
-                        class="flex-2 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        class="flex-2 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
                       />
                       <button
                         type="button"
@@ -813,7 +813,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           value=${name}
           onInput=${(e) => setName(e.target.value)}
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
@@ -825,7 +825,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           onInput=${(e) => setText(e.target.value)}
           rows="8"
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y ${readOnly
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 resize-y ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
@@ -840,7 +840,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           onInput=${(e) => setGroup(e.target.value)}
           placeholder="e.g., Tasks, Code Quality"
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
@@ -866,7 +866,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             onInput=${(e) => setBackgroundColor(e.target.value)}
             placeholder="#E8F5E9"
             disabled=${readOnly}
-            class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono ${readOnly
+            class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono ${readOnly
               ? "opacity-60 cursor-not-allowed"
               : ""}"
           />
@@ -908,7 +908,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           <button
             onClick=${() => onSave(name, text, backgroundColor, group)}
             disabled=${!name.trim() || !text.trim()}
-            class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50"
+            class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50"
           >
             Save
           </button>
@@ -2061,7 +2061,7 @@ export function SettingsDialog({
                   onClick=${() => setActiveTab(item.id)}
                   class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${activeTab ===
                   item.id
-                    ? "text-mitto-accent bg-blue-500/10 border-l-2 border-mitto-accent"
+                    ? "text-mitto-accent bg-mitto-accent-500/10 border-l-2 border-mitto-accent"
                     : "text-mitto-text-muted hover:text-white hover:bg-slate-700/50 border-l-2 border-transparent"}"
                 >
                   <${item.icon} className="w-4 h-4 shrink-0" />
@@ -2095,7 +2095,7 @@ export function SettingsDialog({
                                 "https://agentclientprotocol.com/overview/agents",
                               );
                             }}
-                            class="text-mitto-accent hover:text-blue-300 underline cursor-pointer"
+                            class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
                             >Popular examples</a
                           >${" "} include Auggie and Claude Code. You can
                           configure multiple servers and choose which one to use
@@ -2133,7 +2133,7 @@ export function SettingsDialog({
                               value=${newServerName}
                               onInput=${(e) => setNewServerName(e.target.value)}
                               placeholder="e.g., claude-code"
-                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                             />
                           </div>
                           <div>
@@ -2146,7 +2146,7 @@ export function SettingsDialog({
                               onInput=${(e) =>
                                 setNewServerCommand(e.target.value)}
                               placeholder="e.g., npx -y @anthropic/claude-code-acp"
-                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                             />
                           </div>
                           <div>
@@ -2158,7 +2158,7 @@ export function SettingsDialog({
                               value=${newServerType}
                               onChange=${(e) =>
                                 setNewServerType(e.target.value)}
-                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 ${!newServerType ? "ring-2 ring-amber-500/50" : "focus:ring-blue-500"}"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 ${!newServerType ? "ring-2 ring-amber-500/50" : "focus:ring-mitto-accent-500"}"
                             >
                               <option value="">-- Select agent type --</option>
                               ${agentTypes.map(
@@ -2183,7 +2183,7 @@ export function SettingsDialog({
                               onInput=${(e) =>
                                 setNewServerTags(e.target.value)}
                               placeholder="e.g., coding, fast-model, production"
-                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                             />
                             <p class="text-xs text-mitto-text-muted mt-1">
                               Comma-separated tags for categorization
@@ -2213,7 +2213,7 @@ export function SettingsDialog({
                             </button>
                             <button
                               onClick=${addServer}
-                              class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors"
+                              class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors"
                             >
                               Add
                             </button>
@@ -2275,7 +2275,7 @@ export function SettingsDialog({
                                             (tag) => html`
                                               <span
                                                 key=${tag}
-                                                class="px-1.5 py-0.5 bg-blue-500/20 text-mitto-accent rounded text-xs"
+                                                class="px-1.5 py-0.5 bg-mitto-accent-500/20 text-mitto-accent rounded text-xs"
                                                 title="Tag"
                                               >
                                                 ${tag}
@@ -2442,7 +2442,7 @@ export function SettingsDialog({
                                   ${restrictedRunners[runner.type] &&
                                   html`
                                     <span
-                                      class="px-2 py-0.5 bg-blue-500/20 text-mitto-accent rounded text-xs"
+                                      class="px-2 py-0.5 bg-mitto-accent-500/20 text-mitto-accent rounded text-xs"
                                     >
                                       Configured
                                     </span>
@@ -2484,7 +2484,7 @@ export function SettingsDialog({
                                             [runner.type]: newConfig,
                                           });
                                         }}
-                                        class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                                        class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                                       />
                                       <div>
                                         <div class="font-medium text-sm">
@@ -2548,7 +2548,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                                 placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
@@ -2620,7 +2620,7 @@ export function SettingsDialog({
                                               [runner.type]: newConfig,
                                             });
                                           }}
-                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
                                         >
                                           <${PlusIcon} className="w-3 h-3" />
                                           Add folder
@@ -2680,7 +2680,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                                 placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
@@ -2753,7 +2753,7 @@ export function SettingsDialog({
                                               [runner.type]: newConfig,
                                             });
                                           }}
-                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
                                         >
                                           <${PlusIcon} className="w-3 h-3" />
                                           Add folder
@@ -2811,7 +2811,7 @@ export function SettingsDialog({
                                                   [runner.type]: newConfig,
                                                 });
                                               }}
-                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                               placeholder="alpine:latest"
                                             />
                                           </div>
@@ -2854,7 +2854,7 @@ export function SettingsDialog({
                                                   [runner.type]: newConfig,
                                                 });
                                               }}
-                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                               placeholder="4g"
                                             />
                                           </div>
@@ -2896,7 +2896,7 @@ export function SettingsDialog({
                                                   [runner.type]: newConfig,
                                                 });
                                               }}
-                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                               placeholder="2.0"
                                             />
                                           </div>
@@ -2924,7 +2924,7 @@ export function SettingsDialog({
                                             [runner.type]: newConfig,
                                           });
                                         }}
-                                        class="px-2 py-1 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        class="px-2 py-1 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                       >
                                         <option value="extend">
                                           extend (merge with workspace config)
@@ -2965,7 +2965,7 @@ export function SettingsDialog({
                                             });
                                           }
                                         }}
-                                        class="px-3 py-1.5 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                        class="px-3 py-1.5 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
                                       >
                                         Reset to Defaults
                                       </button>
@@ -3035,7 +3035,7 @@ export function SettingsDialog({
                             checked=${globalAutoApprove}
                             onChange=${(e) =>
                               setGlobalAutoApprove(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
@@ -3100,7 +3100,7 @@ export function SettingsDialog({
                               value=${autoArchiveInactiveAfter}
                               onChange=${(e) =>
                                 setAutoArchiveInactiveAfter(e.target.value)}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             >
                               <option value="">Disabled</option>
                               <option value="1d">After 1 day</option>
@@ -3127,7 +3127,7 @@ export function SettingsDialog({
                               value=${archiveRetentionPeriod}
                               onChange=${(e) =>
                                 setArchiveRetentionPeriod(e.target.value)}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             >
                               <option value="never">Never</option>
                               <option value="1d">After 1 day</option>
@@ -3164,7 +3164,7 @@ export function SettingsDialog({
                               value=${periodicSuspendTimeout}
                               onInput=${(e) =>
                                 setPeriodicSuspendTimeout(e.target.value)}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             >
                               <option value="">After 30 minutes</option>
                               <option value="15m">After 15 minutes</option>
@@ -3202,7 +3202,7 @@ export function SettingsDialog({
                               value=${memoryRecycleThreshold}
                               onInput=${(e) =>
                                 setMemoryRecycleThreshold(e.target.value)}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             >
                               <option value="">Disabled</option>
                               <option value="3g">Above 3 GB</option>
@@ -3244,7 +3244,7 @@ export function SettingsDialog({
                                 setMaxMessagesPerSession(
                                   parseInt(e.target.value, 10) || 0,
                                 )}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm w-24 text-center focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm w-24 text-center focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             />
                           </div>
                         </div>
@@ -3278,7 +3278,7 @@ export function SettingsDialog({
                                 setMaxChildConversations(
                                   parseInt(e.target.value, 10) || 0,
                                 )}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             />
                           </div>
                         </div>
@@ -3322,7 +3322,7 @@ export function SettingsDialog({
                                             }
                                             setDefaultFlags(newFlags);
                                           }}
-                                          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                                          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0 cursor-pointer"
                                         />
                                       </td>
                                       <td class="p-3">
@@ -3355,7 +3355,7 @@ export function SettingsDialog({
                             checked=${actionButtonsEnabled}
                             onChange=${(e) =>
                               setActionButtonsEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
@@ -3375,7 +3375,7 @@ export function SettingsDialog({
                             checked=${externalImagesEnabled}
                             onChange=${(e) =>
                               setExternalImagesEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
@@ -3414,7 +3414,7 @@ export function SettingsDialog({
                             type="checkbox"
                             checked=${authEnabled}
                             onChange=${(e) => setAuthEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3443,7 +3443,7 @@ export function SettingsDialog({
                                 placeholder="random"
                                 min="1024"
                                 max="65535"
-                                class="w-24 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                class="w-24 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                               />
                               <span class="text-xs text-mitto-text-muted"
                                 >(leave empty for random)</span
@@ -3485,7 +3485,7 @@ export function SettingsDialog({
                                       setAuthUsername(authUsername || "admin");
                                     }
                                   }}
-                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                                 />
                                 <div>
                                   <div class="font-medium text-sm">
@@ -3509,7 +3509,7 @@ export function SettingsDialog({
                                       onInput=${(e) =>
                                         setAuthUsername(e.target.value)}
                                       placeholder="admin"
-                                      class="w-28 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      class="w-28 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                     />
                                   </div>
                                   <div class="flex items-center gap-2">
@@ -3533,7 +3533,7 @@ export function SettingsDialog({
                                       placeholder=${authPasswordUnchanged
                                         ? "••••••••"
                                         : "Enter password"}
-                                      class="w-28 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      class="w-28 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                     />
                                   </div>
                                 </div>
@@ -3550,7 +3550,7 @@ export function SettingsDialog({
                                   checked=${cfEnabled}
                                   onChange=${(e) =>
                                     setCfEnabled(e.target.checked)}
-                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                                 />
                                 <div>
                                   <div class="font-medium text-sm">
@@ -3576,7 +3576,7 @@ export function SettingsDialog({
                                       onInput=${(e) =>
                                         setCfTeamDomain(e.target.value)}
                                       placeholder="yourteam.cloudflareaccess.com"
-                                      class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
                                     />
                                   </div>
                                   <div class="flex items-center gap-2">
@@ -3590,7 +3590,7 @@ export function SettingsDialog({
                                       onInput=${(e) =>
                                         setCfAudience(e.target.value)}
                                       placeholder="Application AUD tag"
-                                      class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                      class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
                                     />
                                   </div>
                                 </div>
@@ -3614,7 +3614,7 @@ export function SettingsDialog({
                                   openExternalURL(
                                     "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md",
                                   )}
-                                class="text-mitto-accent hover:text-blue-300 underline cursor-pointer"
+                                class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
                               >
                                 Learn more
                               </button>
@@ -3629,7 +3629,7 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setHookUpCommand(e.target.value)}
                                 placeholder="e.g., cloudflared tunnel --url http://localhost:$PORT"
-                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
                               />
                             </div>
                             <div class="flex items-center gap-2">
@@ -3642,7 +3642,7 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setHookDownCommand(e.target.value)}
                                 placeholder="e.g., pkill cloudflared"
-                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
                               />
                             </div>
                             <div class="flex items-center gap-2 mt-2">
@@ -3655,7 +3655,7 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setHookExternalAddress(e.target.value)}
                                 placeholder="e.g., https://mitto.example.com"
-                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
                               />
                             </div>
                             <p class="text-xs text-gray-600 mt-1">
@@ -3680,7 +3680,7 @@ export function SettingsDialog({
                             checked=${accessLogEnabled}
                             onChange=${(e) =>
                               setAccessLogEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3714,7 +3714,7 @@ export function SettingsDialog({
                             checked=${followSystemTheme}
                             onChange=${(e) =>
                               handleFollowSystemThemeChange(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3736,7 +3736,7 @@ export function SettingsDialog({
                               handleFollowSystemReducedMotionChange(
                                 e.target.checked,
                               )}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3759,7 +3759,7 @@ export function SettingsDialog({
                             onChange=${(e) =>
                               handleReduceAnimationsChange(e.target.checked)}
                             disabled=${followSystemReducedMotion}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0 ${followSystemReducedMotion
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0 ${followSystemReducedMotion
                               ? "cursor-not-allowed"
                               : ""}"
                           />
@@ -3790,7 +3790,7 @@ export function SettingsDialog({
                               value=${promptSortMode}
                               onChange=${(e) =>
                                 handlePromptSortModeChange(e.target.value)}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             >
                               <option value="alphabetical">Alphabetical</option>
                               <option value="color">By Color</option>
@@ -3814,7 +3814,7 @@ export function SettingsDialog({
                                 value=${inputFontFamily}
                                 onChange=${(e) =>
                                   setInputFontFamily(e.target.value)}
-                                class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                                class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                               >
                                 <option value="system">System Default</option>
                                 <option value="sans-serif">Sans-Serif</option>
@@ -3832,7 +3832,7 @@ export function SettingsDialog({
                                 value=${inputFontSize}
                                 onChange=${(e) =>
                                   setInputFontSize(e.target.value)}
-                                class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                                class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                               >
                                 <option value="small">Small</option>
                                 <option value="default">Default</option>
@@ -3858,7 +3858,7 @@ export function SettingsDialog({
                             <select
                               value=${sendKeyMode}
                               onChange=${(e) => setSendKeyMode(e.target.value)}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500"
                             >
                               <option value="enter">
                                 Enter to send (${navigator.platform?.includes("Mac")
@@ -3889,7 +3889,7 @@ export function SettingsDialog({
                                 setConversationCyclingMode(CYCLING_MODE.ALL);
                               }
                             }}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3920,7 +3920,7 @@ export function SettingsDialog({
                               onChange=${(e) =>
                                 setConversationCyclingMode(e.target.value)}
                               disabled=${singleExpandedGroup}
-                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500 ${singleExpandedGroup ? "cursor-not-allowed" : ""}"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-mitto-accent-500 focus:border-mitto-accent-500 ${singleExpandedGroup ? "cursor-not-allowed" : ""}"
                             >
                               ${CYCLING_MODE_OPTIONS.map(
                                 (opt) => html`
@@ -3947,7 +3947,7 @@ export function SettingsDialog({
                             checked=${confirmDeleteSession}
                             onChange=${(e) =>
                               setConfirmDeleteSession(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3971,7 +3971,7 @@ export function SettingsDialog({
                                 setConfirmQuitWithRunningSessions(
                                   e.target.checked,
                                 )}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4002,7 +4002,7 @@ export function SettingsDialog({
                               checked=${agentCompletedSound}
                               onChange=${(e) =>
                                 setAgentCompletedSound(e.target.checked)}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4024,7 +4024,7 @@ export function SettingsDialog({
                                 // Simply save the preference - permission will be requested on app restart
                                 setNativeNotifications(e.target.checked);
                               }}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4050,7 +4050,7 @@ export function SettingsDialog({
                               checked=${showInAllSpaces}
                               onChange=${(e) =>
                                 setShowInAllSpaces(e.target.checked)}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4072,7 +4072,7 @@ export function SettingsDialog({
                                 checked=${startAtLogin}
                                 onChange=${(e) =>
                                   setStartAtLogin(e.target.checked)}
-                                class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
+                                class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
                               />
                               <div>
                                 <div class="font-medium text-sm">
@@ -4102,7 +4102,7 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setBadgeClickCommand(e.target.value)}
                                 placeholder="open \${MITTO_WORKING_DIR}"
-                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
                               />
                             </div>
                             <p class="text-xs text-mitto-text-muted">
@@ -4130,7 +4130,7 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setTerminalActionCommand(e.target.value)}
                                 placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
-                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
                               />
                             </div>
                             <p class="text-xs text-mitto-text-muted">
@@ -4180,7 +4180,7 @@ export function SettingsDialog({
             <button
               onClick=${handleSave}
               disabled=${saving}
-              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               ${saving
                 ? html`

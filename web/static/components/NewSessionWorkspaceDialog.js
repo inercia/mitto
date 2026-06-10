@@ -233,7 +233,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
               placeholder="Filter workspaces..."
               autofocus
               autocomplete="off"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
+              class="w-full px-3 py-2 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:border-mitto-accent-500 placeholder-gray-500"
             />
           </div>
         `}

@@ -25,6 +25,16 @@
   --mitto-accent: #2563eb;
   --mitto-accent-hover: #3b82f6;
   --mitto-accent-fg: #ffffff;
+  /* Accent ladder (Phase 2a-1+): v1 uses the exact native Tailwind v4 blue
+   * oklch values so bg/text/border/ring-mitto-accent-* are byte-identical to
+   * the native blue-* utilities they replace. */
+  --mitto-accent-100: oklch(93.2% .032 255.585);
+  --mitto-accent-300: oklch(80.9% .105 251.813);
+  --mitto-accent-400: oklch(70.7% .165 254.624);
+  --mitto-accent-500: oklch(62.3% .214 259.815);
+  --mitto-accent-600: oklch(54.6% .245 262.881);
+  --mitto-accent-700: oklch(48.8% .243 264.376);
+  --mitto-accent-900: oklch(37.9% .146 265.522);
   --mitto-danger: #dc2626;
   --mitto-danger-hover: #ef4444;
   --mitto-danger-fg: #ffffff;
@@ -62,6 +72,15 @@
   --mitto-accent: #2563eb;
   --mitto-accent-hover: #3b82f6;
   --mitto-accent-fg: #ffffff;
+  /* Accent ladder (Phase 2a-1+): v1-light uses the same native blue oklch
+   * values as :root so migrated mitto-accent-* utilities stay byte-identical. */
+  --mitto-accent-100: oklch(93.2% .032 255.585);
+  --mitto-accent-300: oklch(80.9% .105 251.813);
+  --mitto-accent-400: oklch(70.7% .165 254.624);
+  --mitto-accent-500: oklch(62.3% .214 259.815);
+  --mitto-accent-600: oklch(54.6% .245 262.881);
+  --mitto-accent-700: oklch(48.8% .243 264.376);
+  --mitto-accent-900: oklch(37.9% .146 265.522);
   --mitto-danger: #dc2626;
   --mitto-danger-hover: #ef4444;
   --mitto-danger-fg: #ffffff;
@@ -1491,7 +1510,7 @@ a.mailto-link:hover {
   color: #16a34a;
 }
 
-.light .agent-plan-item .text-blue-400 {
+.light .agent-plan-item .text-mitto-accent-400 {
   color: #2563eb;
 }
 
@@ -1526,7 +1545,7 @@ a.mailto-link:hover {
   color: #1e293b;
 }
 
-.light .agent-plan-indicator .text-blue-400 {
+.light .agent-plan-indicator .text-mitto-accent-400 {
   color: #2563eb;
 }
 
@@ -1862,11 +1881,11 @@ mitto-action {
   background: rgba(241, 245, 249, 0.9);
 }
 
-.light .textarea-improving-overlay .text-blue-300 {
+.light .textarea-improving-overlay .text-mitto-accent-300 {
   color: #1e40af;
 }
 
-.light .textarea-improving-overlay .text-blue-400 {
+.light .textarea-improving-overlay .text-mitto-accent-400 {
   color: #2563eb;
 }
 

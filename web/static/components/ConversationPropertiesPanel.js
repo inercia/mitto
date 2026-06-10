@@ -215,7 +215,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
 
   return html`
     <select
-      class="w-full bg-mitto-surface-3 text-slate-200 rounded-lg px-3 py-2 text-sm border border-mitto-border-2 focus:border-mitto-accent focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"
+      class="w-full bg-mitto-surface-3 text-slate-200 rounded-lg px-3 py-2 text-sm border border-mitto-border-2 focus:border-mitto-accent focus:ring-1 focus:ring-mitto-accent-500 outline-none cursor-pointer"
       value=${localValue || ""}
       onChange=${handleChange}
       disabled=${isStreaming}
@@ -789,10 +789,10 @@ export function ConversationPropertiesPanel({
           ${isStreaming
             ? html`
                 <span
-                  class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-blue-500/20 text-mitto-accent text-xs"
+                  class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-mitto-accent-500/20 text-mitto-accent text-xs"
                 >
                   <span
-                    class="w-2 h-2 bg-blue-400 rounded-full streaming-indicator"
+                    class="w-2 h-2 bg-mitto-accent-400 rounded-full streaming-indicator"
                   ></span>
                   Streaming
                 </span>
@@ -826,7 +826,7 @@ export function ConversationPropertiesPanel({
           ${sessionInfo?.acp_server &&
           html`
             <span
-              class="inline-flex items-center px-2 py-1 rounded bg-blue-500/20 text-mitto-accent text-xs"
+              class="inline-flex items-center px-2 py-1 rounded bg-mitto-accent-500/20 text-mitto-accent text-xs"
               title="ACP Server"
             >
               ${sessionInfo.acp_server}
@@ -1005,7 +1005,7 @@ export function ConversationPropertiesPanel({
               html`
                 <div class="flex items-center justify-between">
                   <button
-                    class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
+                    class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
                     "true"
                       ? "bg-mitto-accent"
                       : "bg-mitto-surface-4"}"
@@ -1098,7 +1098,7 @@ export function ConversationPropertiesPanel({
                 id="properties-fresh-context-checkbox-${sessionId}"
                 checked=${!!periodicConfig.fresh_context}
                 onInput=${handleFreshContextChange}
-                class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-blue-500 cursor-pointer shrink-0"
+                class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
                 data-testid="properties-fresh-context-checkbox"
               />
               <label

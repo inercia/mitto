@@ -228,7 +228,7 @@ export function AgentDiscoveryDialog({
                         ${alreadyConfigured
                           ? "border-mitto-border-1 opacity-50 cursor-default"
                           : selected.has(agent.dir_name)
-                            ? "border-blue-600 bg-blue-600/10 cursor-pointer hover:border-mitto-accent"
+                            ? "border-mitto-accent-600 bg-mitto-accent-600/10 cursor-pointer hover:border-mitto-accent"
                             : "border-mitto-border-1 cursor-pointer hover:border-mitto-border-3"
                         }"
                       onClick=${() => !alreadyConfigured && toggleAgent(agent.dir_name)}
@@ -240,7 +240,7 @@ export function AgentDiscoveryDialog({
                             checked=${selected.has(agent.dir_name)}
                             onChange=${() => toggleAgent(agent.dir_name)}
                             onClick=${(e) => e.stopPropagation()}
-                            class="mt-0.5 accent-blue-500 shrink-0"
+                            class="mt-0.5 accent-mitto-accent-500 shrink-0"
                           />`
                       }
                       <div class="flex-1 min-w-0">
@@ -295,7 +295,7 @@ export function AgentDiscoveryDialog({
           ${phase === "initial" && html`
             <button
               onClick=${handleScan}
-              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg rounded-lg transition-colors"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg rounded-lg transition-colors"
               data-testid="agent-discovery-scan"
             >
               Scan for Agents
@@ -305,7 +305,7 @@ export function AgentDiscoveryDialog({
             <button
               onClick=${handleConfirm}
               disabled=${selected.size === 0}
-              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 text-mitto-accent-fg rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="agent-discovery-confirm"
             >
               Add Selected (${selected.size})

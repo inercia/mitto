@@ -818,7 +818,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  const inputClass = "w-full px-3 py-2 bg-mitto-input-box border border-mitto-border rounded text-sm text-mitto-text focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-mitto-text-secondary";
+  const inputClass = "w-full px-3 py-2 bg-mitto-input-box border border-mitto-border rounded text-sm text-mitto-text focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 placeholder-mitto-text-secondary";
   const labelClass = "block text-xs font-medium text-mitto-text-secondary mb-1";
 
   return html`
@@ -1111,7 +1111,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         <button
                           type="button"
                           onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                          class="font-mono text-xs text-blue-400 hover:text-blue-300 hover:underline flex-1 min-w-0 truncate text-left"
+                          class="font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline flex-1 min-w-0 truncate text-left"
                           title=${"Open " + d.id}
                         >${d.id}</button>
                         <button
@@ -1176,7 +1176,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       : html`
                         <ul class="space-y-2">
                           ${[...comments].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(cm => html`
-                            <li key=${cm.id} class="border-l-2 border-l-blue-500/70 bg-blue-500/10 rounded-r p-2 pl-3">
+                            <li key=${cm.id} class="border-l-2 border-l-mitto-accent-500/70 bg-mitto-accent-500/10 rounded-r p-2 pl-3">
                               <div class="flex items-center justify-between gap-2 mb-1">
                                 <span class="text-xs font-medium text-mitto-text">${cm.author || "Unknown"}</span>
                                 <span class="text-xs text-mitto-text-secondary" title=${cm.created_at}>${cm.created_at ? new Date(cm.created_at).toLocaleString() : ""}</span>
@@ -1271,7 +1271,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             type="button"
             onClick=${handleSave}
             disabled=${!title.trim() || submitting}
-            class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            class="px-4 py-2 text-sm bg-mitto-accent-600 hover:bg-mitto-accent-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             ${submitting && html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`}
             Save
@@ -2038,7 +2038,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 ? "bg-slate-700/30"
                 : "bg-slate-700/20 hover:bg-red-600";
               const borderTone = isSelected
-                ? "border-blue-500/60"
+                ? "border-mitto-accent-500/60"
                 : isEpic
                   ? "border-slate-600/50 border-l-4 border-l-purple-500"
                   : "border-slate-600/50";
@@ -2055,7 +2055,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                     ${linkedSessionId && onOpenConversation
                       ? html`<a
                           href="#"
-                          class="text-blue-400 hover:text-blue-300 hover:underline"
+                          class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
                           onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
                         >${issue.id}</a>`
                       : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
@@ -2255,7 +2255,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "none"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("none")}
-              class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent-500 focus:ring-mitto-accent-500 focus:ring-offset-0"
             />
             <span class="text-sm text-mitto-text-secondary">Leave child issues unchanged</span>
           </label>
@@ -2268,7 +2268,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 checked=${childAction === "close"}
                 disabled=${deletingIssue}
                 onChange=${() => setChildAction("close")}
-                class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent-500 focus:ring-mitto-accent-500 focus:ring-offset-0"
               />
               <span class="text-sm text-mitto-text-secondary">
                 Close the ${deleteTargetOpenDescendants.length} open child issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}

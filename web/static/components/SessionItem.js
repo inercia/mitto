@@ -449,7 +449,7 @@ export function SessionItem({
           onMouseEnter=${() => setShowActions(true)}
           onMouseLeave=${() => setShowActions(false)}
           class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar overflow-hidden ${isActive
-            ? "bg-blue-900/30 border-l-2 border-l-blue-500"
+            ? "bg-mitto-accent-900/30 border-l-2 border-l-mitto-accent-500"
             : ""} ${isSwiping
             ? ""
             : "transition-transform duration-200"} ${extraLeftPadding} ${isNew
@@ -523,7 +523,7 @@ export function SessionItem({
               ${isStreaming || hasChildStreaming
                 ? html`
                     <span
-                      class="w-2 h-2 bg-blue-400 rounded-full shrink-0 ${hasChildStreaming
+                      class="w-2 h-2 bg-mitto-accent-400 rounded-full shrink-0 ${hasChildStreaming
                         ? "child-streaming-indicator"
                         : "streaming-indicator"}"
                       title=${hasChildStreaming
