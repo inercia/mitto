@@ -12,7 +12,13 @@ import {
 } from "../utils/storage.js";
 
 /**
- * Get status icon and color for a plan entry
+ * Get status icon and color for a plan entry.
+ *
+ * Decision (mitto-d6f): keep the unicode glyphs rather than adopting daisyUI
+ * `status` (a plain colored dot). The "completed" state relies on the ✓
+ * checkmark to convey completion semantics, which a `status` dot cannot
+ * express; using glyphs for all three states keeps that semantic and visual
+ * consistency. Colors already use theme-aware mitto tokens.
  * @param {string} status - Status: pending, in_progress, completed
  * @returns {{ icon: string, colorClass: string }}
  */
@@ -29,19 +35,21 @@ function getStatusDisplay(status) {
 }
 
 /**
- * Get priority badge for a plan entry
+ * Get priority badge color modifiers for a plan entry. Option B (mitto-i1r.17):
+ * map purely-semantic priority to daisyUI semantic badge colors instead of
+ * hand-rolled tailwind color utilities.
  * @param {string} priority - Priority: high, medium, low
- * @returns {string} CSS classes for the badge
+ * @returns {string} daisyUI badge color modifier classes
  */
 function getPriorityBadge(priority) {
   switch (priority) {
     case "high":
-      return "bg-red-500/20 text-mitto-danger border-red-500/30";
+      return "badge-error badge-soft";
     case "medium":
-      return "bg-yellow-500/20 text-mitto-warning border-yellow-500/30";
+      return "badge-warning badge-soft";
     case "low":
     default:
-      return "bg-gray-500/20 text-mitto-text-muted border-gray-500/30";
+      return "badge-ghost";
   }
 }
 
@@ -149,8 +157,8 @@ export function AgentPlanPanel({
   ).length;
   const totalCount = entries.length;
 
-  // Panel classes - use same color scheme as QueueDropdown (bg-slate-700/95)
-  const panelClasses = `agent-plan-panel absolute top-0 left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-b border-l border-r border-mitto-border-2 rounded-b-lg overflow-hidden z-20 ${
+  // Panel classes - elevated surface on daisyUI base tokens (mitto-d6f)
+  const panelClasses = `agent-plan-panel absolute top-0 left-0 right-0 w-full bg-base-200/95 backdrop-blur-sm border-b border-l border-r border-mitto-border-2 rounded-b-lg overflow-hidden z-20 ${
     isDragging ? "" : "transition-all duration-300 ease-out"
   } ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none border-0"}`;
 
@@ -171,7 +179,7 @@ export function AgentPlanPanel({
     >
       <!-- Header -->
       <div
-        class="agent-plan-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between cursor-pointer hover:bg-slate-600/50"
+        class="agent-plan-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between cursor-pointer hover:bg-base-300/50"
         onClick=${onToggle}
       >
         <div class="flex items-center gap-2">
@@ -205,7 +213,7 @@ export function AgentPlanPanel({
                 return html`
                   <div
                     key=${index}
-                    class="agent-plan-item flex items-start gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0"
+                    class="agent-plan-item flex items-start gap-2 px-3 py-2 hover:bg-base-300/50 transition-colors border-b border-base-300/50 last:border-b-0"
                   >
                     <span
                       class="shrink-0 mt-0.5 ${statusDisplay.colorClass}"
@@ -241,8 +249,8 @@ export function AgentPlanPanel({
 
       <!-- Resize Handle at bottom edge -->
       <div
-        class="agent-plan-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging
-          ? "bg-slate-600/50"
+        class="agent-plan-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-base-300/50 transition-colors select-none touch-none ${isDragging
+          ? "bg-base-300/50"
           : ""}"
         ...${handleProps}
         title="Drag to resize"
@@ -277,7 +285,7 @@ export function AgentPlanIndicator({
     <button
       type="button"
       onClick=${onClick}
-      class="agent-plan-indicator flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-700/80 hover:bg-slate-600/80 transition-colors text-xs ${hasNewUpdate
+      class="agent-plan-indicator btn btn-xs gap-1.5 ${hasNewUpdate
         ? "ring-2 ring-mitto-accent-400/50"
         : ""}"
       title="View agent plan"
