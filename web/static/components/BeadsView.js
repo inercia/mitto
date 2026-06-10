@@ -1293,30 +1293,32 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <${ChevronUpIcon} className="w-4 h-4" />
             </button>
             ${showPrompts && html`
-              <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
-                ${promptsLoading && html`
-                  <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
-                    <span class="loading loading-spinner w-4 h-4"></span> Loading…
-                  </div>
-                `}
-                ${!promptsLoading && prompts.length === 0 && html`
-                  <div class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</div>
-                `}
-                ${!promptsLoading && prompts.map(p => {
-                  const PromptIcon = getPromptIconOrDefault(p.icon);
-                  return html`
-                  <button
-                    key=${p.name}
-                    type="button"
-                    onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
-                    title=${p.description || p.name}
-                    class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
-                  >
-                    <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
-                    <span class="truncate flex-1">${p.name}</span>
-                  </button>
-                `;
-                })}
+              <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10">
+                <ul class="menu menu-sm w-full flex-nowrap">
+                  ${promptsLoading && html`
+                    <li class="px-3 py-2 text-sm text-mitto-text-secondary flex items-center gap-2">
+                      <span class="loading loading-spinner w-4 h-4"></span> Loading…
+                    </li>
+                  `}
+                  ${!promptsLoading && prompts.length === 0 && html`
+                    <li class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</li>
+                  `}
+                  ${!promptsLoading && prompts.map(p => {
+                    const PromptIcon = getPromptIconOrDefault(p.icon);
+                    return html`
+                    <li key=${p.name}>
+                      <button
+                        type="button"
+                        onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
+                        title=${p.description || p.name}
+                      >
+                        <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
+                        <span class="truncate flex-1">${p.name}</span>
+                      </button>
+                    </li>
+                  `;
+                  })}
+                </ul>
               </div>
             `}
           </div>
@@ -2107,30 +2109,32 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <${ChevronUpIcon} className="w-4 h-4" />
           </button>
           ${showListPrompts && html`
-            <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
-              ${listPromptsLoading && html`
-                <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
-                  <span class="loading loading-spinner w-4 h-4"></span> Loading…
-                </div>
-              `}
-              ${!listPromptsLoading && listPrompts.length === 0 && html`
-                <div class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</div>
-              `}
-              ${!listPromptsLoading && listPrompts.map(p => {
-                const PromptIcon = getPromptIconOrDefault(p.icon);
-                return html`
-                <button
-                  key=${p.name}
-                  type="button"
-                  onClick=${() => handleRunListPrompt(p)}
-                  title=${p.description || p.name}
-                  class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
-                >
-                  <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
-                  <span class="truncate flex-1">${p.name}</span>
-                </button>
-              `;
-              })}
+            <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10">
+              <ul class="menu menu-sm w-full flex-nowrap">
+                ${listPromptsLoading && html`
+                  <li class="px-3 py-2 text-sm text-mitto-text-secondary flex items-center gap-2">
+                    <span class="loading loading-spinner w-4 h-4"></span> Loading…
+                  </li>
+                `}
+                ${!listPromptsLoading && listPrompts.length === 0 && html`
+                  <li class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</li>
+                `}
+                ${!listPromptsLoading && listPrompts.map(p => {
+                  const PromptIcon = getPromptIconOrDefault(p.icon);
+                  return html`
+                  <li key=${p.name}>
+                    <button
+                      type="button"
+                      onClick=${() => handleRunListPrompt(p)}
+                      title=${p.description || p.name}
+                    >
+                      <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
+                      <span class="truncate flex-1">${p.name}</span>
+                    </button>
+                  </li>
+                `;
+                })}
+              </ul>
             </div>
           `}
         </div>
