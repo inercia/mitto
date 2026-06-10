@@ -2042,7 +2042,7 @@ export function SettingsDialog({
           html`
             <button
               onClick=${handleClose}
-              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+              class="btn btn-ghost btn-square btn-sm"
             >
               <${CloseIcon} className="w-5 h-5" />
             </button>
@@ -2052,26 +2052,26 @@ export function SettingsDialog({
         <!-- Main content area with sidebar - fills available space -->
         <div class="flex flex-1 min-h-0 overflow-hidden">
           <!-- Sidebar Navigation -->
-          <nav
-            class="w-44 shrink-0 border-r border-mitto-border-1 py-2 overflow-y-auto"
+          <ul
+            class="menu flex-nowrap w-44 shrink-0 border-r border-mitto-border-1 overflow-y-auto"
           >
             ${navItems.map(
               (item) => html`
-                <button
-                  key=${item.id}
-                  data-testid=${`settings-nav-${item.id}`}
-                  onClick=${() => setActiveTab(item.id)}
-                  class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${activeTab ===
-                  item.id
-                    ? "text-mitto-accent bg-mitto-accent-500/10 border-l-2 border-mitto-accent"
-                    : "text-mitto-text-muted hover:text-mitto-text-strong hover:bg-slate-700/50 border-l-2 border-transparent"}"
-                >
-                  <${item.icon} className="w-4 h-4 shrink-0" />
-                  <span class="truncate">${item.label}</span>
-                </button>
+                <li key=${item.id}>
+                  <button
+                    data-testid=${`settings-nav-${item.id}`}
+                    onClick=${() => setActiveTab(item.id)}
+                    class="font-medium ${activeTab === item.id
+                      ? "menu-active text-mitto-accent bg-mitto-accent-500/10"
+                      : "text-mitto-text-muted"}"
+                  >
+                    <${item.icon} className="w-4 h-4 shrink-0" />
+                    <span class="truncate">${item.label}</span>
+                  </button>
+                </li>
               `,
             )}
-          </nav>
+          </ul>
 
           <!-- Content Area -->
           <div class="flex-1 overflow-y-auto p-4" data-testid="settings-content">
@@ -4175,7 +4175,7 @@ export function SettingsDialog({
               <button
                 onClick=${handleClose}
                 data-testid="settings-close"
-                class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                class="btn btn-ghost btn-sm"
               >
                 Close
               </button>
@@ -4184,7 +4184,7 @@ export function SettingsDialog({
               onClick=${handleSave}
               data-testid="settings-save"
               disabled=${saving}
-              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+              class="btn btn-primary btn-sm gap-2"
             >
               ${saving
                 ? html`
