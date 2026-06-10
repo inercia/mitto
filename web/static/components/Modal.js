@@ -6,12 +6,13 @@
 //   title    {string}   - optional header title; header omitted when absent
 //   children {any}      - modal body content
 //   footer   {any}      - optional footer node (action buttons, etc.)
+//   testid   {string}   - optional data-testid applied to the modal box
 
 const { html, useEffect } = window.preact;
 
 import { CloseIcon } from "./Icons.js";
 
-export function Modal({ isOpen, onClose, title, children, footer }) {
+export function Modal({ isOpen, onClose, title, children, footer, testid }) {
   if (!isOpen) return null;
 
   useEffect(() => {
@@ -24,7 +25,10 @@ export function Modal({ isOpen, onClose, title, children, footer }) {
 
   return html`
     <div class="modal modal-open">
-      <div class="modal-box flex flex-col gap-0 p-0 overflow-hidden">
+      <div
+        class="modal-box flex flex-col gap-0 p-0 overflow-hidden"
+        data-testid=${testid}
+      >
         ${title &&
         html`
           <div

@@ -81,7 +81,13 @@ export function ConfirmDialog({
   `;
 
   return html`
-    <${Modal} isOpen=${isOpen} onClose=${handleCancel} title=${title} footer=${footer}>
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${handleCancel}
+      title=${title}
+      footer=${footer}
+      testid="confirm-dialog"
+    >
       <p class="text-mitto-text-300">${message}</p>
       ${children}
     </${Modal}>
