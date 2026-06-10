@@ -877,7 +877,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </div>
         <button
           onClick=${() => setFullscreen(f => !f)}
-          class="${isMobile ? "hidden" : "block"} p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text shrink-0"
+          class="btn btn-ghost btn-square btn-sm shrink-0 ${isMobile ? "hidden" : ""}"
           title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
         >
           ${fullscreen
@@ -886,7 +886,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </button>
         <button
           onClick=${handleClose}
-          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text shrink-0"
+          class="btn btn-ghost btn-square btn-sm shrink-0"
           title="Close"
         >
           <${CloseIcon} className="w-5 h-5" />
@@ -1116,12 +1116,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         >${d.id}</button>
                         <button
                           type="button"
-                          onClick=${() => mutateDep("remove", d.id)}
-                          disabled=${depsBusy}
-                          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                          onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
+                          aria-disabled=${depsBusy ? "true" : "false"}
+                          class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
                           title="Remove dependency"
                         >
-                          <${CloseIcon} className="w-3.5 h-3.5" />
+                          <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
                         </button>
                       </div>
                     `)}
@@ -1147,9 +1147,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       />
                       <button
                         type="button"
-                        onClick=${handleAddDep}
-                        disabled=${depsBusy || !newDepId.trim()}
-                        class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                        onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
+                        aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
+                        class="btn btn-ghost btn-square btn-xs shrink-0 ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
                         title="Add dependency"
                       >
                         ${depsBusy
@@ -1263,7 +1263,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             type="button"
             onClick=${handleClose}
             disabled=${submitting}
-            class="px-4 py-2 text-sm hover:bg-mitto-input-box rounded-lg transition-colors text-mitto-text-secondary disabled:opacity-50"
+            class="btn btn-ghost btn-sm"
           >
             Close
           </button>
@@ -1271,9 +1271,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             type="button"
             onClick=${handleSave}
             disabled=${!title.trim() || submitting}
-            class="px-4 py-2 text-sm bg-mitto-accent-600 hover:bg-mitto-accent-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            class="btn btn-primary btn-sm"
           >
-            ${submitting && html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`}
+            ${submitting && html`<span class="loading loading-spinner w-4 h-4"></span>`}
             Save
           </button>
         </div>
@@ -1285,7 +1285,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             <button
               type="button"
               onClick=${togglePrompts}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+              class="btn btn-ghost btn-square btn-sm"
               title="Run a prompt for this issue in a new conversation"
             >
               <${ChevronUpIcon} className="w-4 h-4" />
@@ -1322,9 +1322,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           <div class="flex items-center gap-1 ml-auto">
             <button
               type="button"
-              onClick=${() => onToggleStatus && onToggleStatus(data)}
-              disabled=${statusBusy}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (statusBusy) return; onToggleStatus && onToggleStatus(data); }}
+              aria-disabled=${statusBusy ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
               title=${data.status === "closed" ? "Reopen issue" : "Close issue"}
             >
               ${data.status === "closed"
@@ -1333,9 +1333,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </button>
             <button
               type="button"
-              onClick=${() => onToggleDefer && onToggleDefer(data)}
-              disabled=${statusBusy}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (statusBusy) return; onToggleDefer && onToggleDefer(data); }}
+              aria-disabled=${statusBusy ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
               title=${data.status === "deferred" ? "Undefer issue" : "Defer issue"}
             >
               ${data.status === "deferred"
@@ -1345,10 +1345,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             <button
               type="button"
               onClick=${() => onDelete && onDelete(data)}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400"
+              class="btn btn-ghost btn-square btn-sm group"
               title="Delete issue"
             >
-              <${TrashIcon} className="w-4 h-4" />
+              <${TrashIcon} className="w-4 h-4 group-hover:text-red-400" />
             </button>
           </div>
         </div>
@@ -2090,7 +2090,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
         <button
           onClick=${openCreate}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+          class="btn btn-ghost btn-square btn-sm"
           title="New issue"
         >
           <${PlusIcon} className="w-4 h-4" />
@@ -2099,7 +2099,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <button
             type="button"
             onClick=${toggleListPrompts}
-            class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+            class="btn btn-ghost btn-square btn-sm"
             title="Run a prompt over the issue list in a new conversation"
           >
             <${ChevronUpIcon} className="w-4 h-4" />
@@ -2134,26 +2134,26 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         </div>
         <button
           onClick=${fetchList}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+          class="btn btn-ghost btn-square btn-sm"
           title="Refresh"
         >
           <${RefreshIcon} className="w-4 h-4" />
         </button>
         <button
-          onClick=${() => setShowCleanupConfirm(true)}
-          disabled=${closedCount === 0 || cleaningUp}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-mitto-text-300 disabled:hover:bg-transparent"
+          onClick=${() => { if (closedCount === 0 || cleaningUp) return; setShowCleanupConfirm(true); }}
+          aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
+          class="btn btn-ghost btn-square btn-sm group ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
           title=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
         >
-          <${BroomIcon} className="w-4 h-4" />
+          <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />
         </button>
 
         ${upstream && upstream !== "none" && html`
           <div class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border">
             <button
-              onClick=${() => handleSync("pull")}
-              disabled=${!!syncAction}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (syncAction) return; handleSync("pull"); }}
+              aria-disabled=${syncAction ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
               title=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "pull"
@@ -2161,9 +2161,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 : html`<${ArrowDownIcon} className="w-4 h-4" />`}
             </button>
             <button
-              onClick=${() => handleSync("push")}
-              disabled=${!!syncAction}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (syncAction) return; handleSync("push"); }}
+              aria-disabled=${syncAction ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
               title=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "push"
@@ -2171,9 +2171,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 : html`<${ArrowUpIcon} className="w-4 h-4" />`}
             </button>
             <button
-              onClick=${() => handleSync("sync")}
-              disabled=${!!syncAction}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (syncAction) return; handleSync("sync"); }}
+              aria-disabled=${syncAction ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
               title=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
             >
               ${syncAction === "sync"
@@ -2188,7 +2188,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         ${onOpenConfig && html`
           <button
             onClick=${() => onOpenConfig()}
-            class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text ml-2"
+            class="btn btn-ghost btn-square btn-sm ml-2"
             title="Tasks configuration"
           >
             <${SettingsIcon} className="w-4 h-4" />
