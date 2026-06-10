@@ -647,7 +647,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           <select
             value=${defaultScope}
             onInput=${(e) => { mcpRemoveScopeRef.current = e.target.value; }}
-            class="w-full bg-mitto-surface-2 border border-mitto-border-2 rounded-lg px-3 py-2 text-sm text-mitto-text-strong"
+            class="select select-sm w-full"
           >
             ${mcpTools.mcp_scopes.map(scope => html`
               <option key=${scope} value=${scope}>${scope}</option>
@@ -1406,7 +1406,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       value=${firstWs.working_dir}
                                       onInput=${(e) => updateNewFolderPath(e.target.value)}
                                       placeholder="/path/to/project"
-                                      class="flex-1 bg-mitto-input border ${isIncomplete ? "border-red-400" : "border-mitto-border"} rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                                      class="input input-sm flex-1 ${isIncomplete ? "border-error" : ""}"
                                       style="height: 38px; box-sizing: border-box"
                                     />
                                     ${hasNativeFolderPicker() && html`
@@ -1425,7 +1425,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     type="text"
                                     value=${firstWs.working_dir}
                                     readOnly
-                                    class="w-full bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text-muted cursor-default"
+                                    class="input input-sm w-full cursor-default"
                                     style="height: 38px; box-sizing: border-box"
                                   />
                                 `
@@ -1438,7 +1438,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               value=${editName}
                               onInput=${(e) => setEditName(e.target.value)}
                               placeholder=${getBasename(firstWs.working_dir)}
-                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                              class="input input-sm w-full"
                               style="height: 38px; box-sizing: border-box"
                             />
                           </div>
@@ -1451,7 +1451,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 onInput=${(e) => setEditCode(e.target.value.toUpperCase().slice(0, 3))}
                                 placeholder="Auto (3 letters max)"
                                 maxlength="3"
-                                class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono uppercase"
+                                class="input input-sm w-full font-mono uppercase"
                                 style="height: 38px; box-sizing: border-box"
                               />
                             </div>
@@ -1482,7 +1482,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               onInput=${(e) => setEditMetaDescription(e.target.value)}
                               placeholder="A description of this workspace/project..."
                               rows="3"
-                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 resize-vertical"
+                              class="textarea textarea-sm w-full resize-vertical"
                             />
                           </div>
                           <div>
@@ -1492,7 +1492,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               value=${editMetaUrl}
                               onInput=${(e) => setEditMetaUrl(e.target.value)}
                               placeholder="https://github.com/..."
-                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                              class="input input-sm w-full"
                               style="height: 38px; box-sizing: border-box"
                             />
                           </div>
@@ -1503,7 +1503,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               value=${editMetaGroup}
                               onInput=${(e) => setEditMetaGroup(e.target.value)}
                               placeholder="e.g., CGW, Infrastructure, Frontend..."
-                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                              class="input input-sm w-full"
                               style="height: 38px; box-sizing: border-box"
                             />
                           </div>
@@ -1540,7 +1540,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         value=${field.name}
                                         onInput=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, name: e.target.value } : f))}
                                         placeholder="e.g., JIRA Ticket"
-                                        class="w-full bg-mitto-input border border-mitto-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+                                        class="input input-sm w-full"
                                         style="height: 28px; box-sizing: border-box"
                                       />
                                     </div>
@@ -1549,7 +1549,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       <select
                                         value=${field.type}
                                         onChange=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, type: e.target.value } : f))}
-                                        class="w-full bg-mitto-input border border-mitto-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+                                        class="select select-sm w-full"
                                         style="height: 28px; box-sizing: border-box"
                                       >
                                         <option value="string">string</option>
@@ -1563,7 +1563,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         value=${field.description}
                                         onInput=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, description: e.target.value } : f))}
                                         placeholder="Optional description..."
-                                        class="w-full bg-mitto-input border border-mitto-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+                                        class="input input-sm w-full"
                                         style="height: 28px; box-sizing: border-box"
                                       />
                                     </div>
@@ -1610,7 +1610,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               value=${beadsUpstream}
                               onInput=${(e) => saveBeadsUpstream(e.target.value)}
                               disabled=${beadsUpstreamSaving}
-                              class="w-full bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 disabled:opacity-50"
+                              class="select select-sm w-full disabled:opacity-50"
                             >
                               <option value="none">None</option>
                               <option value="jira">Jira</option>
@@ -1674,7 +1674,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             type="text"
                                             value=${k}
                                             readOnly
-                                            class="bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text-muted font-mono cursor-default"
+                                            class="input input-sm font-mono cursor-default"
                                             style="width: 38%; height: 38px; box-sizing: border-box"
                                           />
                                           <input
@@ -1683,7 +1683,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             defaultValue=${v}
                                             disabled=${beadsConfigSaving}
                                             onBlur=${(e) => { if (e.target.value !== v) setBeadsConfigKey(k, e.target.value); }}
-                                            class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
+                                            class="input input-sm flex-1 font-mono"
                                             style="height: 38px; box-sizing: border-box"
                                           />
                                           <button
@@ -1703,7 +1703,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         value=${newBeadsKey}
                                         onInput=${(e) => setNewBeadsKey(e.target.value)}
                                         placeholder="jira.url"
-                                        class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
+                                        class="input input-sm font-mono"
                                         style="width: 38%; height: 38px; box-sizing: border-box"
                                       />
                                       <input
@@ -1711,7 +1711,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         value=${newBeadsValue}
                                         onInput=${(e) => setNewBeadsValue(e.target.value)}
                                         placeholder="value"
-                                        class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
+                                        class="input input-sm flex-1 font-mono"
                                         style="height: 38px; box-sizing: border-box"
                                       />
                                       <button
@@ -1772,7 +1772,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 <label class="block text-sm text-mitto-text-muted mb-1">Button Label</label>
                                 <input type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
                                   placeholder="e.g., Continue"
-                                  class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                                  class="input input-sm w-full"
                                 />
                               </div>
                               <div>
@@ -1780,14 +1780,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 <textarea value=${newPromptText} onInput=${(e) => setNewPromptText(e.target.value)}
                                   placeholder="e.g., Please continue with the current task."
                                   rows="8"
-                                  class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 resize-y"
+                                  class="textarea textarea-sm w-full resize-y"
                                 />
                               </div>
                               <div>
                                 <label class="block text-sm text-mitto-text-muted mb-1">Group (optional)</label>
                                 <input type="text" value=${newPromptGroup} onInput=${(e) => setNewPromptGroup(e.target.value)}
                                   placeholder="e.g., Tasks, Code Quality"
-                                  class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                                  class="input input-sm w-full"
                                 />
                               </div>
                               <div>
@@ -1798,7 +1798,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   />
                                   <input type="text" value=${newPromptColor} onInput=${(e) => setNewPromptColor(e.target.value)}
                                     placeholder="#E8F5E9"
-                                    class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
+                                    class="input input-sm flex-1 font-mono"
                                   />
                                 </div>
                               </div>
@@ -1836,7 +1836,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                   <input type="text" value=${isBuiltin ? prompt.name : editPromptName}
                                                     onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
                                                     disabled=${isBuiltin}
-                                                    class="w-full px-2 py-1.5 bg-mitto-surface-3 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-mitto-accent-500'}"
+                                                    class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
                                                   />
                                                 </div>
                                                 <div>
@@ -1845,7 +1845,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                     value=${isBuiltin ? prompt.prompt : editPromptText}
                                                     onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
                                                     disabled=${isBuiltin}
-                                                    class="w-full px-2 py-1.5 bg-mitto-surface-3 rounded text-sm resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-mitto-accent-500'}"
+                                                    class="textarea textarea-sm w-full resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
                                                   />
                                                 </div>
                                                 <div>
@@ -1854,7 +1854,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                     onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
                                                     disabled=${isBuiltin}
                                                     placeholder="e.g., Tasks, Code Quality"
-                                                    class="w-full px-2 py-1.5 bg-mitto-surface-3 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-mitto-accent-500'}"
+                                                    class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
                                                   />
                                                 </div>
                                                 ${!isBuiltin && html`
@@ -1868,7 +1868,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                       <input type="text" value=${editPromptColor}
                                                         onInput=${(e) => setEditPromptColor(e.target.value)}
                                                         placeholder="#E8F5E9"
-                                                        class="flex-1 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 font-mono"
+                                                        class="input input-sm flex-1 font-mono"
                                                       />
                                                     </div>
                                                   </div>
@@ -1901,7 +1901,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                               <div class="flex items-center gap-3">
                                                 <input type="checkbox" checked=${isEnabled}
                                                   onChange=${() => togglePromptEnabled(prompt)}
-                                                  class="rounded border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 shrink-0"
+                                                  class="checkbox checkbox-sm shrink-0"
                                                   title=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
                                                 />
                                                 ${prompt.backgroundColor && html`
@@ -1980,7 +1980,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           <div class="flex items-center gap-3">
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => toggleProcessorEnabled(proc)}
-                                              class="rounded border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 shrink-0"
+                                              class="checkbox checkbox-sm shrink-0"
                                               title=${isEnabled ? "Disable this processor" : "Enable this processor"}
                                             />
                                             <div class="flex-1 min-w-0">
@@ -2059,7 +2059,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                         <select
                           value=${editAcpServer}
                           onChange=${(e) => setEditAcpServer(e.target.value)}
-                          class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500"
+                          class="select select-sm w-full"
                           style="height: 38px; box-sizing: border-box"
                         >
                           ${sortedAcpServers.map((s) => html`<option key=${s.name} value=${s.name}>${s.name}</option>`)}
@@ -2072,7 +2072,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           value=${editAcpCommandOverride}
                           onInput=${(e) => setEditAcpCommandOverride(e.target.value)}
                           placeholder=${(() => { const s = acpServers.find((s) => s.name === editAcpServer); return s ? s.command : ""; })()}
-                          class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 placeholder:text-gray-600"
+                          class="input input-sm w-full placeholder:text-gray-600"
                           style="height: 38px; box-sizing: border-box"
                         />
                         <p class="text-xs text-mitto-text-muted mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
@@ -2093,7 +2093,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           type="checkbox"
                           checked=${editAutoApprove}
                           onChange=${(e) => setEditAutoApprove(e.target.checked)}
-                          class="rounded border-mitto-border text-mitto-accent focus:ring-mitto-accent-500"
+                          class="checkbox checkbox-sm"
                         />
                         <span class="text-sm">Auto-approve tool calls</span>
                       </label>
@@ -2102,7 +2102,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           type="checkbox"
                           checked=${editIsDefault}
                           onChange=${(e) => handleToggleIsDefault(e.target.checked)}
-                          class="rounded border-mitto-border text-mitto-accent focus:ring-mitto-accent-500"
+                          class="checkbox checkbox-sm"
                         />
                         <span class="text-sm">Default workspace for this folder</span>
                       </label>
@@ -2127,7 +2127,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 checked=${editRunner === r.type}
                                 disabled=${!r.supported}
                                 onChange=${() => handleRunnerChange(r.type)}
-                                class="text-mitto-accent"
+                                class="radio radio-sm"
                               />
                               <span class="text-sm">${r.label}</span>
                             </label>
@@ -2312,7 +2312,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           value=${mcpInstallJson}
           onInput=${(e) => { setMcpInstallJson(e.target.value); setMcpInstallError(""); setMcpInstallSuccess(""); }}
           placeholder=${'{\n  "mcpServers": {\n    "server-name": {\n      "command": "...",\n      "args": ["..."]\n    }\n  }\n}'}
-          class="w-full h-48 bg-mitto-surface-2 border border-mitto-border rounded-lg px-3 py-2 text-sm font-mono text-mitto-text placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 resize-none"
+          class="textarea textarea-sm w-full h-48 font-mono resize-none"
           disabled=${mcpInstallLoading}
           spellcheck="false"
         />
@@ -2330,7 +2330,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               value=${mcpInstallName}
               onInput=${(e) => { setMcpInstallName(e.target.value); setMcpInstallError(""); }}
               placeholder="my-server"
-              class="w-full bg-mitto-surface-2 border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+              class="input input-sm w-full"
               disabled=${mcpInstallLoading}
             />
           </div>
@@ -2341,7 +2341,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             <select
               value=${mcpInstallScope}
               onChange=${(e) => setMcpInstallScope(e.target.value)}
-              class="w-full bg-mitto-surface-2 border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+              class="select select-sm w-full"
               disabled=${mcpInstallLoading}
             >
               ${mcpTools.mcp_scopes.map(scope => html`
