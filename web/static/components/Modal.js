@@ -6,13 +6,24 @@
 //   title    {string}   - optional header title; header omitted when absent
 //   children {any}      - modal body content
 //   footer   {any}      - optional footer node (action buttons, etc.)
-//   testid   {string}   - optional data-testid applied to the modal box
+//   testid         {string} - optional data-testid applied to the modal box
+//   closeTestid    {string} - optional data-testid applied to the header ✕ button
+//   backdropTestid {string} - optional data-testid applied to the backdrop
 
 const { html, useEffect } = window.preact;
 
 import { CloseIcon } from "./Icons.js";
 
-export function Modal({ isOpen, onClose, title, children, footer, testid }) {
+export function Modal({
+  isOpen,
+  onClose,
+  title,
+  children,
+  footer,
+  testid,
+  closeTestid,
+  backdropTestid,
+}) {
   if (!isOpen) return null;
 
   useEffect(() => {
@@ -39,6 +50,7 @@ export function Modal({ isOpen, onClose, title, children, footer, testid }) {
               onClick=${onClose}
               class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors"
               title="Close"
+              data-testid=${closeTestid}
             >
               <${CloseIcon} className="w-5 h-5" />
             </button>
@@ -58,7 +70,11 @@ export function Modal({ isOpen, onClose, title, children, footer, testid }) {
       </div>
 
       <!-- Backdrop: click to close -->
-      <div class="modal-backdrop" onClick=${onClose}></div>
+      <div
+        class="modal-backdrop"
+        onClick=${onClose}
+        data-testid=${backdropTestid}
+      ></div>
     </div>
   `;
 }
