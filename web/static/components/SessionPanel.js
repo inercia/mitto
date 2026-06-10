@@ -743,7 +743,7 @@ export function SessionPanel({
     if (isLoadingChanges && !changesData) {
       return html`
         <div class="p-4 text-center text-slate-500">
-          <div class="animate-spin inline-block w-5 h-5 border-2 border-mitto-border-3 border-t-transparent rounded-full mb-2"></div>
+          <span class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"></span>
           <p class="text-sm">Loading changes...</p>
         </div>
       `;
@@ -1235,7 +1235,7 @@ export function SessionPanel({
                       <div key=${flag.name} class="flex items-start gap-3">
                         <div class="pt-0.5">
                           ${isSaving
-                            ? html`<div class="w-5 h-5 flex items-center justify-center"><div class="w-3 h-3 border-2 border-mitto-accent border-t-transparent rounded-full animate-spin"></div></div>`
+                            ? html`<span class="loading loading-spinner w-5 h-5 text-mitto-accent"></span>`
                             : html`<${TriStateCheckbox} value=${currentValue} onChange=${(newValue) => handleFlagChange(flag.name, newValue)} title=${flag.description || flag.label} />`}
                         </div>
                         <div class="flex-1 min-w-0">

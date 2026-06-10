@@ -142,9 +142,7 @@ export function MessageList({
                   <p
                     class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
                   >
-                    <span
-                      class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
-                    ></span>
+                    <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
                     Connecting to AI agent...
                   </p>
                 `}
