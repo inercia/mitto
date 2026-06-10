@@ -53,10 +53,10 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
           <h3 class="text-lg font-semibold">Keyboard Shortcuts</h3>
           <button
             onClick=${onClose}
-            class="p-1 hover:bg-slate-700 rounded-lg transition-colors"
+            class="p-1 hover:bg-mitto-surface-hover rounded-lg transition-colors"
             title="Close"
           >
-            <${CloseIcon} className="w-5 h-5 text-gray-400 hover:text-white" />
+            <${CloseIcon} className="w-5 h-5 text-mitto-text-muted hover:text-white" />
           </button>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -66,7 +66,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
               ([sectionName, shortcuts]) => html`
                 <div key=${sectionName}>
                   <h4
-                    class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2"
+                    class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide mb-2"
                   >
                     ${sectionName}
                   </h4>
@@ -79,26 +79,26 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
                         >
                           <div class="flex flex-col gap-0.5">
                             <div class="flex items-center gap-2">
-                              <span class="text-gray-300"
+                              <span class="text-mitto-text-secondary"
                                 >${shortcut.description}</span
                               >
                               ${shortcut.macOnly &&
                               html`
                                 <span
-                                  class="text-[10px] px-1.5 py-0.5 rounded bg-slate-600 text-gray-400"
+                                  class="text-[10px] px-1.5 py-0.5 rounded bg-mitto-surface-4 text-mitto-text-muted"
                                   >macOS app</span
                                 >
                               `}
                             </div>
                             ${shortcut.hint &&
                             html`
-                              <span class="text-[11px] text-gray-500"
+                              <span class="text-[11px] text-mitto-text-muted"
                                 >${shortcut.hint}</span
                               >
                             `}
                           </div>
                           <kbd
-                            class="px-2 py-1 text-sm font-mono bg-slate-700 rounded border border-slate-600 text-gray-200"
+                            class="px-2 py-1 text-sm font-mono bg-mitto-surface-3 rounded border border-mitto-border-2 text-mitto-text"
                           >
                             ${shortcut.keys}
                           </kbd>
@@ -110,11 +110,11 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
               `,
             )}
         </div>
-        <div class="mt-4 pt-3 border-t border-slate-700 space-y-2">
-          <p class="text-xs text-gray-500 text-center">
+        <div class="mt-4 pt-3 border-t border-mitto-border-1 space-y-2">
+          <p class="text-xs text-mitto-text-muted text-center">
             On touch devices, swipe left/right to switch conversations
           </p>
-          <p class="text-xs text-gray-500 text-center">Press Escape to close</p>
+          <p class="text-xs text-mitto-text-muted text-center">Press Escape to close</p>
         </div>
       </div>
     </div>

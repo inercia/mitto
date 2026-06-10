@@ -164,12 +164,12 @@ export function AgentDiscoveryDialog({
         data-testid="agent-discovery-dialog"
       >
         <!-- Header -->
-        <div class="flex items-center justify-between p-4 border-b border-slate-700">
+        <div class="flex items-center justify-between p-4 border-b border-mitto-border-1">
           <h3 class="text-lg font-semibold">${dialogTitle}</h3>
           <button
             onClick=${() => !isLoading && onClose?.()}
             disabled=${isLoading}
-            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isLoading ? "opacity-50 cursor-not-allowed" : ""}"
+            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${isLoading ? "opacity-50 cursor-not-allowed" : ""}"
           >
             <${CloseIcon} className="w-5 h-5" />
           </button>
@@ -180,44 +180,44 @@ export function AgentDiscoveryDialog({
           ${phase === "initial" && html`
             <div class="text-center py-4">
               <div class="text-4xl mb-3">🤖</div>
-              <p class="text-gray-200 font-medium mb-2">No AI agents configured yet</p>
-              <p class="text-gray-400 text-sm mb-5">
+              <p class="text-mitto-text font-medium mb-2">No AI agents configured yet</p>
+              <p class="text-mitto-text-muted text-sm mb-5">
                 Scan your system to detect installed AI coding agents
                 (Claude Code, Auggie, Cursor, etc.)
               </p>
-              ${error && html`<p class="text-red-400 text-sm mb-3">${error}</p>`}
+              ${error && html`<p class="text-mitto-danger text-sm mb-3">${error}</p>`}
             </div>
           `}
 
           ${phase === "scanning" && html`
             <div class="text-center py-6">
-              <${SpinnerIcon} className="w-10 h-10 mx-auto mb-3 text-blue-400" />
-              <p class="text-gray-300">Scanning for installed agents...</p>
+              <${SpinnerIcon} className="w-10 h-10 mx-auto mb-3 text-mitto-accent" />
+              <p class="text-mitto-text-secondary">Scanning for installed agents...</p>
             </div>
           `}
 
           ${phase === "confirming" && html`
             <div class="text-center py-6">
-              <${SpinnerIcon} className="w-10 h-10 mx-auto mb-3 text-blue-400" />
-              <p class="text-gray-300">Saving agent configuration...</p>
+              <${SpinnerIcon} className="w-10 h-10 mx-auto mb-3 text-mitto-accent" />
+              <p class="text-mitto-text-secondary">Saving agent configuration...</p>
             </div>
           `}
 
           ${phase === "empty" && html`
             <div class="text-center py-4">
               <div class="text-4xl mb-3">🔍</div>
-              <p class="text-gray-200 font-medium mb-2">No agents detected</p>
-              <p class="text-gray-400 text-sm">
+              <p class="text-mitto-text font-medium mb-2">No agents detected</p>
+              <p class="text-mitto-text-muted text-sm">
                 No installed AI agents were found.
                 ${!isSettingsMode && " You can configure one manually in Settings."}
               </p>
-              ${error && html`<p class="text-red-400 text-sm mt-2">${error}</p>`}
+              ${error && html`<p class="text-mitto-danger text-sm mt-2">${error}</p>`}
             </div>
           `}
 
           ${phase === "results" && html`
             <div>
-              <p class="text-gray-300 text-sm mb-3">Select the agents to add:</p>
+              <p class="text-mitto-text-secondary text-sm mb-3">Select the agents to add:</p>
               <div class="space-y-2 max-h-64 overflow-y-auto">
                 ${agents.filter((a) => a.available).map((agent) => {
                   const alreadyConfigured = existingCommands.has(agent.status?.command);
@@ -226,10 +226,10 @@ export function AgentDiscoveryDialog({
                       key=${agent.dir_name}
                       class="flex items-start gap-3 p-3 rounded-lg border transition-colors
                         ${alreadyConfigured
-                          ? "border-slate-700 opacity-50 cursor-default"
+                          ? "border-mitto-border-1 opacity-50 cursor-default"
                           : selected.has(agent.dir_name)
-                            ? "border-blue-600 bg-blue-600/10 cursor-pointer hover:border-blue-500"
-                            : "border-slate-700 cursor-pointer hover:border-slate-500"
+                            ? "border-blue-600 bg-blue-600/10 cursor-pointer hover:border-mitto-accent"
+                            : "border-mitto-border-1 cursor-pointer hover:border-mitto-border-3"
                         }"
                       onClick=${() => !alreadyConfigured && toggleAgent(agent.dir_name)}
                     >
@@ -247,16 +247,16 @@ export function AgentDiscoveryDialog({
                         <div class="flex items-center gap-2 flex-wrap">
                           <span class="font-medium text-sm">${agent.metadata.display_name || agent.dir_name}</span>
                           ${agent.status?.version && html`
-                            <span class="text-xs text-gray-500">${agent.status.version}</span>
+                            <span class="text-xs text-mitto-text-muted">${agent.status.version}</span>
                           `}
                           ${alreadyConfigured && html`
-                            <span class="text-xs text-gray-500 bg-slate-700 px-1.5 py-0.5 rounded">
+                            <span class="text-xs text-mitto-text-muted bg-mitto-surface-3 px-1.5 py-0.5 rounded">
                               Already configured
                             </span>
                           `}
                         </div>
                         ${agent.status?.command && html`
-                          <div class="text-xs text-gray-500 truncate mt-0.5">${agent.status.command}</div>
+                          <div class="text-xs text-mitto-text-muted truncate mt-0.5">${agent.status.command}</div>
                         `}
                       </div>
                     </div>
@@ -264,21 +264,21 @@ export function AgentDiscoveryDialog({
                 })}
               </div>
               ${agents.some((a) => !a.available) && html`
-                <p class="text-gray-500 text-xs mt-3">
+                <p class="text-mitto-text-muted text-xs mt-3">
                   ${agents.filter((a) => !a.available).length} agent(s) not installed on this system.
                 </p>
               `}
-              ${error && html`<p class="text-red-400 text-sm mt-3">${error}</p>`}
+              ${error && html`<p class="text-mitto-danger text-sm mt-3">${error}</p>`}
             </div>
           `}
         </div>
 
         <!-- Footer -->
-        <div class="flex justify-end gap-3 p-4 border-t border-slate-700">
+        <div class="flex justify-end gap-3 p-4 border-t border-mitto-border-1">
           ${(phase === "initial" || phase === "empty") && html`
             <button
               onClick=${onClose}
-              class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors"
+              class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
               data-testid="agent-discovery-skip"
             >
               ${isSettingsMode ? "Cancel" : "Configure Manually"}
@@ -287,7 +287,7 @@ export function AgentDiscoveryDialog({
           ${phase === "results" && html`
             <button
               onClick=${onClose}
-              class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors"
+              class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
             >
               ${isSettingsMode ? "Cancel" : "Skip"}
             </button>
@@ -295,7 +295,7 @@ export function AgentDiscoveryDialog({
           ${phase === "initial" && html`
             <button
               onClick=${handleScan}
-              class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg rounded-lg transition-colors"
               data-testid="agent-discovery-scan"
             >
               Scan for Agents
@@ -305,7 +305,7 @@ export function AgentDiscoveryDialog({
             <button
               onClick=${handleConfirm}
               disabled=${selected.size === 0}
-              class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="agent-discovery-confirm"
             >
               Add Selected (${selected.size})

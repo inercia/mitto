@@ -243,13 +243,13 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
       >
         <!-- Header -->
         <div
-          class="flex items-center justify-between p-4 border-b border-slate-700"
+          class="flex items-center justify-between p-4 border-b border-mitto-border-1"
         >
           <h3 class="text-lg font-semibold">Save Prompt</h3>
           <button
             onClick=${handleClose}
             disabled=${isSaving}
-            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isSaving
+            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             data-testid="save-prompt-dialog-close"
@@ -262,9 +262,9 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
         <div class="p-4 space-y-4">
           <!-- Name field -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Name
-              <span class="text-red-400 ml-0.5">*</span>
+              <span class="text-mitto-danger ml-0.5">*</span>
             </label>
             <input
               ref=${nameInputRef}
@@ -274,16 +274,16 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               onKeyDown=${handleKeyDown}
               placeholder="My Prompt"
               disabled=${isSaving}
-              class="w-full px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
               data-testid="save-prompt-name-input"
             />
           </div>
 
           <!-- Description field -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Description
-              <span class="text-gray-500 text-xs ml-1">(optional)</span>
+              <span class="text-mitto-text-muted text-xs ml-1">(optional)</span>
             </label>
             <textarea
               value=${description}
@@ -292,14 +292,14 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               placeholder="A brief description of what this prompt does..."
               disabled=${isSaving}
               rows="2"
-              class="w-full px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 resize-none"
+              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 resize-none"
               data-testid="save-prompt-description-input"
             />
           </div>
 
           <!-- Filename field with optional Browse button -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Filename
             </label>
             <div class="flex gap-2">
@@ -310,7 +310,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="my-prompt.md"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
                 data-testid="save-prompt-filename-input"
               />
             </div>
@@ -318,7 +318,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
           <!-- Save directory with optional Browse button -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Save to
             </label>
             <div class="flex gap-2">
@@ -329,7 +329,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="/path/to/save/directory"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 font-mono text-xs"
+                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 font-mono text-xs"
                 data-testid="save-prompt-directory-input"
               />
               ${hasNativeFolderPicker() &&
@@ -338,7 +338,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                   type="button"
                   onClick=${handleBrowse}
                   disabled=${isSaving}
-                  class="px-3 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                  class="px-3 py-2 text-sm bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
                   data-testid="save-prompt-browse-btn"
                 >
                   Browse…
@@ -348,7 +348,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
             ${fullPath &&
             html`
               <p
-                class="text-xs text-gray-500 mt-1 font-mono truncate"
+                class="text-xs text-mitto-text-muted mt-1 font-mono truncate"
                 title=${fullPath}
               >
                 ${fullPath}
@@ -360,7 +360,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
           ${error &&
           html`
             <div
-              class="text-red-400 text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2"
+              class="text-mitto-danger text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2"
               data-testid="save-prompt-error"
             >
               ${error}
@@ -369,11 +369,11 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
         </div>
 
         <!-- Footer with buttons -->
-        <div class="flex justify-end gap-3 p-4 border-t border-slate-700">
+        <div class="flex justify-end gap-3 p-4 border-t border-mitto-border-1">
           <button
             onClick=${handleClose}
             disabled=${isSaving}
-            class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors ${isSaving
+            class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             data-testid="save-prompt-cancel-btn"
@@ -383,7 +383,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
           <button
             onClick=${handleSave}
             disabled=${!canSave}
-            class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors flex items-center gap-2 ${!canSave
+            class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg rounded-lg transition-colors flex items-center gap-2 ${!canSave
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             data-testid="save-prompt-save-btn"

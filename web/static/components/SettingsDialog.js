@@ -79,11 +79,11 @@ export function FolderListEditor({
   return html`
     <div class="space-y-1">
       <div class="flex items-center gap-2 mb-1">
-        <span class="text-sm font-medium text-gray-300 flex-1">${label}</span>
+        <span class="text-sm font-medium text-mitto-text-secondary flex-1">${label}</span>
         <select
           value=${mode}
           onChange=${(e) => onModeChange(e.target.value)}
-          class="px-2 py-0.5 bg-slate-700 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="px-2 py-0.5 bg-mitto-surface-3 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="append">Append</option>
           <option value="replace">Replace</option>
@@ -101,7 +101,7 @@ export function FolderListEditor({
                   type="text"
                   value=${f}
                   disabled
-                  class="flex-1 px-3 py-1.5 bg-slate-800 rounded text-sm font-mono cursor-not-allowed"
+                  class="flex-1 px-3 py-1.5 bg-mitto-surface-2 rounded text-sm font-mono cursor-not-allowed"
                 />
               </div>
             `,
@@ -125,12 +125,12 @@ export function FolderListEditor({
                 value=${f}
                 onInput=${(e) => updateFolder(idx, e.target.value)}
                 placeholder=${placeholder || "$MITTO_WORKING_DIR"}
-                class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <button
                 type="button"
                 onClick=${() => removeFolder(idx)}
-                class="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
                 title="Remove folder"
               >
                 <${TrashIcon} className="w-4 h-4" />
@@ -141,7 +141,7 @@ export function FolderListEditor({
         <button
           type="button"
           onClick=${addFolder}
-          class="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
         >
           <${PlusIcon} className="w-3 h-3" />
           Add folder
@@ -188,28 +188,28 @@ export function AutoChildrenEditor({
   return html`
     <div class="space-y-2">
       <div class="flex items-center justify-between">
-        <label class="text-sm text-gray-400">Auto-Create Children</label>
+        <label class="text-sm text-mitto-text-muted">Auto-Create Children</label>
         ${canAdd
           ? html`
               <button
                 type="button"
                 onClick=${addChild}
-                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-blue-600 hover:text-white border border-mitto-border rounded-lg transition-colors"
+                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-mitto-accent-hover hover:text-white border border-mitto-border rounded-lg transition-colors"
               >
                 + Add Child
               </button>
             `
           : html`
-              <span class="text-xs text-gray-500">Max ${maxChildren} children</span>
+              <span class="text-xs text-mitto-text-muted">Max ${maxChildren} children</span>
             `}
       </div>
-      <p class="text-xs text-gray-500">
+      <p class="text-xs text-mitto-text-muted">
         These conversations are auto-created when a new top-level conversation
         starts. They are deleted when the parent is deleted.
       </p>
       ${(children || []).length === 0
         ? html`
-            <div class="text-xs text-gray-500 italic py-2">
+            <div class="text-xs text-mitto-text-muted italic py-2">
               No auto-children configured.
             </div>
           `
@@ -252,7 +252,7 @@ export function AutoChildrenEditor({
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                      class="p-1.5 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
                       title="Remove child"
                     >
                       <${TrashIcon} className="w-4 h-4" />
@@ -358,14 +358,14 @@ export function RunnerRestrictionsEditor({
       >
         <div class="flex items-center gap-2">
           <${expanded ? ChevronDownIcon : ChevronRightIcon}
-            className="w-4 h-4 text-gray-400"
+            className="w-4 h-4 text-mitto-text-muted"
           />
           <span class="text-sm font-medium">Runner Restrictions</span>
         </div>
         ${hasConfig &&
         html`
           <span
-            class="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+            class="px-2 py-0.5 bg-blue-500/20 text-mitto-accent rounded text-xs"
           >
             Configured
           </span>
@@ -375,7 +375,7 @@ export function RunnerRestrictionsEditor({
       ${expanded &&
       html`
         <div class="p-4 space-y-4 border-t border-slate-600/50">
-          <p class="text-xs text-gray-500">
+          <p class="text-xs text-mitto-text-muted">
             Override inherited restrictions from global/agent config.
             ${effectiveConfig
               ? ""
@@ -390,7 +390,7 @@ export function RunnerRestrictionsEditor({
                 id="override-networking"
                 checked=${overrideNetworking}
                 onChange=${(e) => handleNetworkingOverride(e.target.checked)}
-                class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
               />
               <label for="override-networking" class="text-sm font-medium"
                 >Override networking</label
@@ -408,13 +408,13 @@ export function RunnerRestrictionsEditor({
                           "allow_networking",
                           e.target.checked,
                         )}
-                      class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                      class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                     />
                     <span class="text-sm">Allow networking</span>
                   </label>
                 `
               : html`
-                  <p class="text-xs text-gray-500 ml-6">
+                  <p class="text-xs text-mitto-text-muted ml-6">
                     Inherited:
                     ${inheritedNetworking ? "allowed" : "blocked"}
                   </p>
@@ -452,39 +452,39 @@ export function RunnerRestrictionsEditor({
           ${runnerType === "docker" &&
           html`
             <div class="space-y-2 pt-2 border-t border-slate-600/50">
-              <label class="text-sm font-medium text-gray-300"
+              <label class="text-sm font-medium text-mitto-text-secondary"
                 >Docker Settings</label
               >
               <div class="grid grid-cols-3 gap-3">
                 <div>
-                  <label class="text-xs text-gray-500">Image</label>
+                  <label class="text-xs text-mitto-text-muted">Image</label>
                   <input
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.image || ""}
                     onInput=${(e) => updateDocker("image", e.target.value)}
-                    class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="alpine:latest"
                   />
                 </div>
                 <div>
-                  <label class="text-xs text-gray-500">Memory Limit</label>
+                  <label class="text-xs text-mitto-text-muted">Memory Limit</label>
                   <input
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.memory_limit ||
                     ""}
                     onInput=${(e) =>
                       updateDocker("memory_limit", e.target.value)}
-                    class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="4g"
                   />
                 </div>
                 <div>
-                  <label class="text-xs text-gray-500">CPU Limit</label>
+                  <label class="text-xs text-mitto-text-muted">CPU Limit</label>
                   <input
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.cpu_limit || ""}
                     onInput=${(e) => updateDocker("cpu_limit", e.target.value)}
-                    class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="2.0"
                   />
                 </div>
@@ -497,7 +497,7 @@ export function RunnerRestrictionsEditor({
             <button
               type="button"
               onClick=${() => onChange(null)}
-              class="px-3 py-1.5 text-xs text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+              class="px-3 py-1.5 text-xs text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
             >
               Clear Restrictions
             </button>
@@ -603,27 +603,27 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
   return html`
     <div class="space-y-3">
       <div>
-        <label class="block text-sm text-gray-400 mb-1">Server Name</label>
+        <label class="block text-sm text-mitto-text-muted mb-1">Server Name</label>
         <input
           type="text"
           value=${name}
           onInput=${(e) => { setName(e.target.value); emitChange({ name: e.target.value }); }}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
       <div>
-        <label class="block text-sm text-gray-400 mb-1">Command</label>
+        <label class="block text-sm text-mitto-text-muted mb-1">Command</label>
         <input
           type="text"
           value=${command}
           onInput=${(e) => { setCommand(e.target.value); emitChange({ command: e.target.value }); }}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
       <!-- Model Selection -->
       <div>
-        <label class="block text-sm text-gray-400 mb-1">Model Selection</label>
-        <p class="text-xs text-gray-500 mb-2">
+        <label class="block text-sm text-mitto-text-muted mb-1">Model Selection</label>
+        <p class="text-xs text-mitto-text-muted mb-2">
           Switch to a model based on some selection criteria
         </p>
         <${ModelSelection}
@@ -637,28 +637,28 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         />
       </div>
       <div>
-        <label class="block text-sm text-gray-400 mb-1"
+        <label class="block text-sm text-mitto-text-muted mb-1"
           >Type
-          <span class="text-xs text-red-400 ml-1">*</span></label
+          <span class="text-xs text-mitto-danger ml-1">*</span></label
         >
         <select
           value=${type}
           onChange=${(e) => { setType(e.target.value); emitChange({ type: e.target.value }); }}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="">-- Select agent type --</option>
           ${agentTypes.map(
             (t) => html`<option key=${t} value=${t}>${t}</option>`,
           )}
         </select>
-        <p class="text-xs text-gray-500 mt-1">
+        <p class="text-xs text-mitto-text-muted mt-1">
           Servers with the same type share prompts and agent configuration.
         </p>
       </div>
       <div>
-        <label class="block text-sm text-gray-400 mb-1"
+        <label class="block text-sm text-mitto-text-muted mb-1"
           >Tags
-          <span class="text-xs text-gray-500"
+          <span class="text-xs text-mitto-text-muted"
             >(optional, for categorization)</span
           ></label
         >
@@ -667,9 +667,9 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           value=${tags}
           onInput=${(e) => { setTags(e.target.value); emitChange({ tags: e.target.value }); }}
           placeholder="e.g., coding, fast-model, production"
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        <p class="text-xs text-gray-500 mt-1">
+        <p class="text-xs text-mitto-text-muted mt-1">
           Comma-separated tags for categorization
         </p>
       </div>
@@ -682,11 +682,11 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           type="checkbox"
           checked=${autoApprove}
           onChange=${(e) => { setAutoApprove(e.target.checked); emitChange({ autoApprove: e.target.checked }); }}
-          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
         />
         <div class="flex-1">
           <div class="font-medium text-sm">Auto-approve Permissions</div>
-          <div class="text-xs text-gray-500">
+          <div class="text-xs text-mitto-text-muted">
             Automatically approve all permission requests from the agent for
             sessions using this server
           </div>
@@ -696,21 +696,21 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       <!-- Environment Variables -->
       <div>
         <div class="flex items-center justify-between mb-2">
-          <label class="block text-sm text-gray-400"
+          <label class="block text-sm text-mitto-text-muted"
             >Environment Variables
-            <span class="text-xs text-gray-500">(optional)</span>
+            <span class="text-xs text-mitto-text-muted">(optional)</span>
           </label>
           <button
             type="button"
             onClick=${addEnvVar}
-            class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+            class="text-xs px-2 py-1 bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded transition-colors"
           >
             + Add Variable
           </button>
         </div>
         ${envVars.length === 0
           ? html`
-              <p class="text-xs text-gray-500 italic">
+              <p class="text-xs text-mitto-text-muted italic">
                 No environment variables configured. Click "Add Variable" to add
                 one.
               </p>
@@ -725,21 +725,21 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                         value=${env.key}
                         placeholder="NAME"
                         onInput=${(e) => updateEnvVar(idx, "key", e.target.value)}
-                        class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                        class="flex-1 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
                       />
-                      <span class="text-gray-500">=</span>
+                      <span class="text-mitto-text-muted">=</span>
                       <input
                         type="text"
                         value=${env.value}
                         placeholder="value"
                         onInput=${(e) =>
                           updateEnvVar(idx, "value", e.target.value)}
-                        class="flex-2 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        class="flex-2 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
                       <button
                         type="button"
                         onClick=${() => removeEnvVar(idx)}
-                        class="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                        class="p-1.5 text-mitto-danger hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
                         title="Remove variable"
                       >
                         <${TrashIcon} className="w-4 h-4" />
@@ -749,7 +749,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                 )}
               </div>
             `}
-        <p class="text-xs text-gray-500 mt-2">
+        <p class="text-xs text-mitto-text-muted mt-2">
           These environment variables will be set when starting the ACP server
           process.
         </p>
@@ -759,9 +759,9 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       ${filePrompts.length > 0 &&
       html`
         <div>
-          <label class="text-sm text-gray-400 mb-2 block"
+          <label class="text-sm text-mitto-text-muted mb-2 block"
             >Server-specific prompts
-            <span class="text-xs text-gray-500"
+            <span class="text-xs text-mitto-text-muted"
               >(from prompt files)</span
             ></label
           >
@@ -776,7 +776,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                   <div class="flex-1 min-w-0">
                     <div class="font-medium text-xs">${p.name}</div>
                     <div
-                      class="text-xs text-gray-500 truncate"
+                      class="text-xs text-mitto-text-muted truncate"
                       title=${p.prompt}
                     >
                       ${p.description || p.prompt}
@@ -807,31 +807,31 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
   return html`
     <div class="space-y-3">
       <div>
-        <label class="block text-sm text-gray-400 mb-1">Button Label</label>
+        <label class="block text-sm text-mitto-text-muted mb-1">Button Label</label>
         <input
           type="text"
           value=${name}
           onInput=${(e) => setName(e.target.value)}
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
       </div>
       <div>
-        <label class="block text-sm text-gray-400 mb-1">Prompt Text</label>
+        <label class="block text-sm text-mitto-text-muted mb-1">Prompt Text</label>
         <textarea
           value=${text}
           onInput=${(e) => setText(e.target.value)}
           rows="8"
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y ${readOnly
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
       </div>
       <div>
-        <label class="block text-sm text-gray-400 mb-1"
+        <label class="block text-sm text-mitto-text-muted mb-1"
           >Group (optional)</label
         >
         <input
@@ -840,13 +840,13 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           onInput=${(e) => setGroup(e.target.value)}
           placeholder="e.g., Tasks, Code Quality"
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
+          class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
       </div>
       <div>
-        <label class="block text-sm text-gray-400 mb-1"
+        <label class="block text-sm text-mitto-text-muted mb-1"
           >Background Color (optional)</label
         >
         <div class="flex items-center gap-2">
@@ -855,7 +855,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             value=${backgroundColor || "#334155"}
             onInput=${(e) => setBackgroundColor(e.target.value)}
             disabled=${readOnly}
-            class="w-10 h-10 rounded cursor-pointer border border-slate-600 ${readOnly
+            class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2 ${readOnly
               ? "opacity-60 cursor-not-allowed"
               : ""}"
             title="Choose background color"
@@ -866,7 +866,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             onInput=${(e) => setBackgroundColor(e.target.value)}
             placeholder="#E8F5E9"
             disabled=${readOnly}
-            class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono ${readOnly
+            class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono ${readOnly
               ? "opacity-60 cursor-not-allowed"
               : ""}"
           />
@@ -876,11 +876,11 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             <button
               type="button"
               onClick=${() => setBackgroundColor("")}
-              class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+              class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
               title="Clear color"
             >
               <svg
-                class="w-4 h-4 text-gray-400"
+                class="w-4 h-4 text-mitto-text-muted"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -899,7 +899,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
       <div class="flex justify-end gap-2">
         <button
           onClick=${onCancel}
-          class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
+          class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
         >
           ${readOnly ? "Close" : "Cancel"}
         </button>
@@ -908,7 +908,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           <button
             onClick=${() => onSave(name, text, backgroundColor, group)}
             disabled=${!name.trim() || !text.trim()}
-            class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50"
+            class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50"
           >
             Save
           </button>
@@ -2031,7 +2031,7 @@ export function SettingsDialog({
       >
         <!-- Header -->
         <div
-          class="flex items-center justify-between p-4 border-b border-slate-700"
+          class="flex items-center justify-between p-4 border-b border-mitto-border-1"
         >
           <h3 class="text-lg font-semibold flex items-center gap-2">
             <${SettingsIcon} className="w-5 h-5" />
@@ -2041,7 +2041,7 @@ export function SettingsDialog({
           html`
             <button
               onClick=${handleClose}
-              class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors"
+              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors"
             >
               <${CloseIcon} className="w-5 h-5" />
             </button>
@@ -2052,7 +2052,7 @@ export function SettingsDialog({
         <div class="flex flex-1 min-h-0 overflow-hidden">
           <!-- Sidebar Navigation -->
           <nav
-            class="w-44 shrink-0 border-r border-slate-700 py-2 overflow-y-auto"
+            class="w-44 shrink-0 border-r border-mitto-border-1 py-2 overflow-y-auto"
           >
             ${navItems.map(
               (item) => html`
@@ -2061,8 +2061,8 @@ export function SettingsDialog({
                   onClick=${() => setActiveTab(item.id)}
                   class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${activeTab ===
                   item.id
-                    ? "text-blue-400 bg-blue-500/10 border-l-2 border-blue-400"
-                    : "text-gray-400 hover:text-white hover:bg-slate-700/50 border-l-2 border-transparent"}"
+                    ? "text-mitto-accent bg-blue-500/10 border-l-2 border-mitto-accent"
+                    : "text-mitto-text-muted hover:text-white hover:bg-slate-700/50 border-l-2 border-transparent"}"
                 >
                   <${item.icon} className="w-4 h-4 shrink-0" />
                   <span class="truncate">${item.label}</span>
@@ -2076,7 +2076,7 @@ export function SettingsDialog({
             ${loading
               ? html`
                   <div class="flex items-center justify-center py-12">
-                    <${SpinnerIcon} className="w-8 h-8 text-blue-400" />
+                    <${SpinnerIcon} className="w-8 h-8 text-mitto-accent" />
                   </div>
                 `
               : html`
@@ -2085,7 +2085,7 @@ export function SettingsDialog({
                   html`
                     <div class="space-y-4">
                       <div class="flex items-center justify-between">
-                        <p class="text-gray-400 text-sm">
+                        <p class="text-mitto-text-muted text-sm">
                           ACP servers are AI coding assistants.${" "}
                           <a
                             href="https://agentclientprotocol.com/overview/agents"
@@ -2095,7 +2095,7 @@ export function SettingsDialog({
                                 "https://agentclientprotocol.com/overview/agents",
                               );
                             }}
-                            class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                            class="text-mitto-accent hover:text-blue-300 underline cursor-pointer"
                             >Popular examples</a
                           >${" "} include Auggie and Claude Code. You can
                           configure multiple servers and choose which one to use
@@ -2103,15 +2103,15 @@ export function SettingsDialog({
                         </p>
                         <button
                           onClick=${() => setShowDiscoverAgents(true)}
-                          class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors"
+                          class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors"
                           title="Discover Agents"
                         >
                           <${SearchIcon} className="w-5 h-5" />
                         </button>
                         <button
                           onClick=${() => setShowAddServer(!showAddServer)}
-                          class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddServer
-                            ? "bg-slate-700"
+                          class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${showAddServer
+                            ? "bg-mitto-surface-3"
                             : ""}"
                           title="Add Server"
                         >
@@ -2122,10 +2122,10 @@ export function SettingsDialog({
                       ${showAddServer &&
                       html`
                         <div
-                          class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3"
+                          class="p-4 bg-slate-800/50 rounded-lg border border-mitto-border-1 space-y-3"
                         >
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1"
+                            <label class="block text-sm text-mitto-text-muted mb-1"
                               >Server Name</label
                             >
                             <input
@@ -2133,11 +2133,11 @@ export function SettingsDialog({
                               value=${newServerName}
                               onInput=${(e) => setNewServerName(e.target.value)}
                               placeholder="e.g., claude-code"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                           </div>
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1"
+                            <label class="block text-sm text-mitto-text-muted mb-1"
                               >Command</label
                             >
                             <input
@@ -2146,34 +2146,34 @@ export function SettingsDialog({
                               onInput=${(e) =>
                                 setNewServerCommand(e.target.value)}
                               placeholder="e.g., npx -y @anthropic/claude-code-acp"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                           </div>
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1"
+                            <label class="block text-sm text-mitto-text-muted mb-1"
                               >Type
-                              <span class="text-xs text-red-400 ml-1">*</span></label
+                              <span class="text-xs text-mitto-danger ml-1">*</span></label
                             >
                             <select
                               value=${newServerType}
                               onChange=${(e) =>
                                 setNewServerType(e.target.value)}
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${!newServerType ? "ring-2 ring-amber-500/50" : "focus:ring-blue-500"}"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 ${!newServerType ? "ring-2 ring-amber-500/50" : "focus:ring-blue-500"}"
                             >
                               <option value="">-- Select agent type --</option>
                               ${agentTypes.map(
                                 (t) => html`<option key=${t} value=${t}>${t}</option>`,
                               )}
                             </select>
-                            <p class="text-xs text-gray-500 mt-1">
+                            <p class="text-xs text-mitto-text-muted mt-1">
                               Servers with the same type share prompts and
                               agent configuration.
                             </p>
                           </div>
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1"
+                            <label class="block text-sm text-mitto-text-muted mb-1"
                               >Tags
-                              <span class="text-xs text-gray-500"
+                              <span class="text-xs text-mitto-text-muted"
                                 >(optional)</span
                               ></label
                             >
@@ -2183,16 +2183,16 @@ export function SettingsDialog({
                               onInput=${(e) =>
                                 setNewServerTags(e.target.value)}
                               placeholder="e.g., coding, fast-model, production"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
-                            <p class="text-xs text-gray-500 mt-1">
+                            <p class="text-xs text-mitto-text-muted mt-1">
                               Comma-separated tags for categorization
                             </p>
                           </div>
                           ${error &&
                           html`
                             <div
-                              class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
+                              class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-mitto-danger text-sm"
                             >
                               ⚠️ ${error}
                             </div>
@@ -2207,13 +2207,13 @@ export function SettingsDialog({
                                 setNewServerTags("");
                                 setError("");
                               }}
-                              class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
+                              class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
                             >
                               Cancel
                             </button>
                             <button
                               onClick=${addServer}
-                              class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+                              class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors"
                             >
                               Add
                             </button>
@@ -2222,7 +2222,7 @@ export function SettingsDialog({
                       `}
                       ${acpServers.length === 0
                         ? html`
-                            <div class="text-center py-8 text-gray-500">
+                            <div class="text-center py-8 text-mitto-text-muted">
                               <${ServerEmptyIcon}
                                 className="w-12 h-12 mx-auto mb-2 opacity-50"
                               />
@@ -2252,7 +2252,7 @@ export function SettingsDialog({
                                     >
                                       ${!isRCFile && html`
                                         <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
-                                          className="w-4 h-4 text-gray-400 shrink-0"
+                                          className="w-4 h-4 text-mitto-text-muted shrink-0"
                                         />
                                       `}
                                       <div class="flex-1 min-w-0">
@@ -2275,7 +2275,7 @@ export function SettingsDialog({
                                             (tag) => html`
                                               <span
                                                 key=${tag}
-                                                class="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                                                class="px-1.5 py-0.5 bg-blue-500/20 text-mitto-accent rounded text-xs"
                                                 title="Tag"
                                               >
                                                 ${tag}
@@ -2296,7 +2296,7 @@ export function SettingsDialog({
                                           ${srv.prompts?.length > 0 &&
                                           html`
                                             <span
-                                              class="flex items-center gap-1 text-xs text-blue-400"
+                                              class="flex items-center gap-1 text-xs text-mitto-accent"
                                               title="${srv.prompts
                                                 .length} server-specific prompt(s)"
                                             >
@@ -2308,7 +2308,7 @@ export function SettingsDialog({
                                           `}
                                         </div>
                                         <div
-                                          class="text-xs text-gray-500 truncate"
+                                          class="text-xs text-mitto-text-muted truncate"
                                           title=${srv.command}
                                         >
                                           ${srv.command}
@@ -2326,7 +2326,7 @@ export function SettingsDialog({
                                             e.stopPropagation();
                                             duplicateServer(srv.name);
                                           }}
-                                          class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          class="p-1.5 text-mitto-text-muted hover:text-mitto-success hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                           title="Duplicate server"
                                         >
                                           <${DuplicateIcon}
@@ -2338,7 +2338,7 @@ export function SettingsDialog({
                                             e.stopPropagation();
                                             removeServer(srv.name);
                                           }}
-                                          class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          class="p-1.5 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                           title="Remove server"
                                         >
                                           <${TrashIcon}
@@ -2393,11 +2393,11 @@ export function SettingsDialog({
                         </p>
                       </div>
 
-                      <p class="text-gray-400 text-sm">
+                      <p class="text-mitto-text-muted text-sm">
                         Configure per-runner-type restrictions. Workspaces using
                         a specific runner type will inherit these settings.
                         <br />
-                        <span class="text-gray-500"
+                        <span class="text-mitto-text-muted"
                           >Note: .mittorc settings will override these
                           values.</span
                         >
@@ -2428,13 +2428,13 @@ export function SettingsDialog({
                                     <${expandedRunner === runner.type
                                       ? ChevronDownIcon
                                       : ChevronRightIcon}
-                                      className="w-4 h-4 text-gray-400"
+                                      className="w-4 h-4 text-mitto-text-muted"
                                     />
                                     <div class="text-left">
                                       <div class="font-medium text-sm">
                                         ${runner.label}
                                       </div>
-                                      <div class="text-xs text-gray-500">
+                                      <div class="text-xs text-mitto-text-muted">
                                         ${runner.description}
                                       </div>
                                     </div>
@@ -2442,7 +2442,7 @@ export function SettingsDialog({
                                   ${restrictedRunners[runner.type] &&
                                   html`
                                     <span
-                                      class="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                                      class="px-2 py-0.5 bg-blue-500/20 text-mitto-accent rounded text-xs"
                                     >
                                       Configured
                                     </span>
@@ -2484,13 +2484,13 @@ export function SettingsDialog({
                                             [runner.type]: newConfig,
                                           });
                                         }}
-                                        class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                        class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                                       />
                                       <div>
                                         <div class="font-medium text-sm">
                                           Allow networking
                                         </div>
-                                        <div class="text-xs text-gray-500">
+                                        <div class="text-xs text-mitto-text-muted">
                                           Required for network-based MCP servers
                                         </div>
                                       </div>
@@ -2499,7 +2499,7 @@ export function SettingsDialog({
                                     <!-- Allow read folders -->
                                     <div class="space-y-2">
                                       <label
-                                        class="text-sm font-medium text-gray-300"
+                                        class="text-sm font-medium text-mitto-text-secondary"
                                       >
                                         Allow read folders
                                       </label>
@@ -2548,7 +2548,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                 placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
@@ -2582,7 +2582,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                                class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
                                                 title="Remove folder"
                                               >
                                                 <${TrashIcon}
@@ -2620,7 +2620,7 @@ export function SettingsDialog({
                                               [runner.type]: newConfig,
                                             });
                                           }}
-                                          class="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
                                         >
                                           <${PlusIcon} className="w-3 h-3" />
                                           Add folder
@@ -2631,7 +2631,7 @@ export function SettingsDialog({
                                     <!-- Allow write folders -->
                                     <div class="space-y-2">
                                       <label
-                                        class="text-sm font-medium text-gray-300"
+                                        class="text-sm font-medium text-mitto-text-secondary"
                                       >
                                         Allow write folders
                                       </label>
@@ -2680,7 +2680,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                class="flex-1 px-3 py-1.5 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                 placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
@@ -2715,7 +2715,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                                class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
                                                 title="Remove folder"
                                               >
                                                 <${TrashIcon}
@@ -2753,7 +2753,7 @@ export function SettingsDialog({
                                               [runner.type]: newConfig,
                                             });
                                           }}
-                                          class="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
                                         >
                                           <${PlusIcon} className="w-3 h-3" />
                                           Add folder
@@ -2768,13 +2768,13 @@ export function SettingsDialog({
                                         class="space-y-2 pt-2 border-t border-slate-600/50"
                                       >
                                         <label
-                                          class="text-sm font-medium text-gray-300"
+                                          class="text-sm font-medium text-mitto-text-secondary"
                                         >
                                           Docker Settings
                                         </label>
                                         <div class="grid grid-cols-3 gap-3">
                                           <div>
-                                            <label class="text-xs text-gray-500"
+                                            <label class="text-xs text-mitto-text-muted"
                                               >Image</label
                                             >
                                             <input
@@ -2811,12 +2811,12 @@ export function SettingsDialog({
                                                   [runner.type]: newConfig,
                                                 });
                                               }}
-                                              class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                                               placeholder="alpine:latest"
                                             />
                                           </div>
                                           <div>
-                                            <label class="text-xs text-gray-500"
+                                            <label class="text-xs text-mitto-text-muted"
                                               >Memory Limit</label
                                             >
                                             <input
@@ -2854,12 +2854,12 @@ export function SettingsDialog({
                                                   [runner.type]: newConfig,
                                                 });
                                               }}
-                                              class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                                               placeholder="4g"
                                             />
                                           </div>
                                           <div>
-                                            <label class="text-xs text-gray-500"
+                                            <label class="text-xs text-mitto-text-muted"
                                               >CPU Limit</label
                                             >
                                             <input
@@ -2896,7 +2896,7 @@ export function SettingsDialog({
                                                   [runner.type]: newConfig,
                                                 });
                                               }}
-                                              class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                              class="w-full px-2 py-1 bg-mitto-surface-3 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                                               placeholder="2.0"
                                             />
                                           </div>
@@ -2906,7 +2906,7 @@ export function SettingsDialog({
 
                                     <!-- Merge strategy -->
                                     <div class="flex items-center gap-3 pt-2">
-                                      <label class="text-sm text-gray-400"
+                                      <label class="text-sm text-mitto-text-muted"
                                         >Merge Strategy:</label
                                       >
                                       <select
@@ -2924,7 +2924,7 @@ export function SettingsDialog({
                                             [runner.type]: newConfig,
                                           });
                                         }}
-                                        class="px-2 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        class="px-2 py-1 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                       >
                                         <option value="extend">
                                           extend (merge with workspace config)
@@ -2949,7 +2949,7 @@ export function SettingsDialog({
                                           delete newRunners[runner.type];
                                           setRestrictedRunners(newRunners);
                                         }}
-                                        class="px-3 py-1.5 text-xs text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                                        class="px-3 py-1.5 text-xs text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
                                       >
                                         Clear Configuration
                                       </button>
@@ -2965,7 +2965,7 @@ export function SettingsDialog({
                                             });
                                           }
                                         }}
-                                        class="px-3 py-1.5 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                                        class="px-3 py-1.5 text-xs text-mitto-accent hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
                                       >
                                         Reset to Defaults
                                       </button>
@@ -2990,11 +2990,11 @@ export function SettingsDialog({
                                 >
                                   <div class="flex items-center gap-3">
                                     <${ChevronRightIcon}
-                                      className="w-4 h-4 text-gray-500"
+                                      className="w-4 h-4 text-mitto-text-muted"
                                     />
                                     <div>
                                       <div
-                                        class="font-medium text-sm text-gray-500"
+                                        class="font-medium text-sm text-mitto-text-muted"
                                       >
                                         ${runner.label}
                                       </div>
@@ -3016,14 +3016,14 @@ export function SettingsDialog({
                   ${activeTab === "permissions" &&
                   html`
                     <div class="space-y-4">
-                      <p class="text-gray-400 text-sm">
+                      <p class="text-mitto-text-muted text-sm">
                         Configure how permission requests from AI agents are
                         handled.
                       </p>
 
                       <!-- Global Permissions Section -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Global Settings
                         </h4>
 
@@ -3035,13 +3035,13 @@ export function SettingsDialog({
                             checked=${globalAutoApprove}
                             onChange=${(e) =>
                               setGlobalAutoApprove(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
                               Auto-approve All Permissions
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Automatically approve all permission requests from
                               AI agents without showing a dialog. This is the
                               default behavior.
@@ -3050,10 +3050,10 @@ export function SettingsDialog({
                         </label>
 
                         <div
-                          class="p-3 bg-slate-800/50 rounded-lg border border-slate-700"
+                          class="p-3 bg-slate-800/50 rounded-lg border border-mitto-border-1"
                         >
-                          <p class="text-gray-300 text-sm leading-relaxed">
-                            <span class="text-blue-400 font-medium"
+                          <p class="text-mitto-text-secondary text-sm leading-relaxed">
+                            <span class="text-mitto-accent font-medium"
                               >Permission hierarchy:</span
                             >${" "}
                             Per-workspace settings can enable auto-approve even
@@ -3080,7 +3080,7 @@ export function SettingsDialog({
 
                       <!-- Archive Settings -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Archive Settings
                         </h4>
                         <div
@@ -3091,7 +3091,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Auto-archive inactive conversations
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Automatically archive conversations after the
                                 specified period of inactivity
                               </div>
@@ -3100,7 +3100,7 @@ export function SettingsDialog({
                               value=${autoArchiveInactiveAfter}
                               onChange=${(e) =>
                                 setAutoArchiveInactiveAfter(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                             >
                               <option value="">Disabled</option>
                               <option value="1d">After 1 day</option>
@@ -3118,7 +3118,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Auto-delete archived conversations
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Automatically delete archived conversations
                                 after the specified period
                               </div>
@@ -3127,7 +3127,7 @@ export function SettingsDialog({
                               value=${archiveRetentionPeriod}
                               onChange=${(e) =>
                                 setArchiveRetentionPeriod(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                             >
                               <option value="never">Never</option>
                               <option value="1d">After 1 day</option>
@@ -3141,7 +3141,7 @@ export function SettingsDialog({
 
                       <!-- Suspend Settings -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Suspend Settings
                         </h4>
                         <div
@@ -3152,7 +3152,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Suspend periodic conversations
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Automatically suspend idle periodic conversations
                                 when their next run is farther away than this
                                 timeout. Saves memory by stopping ACP and MCP
@@ -3164,7 +3164,7 @@ export function SettingsDialog({
                               value=${periodicSuspendTimeout}
                               onInput=${(e) =>
                                 setPeriodicSuspendTimeout(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                             >
                               <option value="">After 30 minutes</option>
                               <option value="15m">After 15 minutes</option>
@@ -3179,7 +3179,7 @@ export function SettingsDialog({
 
                       <!-- Memory Recycling -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Memory Recycling
                         </h4>
                         <div
@@ -3190,7 +3190,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Recycle bloated idle conversations
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Recycle an idle agent process when its memory
                                 usage grows beyond this size, reclaiming memory
                                 from bloated conversations. Only fully-idle
@@ -3202,7 +3202,7 @@ export function SettingsDialog({
                               value=${memoryRecycleThreshold}
                               onInput=${(e) =>
                                 setMemoryRecycleThreshold(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                             >
                               <option value="">Disabled</option>
                               <option value="3g">Above 3 GB</option>
@@ -3216,7 +3216,7 @@ export function SettingsDialog({
 
                       <!-- Conversation History Limits -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Conversation History
                         </h4>
                         <div
@@ -3227,7 +3227,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Max messages per conversation
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Automatically prune oldest messages when a
                                 conversation exceeds this limit. Prevents
                                 excessive memory usage in long-running
@@ -3244,7 +3244,7 @@ export function SettingsDialog({
                                 setMaxMessagesPerSession(
                                   parseInt(e.target.value, 10) || 0,
                                 )}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-24 text-center focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm w-24 text-center focus:ring-blue-500 focus:border-blue-500"
                             />
                           </div>
                         </div>
@@ -3252,7 +3252,7 @@ export function SettingsDialog({
 
                       <!-- Child Conversations Limit -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Child Conversations
                         </h4>
                         <div
@@ -3263,7 +3263,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Max Child Conversations
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Maximum number of child conversations an AI agent
                                 can spawn via MCP. Auto-created children are not
                                 counted. Set to 0 for unlimited.
@@ -3278,7 +3278,7 @@ export function SettingsDialog({
                                 setMaxChildConversations(
                                   parseInt(e.target.value, 10) || 0,
                                 )}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-blue-500 focus:border-blue-500"
                             />
                           </div>
                         </div>
@@ -3288,10 +3288,10 @@ export function SettingsDialog({
                       ${availableFlags.length > 0 &&
                       html`
                         <div class="space-y-3">
-                          <h4 class="text-sm font-medium text-gray-300">
+                          <h4 class="text-sm font-medium text-mitto-text-secondary">
                             Default Flags for New Conversations
                           </h4>
-                          <p class="text-xs text-gray-500">
+                          <p class="text-xs text-mitto-text-muted">
                             These flags will be enabled by default when creating
                             new conversations.
                           </p>
@@ -3322,14 +3322,14 @@ export function SettingsDialog({
                                             }
                                             setDefaultFlags(newFlags);
                                           }}
-                                          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                                          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
                                         />
                                       </td>
                                       <td class="p-3">
                                         <div class="font-medium">
                                           ${flag.label}
                                         </div>
-                                        <div class="text-xs text-gray-500">
+                                        <div class="text-xs text-mitto-text-muted">
                                           ${flag.description}
                                         </div>
                                       </td>
@@ -3344,7 +3344,7 @@ export function SettingsDialog({
 
                       <!-- Message Display -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Message Display
                         </h4>
                         <label
@@ -3355,13 +3355,13 @@ export function SettingsDialog({
                             checked=${actionButtonsEnabled}
                             onChange=${(e) =>
                               setActionButtonsEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
                               Follow-up Suggestions
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Analyze agent responses to suggest clickable
                               follow-up options (uses auxiliary conversation)
                             </div>
@@ -3375,13 +3375,13 @@ export function SettingsDialog({
                             checked=${externalImagesEnabled}
                             onChange=${(e) =>
                               setExternalImagesEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
                               Allow External Images
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Load images from external HTTPS sources in
                               messages (requires restart, may expose your IP to
                               external servers)
@@ -3396,14 +3396,14 @@ export function SettingsDialog({
                   ${activeTab === "web" &&
                   html`
                     <div class="space-y-4">
-                      <p class="text-gray-400 text-sm">
+                      <p class="text-mitto-text-muted text-sm">
                         Configure external access
                         settings${authEnabled ? " and lifecycle hooks" : ""}.
                       </p>
 
                       <!-- External Access Section -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           External Access
                         </h4>
 
@@ -3414,13 +3414,13 @@ export function SettingsDialog({
                             type="checkbox"
                             checked=${authEnabled}
                             onChange=${(e) => setAuthEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
                               Allow External Access
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Listen on all interfaces (0.0.0.0) and require
                               authentication
                             </div>
@@ -3434,7 +3434,7 @@ export function SettingsDialog({
                             class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
                           >
                             <div class="flex items-center gap-2">
-                              <label class="text-sm text-gray-400">Port</label>
+                              <label class="text-sm text-mitto-text-muted">Port</label>
                               <input
                                 type="number"
                                 value=${externalPort}
@@ -3443,16 +3443,16 @@ export function SettingsDialog({
                                 placeholder="random"
                                 min="1024"
                                 max="65535"
-                                class="w-24 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                class="w-24 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                               />
-                              <span class="text-xs text-gray-500"
+                              <span class="text-xs text-mitto-text-muted"
                                 >(leave empty for random)</span
                               >
                             </div>
                             ${externalEnabled &&
                             currentExternalPort &&
                             html`
-                              <div class="text-xs text-green-400">
+                              <div class="text-xs text-mitto-success">
                                 ✓ External access active on port${" "}
                                 ${currentExternalPort}
                               </div>
@@ -3461,10 +3461,10 @@ export function SettingsDialog({
 
                           <!-- Authentication Methods -->
                           <div class="space-y-3">
-                            <h5 class="text-sm font-medium text-gray-400">
+                            <h5 class="text-sm font-medium text-mitto-text-muted">
                               Authentication
                             </h5>
-                            <p class="text-xs text-gray-500">
+                            <p class="text-xs text-mitto-text-muted">
                               At least one authentication method is required for
                               external access.
                             </p>
@@ -3485,13 +3485,13 @@ export function SettingsDialog({
                                       setAuthUsername(authUsername || "admin");
                                     }
                                   }}
-                                  class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                                 />
                                 <div>
                                   <div class="font-medium text-sm">
                                     Username / Password
                                   </div>
-                                  <div class="text-xs text-gray-500">
+                                  <div class="text-xs text-mitto-text-muted">
                                     Simple credentials for login
                                   </div>
                                 </div>
@@ -3500,7 +3500,7 @@ export function SettingsDialog({
                               html`
                                 <div class="flex items-center gap-4 pl-7">
                                   <div class="flex items-center gap-2">
-                                    <label class="text-sm text-gray-400"
+                                    <label class="text-sm text-mitto-text-muted"
                                       >Username</label
                                     >
                                     <input
@@ -3509,11 +3509,11 @@ export function SettingsDialog({
                                       onInput=${(e) =>
                                         setAuthUsername(e.target.value)}
                                       placeholder="admin"
-                                      class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      class="w-28 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                     />
                                   </div>
                                   <div class="flex items-center gap-2">
-                                    <label class="text-sm text-gray-400"
+                                    <label class="text-sm text-mitto-text-muted"
                                       >Password</label
                                     >
                                     <input
@@ -3533,7 +3533,7 @@ export function SettingsDialog({
                                       placeholder=${authPasswordUnchanged
                                         ? "••••••••"
                                         : "Enter password"}
-                                      class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      class="w-28 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                     />
                                   </div>
                                 </div>
@@ -3550,13 +3550,13 @@ export function SettingsDialog({
                                   checked=${cfEnabled}
                                   onChange=${(e) =>
                                     setCfEnabled(e.target.checked)}
-                                  class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                                 />
                                 <div>
                                   <div class="font-medium text-sm">
                                     Cloudflare Access
                                   </div>
-                                  <div class="text-xs text-gray-500">
+                                  <div class="text-xs text-mitto-text-muted">
                                     SSO/OAuth via Cloudflare Access JWT
                                     validation
                                   </div>
@@ -3567,7 +3567,7 @@ export function SettingsDialog({
                                 <div class="space-y-2 pl-7">
                                   <div class="flex items-center gap-2">
                                     <label
-                                      class="text-sm text-gray-400 w-28"
+                                      class="text-sm text-mitto-text-muted w-28"
                                       >Team Domain</label
                                     >
                                     <input
@@ -3576,12 +3576,12 @@ export function SettingsDialog({
                                       onInput=${(e) =>
                                         setCfTeamDomain(e.target.value)}
                                       placeholder="yourteam.cloudflareaccess.com"
-                                      class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                      class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                     />
                                   </div>
                                   <div class="flex items-center gap-2">
                                     <label
-                                      class="text-sm text-gray-400 w-28"
+                                      class="text-sm text-mitto-text-muted w-28"
                                       >Audience</label
                                     >
                                     <input
@@ -3590,7 +3590,7 @@ export function SettingsDialog({
                                       onInput=${(e) =>
                                         setCfAudience(e.target.value)}
                                       placeholder="Application AUD tag"
-                                      class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                      class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                                     />
                                   </div>
                                 </div>
@@ -3602,10 +3602,10 @@ export function SettingsDialog({
                           <div
                             class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
                           >
-                            <h5 class="text-sm font-medium text-gray-300">
+                            <h5 class="text-sm font-medium text-mitto-text-secondary">
                               Lifecycle Hooks
                             </h5>
-                            <p class="text-xs text-gray-500">
+                            <p class="text-xs text-mitto-text-muted">
                               Commands to run when external access starts/stops
                               (e.g., for tunneling).${" "}
                               <button
@@ -3614,13 +3614,13 @@ export function SettingsDialog({
                                   openExternalURL(
                                     "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md",
                                   )}
-                                class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                                class="text-mitto-accent hover:text-blue-300 underline cursor-pointer"
                               >
                                 Learn more
                               </button>
                             </p>
                             <div class="flex items-center gap-2">
-                              <label class="text-sm text-gray-400 w-12"
+                              <label class="text-sm text-mitto-text-muted w-12"
                                 >Up</label
                               >
                               <input
@@ -3629,11 +3629,11 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setHookUpCommand(e.target.value)}
                                 placeholder="e.g., cloudflared tunnel --url http://localhost:$PORT"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               />
                             </div>
                             <div class="flex items-center gap-2">
-                              <label class="text-sm text-gray-400 w-12"
+                              <label class="text-sm text-mitto-text-muted w-12"
                                 >Down</label
                               >
                               <input
@@ -3642,11 +3642,11 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setHookDownCommand(e.target.value)}
                                 placeholder="e.g., pkill cloudflared"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               />
                             </div>
                             <div class="flex items-center gap-2 mt-2">
-                              <label class="text-sm text-gray-400 w-12"
+                              <label class="text-sm text-mitto-text-muted w-12"
                                 >URL</label
                               >
                               <input
@@ -3655,7 +3655,7 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setHookExternalAddress(e.target.value)}
                                 placeholder="e.g., https://mitto.example.com"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               />
                             </div>
                             <p class="text-xs text-gray-600 mt-1">
@@ -3668,7 +3668,7 @@ export function SettingsDialog({
 
                       <!-- Access Log Section -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Access Log
                         </h4>
 
@@ -3680,13 +3680,13 @@ export function SettingsDialog({
                             checked=${accessLogEnabled}
                             onChange=${(e) =>
                               setAccessLogEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
                               Enable Access Log
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Log security-relevant events (login attempts,
                               unauthorized access, external requests) to a
                               rotating log file
@@ -3703,7 +3703,7 @@ export function SettingsDialog({
                     <div class="space-y-4">
                       <!-- Appearance Settings (all platforms) -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Appearance
                         </h4>
                         <label
@@ -3714,13 +3714,13 @@ export function SettingsDialog({
                             checked=${followSystemTheme}
                             onChange=${(e) =>
                               handleFollowSystemThemeChange(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
                               Follow system theme
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Automatically switch between light and dark mode
                               based on your system preferences
                             </div>
@@ -3736,13 +3736,13 @@ export function SettingsDialog({
                               handleFollowSystemReducedMotionChange(
                                 e.target.checked,
                               )}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
                               Follow system reduced motion
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Automatically reduce animations based on your
                               system accessibility preferences
                             </div>
@@ -3759,7 +3759,7 @@ export function SettingsDialog({
                             onChange=${(e) =>
                               handleReduceAnimationsChange(e.target.checked)}
                             disabled=${followSystemReducedMotion}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 ${followSystemReducedMotion
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0 ${followSystemReducedMotion
                               ? "cursor-not-allowed"
                               : ""}"
                           />
@@ -3767,7 +3767,7 @@ export function SettingsDialog({
                             <div class="font-medium text-sm">
                               Reduce animations
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               ${followSystemReducedMotion
                                 ? "Controlled by system preference"
                                 : "Replace pulsing and blinking animations with static indicators"}
@@ -3782,7 +3782,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Prompt sorting
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 How to sort prompts in the dropdown menu
                               </div>
                             </div>
@@ -3790,7 +3790,7 @@ export function SettingsDialog({
                               value=${promptSortMode}
                               onChange=${(e) =>
                                 handlePromptSortModeChange(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                             >
                               <option value="alphabetical">Alphabetical</option>
                               <option value="color">By Color</option>
@@ -3805,7 +3805,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Input box font
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Font family and size for the message compose area
                               </div>
                             </div>
@@ -3814,7 +3814,7 @@ export function SettingsDialog({
                                 value=${inputFontFamily}
                                 onChange=${(e) =>
                                   setInputFontFamily(e.target.value)}
-                                class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                                class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                               >
                                 <option value="system">System Default</option>
                                 <option value="sans-serif">Sans-Serif</option>
@@ -3832,7 +3832,7 @@ export function SettingsDialog({
                                 value=${inputFontSize}
                                 onChange=${(e) =>
                                   setInputFontSize(e.target.value)}
-                                class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                                class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                               >
                                 <option value="small">Small</option>
                                 <option value="default">Default</option>
@@ -3851,14 +3851,14 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Send message shortcut
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Key combination to send messages
                               </div>
                             </div>
                             <select
                               value=${sendKeyMode}
                               onChange=${(e) => setSendKeyMode(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                             >
                               <option value="enter">
                                 Enter to send (${navigator.platform?.includes("Mac")
@@ -3889,13 +3889,13 @@ export function SettingsDialog({
                                 setConversationCyclingMode(CYCLING_MODE.ALL);
                               }
                             }}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
                               Accordion mode for groups
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               When grouping is enabled, only one group can be
                               expanded at a time
                             </div>
@@ -3909,7 +3909,7 @@ export function SettingsDialog({
                               <div class="font-medium text-sm">
                                 Conversation cycling
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 ${singleExpandedGroup
                                   ? "Requires accordion mode to be disabled"
                                   : "Which conversations to include when using keyboard/swipe navigation"}
@@ -3920,7 +3920,7 @@ export function SettingsDialog({
                               onChange=${(e) =>
                                 setConversationCyclingMode(e.target.value)}
                               disabled=${singleExpandedGroup}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500 ${singleExpandedGroup ? "cursor-not-allowed" : ""}"
+                              class="bg-mitto-surface-3 border border-mitto-border-2 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500 ${singleExpandedGroup ? "cursor-not-allowed" : ""}"
                             >
                               ${CYCLING_MODE_OPTIONS.map(
                                 (opt) => html`
@@ -3936,7 +3936,7 @@ export function SettingsDialog({
 
                       <!-- Confirmation Settings (all platforms) -->
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Confirmations
                         </h4>
                         <label
@@ -3947,13 +3947,13 @@ export function SettingsDialog({
                             checked=${confirmDeleteSession}
                             onChange=${(e) =>
                               setConfirmDeleteSession(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
                             <div class="font-medium text-sm">
                               Confirm before deleting conversations
                             </div>
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-mitto-text-muted">
                               Show a confirmation dialog when deleting a
                               conversation
                             </div>
@@ -3971,14 +3971,14 @@ export function SettingsDialog({
                                 setConfirmQuitWithRunningSessions(
                                   e.target.checked,
                                 )}
-                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
                                 Confirm before quitting with active
                                 conversations
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Show a confirmation dialog when quitting while
                                 an agent is responding
                               </div>
@@ -3991,7 +3991,7 @@ export function SettingsDialog({
                       ${isMacApp &&
                       html`
                         <div class="space-y-3">
-                          <h4 class="text-sm font-medium text-gray-300">
+                          <h4 class="text-sm font-medium text-mitto-text-secondary">
                             macOS Settings
                           </h4>
                           <label
@@ -4002,13 +4002,13 @@ export function SettingsDialog({
                               checked=${agentCompletedSound}
                               onChange=${(e) =>
                                 setAgentCompletedSound(e.target.checked)}
-                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
                                 Play sound when agent completes
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Play a notification sound when the AI finishes
                                 responding
                               </div>
@@ -4024,17 +4024,17 @@ export function SettingsDialog({
                                 // Simply save the preference - permission will be requested on app restart
                                 setNativeNotifications(e.target.checked);
                               }}
-                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
                                 Native notifications
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Show notifications in macOS Notification Center
                                 (requires restart)
                                 ${notificationPermissionStatus === 1
-                                  ? html`<span class="text-yellow-500 ml-1"
+                                  ? html`<span class="text-mitto-warning ml-1"
                                       >(permission denied in System
                                       Settings)</span
                                     >`
@@ -4050,13 +4050,13 @@ export function SettingsDialog({
                               checked=${showInAllSpaces}
                               onChange=${(e) =>
                                 setShowInAllSpaces(e.target.checked)}
-                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                             />
                             <div>
                               <div class="font-medium text-sm">
                                 Show in all Spaces
                               </div>
-                              <div class="text-xs text-gray-500">
+                              <div class="text-xs text-mitto-text-muted">
                                 Make the window visible in all macOS Spaces
                                 (requires restart)
                               </div>
@@ -4072,13 +4072,13 @@ export function SettingsDialog({
                                 checked=${startAtLogin}
                                 onChange=${(e) =>
                                   setStartAtLogin(e.target.checked)}
-                                class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-blue-500 focus:ring-offset-0"
                               />
                               <div>
                                 <div class="font-medium text-sm">
                                   Start at Login
                                 </div>
-                                <div class="text-xs text-gray-500">
+                                <div class="text-xs text-mitto-text-muted">
                                   Launch Mitto automatically when you log in
                                 </div>
                               </div>
@@ -4092,7 +4092,7 @@ export function SettingsDialog({
                             <div class="font-medium text-sm">
                               Open folder command
                             </div>
-                            <div class="text-xs text-gray-500 mb-2">
+                            <div class="text-xs text-mitto-text-muted mb-2">
                               Command to open workspace folder from badges and group header buttons. Leave empty to disable.
                             </div>
                             <div class="flex items-center gap-2">
@@ -4102,12 +4102,12 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setBadgeClickCommand(e.target.value)}
                                 placeholder="open \${MITTO_WORKING_DIR}"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               />
                             </div>
-                            <p class="text-xs text-gray-500">
+                            <p class="text-xs text-mitto-text-muted">
                               Use${" "}
-                              <code class="bg-slate-600 px-1 rounded"
+                              <code class="bg-mitto-surface-4 px-1 rounded"
                                 >\${MITTO_WORKING_DIR}</code
                               >${" "} as placeholder for the workspace path
                             </p>
@@ -4120,7 +4120,7 @@ export function SettingsDialog({
                             <div class="font-medium text-sm">
                               Open terminal command
                             </div>
-                            <div class="text-xs text-gray-500 mb-2">
+                            <div class="text-xs text-mitto-text-muted mb-2">
                               Command to open a terminal at the workspace folder from group header buttons. Leave empty to disable.
                             </div>
                             <div class="flex items-center gap-2">
@@ -4130,12 +4130,12 @@ export function SettingsDialog({
                                 onInput=${(e) =>
                                   setTerminalActionCommand(e.target.value)}
                                 placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               />
                             </div>
-                            <p class="text-xs text-gray-500">
+                            <p class="text-xs text-mitto-text-muted">
                               Use${" "}
-                              <code class="bg-slate-600 px-1 rounded"
+                              <code class="bg-mitto-surface-4 px-1 rounded"
                                 >\${MITTO_WORKING_DIR}</code
                               >${" "} as placeholder for the workspace path
                             </p>
@@ -4150,11 +4150,11 @@ export function SettingsDialog({
         </div>
 
         <!-- Footer -->
-        <div class="p-4 border-t border-slate-700">
+        <div class="p-4 border-t border-mitto-border-1">
           ${error &&
           html`
             <div
-              class="mb-3 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
+              class="mb-3 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-mitto-danger text-sm"
             >
               ${error}
             </div>
@@ -4162,7 +4162,7 @@ export function SettingsDialog({
           ${warning &&
           html`
             <div
-              class="mb-3 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg text-yellow-400 text-sm"
+              class="mb-3 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg text-mitto-warning text-sm"
             >
               ${warning}
             </div>
@@ -4172,7 +4172,7 @@ export function SettingsDialog({
             html`
               <button
                 onClick=${handleClose}
-                class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors"
+                class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
               >
                 Close
               </button>
@@ -4180,7 +4180,7 @@ export function SettingsDialog({
             <button
               onClick=${handleSave}
               disabled=${saving}
-              class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               ${saving
                 ? html`

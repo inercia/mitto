@@ -202,7 +202,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
         onClick=${(e) => e.stopPropagation()}
       >
         <h3 class="text-lg font-semibold mb-2">Select Workspace</h3>
-        <p class="text-gray-400 text-sm mb-4">${helpText}</p>
+        <p class="text-mitto-text-muted text-sm mb-4">${helpText}</p>
 
         ${showFilter &&
         html`
@@ -233,7 +233,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
               placeholder="Filter workspaces..."
               autofocus
               autocomplete="off"
-              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
+              class="w-full px-3 py-2 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
             />
           </div>
         `}
@@ -241,7 +241,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
         <div class="space-y-2">
           ${filteredGroups.length === 0
             ? html`
-                <div class="text-center py-4 text-gray-500">
+                <div class="text-center py-4 text-mitto-text-muted">
                   No workspaces match your filter.
                 </div>
               `
@@ -259,7 +259,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                       html`
                         <button
                           onClick=${() => toggleFolder(workingDir)}
-                          class="w-full px-2 py-1 text-left text-xs text-gray-400 hover:text-gray-300 hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
+                          class="w-full px-2 py-1 text-left text-xs text-mitto-text-muted hover:text-mitto-text-secondary hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
                         >
                           <span class="font-mono"
                             >${isExpanded ? "▼" : "▶"}</span
@@ -267,7 +267,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                           <span class="truncate" title=${workingDir}>
                             ${label}
                           </span>
-                          <span class="text-gray-500">(${wsArray.length})</span>
+                          <span class="text-mitto-text-muted">(${wsArray.length})</span>
                         </button>
                       `}
                       ${isExpanded &&
@@ -277,14 +277,14 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                           <button
                             key=${ws.working_dir + "|" + ws.acp_server}
                             onClick=${() => onSelect(ws)}
-                            class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-3 ${showGroupHeader
+                            class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
                               ? "ml-4"
                               : ""}"
                           >
                             <div
                               class="w-8 h-8 shrink-0 ${currentIndex <
                               WORKSPACE_FILTER_THRESHOLD
-                                ? "flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm"
+                                ? "flex items-center justify-center rounded-lg bg-mitto-surface-4 text-mitto-text-secondary font-mono text-sm"
                                 : ""}"
                             >
                               ${currentIndex < WORKSPACE_FILTER_THRESHOLD
@@ -311,14 +311,14 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                                   class="${showGroupHeader &&
                                   (!ws.name || ws.name === label)
                                     ? "text-sm font-medium"
-                                    : "text-xs text-blue-400"}"
+                                    : "text-xs text-mitto-accent"}"
                                 >
                                   ${ws.acp_server}
                                 </div>
                               `}
                               ${!showGroupHeader &&
                               html`
-                                <div class="text-xs text-gray-500 truncate">
+                                <div class="text-xs text-mitto-text-muted truncate">
                                   ${ws.working_dir}
                                 </div>
                               `}
@@ -335,7 +335,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
           <button
             type="button"
             onClick=${onCancel}
-            class="px-4 py-2 rounded-lg hover:bg-slate-700 transition-colors"
+            class="px-4 py-2 rounded-lg hover:bg-mitto-surface-hover transition-colors"
           >
             Cancel
           </button>

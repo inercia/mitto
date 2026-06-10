@@ -643,11 +643,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       confirmVariant: "danger",
       children: mcpTools?.mcp_scopes?.length > 0 ? html`
         <div class="mt-3">
-          <label class="block text-sm text-gray-400 mb-1">Scope</label>
+          <label class="block text-sm text-mitto-text-muted mb-1">Scope</label>
           <select
             value=${defaultScope}
             onInput=${(e) => { mcpRemoveScopeRef.current = e.target.value; }}
-            class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white"
+            class="w-full bg-mitto-surface-2 border border-mitto-border-2 rounded-lg px-3 py-2 text-sm text-mitto-text-strong"
           >
             ${mcpTools.mcp_scopes.map(scope => html`
               <option key=${scope} value=${scope}>${scope}</option>
@@ -1244,7 +1244,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             <${FolderIcon} className="w-5 h-5 opacity-70" />
             Workspaces
           </h3>
-          <button onClick=${handleClose} class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors">
+          <button onClick=${handleClose} class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors">
             <${CloseIcon} className="w-4 h-4" />
           </button>
         </div>
@@ -1256,9 +1256,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           <div class="shrink-0 flex flex-col" style="width: ${leftPanelWidth}px">
             <div ref=${scrollContainerRef} class="flex-1 overflow-y-auto p-3 space-y-1.5">
               ${loading
-                ? html`<div class="flex items-center justify-center py-8"><${SpinnerIcon} className="w-6 h-6 text-blue-400" /></div>`
+                ? html`<div class="flex items-center justify-center py-8"><${SpinnerIcon} className="w-6 h-6 text-mitto-accent" /></div>`
                 : workspaces.length === 0
-                  ? html`<div class="text-center py-8 text-gray-500 text-sm px-2">
+                  ? html`<div class="text-center py-8 text-mitto-text-muted text-sm px-2">
                       <${FolderIcon} className="w-8 h-8 mx-auto mb-2 opacity-40" />
                       <p>No workspaces.</p>
                       <p class="text-xs mt-1">Click the folder icon below to add one.</p>
@@ -1273,8 +1273,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             class="group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${isFolderSelected ? "bg-blue-500/10" : "hover:bg-slate-700/30"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
-                            <${ChevronDownIcon} className="w-3.5 h-3.5 text-gray-500 shrink-0" />
-                            <${FolderIcon} className="w-4 h-4 text-gray-400 shrink-0" />
+                            <${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted shrink-0" />
+                            <${FolderIcon} className="w-4 h-4 text-mitto-text-muted shrink-0" />
                             <span class="text-sm font-medium truncate flex-1" title=${wsGroup[0]?.working_dir || "No folder selected"}>${displayName}</span>
                             <span class="text-xs text-gray-600">${wsGroup.length}</span>
                           </div>
@@ -1312,7 +1312,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addWorkspace}
                 disabled=${acpServers.length === 0 || isNewFolderIncomplete}
-                class="p-1.5 rounded-lg transition-colors hover:bg-blue-600 hover:text-white text-gray-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Add folder"
               >
                 <${FolderIcon} className="w-4 h-4" />
@@ -1320,7 +1320,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
                 disabled=${!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1}
-                class="p-1.5 rounded-lg transition-colors hover:bg-red-600 hover:text-white text-gray-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-danger hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Delete selected ACP server"
               >
                 <${TrashIcon} className="w-4 h-4" />
@@ -1328,7 +1328,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && duplicateWorkspace(selectedWorkspaceKey)}
                 disabled=${!selectedWorkspaceKey}
-                class="p-1.5 rounded-lg transition-colors hover:bg-blue-600 hover:text-white text-gray-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Duplicate selected workspace"
               >
                 <${DuplicateIcon} className="w-4 h-4" />
@@ -1336,7 +1336,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addServerToFolder}
                 disabled=${!selectedFolder || !folderCanAddServer}
-                class="p-1.5 rounded-lg transition-colors hover:bg-blue-600 hover:text-white text-gray-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Add ACP server to folder"
               >
                 <${ServerIcon} className="w-4 h-4" />
@@ -1356,7 +1356,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               ? (() => {
                   const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
                   const firstWs = folderGroup?.workspaces[0];
-                  if (!firstWs) return html`<div class="flex items-center justify-center h-full text-gray-500 text-sm">No workspaces in this folder</div>`;
+                  if (!firstWs) return html`<div class="flex items-center justify-center h-full text-mitto-text-muted text-sm">No workspaces in this folder</div>`;
                   const isNewFolder = newFolderKey && getWorkspaceKey(firstWs) === newFolderKey;
                   const isIncomplete = isNewFolder && (!firstWs.working_dir || firstWs.working_dir.trim() === "");
                   const updateNewFolderPath = (path) => {
@@ -1383,7 +1383,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                         <button
                           key=${tab.id}
                           onClick=${() => setActiveTab(tab.id)}
-                          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-blue-500 text-blue-400" : "border-transparent text-gray-500 hover:text-gray-300"}"
+                          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-mitto-accent text-mitto-accent" : "border-transparent text-mitto-text-muted hover:text-mitto-text-secondary"}"
                           style="margin-bottom: -1px"
                         >${tab.label}</button>
                       `)}
@@ -1396,7 +1396,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       ${activeTab === "general" && html`
                         <div class="space-y-4">
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1">Working Directory</label>
+                            <label class="block text-sm text-mitto-text-muted mb-1">Working Directory</label>
                             ${isNewFolder
                               ? html`
                                   <div class="flex gap-2">
@@ -1411,27 +1411,27 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     ${hasNativeFolderPicker() && html`
                                       <button
                                         onClick=${async () => { const p = await pickFolder(); if (p) updateNewFolderPath(p); }}
-                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-white transition-colors"
+                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-white transition-colors"
                                         title="Browse"
                                         style="height: 38px; box-sizing: border-box"
                                       ><${FolderIcon} className="w-4 h-4" /></button>
                                     `}
                                   </div>
-                                  ${isIncomplete && html`<p class="text-xs text-red-400 mt-1">Please select a folder for this workspace.</p>`}
+                                  ${isIncomplete && html`<p class="text-xs text-mitto-danger mt-1">Please select a folder for this workspace.</p>`}
                                 `
                               : html`
                                   <input
                                     type="text"
                                     value=${firstWs.working_dir}
                                     readOnly
-                                    class="w-full bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-500 cursor-default"
+                                    class="w-full bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text-muted cursor-default"
                                     style="height: 38px; box-sizing: border-box"
                                   />
                                 `
                             }
                           </div>
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1">Display Name</label>
+                            <label class="block text-sm text-mitto-text-muted mb-1">Display Name</label>
                             <input
                               type="text"
                               value=${editName}
@@ -1443,7 +1443,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </div>
                           <div class="flex gap-4 items-end">
                             <div class="flex-1 min-w-0">
-                              <label class="block text-sm text-gray-400 mb-1">Badge Code</label>
+                              <label class="block text-sm text-mitto-text-muted mb-1">Badge Code</label>
                               <input
                                 type="text"
                                 value=${editCode}
@@ -1455,7 +1455,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               />
                             </div>
                             <div class="shrink-0">
-                              <label class="block text-sm text-gray-400 mb-1">Badge Color</label>
+                              <label class="block text-sm text-mitto-text-muted mb-1">Badge Color</label>
                               <div class="flex items-center gap-2">
                                 <input
                                   type="color"
@@ -1464,7 +1464,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   class="rounded cursor-pointer border border-mitto-border"
                                   style="width: 38px; height: 38px"
                                 />
-                                <span class="text-xs text-gray-500 font-mono">${editColor}</span>
+                                <span class="text-xs text-mitto-text-muted font-mono">${editColor}</span>
                               </div>
                             </div>
                           </div>
@@ -1475,7 +1475,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       ${activeTab === "metadata" && html`
                         <div class="space-y-4">
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1">Description</label>
+                            <label class="block text-sm text-mitto-text-muted mb-1">Description</label>
                             <textarea
                               value=${editMetaDescription}
                               onInput=${(e) => setEditMetaDescription(e.target.value)}
@@ -1485,7 +1485,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             />
                           </div>
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1">URL</label>
+                            <label class="block text-sm text-mitto-text-muted mb-1">URL</label>
                             <input
                               type="url"
                               value=${editMetaUrl}
@@ -1496,7 +1496,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             />
                           </div>
                           <div>
-                            <label class="block text-sm text-gray-400 mb-1">Group</label>
+                            <label class="block text-sm text-mitto-text-muted mb-1">Group</label>
                             <input
                               type="text"
                               value=${editMetaGroup}
@@ -1511,14 +1511,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           <div class="mt-6 pt-4 border-t border-mitto-border">
                             <div class="flex items-center justify-between mb-2">
                               <div>
-                                <h3 class="text-sm font-medium text-gray-300">User Data Schema</h3>
-                                <p class="text-xs text-gray-500 mt-0.5">
+                                <h3 class="text-sm font-medium text-mitto-text-secondary">User Data Schema</h3>
+                                <p class="text-xs text-mitto-text-muted mt-0.5">
                                   Define custom data attributes for conversations in this workspace.
                                 </p>
                               </div>
                               <button
                                 onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
-                                class="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+                                class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-text-secondary hover:text-white bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded-lg transition-colors"
                                 title="Add Field"
                               >
                                 <${PlusIcon} className="w-3.5 h-3.5" />
@@ -1526,14 +1526,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               </button>
                             </div>
                             ${editUserDataFields.length === 0 && html`
-                              <p class="text-xs text-gray-500 italic py-2">No fields defined. Click "Add Field" to create one.</p>
+                              <p class="text-xs text-mitto-text-muted italic py-2">No fields defined. Click "Add Field" to create one.</p>
                             `}
                             ${editUserDataFields.length > 0 && html`
                               <div class="space-y-2">
                                 ${editUserDataFields.map((field, i) => html`
                                   <div key=${i} class="flex gap-2 items-start p-2 rounded-lg ${i % 2 === 0 ? 'bg-slate-800/30' : ''}">
                                     <div class="flex-1 min-w-0">
-                                      <label class="block text-xs text-gray-500 mb-0.5">Name</label>
+                                      <label class="block text-xs text-mitto-text-muted mb-0.5">Name</label>
                                       <input
                                         type="text"
                                         value=${field.name}
@@ -1544,7 +1544,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       />
                                     </div>
                                     <div class="w-24 shrink-0">
-                                      <label class="block text-xs text-gray-500 mb-0.5">Type</label>
+                                      <label class="block text-xs text-mitto-text-muted mb-0.5">Type</label>
                                       <select
                                         value=${field.type}
                                         onChange=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, type: e.target.value } : f))}
@@ -1556,7 +1556,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       </select>
                                     </div>
                                     <div class="flex-1 min-w-0">
-                                      <label class="block text-xs text-gray-500 mb-0.5">Description</label>
+                                      <label class="block text-xs text-mitto-text-muted mb-0.5">Description</label>
                                       <input
                                         type="text"
                                         value=${field.description}
@@ -1569,7 +1569,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <div class="shrink-0 pt-4">
                                       <button
                                         onClick=${() => setEditUserDataFields(prev => prev.filter((_, idx) => idx !== i))}
-                                        class="p-1 text-gray-500 hover:text-red-400 hover:bg-slate-700 rounded transition-colors"
+                                        class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-mitto-surface-hover rounded transition-colors"
                                         title="Remove field"
                                       >
                                         <${TrashIcon} className="w-3.5 h-3.5" />
@@ -1586,7 +1586,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <!-- Folder Beads tab -->
                       ${activeTab === "beads" && html`
                         <div class="space-y-4">
-                          <p class="text-sm text-gray-400">
+                          <p class="text-sm text-mitto-text-muted">
                             Mitto uses${" "}
                             <a
                               href="https://github.com/steveyegge/beads"
@@ -1594,14 +1594,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 e.preventDefault();
                                 openExternalURL("https://github.com/steveyegge/beads");
                               }}
-                              class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                              class="text-mitto-accent hover:text-blue-300 underline cursor-pointer"
                               >beads</a
                             >${" "}(the <code>bd</code> tool) for managing tasks.
                           </p>
                           <!-- Upstream task system selector (persisted in folders.json) -->
                           <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">Upstream tasks management</label>
-                            <p class="text-xs text-gray-500 mb-2">
+                            <label class="block text-sm font-medium text-mitto-text-secondary mb-1">Upstream tasks management</label>
+                            <p class="text-xs text-mitto-text-muted mb-2">
                               Select the external task system beads syncs with. When set, Pull/Push/Sync
                               actions appear in the Tasks view for this folder.
                             </p>
@@ -1621,7 +1621,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
                           ${beadsUpstream !== "none" && BEADS_UPSTREAM_HELP[beadsUpstream] && html`
                             <div class="p-3 bg-mitto-input-box border border-mitto-border rounded-lg">
-                              <p class="text-xs text-gray-400 mb-2">
+                              <p class="text-xs text-mitto-text-muted mb-2">
                                 Recommended ${BEADS_UPSTREAM_HELP[beadsUpstream].label} keys${" "}
                                 (click a key to fill the add-key field below):
                               </p>
@@ -1631,10 +1631,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <button
                                       type="button"
                                       onClick=${() => setNewBeadsKey(row.key)}
-                                      class="font-mono text-blue-400 hover:text-blue-300 hover:underline whitespace-nowrap"
+                                      class="font-mono text-mitto-accent hover:text-blue-300 hover:underline whitespace-nowrap"
                                       title="Use this key in the add-key field below"
                                     >${row.key}</button>
-                                    <span class="text-gray-500">— ${row.desc}</span>
+                                    <span class="text-mitto-text-muted">— ${row.desc}</span>
                                   </div>
                                 `)}
                               </div>
@@ -1643,12 +1643,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
                           <div class="pt-2 border-t border-mitto-border"></div>
 
-                          <p class="text-xs text-gray-500">
+                          <p class="text-xs text-mitto-text-muted">
                             Integration settings stored in this folder's beads database via${" "}
-                            <span class="font-mono text-gray-400">bd config</span>. Use namespaced keys such as${" "}
-                            <span class="font-mono text-gray-400">jira.url</span>,${" "}
-                            <span class="font-mono text-gray-400">github.repo</span>, or${" "}
-                            <span class="font-mono text-gray-400">${"custom.<key>"}</span>.
+                            <span class="font-mono text-mitto-text-muted">bd config</span>. Use namespaced keys such as${" "}
+                            <span class="font-mono text-mitto-text-muted">jira.url</span>,${" "}
+                            <span class="font-mono text-mitto-text-muted">github.repo</span>, or${" "}
+                            <span class="font-mono text-mitto-text-muted">${"custom.<key>"}</span>.
                           </p>
 
                           ${beadsConfigError && html`
@@ -1658,7 +1658,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           `}
 
                           ${beadsConfigLoading
-                            ? html`<div class="flex items-center gap-2 text-sm text-gray-400"><${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…</div>`
+                            ? html`<div class="flex items-center gap-2 text-sm text-mitto-text-muted"><${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…</div>`
                             : (beadsConfig && html`
                               ${(() => {
                                 const editable = Object.entries(beadsConfig).filter(([k]) => k.includes("."));
@@ -1666,14 +1666,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 return html`
                                   <div class="space-y-2">
                                     ${editable.length === 0
-                                      ? html`<p class="text-xs text-gray-500 italic">No integration keys set yet.</p>`
+                                      ? html`<p class="text-xs text-mitto-text-muted italic">No integration keys set yet.</p>`
                                       : editable.map(([k, v]) => html`
                                         <div key=${k} class="flex gap-2 items-center">
                                           <input
                                             type="text"
                                             value=${k}
                                             readOnly
-                                            class="bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-400 font-mono cursor-default"
+                                            class="bg-mitto-input-box border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text-muted font-mono cursor-default"
                                             style="width: 38%; height: 38px; box-sizing: border-box"
                                           />
                                           <input
@@ -1688,7 +1688,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           <button
                                             onClick=${() => unsetBeadsConfigKey(k)}
                                             disabled=${beadsConfigSaving}
-                                            class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50"
+                                            class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-mitto-danger transition-colors disabled:opacity-50"
                                             title="Delete this key"
                                             style="height: 38px; box-sizing: border-box"
                                           ><${TrashIcon} className="w-4 h-4" /></button>
@@ -1722,7 +1722,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           setNewBeadsValue("");
                                         }}
                                         disabled=${beadsConfigSaving || !newBeadsKey.trim()}
-                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
+                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-mitto-accent transition-colors disabled:opacity-50"
                                         title="Add key"
                                         style="height: 38px; box-sizing: border-box"
                                       ><${PlusIcon} className="w-4 h-4" /></button>
@@ -1731,11 +1731,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
                                   ${system.length > 0 && html`
                                     <div class="mt-6 pt-4 border-t border-mitto-border">
-                                      <h3 class="text-sm font-medium text-gray-300 mb-1">System</h3>
-                                      <p class="text-xs text-gray-500 mb-2">Operational beads settings (read-only here; edit via the bd CLI).</p>
+                                      <h3 class="text-sm font-medium text-mitto-text-secondary mb-1">System</h3>
+                                      <p class="text-xs text-mitto-text-muted mb-2">Operational beads settings (read-only here; edit via the bd CLI).</p>
                                       <div class="space-y-1">
                                         ${system.map(([k, v]) => html`
-                                          <div key=${k} class="flex gap-2 text-xs font-mono text-gray-500">
+                                          <div key=${k} class="flex gap-2 text-xs font-mono text-mitto-text-muted">
                                             <span class="truncate" style="width: 38%">${k}</span>
                                             <span class="flex-1 truncate">${String(v)}</span>
                                           </div>
@@ -1753,12 +1753,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       ${activeTab === "prompts" && html`
                         <div class="space-y-4">
                           <div class="flex items-center justify-between">
-                            <p class="text-sm text-gray-400">
+                            <p class="text-sm text-mitto-text-muted">
                               Manage prompts for this workspace. Built-in prompts are read-only but can be disabled.
                             </p>
                             <button
                               onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                              class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddPrompt ? 'bg-slate-700' : ''}"
+                              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${showAddPrompt ? 'bg-mitto-surface-3' : ''}"
                               title="Add Prompt"
                             >
                               <${PlusIcon} className="w-5 h-5" />
@@ -1766,50 +1766,50 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </div>
 
                           ${showAddPrompt && html`
-                            <div class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3">
+                            <div class="p-4 bg-slate-800/50 rounded-lg border border-mitto-border-1 space-y-3">
                               <div>
-                                <label class="block text-sm text-gray-400 mb-1">Button Label</label>
+                                <label class="block text-sm text-mitto-text-muted mb-1">Button Label</label>
                                 <input type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
                                   placeholder="e.g., Continue"
-                                  class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                               </div>
                               <div>
-                                <label class="block text-sm text-gray-400 mb-1">Prompt Text</label>
+                                <label class="block text-sm text-mitto-text-muted mb-1">Prompt Text</label>
                                 <textarea value=${newPromptText} onInput=${(e) => setNewPromptText(e.target.value)}
                                   placeholder="e.g., Please continue with the current task."
                                   rows="8"
-                                  class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                                  class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
                                 />
                               </div>
                               <div>
-                                <label class="block text-sm text-gray-400 mb-1">Group (optional)</label>
+                                <label class="block text-sm text-mitto-text-muted mb-1">Group (optional)</label>
                                 <input type="text" value=${newPromptGroup} onInput=${(e) => setNewPromptGroup(e.target.value)}
                                   placeholder="e.g., Tasks, Code Quality"
-                                  class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  class="w-full px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                               </div>
                               <div>
-                                <label class="block text-sm text-gray-400 mb-1">Background Color (optional)</label>
+                                <label class="block text-sm text-mitto-text-muted mb-1">Background Color (optional)</label>
                                 <div class="flex items-center gap-2">
                                   <input type="color" value=${newPromptColor || '#334155'} onInput=${(e) => setNewPromptColor(e.target.value)}
-                                    class="w-10 h-10 rounded cursor-pointer border border-slate-600"
+                                    class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2"
                                   />
                                   <input type="text" value=${newPromptColor} onInput=${(e) => setNewPromptColor(e.target.value)}
                                     placeholder="#E8F5E9"
-                                    class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                    class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                                   />
                                 </div>
                               </div>
                               <div class="flex justify-end gap-2">
                                 <button onClick=${() => { setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup(""); }}
-                                  class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors">Cancel</button>
+                                  class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">Cancel</button>
                                 <button onClick=${async () => {
                                     await saveWorkspacePrompt({ name: newPromptName.trim(), prompt: newPromptText.trim(), backgroundColor: newPromptColor || undefined, group: newPromptGroup.trim() || undefined, enabled: true });
                                     setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup("");
                                   }}
                                   disabled=${!newPromptName.trim() || !newPromptText.trim() || promptSaving}
-                                  class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50">
+                                  class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50">
                                   ${promptSaving ? 'Saving...' : 'Add Prompt'}
                                 </button>
                               </div>
@@ -1821,7 +1821,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             : html`
                               <div class="space-y-2">
                                 ${folderPrompts.length === 0
-                                  ? html`<div class="p-4 text-center text-gray-500 text-sm">No prompts found. Click + to add a workspace prompt.</div>`
+                                  ? html`<div class="p-4 text-center text-mitto-text-muted text-sm">No prompts found. Click + to add a workspace prompt.</div>`
                                   : [...folderPrompts].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((prompt, idx) => {
                                       const isBuiltin = prompt.source === "builtin" || prompt.source === "file";
                                       const isEnabled = prompt.enabled !== false;
@@ -1831,50 +1831,50 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             ? html`
                                               <div class="space-y-3">
                                                 <div>
-                                                  <label class="block text-xs text-gray-400 mb-1">Button Label</label>
+                                                  <label class="block text-xs text-mitto-text-muted mb-1">Button Label</label>
                                                   <input type="text" value=${isBuiltin ? prompt.name : editPromptName}
                                                     onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
                                                     disabled=${isBuiltin}
-                                                    class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
+                                                    class="w-full px-2 py-1.5 bg-mitto-surface-3 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
                                                   />
                                                 </div>
                                                 <div>
-                                                  <label class="block text-xs text-gray-400 mb-1">Prompt Text</label>
+                                                  <label class="block text-xs text-mitto-text-muted mb-1">Prompt Text</label>
                                                   <textarea rows="8"
                                                     value=${isBuiltin ? prompt.prompt : editPromptText}
                                                     onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
                                                     disabled=${isBuiltin}
-                                                    class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
+                                                    class="w-full px-2 py-1.5 bg-mitto-surface-3 rounded text-sm resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
                                                   />
                                                 </div>
                                                 <div>
-                                                  <label class="block text-xs text-gray-400 mb-1">Group (optional)</label>
+                                                  <label class="block text-xs text-mitto-text-muted mb-1">Group (optional)</label>
                                                   <input type="text" value=${isBuiltin ? (prompt.group || '') : editPromptGroup}
                                                     onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
                                                     disabled=${isBuiltin}
                                                     placeholder="e.g., Tasks, Code Quality"
-                                                    class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
+                                                    class="w-full px-2 py-1.5 bg-mitto-surface-3 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
                                                   />
                                                 </div>
                                                 ${!isBuiltin && html`
                                                   <div>
-                                                    <label class="block text-xs text-gray-400 mb-1">Background Color (optional)</label>
+                                                    <label class="block text-xs text-mitto-text-muted mb-1">Background Color (optional)</label>
                                                     <div class="flex items-center gap-2">
                                                       <input type="color" value=${editPromptColor || '#334155'}
                                                         onInput=${(e) => setEditPromptColor(e.target.value)}
-                                                        class="w-8 h-8 rounded cursor-pointer border border-slate-600"
+                                                        class="w-8 h-8 rounded cursor-pointer border border-mitto-border-2"
                                                       />
                                                       <input type="text" value=${editPromptColor}
                                                         onInput=${(e) => setEditPromptColor(e.target.value)}
                                                         placeholder="#E8F5E9"
-                                                        class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                                        class="flex-1 px-2 py-1.5 bg-mitto-surface-3 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                                                       />
                                                     </div>
                                                   </div>
                                                 `}
                                                 <div class="flex justify-end gap-2">
                                                   <button onClick=${() => setEditingPromptIndex(null)}
-                                                    class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors">
+                                                    class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">
                                                     ${isBuiltin ? 'Close' : 'Cancel'}
                                                   </button>
                                                   ${!isBuiltin && html`
@@ -1889,7 +1889,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                         setEditingPromptIndex(null);
                                                       }}
                                                       disabled=${!editPromptName.trim() || !editPromptText.trim() || promptSaving}
-                                                      class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50">
+                                                      class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50">
                                                       ${promptSaving ? 'Saving...' : 'Save'}
                                                     </button>
                                                   `}
@@ -1900,21 +1900,21 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                               <div class="flex items-center gap-3">
                                                 <input type="checkbox" checked=${isEnabled}
                                                   onChange=${() => togglePromptEnabled(prompt)}
-                                                  class="rounded border-slate-600 text-blue-500 focus:ring-blue-500 shrink-0"
+                                                  class="rounded border-mitto-border-2 text-mitto-accent focus:ring-blue-500 shrink-0"
                                                   title=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
                                                 />
                                                 ${prompt.backgroundColor && html`
-                                                  <div class="w-5 h-5 rounded-sm shrink-0 border border-slate-600" style="background-color: ${prompt.backgroundColor}" />
+                                                  <div class="w-5 h-5 rounded-sm shrink-0 border border-mitto-border-2" style="background-color: ${prompt.backgroundColor}" />
                                                 `}
                                                 <div class="flex-1 min-w-0">
                                                   <div class="flex items-center gap-2">
-                                                    <span class="text-sm font-medium ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${prompt.name}</span>
-                                                    <span class="text-xs px-1.5 py-0.5 rounded ${isBuiltin ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}">
+                                                    <span class="text-sm font-medium ${isEnabled ? 'text-mitto-accent' : 'text-mitto-text-muted'}">${prompt.name}</span>
+                                                    <span class="text-xs px-1.5 py-0.5 rounded ${isBuiltin ? 'bg-blue-500/20 text-mitto-accent' : 'bg-green-500/20 text-mitto-success'}">
                                                       ${isBuiltin ? 'built-in' : 'workspace'}
                                                     </span>
                                                   </div>
-                                                  ${prompt.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${prompt.description}</p>`}
-                                                  ${!prompt.description && prompt.prompt && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${prompt.prompt.slice(0, 80)}${prompt.prompt.length > 80 ? '...' : ''}</p>`}
+                                                  ${prompt.description && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${prompt.description}</p>`}
+                                                  ${!prompt.description && prompt.prompt && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${prompt.prompt.slice(0, 80)}${prompt.prompt.length > 80 ? '...' : ''}</p>`}
                                                 </div>
                                                 <div class="flex items-center gap-1 shrink-0">
                                                   <button onClick=${() => {
@@ -1928,13 +1928,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                         setEditingPromptIndex(idx);
                                                       }
                                                     }}
-                                                    class="p-1.5 hover:bg-slate-700 rounded transition-colors" title=${isBuiltin ? "View" : "Edit"}>
-                                                    <${EditIcon} className="w-4 h-4 ${isBuiltin ? 'text-gray-500' : 'text-gray-400'}" />
+                                                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors" title=${isBuiltin ? "View" : "Edit"}>
+                                                    <${EditIcon} className="w-4 h-4 ${isBuiltin ? 'text-mitto-text-muted' : 'text-mitto-text-muted'}" />
                                                   </button>
                                                   ${!isBuiltin && html`
                                                     <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
                                                       class="p-1.5 hover:bg-red-500/20 rounded transition-colors" title="Delete">
-                                                      <${TrashIcon} className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                                                      <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                                     </button>
                                                   `}
                                                 </div>
@@ -1953,7 +1953,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <!-- Folder Processors tab -->
                       ${activeTab === "processors" && html`
                         <div class="space-y-4">
-                          <p class="text-sm text-gray-400">
+                          <p class="text-sm text-mitto-text-muted">
                             Manage processors for this workspace. Global processors can be disabled per workspace.
                           </p>
 
@@ -1962,15 +1962,15 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             : html`
                               <div class="space-y-2">
                                 ${folderProcessors.length === 0
-                                  ? html`<div class="p-4 text-center text-gray-500 text-sm">No processors found for this workspace.</div>`
+                                  ? html`<div class="p-4 text-center text-mitto-text-muted text-sm">No processors found for this workspace.</div>`
                                   : folderProcessors.map((proc) => {
                                       const isWorkspace = proc.source === "workspace";
                                       const isEnabled = proc.enabled !== false;
                                       const isPromptMode = proc.mode === "prompt";
                                       const sourceLabel = isWorkspace ? "workspace" : (proc.source === "builtin" ? "built-in" : "global");
                                       const sourceBadgeClass = isWorkspace
-                                        ? "bg-green-500/20 text-green-400"
-                                        : (proc.source === "builtin" ? "bg-blue-500/20 text-blue-400" : "bg-orange-500/20 text-orange-400");
+                                        ? "bg-green-500/20 text-mitto-success"
+                                        : (proc.source === "builtin" ? "bg-blue-500/20 text-mitto-accent" : "bg-orange-500/20 text-orange-400");
                                       const borderClass = isPromptMode
                                         ? "border-purple-500/30"
                                         : (isEnabled ? "border-slate-600/50" : "border-slate-600/30 opacity-60");
@@ -1979,20 +1979,20 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           <div class="flex items-center gap-3">
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => toggleProcessorEnabled(proc)}
-                                              class="rounded border-slate-600 text-blue-500 focus:ring-blue-500 shrink-0"
+                                              class="rounded border-mitto-border-2 text-mitto-accent focus:ring-blue-500 shrink-0"
                                               title=${isEnabled ? "Disable this processor" : "Enable this processor"}
                                             />
                                             <div class="flex-1 min-w-0">
                                               <div class="flex items-center gap-2">
                                                 ${isPromptMode && html`<${RobotIcon} className="w-4 h-4 text-purple-400 shrink-0" />`}
-                                                <span class="text-sm font-medium font-mono ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${proc.name}</span>
+                                                <span class="text-sm font-medium font-mono ${isEnabled ? 'text-mitto-accent' : 'text-mitto-text-muted'}">${proc.name}</span>
                                                 ${proc.source === "global"
                                                   ? html`<${GlobeIcon} className="w-3.5 h-3.5 text-orange-400 shrink-0" title="Global processor" />`
                                                   : html`<span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>`
                                                 }
-                                                ${proc.on && html`<span class="text-xs text-gray-500">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
+                                                ${proc.on && html`<span class="text-xs text-mitto-text-muted">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
                                               </div>
-                                              ${proc.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${proc.description}</p>`}
+                                              ${proc.description && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${proc.description}</p>`}
                                             </div>
                                           </div>
                                         </div>
@@ -2008,7 +2008,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <!-- Folder Children tab -->
                       ${activeTab === "children" && html`
                         <div class="space-y-5">
-                          <p class="text-sm text-gray-400">Configure automatic child conversations for this folder.</p>
+                          <p class="text-sm text-mitto-text-muted">Configure automatic child conversations for this folder.</p>
                           <${AutoChildrenEditor}
                             children=${editAutoChildren}
                             workspaces=${workspaces}
@@ -2022,13 +2022,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   `;
                 })()
               : !selectedWorkspace
-                ? html`<div class="flex flex-col items-center justify-center h-full text-gray-500 text-sm gap-3 px-8 text-center">
+                ? html`<div class="flex flex-col items-center justify-center h-full text-mitto-text-muted text-sm gap-3 px-8 text-center">
                     ${workspaces.length === 0
                       ? html`
                         <${FolderIcon} className="w-10 h-10 opacity-30" />
-                        <p class="text-base font-medium text-gray-400">No workspaces configured</p>
+                        <p class="text-base font-medium text-mitto-text-muted">No workspaces configured</p>
                         <p>Add a workspace to specify a folder where an ACP server will operate.</p>
-                        <p class="text-xs">Click the <span class="inline-flex items-center gap-1 text-gray-400"><${FolderIcon} className="w-3.5 h-3.5" /> folder</span> button below to get started.</p>
+                        <p class="text-xs">Click the <span class="inline-flex items-center gap-1 text-mitto-text-muted"><${FolderIcon} className="w-3.5 h-3.5" /> folder</span> button below to get started.</p>
                       `
                       : html`<p>Select a workspace to edit</p>`
                     }
@@ -2040,7 +2040,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                     <button
                       key=${tab.id}
                       onClick=${() => setActiveTab(tab.id)}
-                      class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-blue-500 text-blue-400" : "border-transparent text-gray-500 hover:text-gray-300"}"
+                      class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? "border-mitto-accent text-mitto-accent" : "border-transparent text-mitto-text-muted hover:text-mitto-text-secondary"}"
                       style="margin-bottom: -1px"
                     >${tab.label}</button>
                   `)}
@@ -2053,7 +2053,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   ${activeTab === "general" && html`
                     <div class="space-y-4">
                       <div>
-                        <label class="block text-sm text-gray-400 mb-1">ACP Server</label>
+                        <label class="block text-sm text-mitto-text-muted mb-1">ACP Server</label>
                         <select
                           value=${editAcpServer}
                           onChange=${(e) => setEditAcpServer(e.target.value)}
@@ -2064,7 +2064,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                         </select>
                       </div>
                       <div>
-                        <label class="block text-sm text-gray-400 mb-1">ACP Command Override (optional)</label>
+                        <label class="block text-sm text-mitto-text-muted mb-1">ACP Command Override (optional)</label>
                         <input
                           type="text"
                           value=${editAcpCommandOverride}
@@ -2073,11 +2073,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-600"
                           style="height: 38px; box-sizing: border-box"
                         />
-                        <p class="text-xs text-gray-500 mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
+                        <p class="text-xs text-mitto-text-muted mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
                       </div>
                       <div>
-                        <label class="block text-sm text-gray-400 mb-1">Auxiliary Model Selection (optional)</label>
-                        <p class="text-xs text-gray-500 mb-2">
+                        <label class="block text-sm text-mitto-text-muted mb-1">Auxiliary Model Selection (optional)</label>
+                        <p class="text-xs text-mitto-text-muted mb-2">
                           Switch auxiliary sessions (titles, suggestions) to a specific model
                         </p>
                         <${ModelSelection}
@@ -2091,7 +2091,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           type="checkbox"
                           checked=${editAutoApprove}
                           onChange=${(e) => setEditAutoApprove(e.target.checked)}
-                          class="rounded border-mitto-border text-blue-500 focus:ring-blue-500"
+                          class="rounded border-mitto-border text-mitto-accent focus:ring-blue-500"
                         />
                         <span class="text-sm">Auto-approve tool calls</span>
                       </label>
@@ -2100,11 +2100,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           type="checkbox"
                           checked=${editIsDefault}
                           onChange=${(e) => handleToggleIsDefault(e.target.checked)}
-                          class="rounded border-mitto-border text-blue-500 focus:ring-blue-500"
+                          class="rounded border-mitto-border text-mitto-accent focus:ring-blue-500"
                         />
                         <span class="text-sm">Default workspace for this folder</span>
                       </label>
-                      <p class="text-xs text-gray-500 -mt-2 ml-7">
+                      <p class="text-xs text-mitto-text-muted -mt-2 ml-7">
                         Preferred when this folder has several workspaces and one is launched without a specific agent.
                       </p>
                     </div>
@@ -2114,7 +2114,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   ${activeTab === "runner" && html`
                     <div class="space-y-5">
                       <div>
-                        <label class="block text-sm text-gray-400 mb-3">Runner Type</label>
+                        <label class="block text-sm text-mitto-text-muted mb-3">Runner Type</label>
                         <div class="space-y-2">
                           ${supportedRunners.map((r) => html`
                             <label key=${r.type} class="flex items-center gap-3 cursor-pointer ${!r.supported ? "opacity-50" : ""}">
@@ -2125,7 +2125,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 checked=${editRunner === r.type}
                                 disabled=${!r.supported}
                                 onChange=${() => handleRunnerChange(r.type)}
-                                class="text-blue-500"
+                                class="text-mitto-accent"
                               />
                               <span class="text-sm">${r.label}</span>
                             </label>
@@ -2147,13 +2147,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   ${activeTab === "mcp" && html`
                     <div class="space-y-4">
                       <div class="flex items-center justify-between">
-                        <p class="text-sm text-gray-400">
+                        <p class="text-sm text-mitto-text-muted">
                           MCP servers configured for this workspace's ACP agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
                         </p>
                         <div class="flex items-center gap-0.5">
                           <button
                             onClick=${() => loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir)}
-                            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-white"
                             title="Refresh MCP server list"
                             disabled=${mcpToolsLoading}
                           >
@@ -2169,7 +2169,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 setMcpInstallError("");
                                 setMcpInstallSuccess("");
                               }}
-                              class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-white"
                               title="Install MCP servers"
                             >
                               <${PlusIcon} className="w-4 h-4" />
@@ -2180,9 +2180,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       ${mcpToolsLoading
                         ? html`<div class="flex items-center justify-center p-8"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
                         : mcpToolsError
-                          ? html`<div class="p-4 text-center text-yellow-400 text-sm">${mcpToolsError}</div>`
+                          ? html`<div class="p-4 text-center text-mitto-warning text-sm">${mcpToolsError}</div>`
                           : mcpTools?.servers?.length === 0
-                            ? html`<div class="p-4 text-center text-gray-500 text-sm">
+                            ? html`<div class="p-4 text-center text-mitto-text-muted text-sm">
                                 ${mcpTools?.message || "No MCP servers found for this agent."}
                               </div>`
                             : html`
@@ -2195,8 +2195,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   </colgroup>
                                   <thead>
                                     <tr class="bg-slate-800/50">
-                                      <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Name</th>
-                                      <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Command / URL</th>
+                                      <th class="text-left px-4 py-2.5 text-mitto-text-muted font-medium">Name</th>
+                                      <th class="text-left px-4 py-2.5 text-mitto-text-muted font-medium">Command / URL</th>
                                       ${mcpTools?.has_mcp_remove && html`
                                         <th class="px-2 py-2.5"></th>
                                       `}
@@ -2206,7 +2206,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     ${mcpTools?.servers?.map((srv, i) => html`
                                       <tr key=${srv.name || i} class="border-t border-mitto-border hover:bg-slate-800/30">
                                         <td class="px-4 py-2.5 font-medium truncate" title=${srv.name}>${srv.name}</td>
-                                        <td class="px-4 py-2.5 text-gray-400 font-mono text-xs truncate" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
+                                        <td class="px-4 py-2.5 text-mitto-text-muted font-mono text-xs truncate" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
                                           ${srv.url || [srv.command, ...(srv.args || [])].join(" ")}
                                         </td>
                                         ${mcpTools?.has_mcp_remove && html`
@@ -2217,7 +2217,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                               title="Remove MCP server"
                                               disabled=${mcpRemoveLoading}
                                             >
-                                              <${TrashIcon} className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                                              <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                             </button>
                                           </td>
                                         `}
@@ -2239,9 +2239,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         <div class="flex items-center justify-between p-4 border-t border-mitto-border shrink-0">
           <div class="flex-1 mr-4">
             ${orphanedWorkspaces.length > 0 && html`
-              <p class="text-xs text-yellow-400">⚠ ${orphanedWorkspaces.length} workspace(s) hidden: missing ACP server</p>
+              <p class="text-xs text-mitto-warning">⚠ ${orphanedWorkspaces.length} workspace(s) hidden: missing ACP server</p>
             `}
-            ${error && html`<p class="text-xs text-red-400">${error}</p>`}
+            ${error && html`<p class="text-xs text-mitto-danger">${error}</p>`}
           </div>
           <div class="flex gap-2">
             ${needsRestart && html`
@@ -2256,11 +2256,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   : "Restart ACP"}
               </button>
             `}
-            <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors">Close</button>
+            <button onClick=${handleClose} class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">Close</button>
             <button
               onClick=${handleSave}
               disabled=${saving || loading}
-              class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+              class="px-4 py-2 text-sm bg-mitto-accent hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
             >
               ${saving
                 ? html`<${SpinnerIcon} className="w-4 h-4" /> Saving...`
@@ -2302,14 +2302,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       }}
     >
       <div class="space-y-4 mt-3">
-        <p class="text-sm text-gray-400">
+        <p class="text-sm text-mitto-text-muted">
           Paste one or more MCP server definitions as JSON.
         </p>
         <textarea
           value=${mcpInstallJson}
           onInput=${(e) => { setMcpInstallJson(e.target.value); setMcpInstallError(""); setMcpInstallSuccess(""); }}
           placeholder=${'{\n  "mcpServers": {\n    "server-name": {\n      "command": "...",\n      "args": ["..."]\n    }\n  }\n}'}
-          class="w-full h-48 bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm font-mono text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+          class="w-full h-48 bg-mitto-surface-2 border border-mitto-border rounded-lg px-3 py-2 text-sm font-mono text-mitto-text placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
           disabled=${mcpInstallLoading}
           spellcheck="false"
         />
@@ -2321,24 +2321,24 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           } catch { return false; }
         })() && html`
           <div>
-            <label class="block text-sm text-gray-400 mb-1">Server name</label>
+            <label class="block text-sm text-mitto-text-muted mb-1">Server name</label>
             <input
               type="text"
               value=${mcpInstallName}
               onInput=${(e) => { setMcpInstallName(e.target.value); setMcpInstallError(""); }}
               placeholder="my-server"
-              class="w-full bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              class="w-full bg-mitto-surface-2 border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
               disabled=${mcpInstallLoading}
             />
           </div>
         `}
         ${mcpTools?.mcp_scopes?.length > 0 && html`
           <div>
-            <label class="block text-sm text-gray-400 mb-1">Scope</label>
+            <label class="block text-sm text-mitto-text-muted mb-1">Scope</label>
             <select
               value=${mcpInstallScope}
               onChange=${(e) => setMcpInstallScope(e.target.value)}
-              class="w-full bg-slate-800 border border-mitto-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              class="w-full bg-mitto-surface-2 border border-mitto-border rounded-lg px-3 py-2 text-sm text-mitto-text focus:outline-none focus:ring-1 focus:ring-blue-500"
               disabled=${mcpInstallLoading}
             >
               ${mcpTools.mcp_scopes.map(scope => html`
@@ -2348,10 +2348,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           </div>
         `}
         ${mcpInstallError && html`
-          <p class="text-sm text-red-400 whitespace-pre-wrap">${mcpInstallError}</p>
+          <p class="text-sm text-mitto-danger whitespace-pre-wrap">${mcpInstallError}</p>
         `}
         ${mcpInstallSuccess && html`
-          <p class="text-sm text-green-400">${mcpInstallSuccess}</p>
+          <p class="text-sm text-mitto-success">${mcpInstallSuccess}</p>
         `}
       </div>
     <//>
