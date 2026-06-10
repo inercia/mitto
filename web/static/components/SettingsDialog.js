@@ -390,7 +390,7 @@ export function RunnerRestrictionsEditor({
                 id="override-networking"
                 checked=${overrideNetworking}
                 onChange=${(e) => handleNetworkingOverride(e.target.checked)}
-                class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                class="checkbox checkbox-sm checkbox-primary"
               />
               <label for="override-networking" class="text-sm font-medium"
                 >Override networking</label
@@ -408,7 +408,7 @@ export function RunnerRestrictionsEditor({
                           "allow_networking",
                           e.target.checked,
                         )}
-                      class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                      class="checkbox checkbox-sm checkbox-primary"
                     />
                     <span class="text-sm">Allow networking</span>
                   </label>
@@ -682,7 +682,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           type="checkbox"
           checked=${autoApprove}
           onChange=${(e) => { setAutoApprove(e.target.checked); emitChange({ autoApprove: e.target.checked }); }}
-          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+          class="checkbox checkbox-sm checkbox-primary"
         />
         <div class="flex-1">
           <div class="font-medium text-sm">Auto-approve Permissions</div>
@@ -2486,7 +2486,7 @@ export function SettingsDialog({
                                             [runner.type]: newConfig,
                                           });
                                         }}
-                                        class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                                        class="checkbox checkbox-sm checkbox-primary"
                                       />
                                       <div>
                                         <div class="font-medium text-sm">
@@ -3037,7 +3037,7 @@ export function SettingsDialog({
                             checked=${globalAutoApprove}
                             onChange=${(e) =>
                               setGlobalAutoApprove(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
@@ -3324,7 +3324,7 @@ export function SettingsDialog({
                                             }
                                             setDefaultFlags(newFlags);
                                           }}
-                                          class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0 cursor-pointer"
+                                          class="checkbox checkbox-sm checkbox-primary cursor-pointer"
                                         />
                                       </td>
                                       <td class="p-3">
@@ -3357,7 +3357,7 @@ export function SettingsDialog({
                             checked=${actionButtonsEnabled}
                             onChange=${(e) =>
                               setActionButtonsEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
@@ -3377,7 +3377,7 @@ export function SettingsDialog({
                             checked=${externalImagesEnabled}
                             onChange=${(e) =>
                               setExternalImagesEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div class="flex-1">
                             <div class="font-medium text-sm">
@@ -3416,7 +3416,7 @@ export function SettingsDialog({
                             type="checkbox"
                             checked=${authEnabled}
                             onChange=${(e) => setAuthEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3487,7 +3487,7 @@ export function SettingsDialog({
                                       setAuthUsername(authUsername || "admin");
                                     }
                                   }}
-                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                                  class="checkbox checkbox-sm checkbox-primary"
                                 />
                                 <div>
                                   <div class="font-medium text-sm">
@@ -3552,7 +3552,7 @@ export function SettingsDialog({
                                   checked=${cfEnabled}
                                   onChange=${(e) =>
                                     setCfEnabled(e.target.checked)}
-                                  class="w-4 h-4 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                                  class="checkbox checkbox-sm checkbox-primary"
                                 />
                                 <div>
                                   <div class="font-medium text-sm">
@@ -3682,7 +3682,7 @@ export function SettingsDialog({
                             checked=${accessLogEnabled}
                             onChange=${(e) =>
                               setAccessLogEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3716,7 +3716,7 @@ export function SettingsDialog({
                             checked=${followSystemTheme}
                             onChange=${(e) =>
                               handleFollowSystemThemeChange(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3738,7 +3738,7 @@ export function SettingsDialog({
                               handleFollowSystemReducedMotionChange(
                                 e.target.checked,
                               )}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3761,7 +3761,7 @@ export function SettingsDialog({
                             onChange=${(e) =>
                               handleReduceAnimationsChange(e.target.checked)}
                             disabled=${followSystemReducedMotion}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0 ${followSystemReducedMotion
+                            class="checkbox checkbox-sm checkbox-primary ${followSystemReducedMotion
                               ? "cursor-not-allowed"
                               : ""}"
                           />
@@ -3891,7 +3891,7 @@ export function SettingsDialog({
                                 setConversationCyclingMode(CYCLING_MODE.ALL);
                               }
                             }}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3949,7 +3949,7 @@ export function SettingsDialog({
                             checked=${confirmDeleteSession}
                             onChange=${(e) =>
                               setConfirmDeleteSession(e.target.checked)}
-                            class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                            class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
@@ -3973,7 +3973,7 @@ export function SettingsDialog({
                                 setConfirmQuitWithRunningSessions(
                                   e.target.checked,
                                 )}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                              class="checkbox checkbox-sm checkbox-primary"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4004,7 +4004,7 @@ export function SettingsDialog({
                               checked=${agentCompletedSound}
                               onChange=${(e) =>
                                 setAgentCompletedSound(e.target.checked)}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                              class="checkbox checkbox-sm checkbox-primary"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4026,7 +4026,7 @@ export function SettingsDialog({
                                 // Simply save the preference - permission will be requested on app restart
                                 setNativeNotifications(e.target.checked);
                               }}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                              class="checkbox checkbox-sm checkbox-primary"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4052,7 +4052,7 @@ export function SettingsDialog({
                               checked=${showInAllSpaces}
                               onChange=${(e) =>
                                 setShowInAllSpaces(e.target.checked)}
-                              class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                              class="checkbox checkbox-sm checkbox-primary"
                             />
                             <div>
                               <div class="font-medium text-sm">
@@ -4074,7 +4074,7 @@ export function SettingsDialog({
                                 checked=${startAtLogin}
                                 onChange=${(e) =>
                                   setStartAtLogin(e.target.checked)}
-                                class="w-5 h-5 rounded bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent focus:ring-mitto-accent-500 focus:ring-offset-0"
+                                class="checkbox checkbox-sm checkbox-primary"
                               />
                               <div>
                                 <div class="font-medium text-sm">
