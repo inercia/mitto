@@ -87,7 +87,7 @@ const TYPE_COLORS = {
 };
 
 function badge(text, colorClass) {
-  return html`<span class="px-1.5 py-0.5 rounded text-xs font-medium ${colorClass}">${text}</span>`;
+  return html`<span class="badge badge-sm font-medium ${colorClass}">${text}</span>`;
 }
 
 function priorityBadge(p) {
