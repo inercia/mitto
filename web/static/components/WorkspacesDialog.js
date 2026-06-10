@@ -1312,7 +1312,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addWorkspace}
                 disabled=${acpServers.length === 0 || isNewFolderIncomplete}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Add folder"
               >
                 <${FolderIcon} className="w-4 h-4" />
@@ -1320,7 +1320,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
                 disabled=${!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-danger hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-danger hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Delete selected ACP server"
               >
                 <${TrashIcon} className="w-4 h-4" />
@@ -1328,7 +1328,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && duplicateWorkspace(selectedWorkspaceKey)}
                 disabled=${!selectedWorkspaceKey}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Duplicate selected workspace"
               >
                 <${DuplicateIcon} className="w-4 h-4" />
@@ -1336,7 +1336,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addServerToFolder}
                 disabled=${!selectedFolder || !folderCanAddServer}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-white text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Add ACP server to folder"
               >
                 <${ServerIcon} className="w-4 h-4" />
@@ -1411,7 +1411,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     ${hasNativeFolderPicker() && html`
                                       <button
                                         onClick=${async () => { const p = await pickFolder(); if (p) updateNewFolderPath(p); }}
-                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-white transition-colors"
+                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-mitto-text-strong transition-colors"
                                         title="Browse"
                                         style="height: 38px; box-sizing: border-box"
                                       ><${FolderIcon} className="w-4 h-4" /></button>
@@ -1518,7 +1518,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               </div>
                               <button
                                 onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
-                                class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-text-secondary hover:text-white bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                                class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-text-secondary hover:text-mitto-text-strong bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded-lg transition-colors"
                                 title="Add Field"
                               >
                                 <${PlusIcon} className="w-3.5 h-3.5" />
@@ -2153,7 +2153,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                         <div class="flex items-center gap-0.5">
                           <button
                             onClick=${() => loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir)}
-                            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-white"
+                            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
                             title="Refresh MCP server list"
                             disabled=${mcpToolsLoading}
                           >
@@ -2169,7 +2169,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 setMcpInstallError("");
                                 setMcpInstallSuccess("");
                               }}
-                              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-white"
+                              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
                               title="Install MCP servers"
                             >
                               <${PlusIcon} className="w-4 h-4" />

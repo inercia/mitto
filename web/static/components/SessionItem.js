@@ -569,7 +569,7 @@ export function SessionItem({
                 ${hasChildren && childCount > 0
                   ? html`
                       <button
-                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-mitto-surface-3'} text-mitto-text-muted hover:text-white hover:bg-mitto-surface-hover transition-colors cursor-pointer"
+                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-mitto-surface-3'} text-mitto-text-muted hover:text-mitto-text-strong hover:bg-mitto-surface-hover transition-colors cursor-pointer"
                         onClick=${(e) => {
                           e.stopPropagation();
                           if (onToggleExpand) onToggleExpand();
@@ -592,7 +592,7 @@ export function SessionItem({
                 ${isSpawned
                   ? html`<button
                       onClick=${handleDelete}
-                      class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-white"
+                      class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-mitto-text-strong"
                       title="Delete"
                     >
                       <${TrashIcon} className="w-4 h-4" />
@@ -604,7 +604,7 @@ export function SessionItem({
                         ? "opacity-50 cursor-not-allowed text-mitto-text-muted"
                         : isArchived
                           ? "hover:bg-mitto-surface-hover text-mitto-text-muted"
-                          : "hover:bg-mitto-surface-hover text-mitto-text-secondary hover:text-white"}"
+                          : "hover:bg-mitto-surface-hover text-mitto-text-secondary hover:text-mitto-text-strong"}"
                       title="${!canArchive
                         ? archiveBlockedReason
                         : isArchived
@@ -618,14 +618,14 @@ export function SessionItem({
                 }
                 <button
                   onClick=${handleRename}
-                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-secondary hover:text-white"
+                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-secondary hover:text-mitto-text-strong"
                   title="Properties"
                 >
                   <${EditIcon} className="w-4 h-4" />
                 </button>
                 <button
                   onClick=${handleDelete}
-                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-white"
+                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-mitto-text-strong"
                   title="Delete"
                 >
                   <${TrashIcon} className="w-4 h-4" />

@@ -56,7 +56,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
             class="p-1 hover:bg-mitto-surface-hover rounded-lg transition-colors"
             title="Close"
           >
-            <${CloseIcon} className="w-5 h-5 text-mitto-text-muted hover:text-white" />
+            <${CloseIcon} className="w-5 h-5 text-mitto-text-muted hover:text-mitto-text-strong" />
           </button>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">

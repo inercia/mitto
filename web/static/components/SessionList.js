@@ -824,7 +824,7 @@ export function SessionList({
         return html`
           <div key=${group.key} class="group-section">
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none group/header"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-mitto-text-strong hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none group/header"
               onClick=${() => handleToggleGroup(group.key, allGroupKeys)}
               onContextMenu=${(e) => {
                 if (group.workingDir) {
@@ -871,7 +871,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(group.workingDir); }}
-                  class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-white"
+                  class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
                   title="Beads issues: ${group.workingDir}"
                 >
                   <${BeadsIcon} className="w-3.5 h-3.5" />
@@ -882,7 +882,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => !isCreatingSession && handleNewSessionInGroup(group.key, e)}
-                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-mitto-text-muted" : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-white"}"
+                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-mitto-text-muted" : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-mitto-text-strong"}"
                   title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${group.label}`}
                   disabled=${isCreatingSession}
                 >
@@ -1028,7 +1028,7 @@ export function SessionList({
           <div key=${folder.key} class="folder-group">
             <!-- Level 1: Folder header -->
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-mitto-text-strong hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none"
               onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
               onContextMenu=${(e) => {
                 if (folder.workingDir) {
@@ -1063,7 +1063,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(folder.workingDir); }}
-                  class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-white"
+                  class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
                   title="Beads issues: ${folder.workingDir}"
                 >
                   <${BeadsIcon} className="w-3.5 h-3.5" />
@@ -1073,7 +1073,7 @@ export function SessionList({
               html`
                 <button
                   onClick=${(e) => !isCreatingSession && handleNewSessionInFolder(folder.workingDir, e)}
-                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-mitto-text-muted" : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-white"}"
+                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-mitto-text-muted" : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-mitto-text-strong"}"
                   title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${folder.label}`}
                   disabled=${isCreatingSession}
                 >
@@ -1434,14 +1434,14 @@ export function SessionList({
                 <div class="flex items-center gap-0.5">
                   <button
                     onClick=${onShowSettings}
-                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-white"
+                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
                     title="Settings"
                   >
                     <${SettingsIcon} className="w-4 h-4" />
                   </button>
                   <button
                     onClick=${onShowWorkspaces}
-                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-white"
+                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
                     title="Workspaces"
                   >
                     <${FolderIcon} className="w-4 h-4" />
@@ -1508,7 +1508,7 @@ export function SessionList({
             title="Keyboard Shortcuts"
           >
             <${KeyboardIcon}
-              className="w-4 h-4 text-mitto-text-muted group-hover:text-white"
+              className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
             />
           </button>
         </div>

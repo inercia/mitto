@@ -585,10 +585,7 @@ a:hover {
   background: #e5e5e5 !important;
 }
 
-/* Light theme: Hover states - text */
-.v2-theme:not(.dark) .hover\:text-white:hover {
-  color: #18181b !important;
-}
+/* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
 /* Light theme: Focus states */
 .v2-theme:not(.dark) .focus\:ring-mitto-accent-500:focus {
@@ -666,10 +663,7 @@ a:hover {
   background: #475569 !important;
 }
 
-/* Dark theme: Hover states - text */
-.v2-theme.dark .hover\:text-white:hover {
-  color: #ffffff !important;
-}
+/* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
 /* Dark theme: Focus states */
 .v2-theme.dark .focus\:ring-mitto-accent-500:focus {

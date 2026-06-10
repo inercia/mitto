@@ -303,7 +303,7 @@ export function QueueDropdown({
                         type="button"
                         onClick=${(e) => handleMoveUp(e, msg.id)}
                         disabled=${isMoving || index === 0}
-                        class="queue-item-move-up p-1 rounded hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-mitto-text-muted"
+                        class="queue-item-move-up p-1 rounded hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-mitto-text-strong transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-mitto-text-muted"
                         title=${index === 0 ? "Already at top" : "Move up"}
                       >
                         <${ChevronUpIcon} className="w-3.5 h-3.5" />
@@ -312,7 +312,7 @@ export function QueueDropdown({
                         type="button"
                         onClick=${(e) => handleMoveDown(e, msg.id)}
                         disabled=${isMoving || index === messages.length - 1}
-                        class="queue-item-move-down p-1 rounded hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-mitto-text-muted"
+                        class="queue-item-move-down p-1 rounded hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-mitto-text-strong transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-mitto-text-muted"
                         title=${index === messages.length - 1
                           ? "Already at bottom"
                           : "Move down"}
@@ -323,7 +323,7 @@ export function QueueDropdown({
                         type="button"
                         onClick=${(e) => handleDelete(e, msg.id)}
                         disabled=${isDeleting}
-                        class="queue-item-delete p-1 rounded hover:bg-red-600/80 text-mitto-text-muted hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        class="queue-item-delete p-1 rounded hover:bg-red-600/80 text-mitto-text-muted hover:text-mitto-text-strong transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         title="Remove from queue"
                       >
                         <${TrashIcon} className="w-3.5 h-3.5" />

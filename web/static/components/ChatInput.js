@@ -76,7 +76,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
     <button
       type="button"
       onClick=${onToggle}
-      class="p-2 text-mitto-text-muted hover:text-white transition-colors rounded-lg hover:bg-mitto-surface-hover"
+      class="p-2 text-mitto-text-muted hover:text-mitto-text-strong transition-colors rounded-lg hover:bg-mitto-surface-hover"
       title=${collapsed ? "Show prompt area" : "Hide prompt area"}
     >
       <svg

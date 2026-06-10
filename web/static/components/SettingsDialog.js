@@ -194,7 +194,7 @@ export function AutoChildrenEditor({
               <button
                 type="button"
                 onClick=${addChild}
-                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-mitto-accent-hover hover:text-white border border-mitto-border rounded-lg transition-colors"
+                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-mitto-accent-hover hover:text-mitto-text-strong border border-mitto-border rounded-lg transition-colors"
               >
                 + Add Child
               </button>
@@ -2062,7 +2062,7 @@ export function SettingsDialog({
                   class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${activeTab ===
                   item.id
                     ? "text-mitto-accent bg-mitto-accent-500/10 border-l-2 border-mitto-accent"
-                    : "text-mitto-text-muted hover:text-white hover:bg-slate-700/50 border-l-2 border-transparent"}"
+                    : "text-mitto-text-muted hover:text-mitto-text-strong hover:bg-slate-700/50 border-l-2 border-transparent"}"
                 >
                   <${item.icon} className="w-4 h-4 shrink-0" />
                   <span class="truncate">${item.label}</span>

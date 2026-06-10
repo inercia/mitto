@@ -182,7 +182,7 @@ export function PeriodicPromptSelector({
           <button
             type="button"
             onClick=${onTogglePromptArea}
-            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-white transition-colors rounded hover:bg-mitto-surface-hover"
+            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-mitto-text-strong transition-colors rounded hover:bg-mitto-surface-hover"
             title=${isPromptAreaVisible
               ? "Hide message input"
               : "Show message input"}

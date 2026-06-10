@@ -49,7 +49,7 @@ export function ToastContainer({ toasts, onDismiss }) {
                       e.stopPropagation();
                       onDismiss(toast.id);
                     }}
-                    class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
+                    class="ml-auto p-1 text-white/80 hover:text-mitto-text-strong rounded transition-colors"
                     title="Dismiss"
                   >
                     <${CloseIcon} className="w-4 h-4" />
