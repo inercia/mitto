@@ -8,6 +8,7 @@ const {
   useMemo,
   useRef,
   html,
+  Fragment,
 } = window.preact;
 
 /**
@@ -121,29 +122,29 @@ export function PeriodicPromptSelector({
 
   const displayName = selectedPromptName || "Select a prompt...";
 
-  // Render a single prompt item in the dropdown
+  // Render a single prompt item in the dropdown (daisyUI menu <li>; menu provides
+  // the icon/label/trailing grid layout, padding and hover).
   const renderPromptItem = (prompt) => {
     const isSelected = prompt.name === selectedPromptName;
     return html`
-      <button
-        key=${"periodic-prompt-" + prompt.name}
-        type="button"
-        onClick=${() => handleSelect(prompt)}
-        title=${prompt.description || prompt.name}
-        class="w-full text-left px-4 py-2.5 text-sm transition-all flex items-center gap-2 ${isSelected
-          ? "bg-mitto-accent-600/20 text-white"
-          : "text-mitto-text hover:bg-slate-600/50"}"
-      >
-        <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-        </svg>
-        <span class="truncate flex-1">${prompt.name}</span>
-        ${isSelected && html`
-          <svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+      <li key=${"periodic-prompt-" + prompt.name}>
+        <button
+          type="button"
+          onClick=${() => handleSelect(prompt)}
+          title=${prompt.description || prompt.name}
+          class=${isSelected ? "bg-mitto-accent-600/20 text-white" : ""}
+        >
+          <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
-        `}
-      </button>
+          <span class="truncate">${prompt.name}</span>
+          ${isSelected && html`
+            <svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+            </svg>
+          `}
+        </button>
+      </li>
     `;
   };
 
@@ -225,32 +226,35 @@ export function PeriodicPromptSelector({
             />
           </div>
 
-          <!-- Prompt list -->
-          <div class="overflow-y-auto flex-1" style="max-height: 310px;">
+          <!-- Prompt list (daisyUI menu) -->
+          <ul
+            class="menu menu-sm w-full p-0 flex-nowrap overflow-y-auto flex-1"
+            style="max-height: 310px;"
+          >
             ${sortedGroupNames.map(
               (groupName) => html`
-                <div key=${"pps-group-" + groupName}>
-                  <div class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30">
+                <${Fragment} key=${"pps-group-" + groupName}>
+                  <li class="menu-title text-xs font-semibold text-mitto-text-muted uppercase tracking-wider">
                     ${groupName}
-                  </div>
+                  </li>
                   ${groupedPrompts[groupName].map((prompt) => renderPromptItem(prompt))}
-                </div>
+                </${Fragment}>
               `,
             )}
             ${ungroupedPrompts.length > 0 ? html`
-              <div key="pps-group-other">
-                <div class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30">
+              <${Fragment} key="pps-group-other">
+                <li class="menu-title text-xs font-semibold text-mitto-text-muted uppercase tracking-wider">
                   Other
-                </div>
+                </li>
                 ${ungroupedPrompts.map((prompt) => renderPromptItem(prompt))}
-              </div>
+              </${Fragment}>
             ` : ""}
             ${!hasResults ? html`
-              <div class="px-4 py-3 text-xs text-mitto-text-muted text-center">
+              <li class="px-4 py-3 text-xs text-mitto-text-muted text-center">
                 No matching prompts
-              </div>
+              </li>
             ` : ""}
-          </div>
+          </ul>
         </div>
       `}
     </div>
