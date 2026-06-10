@@ -140,5 +140,17 @@
   ::file-selector-button {
     border-color: var(--color-gray-200, currentColor);
   }
+
+  /* Theme-aware color-scheme: the daisyUI theme plugin sets color-scheme:dark on
+   * :root (default). Override to light for the two light-mode states so that
+   * native browser chrome (scrollbars, form controls, date pickers) renders in
+   * light mode. Dark states (v1 default, v2 .dark) inherit the daisyUI default.
+   *   v1 light  → .light class on <html>/<body>
+   *   v2 light  → .v2-theme without .dark
+   */
+  .light,
+  .v2-theme:not(.dark) {
+    color-scheme: light;
+  }
 }
 
