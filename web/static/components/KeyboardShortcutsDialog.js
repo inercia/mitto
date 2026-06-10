@@ -55,7 +55,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
                             ${shortcut.macOnly &&
                             html`
                               <span
-                                class="text-[10px] px-1.5 py-0.5 rounded bg-mitto-surface-4 text-mitto-text-muted"
+                                class="badge badge-sm bg-mitto-surface-4 text-mitto-text-muted"
                                 >macOS app</span
                               >
                             `}
