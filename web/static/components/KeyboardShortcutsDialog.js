@@ -1,7 +1,7 @@
 // Mitto Web Interface - Keyboard Shortcuts Dialog Component
-const { html, useEffect } = window.preact;
+const { html } = window.preact;
 
-import { CloseIcon } from "./Icons.js";
+import { Modal } from "./Modal.js";
 import { KEYBOARD_SHORTCUTS } from "../constants.js";
 
 // =============================================================================
@@ -9,21 +9,8 @@ import { KEYBOARD_SHORTCUTS } from "../constants.js";
 // =============================================================================
 
 export function KeyboardShortcutsDialog({ isOpen, onClose }) {
-  if (!isOpen) return null;
-
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
-
-  // Handle Escape key to close dialog
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
 
   // Filter shortcuts based on environment and group by section
   // In browser (not macOS app), hide macOnly shortcuts since they're handled by native menu
@@ -41,82 +28,60 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
   });
 
   return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${onClose}
-    >
-      <div
-        class="bg-mitto-sidebar rounded-xl p-6 w-[420px] md:w-[700px] shadow-2xl max-h-[80vh] overflow-y-auto"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">Keyboard Shortcuts</h3>
-          <button
-            onClick=${onClose}
-            class="p-1 hover:bg-mitto-surface-hover rounded-lg transition-colors"
-            title="Close"
-          >
-            <${CloseIcon} className="w-5 h-5 text-mitto-text-muted hover:text-mitto-text-strong" />
-          </button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          ${Object.entries(sections)
-            .sort((a, b) => b[1].length - a[1].length)
-            .map(
-              ([sectionName, shortcuts]) => html`
-                <div key=${sectionName}>
-                  <h4
-                    class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide mb-2"
-                  >
-                    ${sectionName}
-                  </h4>
-                  <div class="space-y-1">
-                    ${shortcuts.map(
-                      (shortcut) => html`
-                        <div
-                          key=${shortcut.keys}
-                          class="flex items-center justify-between py-2 px-3 rounded-lg bg-slate-700/30"
-                        >
-                          <div class="flex flex-col gap-0.5">
-                            <div class="flex items-center gap-2">
-                              <span class="text-mitto-text-secondary"
-                                >${shortcut.description}</span
-                              >
-                              ${shortcut.macOnly &&
-                              html`
-                                <span
-                                  class="text-[10px] px-1.5 py-0.5 rounded bg-mitto-surface-4 text-mitto-text-muted"
-                                  >macOS app</span
-                                >
-                              `}
-                            </div>
-                            ${shortcut.hint &&
+    <${Modal} isOpen=${isOpen} onClose=${onClose} title="Keyboard Shortcuts">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        ${Object.entries(sections)
+          .sort((a, b) => b[1].length - a[1].length)
+          .map(
+            ([sectionName, shortcuts]) => html`
+              <div key=${sectionName}>
+                <h4
+                  class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide mb-2"
+                >
+                  ${sectionName}
+                </h4>
+                <div class="space-y-1">
+                  ${shortcuts.map(
+                    (shortcut) => html`
+                      <div
+                        key=${shortcut.keys}
+                        class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200"
+                      >
+                        <div class="flex flex-col gap-0.5">
+                          <div class="flex items-center gap-2">
+                            <span class="text-mitto-text-secondary"
+                              >${shortcut.description}</span
+                            >
+                            ${shortcut.macOnly &&
                             html`
-                              <span class="text-[11px] text-mitto-text-muted"
-                                >${shortcut.hint}</span
+                              <span
+                                class="text-[10px] px-1.5 py-0.5 rounded bg-mitto-surface-4 text-mitto-text-muted"
+                                >macOS app</span
                               >
                             `}
                           </div>
-                          <kbd
-                            class="px-2 py-1 text-sm font-mono bg-mitto-surface-3 rounded border border-mitto-border-2 text-mitto-text"
-                          >
-                            ${shortcut.keys}
-                          </kbd>
+                          ${shortcut.hint &&
+                          html`
+                            <span class="text-[11px] text-mitto-text-muted"
+                              >${shortcut.hint}</span
+                            >
+                          `}
                         </div>
-                      `,
-                    )}
-                  </div>
+                        <kbd class="kbd kbd-sm">${shortcut.keys}</kbd>
+                      </div>
+                    `,
+                  )}
                 </div>
-              `,
-            )}
-        </div>
-        <div class="mt-4 pt-3 border-t border-mitto-border-1 space-y-2">
-          <p class="text-xs text-mitto-text-muted text-center">
-            On touch devices, swipe left/right to switch conversations
-          </p>
-          <p class="text-xs text-mitto-text-muted text-center">Press Escape to close</p>
-        </div>
+              </div>
+            `,
+          )}
       </div>
-    </div>
+      <div class="mt-4 pt-3 border-t border-mitto-border-1 space-y-2">
+        <p class="text-xs text-mitto-text-muted text-center">
+          On touch devices, swipe left/right to switch conversations
+        </p>
+        <p class="text-xs text-mitto-text-muted text-center">Press Escape to close</p>
+      </div>
+    </${Modal}>
   `;
 }
