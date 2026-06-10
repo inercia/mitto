@@ -1271,7 +1271,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           <!-- Folder header -->
                           <div
                             data-folder-name=${displayName}
-                            class="group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-slate-700/30"}"
+                            class="group flex items-center gap-2 px-3 py-2 rounded-sm cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-slate-700/30"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
                             <${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted shrink-0" />
@@ -1533,7 +1533,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             ${editUserDataFields.length > 0 && html`
                               <div class="space-y-2">
                                 ${editUserDataFields.map((field, i) => html`
-                                  <div key=${i} class="flex gap-2 items-start p-2 rounded-lg ${i % 2 === 0 ? 'bg-slate-800/30' : ''}">
+                                  <div key=${i} class="flex gap-2 items-start p-2 rounded-sm ${i % 2 === 0 ? 'bg-slate-800/30' : ''}">
                                     <div class="flex-1 min-w-0">
                                       <label class="block text-xs text-mitto-text-muted mb-0.5">Name</label>
                                       <input
@@ -1829,7 +1829,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       const isEnabled = prompt.enabled !== false;
                                       return html`
                                         <div key=${prompt.name}
-                                             class="collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-lg border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'}">
+                                             class="collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-sm border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'}">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12">
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => togglePromptEnabled(prompt)}
@@ -1978,7 +1978,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       const isExpanded = expandedProcessor === proc.name;
                                       return html`
                                         <div key=${proc.name}
-                                             class="collapse collapse-arrow ${isExpanded ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-lg border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
+                                             class="collapse collapse-arrow ${isExpanded ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-sm border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
                                                onClick=${() => setExpandedProcessor(isExpanded ? null : proc.name)}>
                                             <input type="checkbox" checked=${isEnabled}

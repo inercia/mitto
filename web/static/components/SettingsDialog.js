@@ -676,7 +676,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
 
       <!-- Auto-approve Permissions -->
       <label
-        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
       >
         <input
           type="checkbox"
@@ -2243,7 +2243,7 @@ export function SettingsDialog({
                                 return html`
                                   <div
                                     key=${srv._key}
-                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile ? "opacity-80" : ""} group"
+                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-slate-700/20 rounded-sm border border-slate-600/50 ${isRCFile ? "opacity-80" : ""} group"
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
@@ -3007,7 +3007,7 @@ export function SettingsDialog({
                         </h4>
 
                         <label
-                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3063,7 +3063,7 @@ export function SettingsDialog({
                           Archive Settings
                         </h4>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3090,7 +3090,7 @@ export function SettingsDialog({
                           </div>
                         </div>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3124,7 +3124,7 @@ export function SettingsDialog({
                           Suspend Settings
                         </h4>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3162,7 +3162,7 @@ export function SettingsDialog({
                           Memory Recycling
                         </h4>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3199,7 +3199,7 @@ export function SettingsDialog({
                           Conversation History
                         </h4>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3235,7 +3235,7 @@ export function SettingsDialog({
                           Child Conversations
                         </h4>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3275,7 +3275,7 @@ export function SettingsDialog({
                             new conversations.
                           </p>
                           <div
-                            class="bg-slate-700/20 rounded-lg border border-slate-600/50 overflow-hidden"
+                            class="bg-slate-700/20 rounded-sm border border-slate-600/50 overflow-hidden"
                           >
                             <table class="w-full text-sm">
                               <tbody>
@@ -3327,7 +3327,7 @@ export function SettingsDialog({
                           Message Display
                         </h4>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3347,7 +3347,7 @@ export function SettingsDialog({
                           </div>
                         </label>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3387,7 +3387,7 @@ export function SettingsDialog({
                         </h4>
 
                         <label
-                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3410,7 +3410,7 @@ export function SettingsDialog({
                         html`
                           <!-- Port and status -->
                           <div
-                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
+                            class="p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 space-y-3"
                           >
                             <div class="flex items-center gap-2">
                               <label class="text-sm text-mitto-text-muted">Port</label>
@@ -3450,7 +3450,7 @@ export function SettingsDialog({
 
                             <!-- Simple Auth (Username/Password) -->
                             <div
-                              class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
+                              class="p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 space-y-3"
                             >
                               <label class="flex items-center gap-3 cursor-pointer">
                                 <input
@@ -3521,7 +3521,7 @@ export function SettingsDialog({
 
                             <!-- Cloudflare Access Auth -->
                             <div
-                              class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
+                              class="p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 space-y-3"
                             >
                               <label class="flex items-center gap-3 cursor-pointer">
                                 <input
@@ -3579,7 +3579,7 @@ export function SettingsDialog({
 
                           <!-- Lifecycle Hooks -->
                           <div
-                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
+                            class="p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 space-y-3"
                           >
                             <h5 class="text-sm font-medium text-mitto-text-secondary">
                               Lifecycle Hooks
@@ -3652,7 +3652,7 @@ export function SettingsDialog({
                         </h4>
 
                         <label
-                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3686,7 +3686,7 @@ export function SettingsDialog({
                           Appearance
                         </h4>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3706,7 +3706,7 @@ export function SettingsDialog({
                           </div>
                         </label>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3728,7 +3728,7 @@ export function SettingsDialog({
                           </div>
                         </label>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors ${followSystemReducedMotion
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors ${followSystemReducedMotion
                             ? "opacity-50"
                             : ""}"
                         >
@@ -3754,7 +3754,7 @@ export function SettingsDialog({
                           </div>
                         </label>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3777,7 +3777,7 @@ export function SettingsDialog({
                           </div>
                         </div>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3823,7 +3823,7 @@ export function SettingsDialog({
                           </div>
                         </div>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3855,7 +3855,7 @@ export function SettingsDialog({
                           </div>
                         </div>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3881,7 +3881,7 @@ export function SettingsDialog({
                           </div>
                         </label>
                         <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${singleExpandedGroup ? "opacity-50" : ""}"
+                          class="p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 ${singleExpandedGroup ? "opacity-50" : ""}"
                         >
                           <div class="flex items-center justify-between">
                             <div>
@@ -3919,7 +3919,7 @@ export function SettingsDialog({
                           Confirmations
                         </h4>
                         <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
@@ -3941,7 +3941,7 @@ export function SettingsDialog({
                         ${isMacApp &&
                         html`
                           <label
-                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                           >
                             <input
                               type="checkbox"
@@ -3974,7 +3974,7 @@ export function SettingsDialog({
                             macOS Settings
                           </h4>
                           <label
-                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                           >
                             <input
                               type="checkbox"
@@ -3994,7 +3994,7 @@ export function SettingsDialog({
                             </div>
                           </label>
                           <label
-                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                           >
                             <input
                               type="checkbox"
@@ -4022,7 +4022,7 @@ export function SettingsDialog({
                             </div>
                           </label>
                           <label
-                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                           >
                             <input
                               type="checkbox"
@@ -4044,7 +4044,7 @@ export function SettingsDialog({
                           ${loginItemSupported &&
                           html`
                             <label
-                              class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                              class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-sm border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                             >
                               <input
                                 type="checkbox"
@@ -4066,7 +4066,7 @@ export function SettingsDialog({
 
                           <!-- Open Folder Action -->
                           <div
-                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
+                            class="p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 space-y-2"
                           >
                             <div class="font-medium text-sm">
                               Open folder command
@@ -4094,7 +4094,7 @@ export function SettingsDialog({
 
                           <!-- Terminal Action -->
                           <div
-                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
+                            class="p-4 bg-slate-700/20 rounded-sm border border-slate-600/50 space-y-2"
                           >
                             <div class="font-medium text-sm">
                               Open terminal command
