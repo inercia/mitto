@@ -172,6 +172,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   // Folder processors state (for the Processors tab)
   const [folderProcessors, setFolderProcessors] = useState([]);
   const [processorsLoading, setProcessorsLoading] = useState(false);
+  const [expandedProcessor, setExpandedProcessor] = useState(null);
 
   // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
   // beadsConfig holds the raw {key: value} map last loaded from the server.
@@ -1827,120 +1828,119 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       const isBuiltin = prompt.source === "builtin" || prompt.source === "file";
                                       const isEnabled = prompt.enabled !== false;
                                       return html`
-                                        <div key=${prompt.name} class="p-3 bg-slate-700/20 rounded-lg border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'}">
-                                          ${editingPromptIndex === idx
-                                            ? html`
-                                              <div class="space-y-3">
-                                                <div>
-                                                  <label class="block text-xs text-mitto-text-muted mb-1">Button Label</label>
-                                                  <input type="text" value=${isBuiltin ? prompt.name : editPromptName}
-                                                    onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
-                                                    disabled=${isBuiltin}
-                                                    class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
-                                                  />
-                                                </div>
-                                                <div>
-                                                  <label class="block text-xs text-mitto-text-muted mb-1">Prompt Text</label>
-                                                  <textarea rows="8"
-                                                    value=${isBuiltin ? prompt.prompt : editPromptText}
-                                                    onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
-                                                    disabled=${isBuiltin}
-                                                    class="textarea textarea-sm w-full resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
-                                                  />
-                                                </div>
-                                                <div>
-                                                  <label class="block text-xs text-mitto-text-muted mb-1">Group (optional)</label>
-                                                  <input type="text" value=${isBuiltin ? (prompt.group || '') : editPromptGroup}
-                                                    onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
-                                                    disabled=${isBuiltin}
-                                                    placeholder="e.g., Tasks, Code Quality"
-                                                    class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
-                                                  />
-                                                </div>
-                                                ${!isBuiltin && html`
-                                                  <div>
-                                                    <label class="block text-xs text-mitto-text-muted mb-1">Background Color (optional)</label>
-                                                    <div class="flex items-center gap-2">
-                                                      <input type="color" value=${editPromptColor || '#334155'}
-                                                        onInput=${(e) => setEditPromptColor(e.target.value)}
-                                                        class="w-8 h-8 rounded cursor-pointer border border-mitto-border-2"
-                                                      />
-                                                      <input type="text" value=${editPromptColor}
-                                                        onInput=${(e) => setEditPromptColor(e.target.value)}
-                                                        placeholder="#E8F5E9"
-                                                        class="input input-sm flex-1 font-mono"
-                                                      />
-                                                    </div>
-                                                  </div>
-                                                `}
-                                                <div class="flex justify-end gap-2">
-                                                  <button onClick=${() => setEditingPromptIndex(null)}
-                                                    class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">
-                                                    ${isBuiltin ? 'Close' : 'Cancel'}
-                                                  </button>
-                                                  ${!isBuiltin && html`
-                                                    <button onClick=${async () => {
-                                                        await saveWorkspacePrompt({
-                                                          name: editPromptName.trim(),
-                                                          prompt: editPromptText.trim(),
-                                                          backgroundColor: editPromptColor || undefined,
-                                                          group: editPromptGroup.trim() || undefined,
-                                                          enabled: prompt.enabled !== false,
-                                                        });
-                                                        setEditingPromptIndex(null);
-                                                      }}
-                                                      disabled=${!editPromptName.trim() || !editPromptText.trim() || promptSaving}
-                                                      class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50">
-                                                      ${promptSaving ? 'Saving...' : 'Save'}
-                                                    </button>
-                                                  `}
-                                                </div>
-                                              </div>
-                                            `
-                                            : html`
-                                              <div class="flex items-center gap-3">
-                                                <input type="checkbox" checked=${isEnabled}
-                                                  onChange=${() => togglePromptEnabled(prompt)}
-                                                  class="checkbox checkbox-sm shrink-0"
-                                                  title=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
-                                                />
-                                                ${prompt.backgroundColor && html`
-                                                  <div class="w-5 h-5 rounded-sm shrink-0 border border-mitto-border-2" style="background-color: ${prompt.backgroundColor}" />
-                                                `}
-                                                <div class="flex-1 min-w-0">
-                                                  <div class="flex items-center gap-2">
-                                                    <span class="text-sm font-medium ${isEnabled ? 'text-mitto-accent' : 'text-mitto-text-muted'}">${prompt.name}</span>
-                                                    <span class="badge badge-sm ${isBuiltin ? 'bg-mitto-accent-500/20 text-mitto-accent' : 'bg-green-500/20 text-mitto-success'}">
-                                                      ${isBuiltin ? 'built-in' : 'workspace'}
-                                                    </span>
-                                                  </div>
-                                                  ${prompt.description && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${prompt.description}</p>`}
-                                                  ${!prompt.description && prompt.prompt && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${prompt.prompt.slice(0, 80)}${prompt.prompt.length > 80 ? '...' : ''}</p>`}
-                                                </div>
-                                                <div class="flex items-center gap-1 shrink-0">
-                                                  <button onClick=${() => {
-                                                      if (editingPromptIndex === idx) {
-                                                        setEditingPromptIndex(null);
-                                                      } else {
-                                                        setEditPromptName(prompt.name || "");
-                                                        setEditPromptText(prompt.prompt || "");
-                                                        setEditPromptColor(prompt.backgroundColor || "");
-                                                        setEditPromptGroup(prompt.group || "");
-                                                        setEditingPromptIndex(idx);
-                                                      }
-                                                    }}
-                                                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors" title=${isBuiltin ? "View" : "Edit"}>
-                                                    <${EditIcon} className="w-4 h-4 ${isBuiltin ? 'text-mitto-text-muted' : 'text-mitto-text-muted'}" />
-                                                  </button>
-                                                  ${!isBuiltin && html`
-                                                    <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
-                                                      class="p-1.5 hover:bg-red-500/20 rounded transition-colors" title="Delete">
-                                                      <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
-                                                    </button>
-                                                  `}
-                                                </div>
-                                              </div>
+                                        <div key=${prompt.name}
+                                             class="collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-lg border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'}">
+                                          <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12">
+                                            <input type="checkbox" checked=${isEnabled}
+                                              onChange=${() => togglePromptEnabled(prompt)}
+                                              onClick=${(e) => e.stopPropagation()}
+                                              class="checkbox checkbox-sm shrink-0"
+                                              title=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
+                                            />
+                                            ${prompt.backgroundColor && html`
+                                              <div class="w-5 h-5 rounded-sm shrink-0 border border-mitto-border-2" style="background-color: ${prompt.backgroundColor}" />
                                             `}
+                                            <div class="flex-1 min-w-0">
+                                              <div class="flex items-center gap-2">
+                                                <span class="text-sm font-medium ${isEnabled ? 'text-mitto-accent' : 'text-mitto-text-muted'}">${prompt.name}</span>
+                                                <span class="badge badge-sm ${isBuiltin ? 'bg-mitto-accent-500/20 text-mitto-accent' : 'bg-green-500/20 text-mitto-success'}">
+                                                  ${isBuiltin ? 'built-in' : 'workspace'}
+                                                </span>
+                                              </div>
+                                              ${prompt.description && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${prompt.description}</p>`}
+                                              ${!prompt.description && prompt.prompt && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${prompt.prompt.slice(0, 80)}${prompt.prompt.length > 80 ? '...' : ''}</p>`}
+                                            </div>
+                                            <div class="flex items-center gap-1 shrink-0" onClick=${(e) => e.stopPropagation()}>
+                                              <button onClick=${() => {
+                                                  if (editingPromptIndex === idx) {
+                                                    setEditingPromptIndex(null);
+                                                  } else {
+                                                    setEditPromptName(prompt.name || "");
+                                                    setEditPromptText(prompt.prompt || "");
+                                                    setEditPromptColor(prompt.backgroundColor || "");
+                                                    setEditPromptGroup(prompt.group || "");
+                                                    setEditingPromptIndex(idx);
+                                                  }
+                                                }}
+                                                class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors" title=${isBuiltin ? "View" : "Edit"}>
+                                                <${EditIcon} className="w-4 h-4 text-mitto-text-muted" />
+                                              </button>
+                                              ${!isBuiltin && html`
+                                                <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
+                                                  class="p-1.5 hover:bg-red-500/20 rounded transition-colors" title="Delete">
+                                                  <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
+                                                </button>
+                                              `}
+                                            </div>
+                                          </div>
+                                          <div class="collapse-content px-3 pb-3">
+                                            <div class="space-y-3">
+                                              <div>
+                                                <label class="block text-xs text-mitto-text-muted mb-1">Button Label</label>
+                                                <input type="text" value=${isBuiltin ? prompt.name : editPromptName}
+                                                  onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
+                                                  disabled=${isBuiltin}
+                                                  class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
+                                                />
+                                              </div>
+                                              <div>
+                                                <label class="block text-xs text-mitto-text-muted mb-1">Prompt Text</label>
+                                                <textarea rows="8"
+                                                  value=${isBuiltin ? prompt.prompt : editPromptText}
+                                                  onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
+                                                  disabled=${isBuiltin}
+                                                  class="textarea textarea-sm w-full resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
+                                                />
+                                              </div>
+                                              <div>
+                                                <label class="block text-xs text-mitto-text-muted mb-1">Group (optional)</label>
+                                                <input type="text" value=${isBuiltin ? (prompt.group || '') : editPromptGroup}
+                                                  onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
+                                                  disabled=${isBuiltin}
+                                                  placeholder="e.g., Tasks, Code Quality"
+                                                  class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
+                                                />
+                                              </div>
+                                              ${!isBuiltin && html`
+                                                <div>
+                                                  <label class="block text-xs text-mitto-text-muted mb-1">Background Color (optional)</label>
+                                                  <div class="flex items-center gap-2">
+                                                    <input type="color" value=${editPromptColor || '#334155'}
+                                                      onInput=${(e) => setEditPromptColor(e.target.value)}
+                                                      class="w-8 h-8 rounded cursor-pointer border border-mitto-border-2"
+                                                    />
+                                                    <input type="text" value=${editPromptColor}
+                                                      onInput=${(e) => setEditPromptColor(e.target.value)}
+                                                      placeholder="#E8F5E9"
+                                                      class="input input-sm flex-1 font-mono"
+                                                    />
+                                                  </div>
+                                                </div>
+                                              `}
+                                              <div class="flex justify-end gap-2">
+                                                <button onClick=${() => setEditingPromptIndex(null)}
+                                                  class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">
+                                                  ${isBuiltin ? 'Close' : 'Cancel'}
+                                                </button>
+                                                ${!isBuiltin && html`
+                                                  <button onClick=${async () => {
+                                                      await saveWorkspacePrompt({
+                                                        name: editPromptName.trim(),
+                                                        prompt: editPromptText.trim(),
+                                                        backgroundColor: editPromptColor || undefined,
+                                                        group: editPromptGroup.trim() || undefined,
+                                                        enabled: prompt.enabled !== false,
+                                                      });
+                                                      setEditingPromptIndex(null);
+                                                    }}
+                                                    disabled=${!editPromptName.trim() || !editPromptText.trim() || promptSaving}
+                                                    class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50">
+                                                    ${promptSaving ? 'Saving...' : 'Save'}
+                                                  </button>
+                                                `}
+                                              </div>
+                                            </div>
+                                          </div>
                                         </div>
                                       `;
                                     })
@@ -1975,11 +1975,15 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       const borderClass = isPromptMode
                                         ? "border-purple-500/30"
                                         : (isEnabled ? "border-slate-600/50" : "border-slate-600/30 opacity-60");
+                                      const isExpanded = expandedProcessor === proc.name;
                                       return html`
-                                        <div key=${proc.name} class="p-3 bg-slate-700/20 rounded-lg border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
-                                          <div class="flex items-center gap-3">
+                                        <div key=${proc.name}
+                                             class="collapse collapse-arrow ${isExpanded ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-lg border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
+                                          <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
+                                               onClick=${() => setExpandedProcessor(isExpanded ? null : proc.name)}>
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => toggleProcessorEnabled(proc)}
+                                              onClick=${(e) => e.stopPropagation()}
                                               class="checkbox checkbox-sm shrink-0"
                                               title=${isEnabled ? "Disable this processor" : "Enable this processor"}
                                             />
@@ -1994,6 +1998,34 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                 ${proc.on && html`<span class="text-xs text-mitto-text-muted">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
                                               </div>
                                               ${proc.description && html`<p class="text-xs text-mitto-text-muted mt-0.5 truncate">${proc.description}</p>`}
+                                            </div>
+                                          </div>
+                                          <div class="collapse-content px-3 pb-3">
+                                            <div class="space-y-2 text-sm">
+                                              ${proc.description && html`
+                                                <div>
+                                                  <span class="text-xs text-mitto-text-muted block mb-0.5">Description</span>
+                                                  <p class="text-mitto-text">${proc.description}</p>
+                                                </div>
+                                              `}
+                                              ${proc.on && html`
+                                                <div>
+                                                  <span class="text-xs text-mitto-text-muted block mb-0.5">Trigger</span>
+                                                  <p class="font-mono text-xs">${proc.on}${proc.match ? `: ${proc.match}` : ''}</p>
+                                                </div>
+                                              `}
+                                              ${proc.mode && html`
+                                                <div>
+                                                  <span class="text-xs text-mitto-text-muted block mb-0.5">Mode</span>
+                                                  <p class="font-mono text-xs">${proc.mode}</p>
+                                                </div>
+                                              `}
+                                              ${proc.source && html`
+                                                <div>
+                                                  <span class="text-xs text-mitto-text-muted block mb-0.5">Source</span>
+                                                  <p class="font-mono text-xs">${proc.source}</p>
+                                                </div>
+                                              `}
                                             </div>
                                           </div>
                                         </div>
