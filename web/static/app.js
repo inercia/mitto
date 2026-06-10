@@ -107,6 +107,7 @@ import {
   AgentPlanIndicator,
 } from "./components/AgentPlanPanel.js";
 import { SessionPanel } from "./components/SessionPanel.js";
+import { Drawer } from "./components/Drawer.js";
 import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -1780,8 +1781,15 @@ function App() {
       <!-- Mobile sidebar overlay -->
       ${showSidebar &&
       html`
-        <div class="md:hidden fixed inset-0 z-40 flex">
-          <div class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl">
+        <${Drawer}
+          side="start"
+          animate=${false}
+          onClose=${() => setShowSidebar(false)}
+          widthClass="w-80"
+          panelClass="bg-mitto-sidebar h-full"
+          zClass="z-40"
+          className="md:hidden"
+        >
             <${SessionList}
               activeSessions=${activeSessions}
               storedSessions=${storedSessions}
@@ -1814,12 +1822,7 @@ function App() {
               onSendPromptToConversation=${handleSendPromptToConversation}
               isCreatingSession=${isCreatingSession}
             />
-          </div>
-          <div
-            class="flex-1 bg-black/50"
-            onClick=${() => setShowSidebar(false)}
-          />
-        </div>
+        <//>
       `}
 
       <!-- Main content area: beads view or conversation -->

@@ -18,6 +18,7 @@ import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
+import { Drawer } from "./Drawer.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { getContextWindowSize } from "../utils/models.js";
 
@@ -671,31 +672,18 @@ export function ConversationPropertiesPanel({
 
   if (!shouldRender) return null;
 
-  // Fixed overlay on the RIGHT side, above all other panels
+  // Side drawer docked to the RIGHT, above all other panels
   return html`
     <${Fragment}>
-      <div
-        class="fixed inset-0 z-50 flex"
-        onClick=${(e) => {
-          if (e.target === e.currentTarget) handleClose();
-        }}
+      <${Drawer}
+        side="end"
+        isClosing=${isClosing}
+        onClose=${handleClose}
+        widthClass="w-80"
+        panelClass="bg-mitto-sidebar border-l border-mitto-border-1 h-full overflow-y-auto"
       >
-        <!-- Backdrop on the left -->
-        <div
-          class="flex-1 bg-black/50 properties-backdrop ${isClosing
-            ? "closing"
-            : ""}"
-          onClick=${handleClose}
-        />
-        <!-- Panel on the right -->
-        <div
-          class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl h-full overflow-y-auto border-l border-mitto-border-1 properties-panel ${isClosing
-            ? "closing"
-            : ""}"
-        >
-          ${renderPanelContent()}
-        </div>
-      </div>
+        ${renderPanelContent()}
+      <//>
 
       <${ConfirmDialog}
         isOpen=${!!confirmDialog}
@@ -1004,14 +992,13 @@ export function ConversationPropertiesPanel({
               ${configOption.type === "toggle" &&
               html`
                 <div class="flex items-center justify-between">
-                  <button
-                    class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
-                    "true"
-                      ? "bg-mitto-accent"
-                      : "bg-mitto-surface-4"}"
+                  <input
+                    type="checkbox"
                     role="switch"
+                    class="toggle toggle-primary"
+                    checked=${configOption.current_value === "true"}
                     aria-checked=${configOption.current_value === "true"}
-                    onClick=${() =>
+                    onChange=${() =>
                       onSetConfigOption?.(
                         configOption.id,
                         configOption.current_value === "true"
@@ -1023,14 +1010,7 @@ export function ConversationPropertiesPanel({
                       ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
                       : configOption.description ||
                         `Toggle ${configOption.name.toLowerCase()}`}
-                  >
-                    <span
-                      class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${configOption.current_value ===
-                      "true"
-                        ? "translate-x-5"
-                        : "translate-x-0"}"
-                    />
-                  </button>
+                  />
                 </div>
                 ${configOption.description &&
                 html`

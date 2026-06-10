@@ -60,7 +60,11 @@ const MOCK_ISSUES = [
 ];
 
 // Mobile sidebar overlay (z-40); modal dialogs use z-50, so this is unambiguous.
-const MOBILE_OVERLAY = ".fixed.inset-0.z-40";
+// The mobile sidebar is a daisyUI `drawer` (side="start", zClass="z-40"); its
+// full-viewport container is `.drawer-side` (position:fixed/inset via daisyUI),
+// which becomes visible when the permanently-checked drawer-toggle resolves the
+// open state and holds the panel with the "Conversations" heading.
+const MOBILE_OVERLAY = ".drawer-side.z-40";
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 // The detail panel carries the shared `properties-panel` class; no other panel
