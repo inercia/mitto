@@ -7451,6 +7451,137 @@ func TestConversationHistory_SeqRange(t *testing.T) {
 	}
 }
 
+func TestConversationHistory_TimeRange(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sessionID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		Name:       "TimeRange Test",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	// Append events with explicit, distinct timestamps. AppendEvent preserves a
+	// non-zero Timestamp, so we can place events at known points in the past.
+	now := time.Now()
+	times := []time.Time{
+		now.Add(-30 * time.Minute),
+		now.Add(-20 * time.Minute),
+		now.Add(-10 * time.Minute),
+		now.Add(-1 * time.Minute),
+	}
+	for i, ts := range times {
+		ev := session.Event{
+			Type:      session.EventTypeUserPrompt,
+			Timestamp: ts,
+			Data:      session.UserPromptData{Message: fmt.Sprintf("msg %d", i)},
+		}
+		if err := store.AppendEvent(sessionID, ev); err != nil {
+			t.Fatalf("AppendEvent failed: %v", err)
+		}
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register session: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// since="15m" (15 minutes ago) → events at -10m and -1m.
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		Since:  "15m",
+		LastN:  200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ReturnedEvents != 2 {
+		t.Errorf("since=15m: ReturnedEvents = %d, want 2", out.ReturnedEvents)
+	}
+
+	// until="15m" (15 minutes ago) → events at -30m and -20m.
+	_, out, err = srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		Until:  "15m",
+		LastN:  200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ReturnedEvents != 2 {
+		t.Errorf("until=15m: ReturnedEvents = %d, want 2", out.ReturnedEvents)
+	}
+
+	// Combined since="25m" and until="5m" → events at -20m and -10m.
+	_, out, err = srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		Since:  "25m",
+		Until:  "5m",
+		LastN:  200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ReturnedEvents != 2 {
+		t.Errorf("since=25m,until=5m: ReturnedEvents = %d, want 2", out.ReturnedEvents)
+	}
+
+	// Absolute RFC 3339 since (15 minutes ago) → events at -10m and -1m.
+	absSince := now.Add(-15 * time.Minute).Format(time.RFC3339)
+	_, out, err = srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		Since:  absSince,
+		LastN:  200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ReturnedEvents != 2 {
+		t.Errorf("since=%s: ReturnedEvents = %d, want 2", absSince, out.ReturnedEvents)
+	}
+
+	// Invalid since → error returned via output, not a Go error.
+	_, out, err = srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		Since:  "not-a-time",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Success {
+		t.Error("expected failure for invalid since")
+	}
+	if out.Error == "" {
+		t.Error("expected non-empty Error for invalid since")
+	}
+}
+
 func TestConversationHistory_LastNPagination(t *testing.T) {
 	srv, sessionID := setupHistoryServer(t)
 	ctx := context.Background()

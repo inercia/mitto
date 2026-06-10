@@ -588,6 +588,8 @@ Get and search through the conversation history of a session. Returns events wit
 | `text_excludes`   | string   | No       | Exclude events whose text content contains this substring (case-insensitive) |
 | `after_seq`       | int      | No       | Only events with seq > this value                                   |
 | `before_seq`      | int      | No       | Only events with seq < this value                                   |
+| `since`           | string   | No       | Only events at/after this time. RFC 3339 timestamp (e.g. `2024-01-15T10:30:00Z`) or relative duration ago (e.g. `3m`, `1h`, `2h30m`) |
+| `until`           | string   | No       | Only events at/before this time. Same format as `since`             |
 | `last_n`          | int      | No       | Return last N matching events (default: 50, max: 200)               |
 | `offset`          | int      | No       | Skip this many matching events from the end (for backward pagination) |
 | `include_data`    | bool     | No       | Include full event data in results (default: true)                  |
@@ -624,6 +626,8 @@ Each event contains:
 - Find all errors in a session: `event_types: ["error"]`
 - Get the last 10 user prompts: `event_types: ["user_prompt"], last_n: 10`
 - Browse history page by page: `last_n: 20, offset: 0` then `last_n: 20, offset: 20`
+- Get everything from the last 30 minutes: `since: "30m"`
+- Get events in a time window: `since: "1h", until: "10m"` (between 1 hour and 10 minutes ago)
 
 #### `mitto_prompt_list`
 
