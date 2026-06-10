@@ -36,11 +36,14 @@
   <body class="bg-mitto-bg text-white h-screen-safe overflow-hidden">
     <div id="app">
       <!-- Loading state -->
-      <div class="h-screen flex items-center justify-center">
+      <div
+        class="h-screen flex items-center justify-center"
+        data-testid="app-loading"
+      >
         <div class="text-center">
-          <div
-            class="animate-spin rounded-full h-12 w-12 border-b-2 border-mitto-accent-500 mx-auto mb-4"
-          ></div>
+          <span
+            class="loading loading-spinner w-12 h-12 text-mitto-accent-500 mb-4"
+          ></span>
           <p class="text-gray-400">Loading Mitto...</p>
         </div>
       </div>

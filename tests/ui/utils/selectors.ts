@@ -25,10 +25,11 @@ export function apiUrl(path: string): string {
 export const selectors = {
   // App container
   app: "#app",
-  // Use a more specific selector for the app loading spinner (not tool call spinners)
-  // The app loading spinner is in the center of the screen, not inside a message
-  loadingSpinner:
-    "#app > .animate-spin, .flex.items-center.justify-center > .animate-spin",
+  // App-readiness loader (the pre-mount "Loading Mitto..." screen in index.html).
+  // Anchored on a stable data-testid so it stays decoupled from the spinner's
+  // animation classes (the loader now uses daisyUI `loading`). This must NOT match
+  // tool-call or reconnect spinners — only the initial app loader.
+  loadingSpinner: '[data-testid="app-loading"]',
 
   // Chat input area
   chatInput: "textarea",

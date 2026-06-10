@@ -219,7 +219,7 @@ export function AgentPlanPanel({
                     entry.priority !== "medium" &&
                     html`
                       <span
-                        class="shrink-0 text-xs px-1.5 py-0.5 rounded border ${getPriorityBadge(
+                        class="badge badge-sm shrink-0 ${getPriorityBadge(
                           entry.priority,
                         )}"
                       >

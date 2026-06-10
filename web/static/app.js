@@ -1949,9 +1949,7 @@ function App() {
           <div
             class="flex items-center justify-center gap-2 py-2 text-sm text-mitto-warning"
           >
-            <span
-              class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
-            ></span>
+            <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
             Reconnecting to AI agent...
           </div>
         `}
