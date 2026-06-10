@@ -93,7 +93,7 @@ export function SlashCommandPicker({
   const panelHeight = headerHeight + visibleItems * itemHeight;
 
   // Panel classes - positioned as floating overlay above the input
-  const pickerClasses = `slash-command-picker absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-slate-600 rounded-t-lg overflow-hidden z-20 transition-all duration-200 ease-out ${
+  const pickerClasses = `slash-command-picker absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 transition-all duration-200 ease-out ${
     isOpen && filteredCommands.length > 0
       ? "opacity-100"
       : "opacity-0 pointer-events-none border-0"
@@ -112,12 +112,12 @@ export function SlashCommandPicker({
       data-testid="slash-command-picker"
     >
       <div
-        class="slash-picker-header px-3 py-2 border-b border-slate-700 flex items-center justify-between"
+        class="slash-picker-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between"
       >
-        <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">
+        <span class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide">
           Commands ${filter ? `(/${filter})` : ""}
         </span>
-        <span class="text-xs text-gray-500">
+        <span class="text-xs text-mitto-text-muted">
           ${filteredCommands.length}
           command${filteredCommands.length !== 1 ? "s" : ""}
         </span>
@@ -145,7 +145,7 @@ export function SlashCommandPicker({
                 /${cmd.name}
               </span>
               <span
-                class="slash-command-desc text-sm text-gray-400 truncate flex-1"
+                class="slash-command-desc text-sm text-mitto-text-muted truncate flex-1"
               >
                 ${cmd.description || ""}
               </span>

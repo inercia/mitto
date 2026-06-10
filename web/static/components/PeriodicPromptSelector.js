@@ -132,14 +132,14 @@ export function PeriodicPromptSelector({
         title=${prompt.description || prompt.name}
         class="w-full text-left px-4 py-2.5 text-sm transition-all flex items-center gap-2 ${isSelected
           ? "bg-blue-600/20 text-white"
-          : "text-gray-200 hover:bg-slate-600/50"}"
+          : "text-mitto-text hover:bg-slate-600/50"}"
       >
         <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
         <span class="truncate flex-1">${prompt.name}</span>
         ${isSelected && html`
-          <svg class="w-4 h-4 shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+          <svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
           </svg>
         `}
@@ -182,7 +182,7 @@ export function PeriodicPromptSelector({
           <button
             type="button"
             onClick=${onTogglePromptArea}
-            class="shrink-0 p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-slate-600"
+            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-white transition-colors rounded hover:bg-mitto-surface-hover"
             title=${isPromptAreaVisible
               ? "Hide message input"
               : "Show message input"}
@@ -208,19 +208,19 @@ export function PeriodicPromptSelector({
       <!-- Dropdown panel (appears ABOVE the selector) -->
       ${showDropdown && html`
         <div
-          class="absolute bottom-full left-0 right-0 mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 overflow-hidden"
+          class="absolute bottom-full left-0 right-0 mb-1 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl z-50 overflow-hidden"
           style="max-height: 360px; display: flex; flex-direction: column;"
           data-testid="periodic-prompt-selector-dropdown"
         >
           <!-- Search filter -->
-          <div class="p-2 border-b border-slate-700">
+          <div class="p-2 border-b border-mitto-border-1">
             <input
               ref=${filterInputRef}
               type="text"
               value=${filterText}
               onInput=${(e) => setFilterText(e.target.value)}
               placeholder="Search prompts..."
-              class="w-full h-8 px-3 bg-slate-900 border border-slate-600 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              class="w-full h-8 px-3 bg-mitto-surface-1 border border-mitto-border-2 rounded text-sm text-mitto-text-strong placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               data-testid="periodic-prompt-selector-search"
             />
           </div>
@@ -230,7 +230,7 @@ export function PeriodicPromptSelector({
             ${sortedGroupNames.map(
               (groupName) => html`
                 <div key=${"pps-group-" + groupName}>
-                  <div class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30">
+                  <div class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30">
                     ${groupName}
                   </div>
                   ${groupedPrompts[groupName].map((prompt) => renderPromptItem(prompt))}
@@ -239,14 +239,14 @@ export function PeriodicPromptSelector({
             )}
             ${ungroupedPrompts.length > 0 ? html`
               <div key="pps-group-other">
-                <div class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30">
+                <div class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30">
                   Other
                 </div>
                 ${ungroupedPrompts.map((prompt) => renderPromptItem(prompt))}
               </div>
             ` : ""}
             ${!hasResults ? html`
-              <div class="px-4 py-3 text-xs text-gray-500 text-center">
+              <div class="px-4 py-3 text-xs text-mitto-text-muted text-center">
                 No matching prompts
               </div>
             ` : ""}

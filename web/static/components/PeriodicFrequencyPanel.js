@@ -363,12 +363,12 @@ export function PeriodicFrequencyPanel({
       onConfirm=${handleConfirmImmediateDelivery}
       onCancel=${handleCancelConfirmDialog}
     >
-      <label class="flex items-center gap-2 mt-3 text-sm text-gray-300 cursor-pointer select-none">
+      <label class="flex items-center gap-2 mt-3 text-sm text-mitto-text-secondary cursor-pointer select-none">
         <input
           type="checkbox"
           checked=${resetTimer}
           onInput=${(e) => setResetTimer(e.target.checked)}
-          class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-blue-500 cursor-pointer"
           data-testid="reset-timer-checkbox"
         />
         Reset countdown for next scheduled run
@@ -412,7 +412,7 @@ export function PeriodicFrequencyPanel({
                 ${isTriggering
                   ? html`
                       <svg
-                        class="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400"
+                        class="w-4 h-4 animate-spin text-mitto-accent dark:text-blue-400"
                         fill="none"
                         viewBox="0 0 24 24"
                       >
@@ -432,12 +432,12 @@ export function PeriodicFrequencyPanel({
                       </svg>
                     `
                   : html`<${PlayFilledIcon}
-                      className="w-4 h-4 text-blue-600 dark:text-blue-400"
+                      className="w-4 h-4 text-mitto-accent dark:text-blue-400"
                     />`}
               </button>
             `
           : html`<${PeriodicFilledIcon}
-              className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0"
+              className="w-4 h-4 text-mitto-accent dark:text-blue-400 shrink-0"
             />`}
 
         <!-- Run every label -->
@@ -507,7 +507,7 @@ export function PeriodicFrequencyPanel({
         ${isSaving &&
         html`
           <svg
-            class="w-4 h-4 animate-spin text-blue-400"
+            class="w-4 h-4 animate-spin text-mitto-accent"
             fill="none"
             viewBox="0 0 24 24"
           >
@@ -537,7 +537,7 @@ export function PeriodicFrequencyPanel({
             id="fresh-context-checkbox-${sessionId}"
             checked=${freshContext}
             onInput=${handleFreshContextChange}
-            class="w-4 h-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+            class="w-4 h-4 rounded border-slate-400 text-mitto-accent focus:ring-blue-500 cursor-pointer shrink-0"
             data-testid="fresh-context-checkbox"
           />
           <label

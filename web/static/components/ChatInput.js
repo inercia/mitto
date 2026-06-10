@@ -76,7 +76,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
     <button
       type="button"
       onClick=${onToggle}
-      class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
+      class="p-2 text-mitto-text-muted hover:text-white transition-colors rounded-lg hover:bg-mitto-surface-hover"
       title=${collapsed ? "Show prompt area" : "Hide prompt area"}
     >
       <svg
@@ -1853,7 +1853,7 @@ export function ChatInput({
       onDrop=${handleDrop}
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
-      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-slate-700 shrink-0 relative ${isDragOver
+      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-mitto-border-1 shrink-0 relative ${isDragOver
         ? "ring-2 ring-blue-500 ring-inset"
         : ""}"
     >
@@ -1863,7 +1863,7 @@ export function ChatInput({
         ...${textareaHandleProps}
         title="Drag to resize input area"
       >
-        <div class="w-8 h-0.5 rounded-full bg-slate-600 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
+        <div class="w-8 h-0.5 rounded-full bg-mitto-surface-4 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
       </div>
       <!-- Hidden file input for images -->
       <input
@@ -1927,7 +1927,7 @@ export function ChatInput({
                             "bg-rose-600 hover:bg-rose-700 border-rose-500";
                         } else {
                           colorClass =
-                            "bg-slate-600 hover:bg-slate-700 border-slate-500";
+                            "bg-mitto-surface-4 hover:bg-mitto-surface-hover border-mitto-border-3";
                         }
                         return html`
                           <button
@@ -1935,7 +1935,7 @@ export function ChatInput({
                             type="button"
                             onClick=${() =>
                               handleUIPromptAnswer(opt.id, opt.label)}
-                            class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
+                            class="px-4 py-2 ${colorClass} text-mitto-text-strong rounded-lg text-sm font-medium transition-colors border"
                           >
                             ${opt.label}
                           </button>
@@ -1959,7 +1959,7 @@ export function ChatInput({
                         ...${promptHandleProps}
                         title="Drag to resize"
                       >
-                        <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                        <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
                       </div>
 
                       <!-- Title -->
@@ -1994,7 +1994,7 @@ ${activeUIPrompt.text || ""}</textarea
                         <span
                           class="text-xs ${textboxValue.length > 15000
                             ? "text-amber-400"
-                            : "text-gray-500"}"
+                            : "text-mitto-text-muted"}"
                         >
                           ${textboxValue.length > 15000
                             ? "⚠ "
@@ -2010,7 +2010,7 @@ ${activeUIPrompt.text || ""}</textarea
                             type="button"
                             onClick=${() =>
                               handleUIPromptAnswer("abort", "Abort")}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-600 hover:bg-slate-500 text-white transition-colors"
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-surface-4 hover:bg-slate-500 text-mitto-text-strong transition-colors"
                           >
                             Abort
                           </button>
@@ -2022,7 +2022,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 "Submit",
                                 textboxValue,
                               )}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg transition-colors"
                           >
                             Submit
                           </button>
@@ -2045,7 +2045,7 @@ ${activeUIPrompt.text || ""}</textarea
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
                         </div>
 
                         <!-- Title -->
@@ -2083,7 +2083,7 @@ ${activeUIPrompt.text || ""}</textarea
                               type="button"
                               onClick=${() =>
                                 handleUIPromptAnswer("cancel", "Cancel", "")}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-700 hover:bg-slate-600 text-gray-300 transition-colors"
+                              class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-secondary transition-colors"
                             >
                               Cancel
                             </button>
@@ -2119,7 +2119,7 @@ ${activeUIPrompt.text || ""}</textarea
                                   JSON.stringify(values),
                                 );
                               }}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                              class="px-4 py-2 text-sm font-medium rounded-lg bg-mitto-accent hover:bg-blue-500 text-mitto-accent-fg transition-colors"
                             >
                               Submit
                             </button>
@@ -2141,7 +2141,7 @@ ${activeUIPrompt.text || ""}</textarea
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
                         </div>
 
                         <!-- Question -->
@@ -2167,18 +2167,18 @@ ${activeUIPrompt.text || ""}</textarea
                                 <span
                                   class="shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
                                   0
-                                    ? "bg-blue-600 text-white"
-                                    : "bg-slate-600/80 text-gray-300 group-hover:bg-slate-500"} transition-colors"
+                                    ? "bg-mitto-accent text-mitto-accent-fg"
+                                    : "bg-slate-600/80 text-mitto-text-secondary group-hover:bg-slate-500"} transition-colors"
                                 >
                                   ${idx + 1}
                                 </span>
                                 <div class="min-w-0 flex-1">
-                                  <span class="text-sm font-medium text-white"
+                                  <span class="text-sm font-medium text-mitto-text-strong"
                                     >${opt.label}</span
                                   >
                                   ${opt.description &&
                                   html`<span
-                                    class="block text-xs text-gray-400 mt-0.5"
+                                    class="block text-xs text-mitto-text-muted mt-0.5"
                                     >${opt.description}</span
                                   >`}
                                 </div>
@@ -2210,7 +2210,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
                                 "Type a custom response..."}
-                                class="w-full bg-transparent text-sm text-gray-300 placeholder-gray-500 outline-none"
+                                class="w-full bg-transparent text-sm text-mitto-text-secondary placeholder-gray-500 outline-none"
                               />
                             </div>
                           `}
@@ -2305,7 +2305,7 @@ ${activeUIPrompt.text || ""}</textarea
                   key=${idx}
                   type="button"
                   onClick=${() => handleActionButtonClick(btn.response)}
-                  class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 border border-blue-500"
+                  class="px-3 py-1.5 bg-mitto-accent hover:bg-mitto-accent-hover text-mitto-accent-fg rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 border border-mitto-accent"
                   title=${btn.response}
                 >
                   <svg
@@ -2506,7 +2506,7 @@ ${activeUIPrompt.text || ""}</textarea
               html`
                 <div class="textarea-improving-overlay">
                   <svg
-                    class="w-6 h-6 animate-spin text-blue-400"
+                    class="w-6 h-6 animate-spin text-mitto-accent"
                     fill="none"
                     viewBox="0 0 24 24"
                   >
@@ -2541,10 +2541,10 @@ ${activeUIPrompt.text || ""}</textarea
                           ? html`<img
                               src=${img.url}
                               alt=${img.name || "Pending image"}
-                              class="w-16 h-16 rounded-lg object-cover border border-slate-600 ${img.uploading ? "opacity-50" : ""}"
+                              class="w-16 h-16 rounded-lg object-cover border border-mitto-border-2 ${img.uploading ? "opacity-50" : ""}"
                             />`
                           : html`<div
-                              class="w-16 h-16 rounded-lg bg-slate-700 border border-slate-600 flex items-center justify-center"
+                              class="w-16 h-16 rounded-lg bg-mitto-surface-3 border border-mitto-border-2 flex items-center justify-center"
                             >
                               <svg class="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -2563,10 +2563,10 @@ ${activeUIPrompt.text || ""}</textarea
                               <button
                                 type="button"
                                 onClick=${() => removeImage(img.id)}
-                                class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                class="absolute -top-1 -right-1 w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Remove image"
                               >
-                                <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                               </button>
@@ -2585,18 +2585,18 @@ ${activeUIPrompt.text || ""}</textarea
                 <div class="flex flex-wrap gap-2">
                   ${pendingFiles.map(
                     (file) => html`
-                      <div key=${file.id} class="relative group flex items-center gap-2 bg-slate-700 rounded-lg px-3 py-2 border border-slate-600">
-                        <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <div key=${file.id} class="relative group flex items-center gap-2 bg-mitto-surface-3 rounded-lg px-3 py-2 border border-mitto-border-2">
+                        <svg class="w-5 h-5 text-mitto-text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
-                        <span class="text-sm text-gray-300 max-w-[150px] truncate" title=${file.name}>${file.name}</span>
+                        <span class="text-sm text-mitto-text-secondary max-w-[150px] truncate" title=${file.name}>${file.name}</span>
                         ${file.category && html`
                           <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-blue-900 text-blue-300"}">${file.category}</span>
                         `}
                         ${file.uploading
                           ? html`
                               <div class="flex items-center justify-center">
-                                <svg class="w-4 h-4 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
+                                <svg class="w-4 h-4 animate-spin text-mitto-accent" fill="none" viewBox="0 0 24 24">
                                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                 </svg>
@@ -2606,10 +2606,10 @@ ${activeUIPrompt.text || ""}</textarea
                               <button
                                 type="button"
                                 onClick=${() => removeFile(file.id)}
-                                class="w-5 h-5 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                class="w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Remove file"
                               >
-                                <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                               </button>
@@ -2768,7 +2768,7 @@ ${activeUIPrompt.text || ""}</textarea
                     ${showDropup &&
                     html`
                       <div
-                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
+                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-xl overflow-hidden z-50 flex flex-col"
                         style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
                         <!-- Filter input -->
@@ -2825,7 +2825,7 @@ ${activeUIPrompt.text || ""}</textarea
                             autocorrect="off"
                             autocapitalize="off"
                             spellcheck=${false}
-                            class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
+                            class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent placeholder-gray-500"
                           />
                         </div>
                         <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
@@ -2907,7 +2907,7 @@ ${activeUIPrompt.text || ""}</textarea
                                   type="button"
                                   onClick=${(e) => handlePredefinedPrompt(prompt, e)}
                                   title=${prompt.description || prompt.name}
-                                  class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                                  class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2"
                                   style=${selectedStyle}
                                   ref=${isSelected ? selectedPromptItemRef : null}
                                 >
@@ -2943,7 +2943,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 (groupName) => html`
                                   <div key=${"group-" + groupName}>
                                     <div
-                                      class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
+                                      class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30"
                                     >
                                       ${groupName}
                                     </div>
@@ -2957,7 +2957,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 ? html`
                                     <div key="group-other">
                                       <div
-                                        class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
+                                        class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30"
                                       >
                                         Other
                                       </div>
@@ -2969,7 +2969,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 : ""}
                               ${flatFilteredPrompts.length === 0
                                 ? html`<div
-                                    class="px-4 py-3 text-xs text-gray-500 text-center"
+                                    class="px-4 py-3 text-xs text-mitto-text-muted text-center"
                                   >
                                     No matching prompts
                                   </div>`
@@ -2977,8 +2977,8 @@ ${activeUIPrompt.text || ""}</textarea
                             `;
                           })()}
                         </div>
-                        <div class="px-3 py-1.5 border-t border-slate-700 shrink-0">
-                          <span class="text-[10px] ${shiftHeld ? 'text-blue-400' : 'text-gray-500'}">
+                        <div class="px-3 py-1.5 border-t border-mitto-border-1 shrink-0">
+                          <span class="text-[10px] ${shiftHeld ? 'text-mitto-accent' : 'text-mitto-text-muted'}">
                             ${shiftHeld ? '✏️ Will insert into editor' : '⇧ Hold Shift to edit before sending'}
                           </span>
                         </div>

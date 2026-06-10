@@ -28,7 +28,7 @@ export function ModelSelection({ matchMode, pattern, onChange }) {
       <select
         value=${matchMode}
         onInput=${handleModeChange}
-        class="px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        class="px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         style="flex: 0 0 auto; min-width: 140px; max-width: 160px;"
       >
         <option value="">-- None --</option>
@@ -44,7 +44,7 @@ export function ModelSelection({ matchMode, pattern, onChange }) {
         onInput=${handlePatternChange}
         placeholder="e.g., Opus 4.6"
         disabled=${!matchMode}
-        class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!matchMode ? "opacity-50 cursor-not-allowed" : ""}"
+        class="flex-1 px-3 py-2 bg-mitto-surface-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!matchMode ? "opacity-50 cursor-not-allowed" : ""}"
       />
     </div>
   `;

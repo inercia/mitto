@@ -63,10 +63,10 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
       class="relative w-5 h-5 rounded border-2 transition-colors flex items-center justify-center
         ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
         ${isUnset
-        ? "border-slate-500 bg-slate-700"
+        ? "border-mitto-border-3 bg-mitto-surface-3"
         : isEnabled
-          ? "border-blue-500 bg-blue-500"
-          : "border-slate-500 bg-slate-700"}"
+          ? "border-mitto-accent bg-mitto-accent"
+          : "border-mitto-border-3 bg-mitto-surface-3"}"
       onClick=${handleClick}
       disabled=${disabled}
       title=${title}
@@ -75,7 +75,7 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
         ? html`<span class="text-slate-500 text-xs font-medium">—</span>`
         : isEnabled
           ? html`<svg
-              class="w-3 h-3 text-white"
+              class="w-3 h-3 text-mitto-accent-fg"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -215,7 +215,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
 
   return html`
     <select
-      class="w-full bg-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm border border-slate-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"
+      class="w-full bg-mitto-surface-3 text-slate-200 rounded-lg px-3 py-2 text-sm border border-mitto-border-2 focus:border-mitto-accent focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"
       value=${localValue || ""}
       onChange=${handleChange}
       disabled=${isStreaming}
@@ -689,7 +689,7 @@ export function ConversationPropertiesPanel({
         />
         <!-- Panel on the right -->
         <div
-          class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
+          class="w-80 bg-mitto-sidebar shrink-0 shadow-2xl h-full overflow-y-auto border-l border-mitto-border-1 properties-panel ${isClosing
             ? "closing"
             : ""}"
         >
@@ -714,11 +714,11 @@ export function ConversationPropertiesPanel({
     return html`
       <!-- Header -->
       <div
-        class="p-4 border-b border-slate-700 flex items-center justify-between shrink-0"
+        class="p-4 border-b border-mitto-border-1 flex items-center justify-between shrink-0"
       >
         <h2 class="font-semibold text-lg">Properties</h2>
         <button
-          class="p-1 hover:bg-slate-700 rounded transition-colors"
+          class="p-1 hover:bg-mitto-surface-hover rounded transition-colors"
           onClick=${handleClose}
           title="Close"
         >
@@ -739,7 +739,7 @@ export function ConversationPropertiesPanel({
                   <input
                     ref=${titleInputRef}
                     type="text"
-                    class="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                    class="flex-1 bg-mitto-surface-2 border border-mitto-border-2 rounded px-3 py-2 text-sm focus:outline-none focus:border-mitto-accent"
                     value=${editedTitle}
                     onInput=${(e) => setEditedTitle(e.target.value)}
                     onKeyDown=${handleTitleKeyDown}
@@ -754,7 +754,7 @@ export function ConversationPropertiesPanel({
                     disabled=${isSavingTitle}
                   />
                   <button
-                    class="p-2 hover:bg-slate-700 rounded transition-colors text-green-400"
+                    class="p-2 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-success"
                     onClick=${handleSaveTitle}
                     title="Save"
                     disabled=${isSavingTitle}
@@ -766,14 +766,14 @@ export function ConversationPropertiesPanel({
             : html`
                 <div class="flex items-center gap-2 group">
                   <span
-                    class="flex-1 text-sm truncate cursor-pointer hover:text-blue-400 transition-colors"
+                    class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors"
                     onClick=${handleStartEditTitle}
                     title="Click to edit title"
                   >
                     ${sessionInfo?.name || "New conversation"}
                   </span>
                   <button
-                    class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
+                    class="p-1 hover:bg-mitto-surface-hover rounded transition-colors opacity-0 group-hover:opacity-100"
                     onClick=${handleStartEditTitle}
                     title="Edit title"
                   >
@@ -789,7 +789,7 @@ export function ConversationPropertiesPanel({
           ${isStreaming
             ? html`
                 <span
-                  class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-blue-500/20 text-blue-400 text-xs"
+                  class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-blue-500/20 text-mitto-accent text-xs"
                 >
                   <span
                     class="w-2 h-2 bg-blue-400 rounded-full streaming-indicator"
@@ -800,7 +800,7 @@ export function ConversationPropertiesPanel({
             : sessionInfo?.archived
               ? html`
                   <span
-                    class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-700 text-slate-400 text-xs"
+                    class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-mitto-surface-3 text-slate-400 text-xs"
                   >
                     <span class="w-2 h-2 bg-slate-500 rounded-full"></span>
                     Archived
@@ -809,7 +809,7 @@ export function ConversationPropertiesPanel({
               : sessionInfo?.status === "active"
                 ? html`
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-green-500/20 text-green-400 text-xs"
+                      class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-green-500/20 text-mitto-success text-xs"
                     >
                       <span class="w-2 h-2 bg-green-400 rounded-full"></span>
                       Active
@@ -817,7 +817,7 @@ export function ConversationPropertiesPanel({
                   `
                 : html`
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-700 text-slate-400 text-xs"
+                      class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-mitto-surface-3 text-slate-400 text-xs"
                     >
                       Stored
                     </span>
@@ -826,7 +826,7 @@ export function ConversationPropertiesPanel({
           ${sessionInfo?.acp_server &&
           html`
             <span
-              class="inline-flex items-center px-2 py-1 rounded bg-blue-500/20 text-blue-400 text-xs"
+              class="inline-flex items-center px-2 py-1 rounded bg-blue-500/20 text-mitto-accent text-xs"
               title="ACP Server"
             >
               ${sessionInfo.acp_server}
@@ -837,7 +837,7 @@ export function ConversationPropertiesPanel({
           html`
             <span
               class="inline-flex items-center px-2 py-1 rounded ${sessionInfo.runner_restricted
-                ? "bg-yellow-500/20 text-yellow-400"
+                ? "bg-yellow-500/20 text-mitto-warning"
                 : "bg-purple-500/20 text-purple-400"} text-xs"
               title="${sessionInfo.runner_restricted
                 ? "Restricted execution mode"
@@ -888,8 +888,8 @@ export function ConversationPropertiesPanel({
                 const contextTokens = sessionInfo.usage.input_tokens;
                 const contextWindow = getContextWindowSize(currentModelId);
                 const pct = contextWindow ? Math.min((contextTokens / contextWindow) * 100, 100) : null;
-                const barColor = pct === null ? "bg-blue-500" : pct > 80 ? "bg-red-500" : pct > 50 ? "bg-yellow-500" : "bg-green-500";
-                const textColor = pct === null ? "text-slate-300" : pct > 80 ? "text-red-400" : pct > 50 ? "text-yellow-400" : "text-green-400";
+                const barColor = pct === null ? "bg-mitto-accent" : pct > 80 ? "bg-mitto-danger" : pct > 50 ? "bg-yellow-500" : "bg-mitto-success";
+                const textColor = pct === null ? "text-slate-300" : pct > 80 ? "text-mitto-danger" : pct > 50 ? "text-mitto-warning" : "text-mitto-success";
                 return html`
                   <div class="mb-2">
                     <div class="flex justify-between items-baseline mb-1">
@@ -898,7 +898,7 @@ export function ConversationPropertiesPanel({
                         ${formatTokenCount(contextTokens)}${contextWindow ? html` / ${formatTokenCount(contextWindow)}` : ''}
                       </span>
                     </div>
-                    <div class="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                    <div class="w-full h-1.5 bg-mitto-surface-3 rounded-full overflow-hidden">
                       <div
                         class="h-full ${barColor} rounded-full transition-all duration-300"
                         style="width: ${pct !== null ? pct : 0}%"
@@ -964,7 +964,7 @@ export function ConversationPropertiesPanel({
               ? html`
                   <button
                     type="button"
-                    class="truncate text-left hover:text-blue-400 hover:underline transition-colors cursor-pointer"
+                    class="truncate text-left hover:text-mitto-accent hover:underline transition-colors cursor-pointer"
                     title="Open in Finder: ${sessionInfo.working_dir}"
                     onClick=${() => revealInFinder(sessionInfo.working_dir)}
                   >
@@ -1007,8 +1007,8 @@ export function ConversationPropertiesPanel({
                   <button
                     class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
                     "true"
-                      ? "bg-blue-600"
-                      : "bg-slate-600"}"
+                      ? "bg-mitto-accent"
+                      : "bg-mitto-surface-4"}"
                     role="switch"
                     aria-checked=${configOption.current_value === "true"}
                     onClick=${() =>
@@ -1045,7 +1045,7 @@ export function ConversationPropertiesPanel({
               configOption.type !== "toggle" &&
               html`
                 <div
-                  class="w-full bg-slate-700/50 text-slate-400 rounded-lg px-3 py-2 text-sm border border-slate-600"
+                  class="w-full bg-slate-700/50 text-slate-400 rounded-lg px-3 py-2 text-sm border border-mitto-border-2"
                   title=${`Unsupported config type: ${configOption.type}`}
                 >
                   ${configOption.current_value || "(not set)"}
@@ -1070,7 +1070,7 @@ export function ConversationPropertiesPanel({
             </label>
             <div class="flex items-center gap-2 text-sm text-slate-300">
               <${PeriodicFilledIcon}
-                className="w-4 h-4 shrink-0 text-blue-400"
+                className="w-4 h-4 shrink-0 text-mitto-accent"
               />
               <span>${formatFrequency(periodicConfig.frequency)}</span>
             </div>
@@ -1098,7 +1098,7 @@ export function ConversationPropertiesPanel({
                 id="properties-fresh-context-checkbox-${sessionId}"
                 checked=${!!periodicConfig.fresh_context}
                 onInput=${handleFreshContextChange}
-                class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+                class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-blue-500 cursor-pointer shrink-0"
                 data-testid="properties-fresh-context-checkbox"
               />
               <label
@@ -1169,14 +1169,14 @@ export function ConversationPropertiesPanel({
             ${periodicConfig.enabled ? html`
               ${callbackConfig?.callback_url ? html`
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Copy callback URL to clipboard">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Copy callback URL to clipboard">
                     ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
                   </button>
-                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
+                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
                 </div>
               ` : html`
-                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
+                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
                   🔗 Enable Callback URL
                 </button>
               `}
@@ -1184,8 +1184,8 @@ export function ConversationPropertiesPanel({
               ${callbackConfig?.callback_url ? html`
                 <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors">✕ Revoke</button>
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-slate-500 hover:text-mitto-danger transition-colors">✕ Revoke</button>
                 </div>
               ` : html`
                 <p class="text-xs text-slate-500">No callback URL configured.</p>
@@ -1221,7 +1221,7 @@ export function ConversationPropertiesPanel({
                   ${flagsError &&
                   html`
                     <div
-                      class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1"
+                      class="text-sm text-mitto-danger bg-red-900/20 rounded px-2 py-1"
                     >
                       ${flagsError}
                     </div>
@@ -1239,7 +1239,7 @@ export function ConversationPropertiesPanel({
                                   class="w-5 h-5 flex items-center justify-center"
                                 >
                                   <div
-                                    class="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"
+                                    class="w-3 h-3 border-2 border-mitto-accent border-t-transparent rounded-full animate-spin"
                                   ></div>
                                 </div>
                               `
