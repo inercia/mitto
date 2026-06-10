@@ -365,7 +365,7 @@ export function RunnerRestrictionsEditor({
         ${hasConfig &&
         html`
           <span
-            class="px-2 py-0.5 bg-mitto-accent-500/20 text-mitto-accent rounded text-xs"
+            class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
           >
             Configured
           </span>
@@ -2265,7 +2265,7 @@ export function SettingsDialog({
                                           ${srv.type &&
                                           html`
                                             <span
-                                              class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
+                                              class="badge badge-sm bg-purple-500/20 text-purple-400"
                                               title="Server type for prompt matching"
                                             >
                                               ${srv.type}
@@ -2277,7 +2277,7 @@ export function SettingsDialog({
                                             (tag) => html`
                                               <span
                                                 key=${tag}
-                                                class="px-1.5 py-0.5 bg-mitto-accent-500/20 text-mitto-accent rounded text-xs"
+                                                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
                                                 title="Tag"
                                               >
                                                 ${tag}
@@ -2444,7 +2444,7 @@ export function SettingsDialog({
                                   ${restrictedRunners[runner.type] &&
                                   html`
                                     <span
-                                      class="px-2 py-0.5 bg-mitto-accent-500/20 text-mitto-accent rounded text-xs"
+                                      class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
                                     >
                                       Configured
                                     </span>
