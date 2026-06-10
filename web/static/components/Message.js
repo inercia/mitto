@@ -115,8 +115,8 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
   }, [isCollapsed, isCollapsible, linkedText, firstLine]);
 
   const bubbleClass = isModelError
-    ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-amber-900/20 text-mitto-text-muted border border-amber-700/50 border-l-4 border-l-amber-500"
-    : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-mitto-text-muted";
+    ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted border border-amber-700/50 border-l-4 border-l-amber-500"
+    : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted";
 
   return html`
     <div class="message-enter flex justify-start mb-3">
@@ -165,7 +165,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-center mb-3">
         <div
-          class="text-xs text-mitto-text-muted bg-slate-800/50 px-3 py-1 rounded-full"
+          class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
           ${message.text}
         </div>
@@ -276,7 +276,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-center mb-1">
         <div
-          class="text-sm text-mitto-text-muted flex items-center gap-2 bg-slate-800/50 dark:bg-slate-800/50 px-3 py-1.5 rounded-lg"
+          class="text-sm text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg"
         >
           <span class="text-mitto-warning">🔧</span>
           <span class="font-medium">${renderTitle()}</span>
@@ -312,7 +312,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           ${onRetry &&
           html`<button
             type="button"
-            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-mitto-text-300 hover:bg-slate-700/50 rounded-full transition-colors"
+            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-mitto-text-300 hover:bg-mitto-surface-hover rounded-full transition-colors"
             onClick=${onRetry}
             title="Retry — resend the last prompt"
           >
