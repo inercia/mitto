@@ -1910,7 +1910,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                 <div class="flex-1 min-w-0">
                                                   <div class="flex items-center gap-2">
                                                     <span class="text-sm font-medium ${isEnabled ? 'text-mitto-accent' : 'text-mitto-text-muted'}">${prompt.name}</span>
-                                                    <span class="text-xs px-1.5 py-0.5 rounded ${isBuiltin ? 'bg-mitto-accent-500/20 text-mitto-accent' : 'bg-green-500/20 text-mitto-success'}">
+                                                    <span class="badge badge-sm ${isBuiltin ? 'bg-mitto-accent-500/20 text-mitto-accent' : 'bg-green-500/20 text-mitto-success'}">
                                                       ${isBuiltin ? 'built-in' : 'workspace'}
                                                     </span>
                                                   </div>
@@ -1989,7 +1989,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                 <span class="text-sm font-medium font-mono ${isEnabled ? 'text-mitto-accent' : 'text-mitto-text-muted'}">${proc.name}</span>
                                                 ${proc.source === "global"
                                                   ? html`<${GlobeIcon} className="w-3.5 h-3.5 text-orange-400 shrink-0" title="Global processor" />`
-                                                  : html`<span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>`
+                                                  : html`<span class="badge badge-sm ${sourceBadgeClass}">${sourceLabel}</span>`
                                                 }
                                                 ${proc.on && html`<span class="text-xs text-mitto-text-muted">${proc.on}${proc.match ? `:${proc.match}` : ''}</span>`}
                                               </div>
