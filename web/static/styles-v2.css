@@ -756,25 +756,9 @@ a:hover {
   color: #ffffff !important;
 }
 
-/* =============================================================================
-   Toast Notifications: preserve semantic colors (don't remap to accent)
-   ============================================================================= */
-
-/* Toast background colors: pin the exact legacy semantic colors so toasts keep
-   their meaning (info=blue, success=green, error=red, warning=amber) regardless
-   of the v2 accent normalization. */
-.v2-theme .toast-enter .bg-blue-600 {
-  background: #2563eb !important;  /* Original blue-600 */
-}
-.v2-theme .toast-enter .bg-green-600 {
-  background: #16a34a !important;  /* Original green-600 */
-}
-.v2-theme .toast-enter .bg-red-600 {
-  background: #dc2626 !important;  /* Original red-600 */
-}
-.v2-theme .toast-enter .bg-amber-500 {
-  background: #f59e0b !important;  /* Original amber-500 */
-}
+/* Toast colors migrated to daisyUI alert-info/success/warning/error (mitto-i1r).
+   The alert-* variants carry background + content color via the --mitto-* token
+   bridge, so the old .toast-enter .bg-*/text-white remaps are no longer needed. */
 
 /* =============================================================================
    Beads semantic blue: in-progress status + feature type (don't remap to accent)
@@ -788,23 +772,6 @@ a:hover {
 .v2-theme.dark .beads-status-inprogress,
 .v2-theme.dark .beads-type-feature {
   background: #1d4ed8 !important;  /* Original blue-700 */
-}
-
-/* Toast text color: preserve white text on colored toast backgrounds
-   (overrides the light-theme .text-white → near-black rule) */
-.v2-theme .toast-enter .text-white,
-.v2-theme .toast-enter div[class*="bg-blue-"].text-white,
-.v2-theme .toast-enter div[class*="bg-red-"].text-white,
-.v2-theme .toast-enter div[class*="bg-green-"].text-white,
-.v2-theme .toast-enter div[class*="bg-amber-"].text-white {
-  color: #ffffff !important;
-}
-/* Also preserve partial-opacity white text inside toasts */
-.v2-theme .toast-enter .text-white\/80 {
-  color: rgba(255, 255, 255, 0.8) !important;
-}
-.v2-theme .toast-enter .text-white\/90 {
-  color: rgba(255, 255, 255, 0.9) !important;
 }
 
 .v2-theme .bg-yellow-400 {

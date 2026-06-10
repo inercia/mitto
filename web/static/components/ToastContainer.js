@@ -3,12 +3,14 @@
 const { html } = window.preact;
 import { CloseIcon } from "./Icons.js";
 
-// Style config: Tailwind background/text class and icon emoji
+// Style config: daisyUI alert variant (severity -> semantic color via --mitto-*
+// token bridge) and icon emoji. The alert-* class carries both background and
+// content color per theme, replacing the old fixed bg-*/text-white pairs.
 const STYLE_CONFIG = {
-  info:    { bg: "bg-blue-600 text-white",   icon: "ℹ️" },
-  success: { bg: "bg-green-600 text-white",  icon: "✓" },
-  warning: { bg: "bg-amber-500 text-white",  icon: "⚠️" },
-  error:   { bg: "bg-red-600 text-white",    icon: "❌" },
+  info:    { alert: "alert-info",    icon: "ℹ️" },
+  success: { alert: "alert-success", icon: "✓" },
+  warning: { alert: "alert-warning", icon: "⚠️" },
+  error:   { alert: "alert-error",   icon: "❌" },
 };
 
 /**
@@ -36,31 +38,29 @@ export function ToastContainer({ toasts, onDismiss }) {
                 }
               : undefined}
           >
-            <div
-              class="flex flex-col gap-1 px-4 py-2.5 rounded-lg shadow-lg max-w-md ${config.bg}"
-            >
-              <div class="flex items-center gap-2">
-                <span class="text-lg">${config.icon}</span>
+            <div role="alert" class="alert ${config.alert} shadow-lg max-w-md">
+              <span class="text-lg">${config.icon}</span>
+              <div class="flex flex-col gap-0.5 min-w-0">
                 <span class="text-sm font-medium">${toast.title}</span>
-                ${toast.dismissable !== false &&
+                ${toast.message &&
                 html`
-                  <button
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      onDismiss(toast.id);
-                    }}
-                    class="ml-auto p-1 text-white/80 hover:text-mitto-text-strong rounded transition-colors"
-                    title="Dismiss"
-                  >
-                    <${CloseIcon} className="w-4 h-4" />
-                  </button>
+                  <span class="text-xs opacity-90 wrap-break-word">
+                    ${toast.message}
+                  </span>
                 `}
               </div>
-              ${toast.message &&
+              ${toast.dismissable !== false &&
               html`
-                <div class="text-xs opacity-90 ml-7 wrap-break-word">
-                  ${toast.message}
-                </div>
+                <button
+                  onClick=${(e) => {
+                    e.stopPropagation();
+                    onDismiss(toast.id);
+                  }}
+                  class="btn btn-ghost btn-xs btn-circle"
+                  title="Dismiss"
+                >
+                  <${CloseIcon} className="w-4 h-4" />
+                </button>
               `}
             </div>
           </div>
