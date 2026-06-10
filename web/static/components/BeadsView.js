@@ -2014,7 +2014,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary text-sm">No issues found</div>
         `}
         ${!loading && !error && filtered.length > 0 && html`
-          <div class="space-y-2 p-2">
+          <div class="list p-2">
             ${filtered.map(issue => {
               // If a conversation is linked to this issue, render the ID as a
               // link that opens that conversation. stopPropagation keeps the
@@ -2037,43 +2037,49 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               const bgTone = isSelected
                 ? "bg-slate-700/30"
                 : "bg-slate-700/20 hover:bg-red-600";
+              // The daisyUI list provides row dividers + list-row radius, so
+              // default rows carry no own border. The two distinctive Mitto
+              // state treatments still get an explicit border: a full accent
+              // border when selected, and the purple left-accent for epics.
               const borderTone = isSelected
-                ? "border-mitto-accent-500/60"
+                ? "border border-mitto-accent-500/60"
                 : isEpic
-                  ? "border-slate-600/50 border-l-4 border-l-purple-500"
-                  : "border-slate-600/50";
+                  ? "border-l-4 border-l-purple-500"
+                  : "";
               return html`
               <div
                 key=${issue.id}
                 data-has-context-menu
-                class="p-3 rounded-lg border cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
+                class="list-row cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
                 onClick=${() => selectIssue(issue)}
                 onContextMenu=${(e) => handleRowContextMenu(e, issue)}
               >
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
-                    ${linkedSessionId && onOpenConversation
-                      ? html`<a
-                          href="#"
-                          class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
-                          onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
-                        >${issue.id}</a>`
-                      : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
-                  </span>
-                  ${typeBadge(issue.issue_type)}
-                  ${statusBadge(issue.status)}
-                  ${priorityBadge(issue.priority)}
-                  ${childCount > 0 ? html`
-                    <span
-                      class="inline-flex items-center gap-1 text-xs text-purple-300"
-                      title="${childCount} child issue${childCount === 1 ? "" : "s"}"
-                    >
-                      <${LayersIcon} className="w-3.5 h-3.5" />
-                      ${childCount}
+                <div class="list-col-grow flex flex-col gap-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
+                      ${linkedSessionId && onOpenConversation
+                        ? html`<a
+                            href="#"
+                            class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
+                            onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
+                          >${issue.id}</a>`
+                        : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
                     </span>
-                  ` : null}
+                    ${typeBadge(issue.issue_type)}
+                    ${statusBadge(issue.status)}
+                    ${priorityBadge(issue.priority)}
+                    ${childCount > 0 ? html`
+                      <span
+                        class="inline-flex items-center gap-1 text-xs text-purple-300"
+                        title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+                      >
+                        <${LayersIcon} className="w-3.5 h-3.5" />
+                        ${childCount}
+                      </span>
+                    ` : null}
+                  </div>
+                  <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
                 </div>
-                <div class="text-sm text-mitto-text mt-1 wrap-break-word">${issue.title}</div>
               </div>
             `;
             })}
