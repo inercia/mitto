@@ -37,18 +37,17 @@ test.describe("Markdown Chunk Rendering", () => {
     // preventing race conditions with stale messages from previous sessions.
     await helpers.sendMessageAndWait(page, "TEST:code-block-split");
 
-    // Wait for all content to be rendered (chunks may arrive after prompt completes)
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Wait for the code block to appear anywhere in the messages container
     const messagesContainer = page.locator(selectors.messagesContainer);
     const codeBlock = messagesContainer.locator("pre code");
     await expect(codeBlock).toBeVisible({ timeout: timeouts.agentResponse });
 
-    // Verify the code content is correct
-    const codeText = await codeBlock.textContent();
-    expect(codeText).toContain("def hello():");
-    expect(codeText).toContain('print("Hello, World!")');
+    // Verify the code content is correct (retries until streamed chunks render)
+    await expect(codeBlock).toContainText("def hello():");
+    await expect(codeBlock).toContainText('print("Hello, World!")');
 
     // Verify surrounding text is rendered in the agent message
     const agentMessage = page.locator(selectors.agentMessage).last();
@@ -64,8 +63,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:nested-list-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Look for the list in the messages container (more reliable than agent message selector)
     const messagesContainer = page.locator(selectors.messagesContainer);
@@ -76,7 +75,7 @@ test.describe("Markdown Chunk Rendering", () => {
 
     // Verify nested unordered list
     const nestedBullets = messagesContainer.locator("ol > li > ul > li");
-    expect(await nestedBullets.count()).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => nestedBullets.count()).toBeGreaterThanOrEqual(2);
 
     // Verify content
     await expect(messagesContainer).toContainText("First item");
@@ -96,15 +95,15 @@ test.describe("Markdown Chunk Rendering", () => {
 
     await helpers.sendMessageAndWait(page, "TEST:inline-code-split");
 
-    // Wait for all content to be rendered (chunks may arrive after prompt completes)
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     const agentMessage = page.locator(selectors.agentMessage).last();
 
     // Verify inline code elements
     const inlineCode = agentMessage.locator("code:not(pre code)");
     await expect(inlineCode.first()).toBeVisible({ timeout: timeouts.agentResponse });
-    expect(await inlineCode.count()).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => inlineCode.count()).toBeGreaterThanOrEqual(2);
 
     // Verify specific code content
     await expect(agentMessage.locator("code")).toContainText(["console.log"]);
@@ -119,8 +118,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:bold-italic-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     const agentMessage = page.locator(selectors.agentMessage).last();
 
@@ -141,8 +140,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:link-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     const agentMessage = page.locator(selectors.agentMessage).last();
 
@@ -160,8 +159,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:table-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Look for the table in the messages container
     const messagesContainer = page.locator(selectors.messagesContainer);
@@ -186,8 +185,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:heading-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Look for headings in the messages container
     const messagesContainer = page.locator(selectors.messagesContainer);
@@ -211,8 +210,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:blockquote-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Look for blockquote in the messages container
     const messagesContainer = page.locator(selectors.messagesContainer);
@@ -233,8 +232,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:backticks-split");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Look for code block in the messages container
     const messagesContainer = page.locator(selectors.messagesContainer);
@@ -243,10 +242,9 @@ test.describe("Markdown Chunk Rendering", () => {
     const codeBlock = messagesContainer.locator("pre code");
     await expect(codeBlock).toBeVisible({ timeout: timeouts.agentResponse });
 
-    // Verify the code content
-    const codeText = await codeBlock.textContent();
-    expect(codeText).toContain("def foo():");
-    expect(codeText).toContain("pass");
+    // Verify the code content (retries until streamed chunks render)
+    await expect(codeBlock).toContainText("def foo():");
+    await expect(codeBlock).toContainText("pass");
   });
 
   test("should render mixed formatting split across chunks", async ({
@@ -257,8 +255,8 @@ test.describe("Markdown Chunk Rendering", () => {
   }) => {
     await helpers.sendMessageAndWait(page, "TEST:mixed-formatting");
 
-    // Wait for all content to be rendered
-    await page.waitForTimeout(1000);
+    // Wait for streamed chunks to finish rendering (deterministic settle).
+    await helpers.waitForStreamingSettled(page);
 
     // Look for elements in the messages container
     const messagesContainer = page.locator(selectors.messagesContainer);
@@ -274,7 +272,7 @@ test.describe("Markdown Chunk Rendering", () => {
 
     // Verify code blocks
     const codeBlocks = messagesContainer.locator("pre code");
-    expect(await codeBlocks.count()).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => codeBlocks.count()).toBeGreaterThanOrEqual(2);
 
     // Verify bold text
     const boldText = messagesContainer.locator("strong");
@@ -306,7 +304,7 @@ test.describe("Markdown Chunk Rendering", () => {
       'Timing-sensitive: code block not visible in Docker environment');
     // Trigger the markdown-code-block scenario which has text after the code block
     await helpers.sendMessageAndWait(page, "TEST:code-block-split");
-    await page.waitForTimeout(1000);
+    await helpers.waitForStreamingSettled(page);
 
     const messagesContainer = page.locator(selectors.messagesContainer);
     const agentMessage = page.locator(selectors.agentMessage).last();

@@ -190,15 +190,16 @@ test.describe("Mermaid Diagram Rendering", () => {
     const svg = mermaidDiagram.first().locator("svg");
     await expect(svg).toBeVisible({ timeout: timeouts.shortAction });
 
-    // Verify the SVG has content (nodes from the flowchart)
-    const svgContent = await svg.innerHTML();
-    expect(svgContent.length).toBeGreaterThan(100); // SVG should have substantial content
+    // Verify the SVG has content (nodes from the flowchart). Poll so the
+    // assertion retries until the mermaid useEffect render lands.
+    await expect
+      .poll(async () => (await svg.innerHTML()).length)
+      .toBeGreaterThan(100);
 
     // Verify the diagram contains the expected flowchart node labels
-    const diagramText = await mermaidDiagram.first().textContent();
-    expect(diagramText).toContain("Start");
-    expect(diagramText).toContain("Decision");
-    expect(diagramText).toContain("End");
+    await expect(mermaidDiagram.first()).toContainText("Start");
+    await expect(mermaidDiagram.first()).toContainText("Decision");
+    await expect(mermaidDiagram.first()).toContainText("End");
   });
 
   test("should render mermaid diagram SVG without showing raw code", async ({
@@ -232,8 +233,7 @@ test.describe("Mermaid Diagram Rendering", () => {
     // The raw mermaid code block should NOT be visible —
     // it should have been replaced by the rendered SVG wrapper.
     const rawMermaidBlock = page.locator('pre.mermaid:not([data-mermaid-processed="true"])');
-    const count = await rawMermaidBlock.count();
-    expect(count).toBe(0);
+    await expect(rawMermaidBlock).toHaveCount(0);
   });
 });
 

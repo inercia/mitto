@@ -512,17 +512,17 @@ test.describe("Unified Viewer UI", () => {
     const svg = mermaidDiagram.first().locator("svg");
     await expect(svg).toBeVisible();
 
-    // Verify the diagram contains expected flowchart node labels
-    const diagramText = await mermaidDiagram.first().textContent();
-    expect(diagramText).toContain("Client");
-    expect(diagramText).toContain("API Gateway");
-    expect(diagramText).toContain("Database");
+    // Verify the diagram contains expected flowchart node labels (retries
+    // until the mermaid render lands).
+    await expect(mermaidDiagram.first()).toContainText("Client");
+    await expect(mermaidDiagram.first()).toContainText("API Gateway");
+    await expect(mermaidDiagram.first()).toContainText("Database");
 
     // The raw mermaid code block should NOT be visible
     const rawMermaidBlock = page.locator(
       '#markdownContent pre.mermaid'
     );
-    expect(await rawMermaidBlock.count()).toBe(0);
+    await expect(rawMermaidBlock).toHaveCount(0);
 
     // No CSP violations
     expect(cspViolations).toHaveLength(0);
