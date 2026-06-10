@@ -24,7 +24,7 @@ export function ToastContainer({ toasts, onDismiss }) {
   if (!toasts || toasts.length === 0) return null;
 
   return html`
-    <div style="position:fixed;top:1rem;right:1rem;z-index:50;display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;">
+    <div class="toast toast-top toast-end items-end z-50">
       ${toasts.map((toast) => {
         const config = STYLE_CONFIG[toast.style] || STYLE_CONFIG.info;
         return html`
