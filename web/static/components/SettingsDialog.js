@@ -2027,6 +2027,7 @@ export function SettingsDialog({
     >
       <div
         class="settings-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
+        data-testid="settings-dialog"
         onClick=${(e) => e.stopPropagation()}
       >
         <!-- Header -->
@@ -2058,6 +2059,7 @@ export function SettingsDialog({
               (item) => html`
                 <button
                   key=${item.id}
+                  data-testid=${`settings-nav-${item.id}`}
                   onClick=${() => setActiveTab(item.id)}
                   class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${activeTab ===
                   item.id
@@ -2072,7 +2074,7 @@ export function SettingsDialog({
           </nav>
 
           <!-- Content Area -->
-          <div class="flex-1 overflow-y-auto p-4">
+          <div class="flex-1 overflow-y-auto p-4" data-testid="settings-content">
             ${loading
               ? html`
                   <div class="flex items-center justify-center py-12">
@@ -4172,6 +4174,7 @@ export function SettingsDialog({
             html`
               <button
                 onClick=${handleClose}
+                data-testid="settings-close"
                 class="px-4 py-2 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
               >
                 Close
@@ -4179,6 +4182,7 @@ export function SettingsDialog({
             `}
             <button
               onClick=${handleSave}
+              data-testid="settings-save"
               disabled=${saving}
               class="px-4 py-2 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
             >
