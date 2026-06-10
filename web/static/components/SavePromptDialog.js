@@ -276,7 +276,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               onKeyDown=${handleKeyDown}
               placeholder="My Prompt"
               disabled=${isSaving}
-              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+              class="input input-sm w-full"
               data-testid="save-prompt-name-input"
             />
           </div>
@@ -312,7 +312,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="my-prompt.md"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+                class="input input-sm flex-1"
                 data-testid="save-prompt-filename-input"
               />
             </div>
@@ -331,7 +331,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="/path/to/save/directory"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 font-mono text-xs"
+                class="input input-sm flex-1 font-mono text-xs"
                 data-testid="save-prompt-directory-input"
               />
               ${hasNativeFolderPicker() &&

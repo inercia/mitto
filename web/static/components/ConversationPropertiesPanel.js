@@ -727,7 +727,7 @@ export function ConversationPropertiesPanel({
                   <input
                     ref=${titleInputRef}
                     type="text"
-                    class="flex-1 bg-mitto-surface-2 border border-mitto-border-2 rounded px-3 py-2 text-sm focus:outline-none focus:border-mitto-accent"
+                    class="input input-sm flex-1"
                     value=${editedTitle}
                     onInput=${(e) => setEditedTitle(e.target.value)}
                     onKeyDown=${handleTitleKeyDown}

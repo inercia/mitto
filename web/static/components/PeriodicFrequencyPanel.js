@@ -434,9 +434,7 @@ export function PeriodicFrequencyPanel({
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
           disabled=${isSaving}
-          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
-            ? "opacity-50 cursor-not-allowed"
-            : ""}"
+          class="input input-xs w-16 text-center"
         />
 
         <!-- Unit dropdown -->
