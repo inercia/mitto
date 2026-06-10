@@ -25,7 +25,7 @@ const AGENT_NAME = "mock-acp";
 
 // Context menus render as fixed-position panels; this matches both the main menu
 // and any open submenu while avoiding dialogs (which use different classes).
-const MENU = ".fixed.z-50.bg-slate-800.shadow-xl";
+const MENU = ".fixed.z-50.bg-mitto-surface-2.shadow-xl";
 
 testWithCleanup.describe("Group Context Menu - New submenu", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
