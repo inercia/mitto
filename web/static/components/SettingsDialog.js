@@ -2114,7 +2114,7 @@ export function SettingsDialog({
                     data-testid=${`settings-nav-${item.id}`}
                     onClick=${() => setActiveTab(item.id)}
                     class="font-medium ${activeTab === item.id
-                      ? "menu-active text-mitto-accent bg-mitto-accent-500/10"
+                      ? "menu-active"
                       : "text-mitto-text-muted"}"
                   >
                     <${item.icon} className="w-4 h-4 shrink-0" />

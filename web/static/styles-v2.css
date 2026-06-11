@@ -812,9 +812,9 @@ a:hover {
 }
 
 .v2-theme:not(.dark)
-  button:hover:not([class*="bg-blue"]):not([class*="bg-red"]):not(
-    [class*="bg-green"]
-  ) {
+  button:hover:not(.menu-active):not([class*="bg-blue"]):not(
+    [class*="bg-red"]
+  ):not([class*="bg-green"]) {
   background: #f0f0f0;
   border-color: #d4d4d8;
 }
@@ -828,9 +828,9 @@ a:hover {
 }
 
 .v2-theme.dark
-  button:hover:not([class*="bg-blue"]):not([class*="bg-red"]):not(
-    [class*="bg-green"]
-  ) {
+  button:hover:not(.menu-active):not([class*="bg-blue"]):not(
+    [class*="bg-red"]
+  ):not([class*="bg-green"]) {
   background: #334155;
   border-color: #475569;
 }
