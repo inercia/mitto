@@ -163,7 +163,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
 
   return html`
     <select
-      class="w-full bg-mitto-surface-3 text-slate-200 rounded-lg px-3 py-2 text-sm border border-mitto-border-2 focus:border-mitto-accent focus:ring-1 focus:ring-mitto-accent-500 outline-none cursor-pointer"
+      class="select select-sm w-full"
       value=${localValue || ""}
       onChange=${handleChange}
       disabled=${isStreaming}
@@ -750,7 +750,7 @@ export function SessionPanel({
     if (changesError) {
       return html`
         <div class="p-4">
-          <div class="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-mitto-danger text-sm">
+          <div role="alert" class="alert alert-error alert-soft text-sm">
             Failed to load changes: ${changesError}
           </div>
           <button
@@ -1006,7 +1006,7 @@ export function SessionPanel({
           return html`
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-2">User Data</label>
-              ${userDataError && html`<div class="text-sm text-mitto-danger bg-red-900/20 rounded px-2 py-1 mb-2">${userDataError}</div>`}
+              ${userDataError && html`<div role="alert" class="alert alert-error alert-soft text-sm mb-2">${userDataError}</div>`}
               <div class="space-y-3">
                 ${userDataSchema.fields.map((field) => {
                   const value = getAttributeValue(field.name);
@@ -1225,7 +1225,7 @@ export function SessionPanel({
             ${isLoadingFlags
               ? html`<div class="text-sm text-slate-500">Loading...</div>`
               : html`
-                  ${flagsError && html`<div class="text-sm text-mitto-danger bg-red-900/20 rounded px-2 py-1">${flagsError}</div>`}
+                  ${flagsError && html`<div role="alert" class="alert alert-error alert-soft text-sm">${flagsError}</div>`}
                   ${availableFlags.map((flag) => {
                     const currentValue = sessionSettings[flag.name];
                     const isSaving = savingFlags[flag.name];

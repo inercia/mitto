@@ -272,7 +272,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                         <button
                           key=${ws.working_dir + "|" + ws.acp_server}
                           onClick=${() => onSelect(ws)}
-                          class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
+                          class="w-full p-3 text-left rounded-md bg-slate-700/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
                             ? "ml-4"
                             : ""}"
                         >

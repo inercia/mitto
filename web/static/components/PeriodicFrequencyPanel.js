@@ -442,9 +442,7 @@ export function PeriodicFrequencyPanel({
           value=${localUnit}
           onChange=${handleUnitChange}
           disabled=${isSaving}
-          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
-            ? "opacity-50 cursor-not-allowed"
-            : "cursor-pointer"}"
+          class="select select-xs"
         >
           <option value="minutes">minutes</option>
           <option value="hours">hours</option>

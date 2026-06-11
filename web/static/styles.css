@@ -1681,35 +1681,8 @@ mitto-action {
     margin-bottom: 2px;
     gap: 12px;
   }
-
-  .chat-input-model-select {
-    max-width: none;
-    font-size: 13px;
-  }
 }
 
-.chat-input-model-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  border: none;
-  color: #64748b;
-  font-size: 12px;
-  padding: 2px 16px 2px 6px;
-  cursor: pointer;
-  outline: none;
-  max-width: 200px;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 2px center;
-}
-
-.chat-input-model-select:hover {
-  color: #94a3b8;
-}
 
 .chat-input-context-pct {
   font-size: 11px;
@@ -1717,15 +1690,6 @@ mitto-action {
   padding: 1px 4px;
 }
 
-.chat-input-model-select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.chat-input-model-select option {
-  background: #1e293b;
-  color: #e2e8f0;
-}
 
 /* Flat inline action button — matches p-1.5 rounded (28px, 4px radius) */
 .chat-input-action {
@@ -1875,18 +1839,6 @@ mitto-action {
   color: #cbd5e1;
 }
 
-.light .chat-input-model-select {
-  color: #64748b;
-}
-
-.light .chat-input-model-select:hover {
-  color: #334155;
-}
-
-.light .chat-input-model-select option {
-  background: #ffffff;
-  color: #1e293b;
-}
 
 /* Send/Stop buttons in light theme — same filled accent style */
 .light .chat-input-action.send-active,

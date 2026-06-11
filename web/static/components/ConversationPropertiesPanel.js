@@ -216,7 +216,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
 
   return html`
     <select
-      class="w-full bg-mitto-surface-3 text-slate-200 rounded-lg px-3 py-2 text-sm border border-mitto-border-2 focus:border-mitto-accent focus:ring-1 focus:ring-mitto-accent-500 outline-none cursor-pointer"
+      class="select select-sm w-full"
       value=${localValue || ""}
       onChange=${handleChange}
       disabled=${isStreaming}
@@ -1201,7 +1201,8 @@ export function ConversationPropertiesPanel({
                   ${flagsError &&
                   html`
                     <div
-                      class="text-sm text-mitto-danger bg-red-900/20 rounded px-2 py-1"
+                      role="alert"
+                      class="alert alert-error alert-soft text-sm"
                     >
                       ${flagsError}
                     </div>

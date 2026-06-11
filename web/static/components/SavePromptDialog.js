@@ -362,7 +362,8 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
           ${error &&
           html`
             <div
-              class="text-mitto-danger text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2"
+              role="alert"
+              class="alert alert-error alert-soft text-sm"
               data-testid="save-prompt-error"
             >
               ${error}

@@ -175,7 +175,7 @@ export function Modal({
             <h3 id=${titleId} class="text-lg font-semibold">${title}</h3>
             <button
               onClick=${onClose}
-              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+              class="p-1.5 hover:bg-mitto-surface-hover rounded-md transition-colors"
               title="Close"
               data-testid=${closeTestid}
             >

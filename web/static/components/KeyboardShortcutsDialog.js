@@ -45,7 +45,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
                     (shortcut) => html`
                       <div
                         key=${shortcut.keys}
-                        class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200"
+                        class="flex items-center justify-between py-2 px-3 rounded-md bg-base-200"
                       >
                         <div class="flex flex-col gap-0.5">
                           <div class="flex items-center gap-2">

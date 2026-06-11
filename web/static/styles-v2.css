@@ -1485,32 +1485,6 @@ a:hover {
   color: var(--border, #334155) !important;
 }
 
-/* Model selector v2 theme overrides */
-.v2-theme:not(.dark) .chat-input-model-select {
-  color: #64748b !important;
-}
-
-.v2-theme:not(.dark) .chat-input-model-select:hover {
-  color: #334155 !important;
-}
-
-.v2-theme:not(.dark) .chat-input-model-select option {
-  background: #ffffff !important;
-  color: #1e293b !important;
-}
-
-.v2-theme.dark .chat-input-model-select {
-  color: var(--muted-strong, #64748b) !important;
-}
-
-.v2-theme.dark .chat-input-model-select:hover {
-  color: var(--text-muted, #cbd5e1) !important;
-}
-
-.v2-theme.dark .chat-input-model-select option {
-  background: var(--bg-offset, #1e293b) !important;
-  color: var(--text, #e2e8f0) !important;
-}
 
 /* Small screens: model selector row separator */
 @media (max-width: 640px) {

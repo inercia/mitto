@@ -219,7 +219,7 @@ export function AutoChildrenEditor({
                 (child, idx) => html`
                   <div
                     key=${idx}
-                    class="flex items-center gap-2 p-2 bg-mitto-input-box rounded-lg border border-mitto-border"
+                    class="flex items-center gap-2 p-2 bg-mitto-input-box rounded-md border border-mitto-border"
                   >
                     <input
                       type="text"
@@ -350,7 +350,7 @@ export function RunnerRestrictionsEditor({
       runnerConfig.restrictions?.docker);
 
   return html`
-    <div class="border border-slate-600/50 rounded-lg overflow-hidden mt-2">
+    <div class="border border-slate-600/50 rounded-md overflow-hidden mt-2">
       <button
         type="button"
         onClick=${() => setExpanded(!expanded)}
@@ -2026,7 +2026,7 @@ export function SettingsDialog({
       onClick=${canClose ? handleClose : null}
     >
       <div
-        class="settings-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
+        class="settings-dialog bg-mitto-sidebar rounded-lg w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
         data-testid="settings-dialog"
         onClick=${(e) => e.stopPropagation()}
       >
@@ -2124,7 +2124,7 @@ export function SettingsDialog({
                       ${showAddServer &&
                       html`
                         <div
-                          class="p-4 bg-slate-800/50 rounded-lg border border-mitto-border-1 space-y-3"
+                          class="p-4 bg-slate-800/50 rounded-md border border-mitto-border-1 space-y-3"
                         >
                           <div>
                             <label class="block text-sm text-mitto-text-muted mb-1"
@@ -2194,7 +2194,8 @@ export function SettingsDialog({
                           ${error &&
                           html`
                             <div
-                              class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-mitto-danger text-sm"
+                              role="alert"
+                              class="alert alert-error alert-soft text-sm"
                             >
                               ⚠️ ${error}
                             </div>
@@ -2361,9 +2362,10 @@ export function SettingsDialog({
                   html`
                     <div class="space-y-4">
                       <div
-                        class="p-3 bg-amber-500/10 rounded-lg border border-amber-500/30"
+                        role="alert"
+                        class="alert alert-warning alert-soft"
                       >
-                        <p class="text-amber-400 text-sm leading-relaxed">
+                        <p class="text-sm leading-relaxed">
                           ⚠️ <strong>Advanced feature:</strong> Configure
                           sandboxing restrictions for each runner type. These
                           are global defaults that apply to all workspaces using
@@ -2390,7 +2392,7 @@ export function SettingsDialog({
                             (runner) => html`
                               <div
                                 key=${runner.type}
-                                class="border border-slate-600/50 rounded-lg overflow-hidden"
+                                class="border border-slate-600/50 rounded-md overflow-hidden"
                               >
                                 <!-- Runner header (collapsible) -->
                                 <button
@@ -2962,7 +2964,7 @@ export function SettingsDialog({
                             (runner) => html`
                               <div
                                 key=${runner.type}
-                                class="border border-slate-600/30 rounded-lg overflow-hidden opacity-50"
+                                class="border border-slate-600/30 rounded-md overflow-hidden opacity-50"
                               >
                                 <div
                                   class="flex items-center justify-between p-3 bg-slate-700/20"
@@ -3029,7 +3031,7 @@ export function SettingsDialog({
                         </label>
 
                         <div
-                          class="p-3 bg-slate-800/50 rounded-lg border border-mitto-border-1"
+                          class="p-3 bg-slate-800/50 rounded-md border border-mitto-border-1"
                         >
                           <p class="text-mitto-text-secondary text-sm leading-relaxed">
                             <span class="text-mitto-accent font-medium"
@@ -3044,9 +3046,10 @@ export function SettingsDialog({
                         ${!globalAutoApprove &&
                         html`
                           <div
-                            class="p-3 bg-amber-500/10 rounded-lg border border-amber-500/30"
+                            role="alert"
+                            class="alert alert-warning alert-soft"
                           >
-                            <p class="text-amber-400 text-sm leading-relaxed">
+                            <p class="text-sm leading-relaxed">
                               ⚠️ <strong>Note:</strong> When auto-approve is
                               disabled, you will need to manually approve or deny
                               each permission request from the agent. This may
@@ -3275,17 +3278,14 @@ export function SettingsDialog({
                             new conversations.
                           </p>
                           <div
-                            class="bg-slate-700/20 rounded-sm border border-slate-600/50 overflow-hidden"
+                            class="overflow-x-auto bg-slate-700/20 rounded-sm border border-slate-600/50"
                           >
-                            <table class="w-full text-sm">
+                            <table class="table table-sm">
                               <tbody>
                                 ${availableFlags.map(
                                   (flag) => html`
-                                    <tr
-                                      key=${flag.name}
-                                      class="border-b border-slate-600/30 last:border-b-0 hover:bg-slate-700/30 transition-colors"
-                                    >
-                                      <td class="p-3 w-10">
+                                    <tr key=${flag.name}>
+                                      <td class="w-10">
                                         <input
                                           type="checkbox"
                                           checked=${defaultFlags[flag.name] ||
@@ -3304,7 +3304,7 @@ export function SettingsDialog({
                                           class="checkbox checkbox-sm checkbox-primary cursor-pointer"
                                         />
                                       </td>
-                                      <td class="p-3">
+                                      <td>
                                         <div class="font-medium">
                                           ${flag.label}
                                         </div>
@@ -4133,7 +4133,8 @@ export function SettingsDialog({
           ${error &&
           html`
             <div
-              class="mb-3 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-mitto-danger text-sm"
+              role="alert"
+              class="alert alert-error alert-soft text-sm mb-3"
             >
               ${error}
             </div>
@@ -4141,7 +4142,8 @@ export function SettingsDialog({
           ${warning &&
           html`
             <div
-              class="mb-3 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg text-mitto-warning text-sm"
+              role="alert"
+              class="alert alert-warning alert-soft text-sm mb-3"
             >
               ${warning}
             </div>

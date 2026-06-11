@@ -1237,7 +1237,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   return html`
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick=${handleClose}>
-      <div class="workspaces-dialog bg-mitto-sidebar rounded-xl w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col" data-testid="workspaces-dialog" onClick=${(e) => e.stopPropagation()}>
+      <div class="workspaces-dialog bg-mitto-sidebar rounded-lg w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col" data-testid="workspaces-dialog" onClick=${(e) => e.stopPropagation()}>
 
         <!-- Header -->
         <div class="flex items-center justify-between p-4 border-b border-mitto-border shrink-0">
@@ -1622,7 +1622,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </div>
 
                           ${beadsUpstream !== "none" && BEADS_UPSTREAM_HELP[beadsUpstream] && html`
-                            <div class="p-3 bg-mitto-input-box border border-mitto-border rounded-lg">
+                            <div class="p-3 bg-mitto-input-box border border-mitto-border rounded-md">
                               <p class="text-xs text-mitto-text-muted mb-2">
                                 Recommended ${BEADS_UPSTREAM_HELP[beadsUpstream].label} keys${" "}
                                 (click a key to fill the add-key field below):
@@ -1654,7 +1654,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </p>
 
                           ${beadsConfigError && html`
-                            <div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-300">
+                            <div role="alert" class="alert alert-warning alert-soft text-xs">
                               ${beadsConfigError}
                             </div>
                           `}
@@ -1768,7 +1768,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </div>
 
                           ${showAddPrompt && html`
-                            <div class="p-4 bg-slate-800/50 rounded-lg border border-mitto-border-1 space-y-3">
+                            <div class="p-4 bg-slate-800/50 rounded-md border border-mitto-border-1 space-y-3">
                               <div>
                                 <label class="block text-sm text-mitto-text-muted mb-1">Button Label</label>
                                 <input type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
@@ -2220,31 +2220,29 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 ${mcpTools?.message || "No MCP servers found for this agent."}
                               </div>`
                             : html`
-                              <div class="border border-mitto-border rounded-lg overflow-hidden">
-                                <table class="w-full text-sm" style="table-layout: fixed;">
+                              <div class="overflow-x-auto border border-mitto-border rounded-md">
+                                <table class="table table-sm" style="table-layout: fixed;">
                                   <colgroup>
                                     <col style="width: 140px;" />
                                     <col />
                                     ${mcpTools?.has_mcp_remove && html`<col style="width: 44px;" />`}
                                   </colgroup>
                                   <thead>
-                                    <tr class="bg-slate-800/50">
-                                      <th class="text-left px-4 py-2.5 text-mitto-text-muted font-medium">Name</th>
-                                      <th class="text-left px-4 py-2.5 text-mitto-text-muted font-medium">Command / URL</th>
-                                      ${mcpTools?.has_mcp_remove && html`
-                                        <th class="px-2 py-2.5"></th>
-                                      `}
+                                    <tr>
+                                      <th>Name</th>
+                                      <th>Command / URL</th>
+                                      ${mcpTools?.has_mcp_remove && html`<th></th>`}
                                     </tr>
                                   </thead>
                                   <tbody>
                                     ${mcpTools?.servers?.map((srv, i) => html`
-                                      <tr key=${srv.name || i} class="border-t border-mitto-border hover:bg-slate-800/30">
-                                        <td class="px-4 py-2.5 font-medium truncate" title=${srv.name}>${srv.name}</td>
-                                        <td class="px-4 py-2.5 text-mitto-text-muted font-mono text-xs truncate" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
+                                      <tr key=${srv.name || i}>
+                                        <td class="font-medium truncate" title=${srv.name}>${srv.name}</td>
+                                        <td class="text-mitto-text-muted font-mono text-xs truncate" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
                                           ${srv.url || [srv.command, ...(srv.args || [])].join(" ")}
                                         </td>
                                         ${mcpTools?.has_mcp_remove && html`
-                                          <td class="px-2 py-2.5 text-center">
+                                          <td class="text-center">
                                             <button
                                               onClick=${() => handleMcpRemoveConfirm(srv.name)}
                                               class="p-1.5 hover:bg-red-500/20 rounded transition-colors"

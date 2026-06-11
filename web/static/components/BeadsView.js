@@ -2273,7 +2273,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "none"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("none")}
-              class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent-500 focus:ring-mitto-accent-500 focus:ring-offset-0"
+              class="radio radio-sm mt-0.5"
             />
             <span class="text-sm text-mitto-text-secondary">Leave child issues unchanged</span>
           </label>
@@ -2286,7 +2286,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 checked=${childAction === "close"}
                 disabled=${deletingIssue}
                 onChange=${() => setChildAction("close")}
-                class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-mitto-accent-500 focus:ring-mitto-accent-500 focus:ring-offset-0"
+                class="radio radio-sm mt-0.5"
               />
               <span class="text-sm text-mitto-text-secondary">
                 Close the ${deleteTargetOpenDescendants.length} open child issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}
@@ -2301,7 +2301,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "delete"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("delete")}
-              class="mt-0.5 w-4 h-4 bg-mitto-surface-3 border-mitto-border-2 text-red-500 focus:ring-red-500 focus:ring-offset-0"
+              class="radio radio-sm radio-error mt-0.5"
             />
             <span class="text-sm text-mitto-text-secondary">
               Delete all ${deleteTargetDescendants.length} child issue${deleteTargetDescendants.length === 1 ? "" : "s"} (permanent)
