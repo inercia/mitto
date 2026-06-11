@@ -196,6 +196,7 @@ function App() {
     cancelPrompt,
     newSession,
     switchSession,
+    setActiveSessionId,
     loadMoreMessages,
     updateSessionName,
     renameSession,
@@ -1374,6 +1375,16 @@ function App() {
     setMainView("conversation");
   };
 
+  // Show the Dashboard (no-session) view by clearing the active session. This
+  // reuses the existing "no sessions left" empty state (setActiveSessionId(null))
+  // and does not delete or disconnect anything.
+  const handleShowDashboard = () => {
+    setActiveSessionId(null);
+    setShowSidebar(false);
+    setShowSidePanel(false);
+    setMainView("conversation");
+  };
+
   // Handle badge click action - calls API to execute configured command
   const handleBadgeClick = useCallback(
     async (workspacePath) => {
@@ -2008,6 +2019,7 @@ function App() {
             onFolderOpen=${handleFolderOpen}
             onTerminalClick=${handleTerminalClick}
             onBeadsOpen=${handleBeadsOpen}
+            onShowDashboard=${handleShowDashboard}
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}

@@ -5990,6 +5990,7 @@ export function useWebSocket() {
     newSession,
     isCreatingSession,
     switchSession,
+    setActiveSessionId,
     loadSession,
     loadMoreMessages,
     updateSessionName,

@@ -26,6 +26,7 @@ import {
   SettingsIcon,
   RobotIcon,
   BeadsIcon,
+  DashboardIcon,
   TerminalIcon,
 } from "./Icons.js";
 
@@ -56,6 +57,7 @@ export function SessionList({
   onFolderOpen,
   onTerminalClick,
   onBeadsOpen,
+  onShowDashboard,
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
@@ -585,10 +587,18 @@ export function SessionList({
 
     return html`
       <ul class="menu menu-sm w-full p-0 flex-nowrap">
-        <!-- Dashboard (static, top-level) — placeholder; wired in mitto-1er.7 -->
+        <!-- Dashboard (static, top-level) — clears the active session to show
+             the no-session view. Not a conversation; excluded from nav. -->
         <li>
-          <button type="button" class="gap-2">
-            <${FolderIcon} className="w-4 h-4 shrink-0" />
+          <button
+            type="button"
+            onClick=${() => onShowDashboard && onShowDashboard()}
+            aria-current=${!activeSessionId ? "page" : undefined}
+            class="gap-2 text-sm ${!activeSessionId
+              ? "text-mitto-text-strong bg-mitto-surface-3"
+              : "text-mitto-text-muted"}"
+          >
+            <${DashboardIcon} className="w-4 h-4 shrink-0" />
             <span class="truncate">${dashboard.label}</span>
           </button>
         </li>
@@ -683,9 +693,19 @@ export function SessionList({
                 </summary>
                 <ul>
                   ${renderSessionNodes(folder.conversations)}
-                  <!-- Tasks (static, per-folder) — placeholder; wired in mitto-1er.7 -->
+                  <!-- Tasks (static, per-folder) — opens the Beads view for this
+                       folder. Not a conversation; excluded from nav. -->
                   <li>
-                    <button type="button" class="gap-2">
+                    <button
+                      type="button"
+                      onClick=${(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onBeadsOpen && onBeadsOpen(folder.workingDir);
+                      }}
+                      class="gap-2 text-sm text-mitto-text-muted"
+                      title="Beads issues: ${folder.workingDir}"
+                    >
                       <${BeadsIcon} className="w-4 h-4 shrink-0" />
                       <span class="truncate">${folder.tasksNode.label}</span>
                     </button>
