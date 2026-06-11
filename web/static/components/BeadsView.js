@@ -2050,8 +2050,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               const childCount = childCountById[issue.id] || 0;
               const isEpic = issue.issue_type === "epic" || childCount > 0;
               const bgTone = isSelected
-                ? "bg-slate-700/30"
-                : "bg-slate-700/20 hover:bg-red-600";
+                ? "bg-mitto-surface-3/30"
+                : "bg-mitto-surface-3/20 hover:bg-red-600";
               // The daisyUI list provides row dividers + list-row radius, so
               // default rows carry no own border. The two distinctive Mitto
               // state treatments still get an explicit border: a full accent

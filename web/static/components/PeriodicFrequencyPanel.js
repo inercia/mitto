@@ -331,7 +331,7 @@ export function PeriodicFrequencyPanel({
   // Panel classes - part of normal document flow (not absolute positioned)
   // This ensures it pushes the conversation area up instead of overlaying it
   // Uses lighter background for better readability and contrast
-  const panelClasses = `periodic-frequency-panel w-full bg-slate-100 dark:bg-slate-700/95 backdrop-blur-sm border border-slate-300 dark:border-slate-600 rounded-lg overflow-hidden transition-all duration-300 ease-out ${
+  const panelClasses = `periodic-frequency-panel w-full bg-mitto-surface-hover dark:bg-mitto-surface-3/95 backdrop-blur-sm border border-mitto-border dark:border-mitto-border-2 rounded-lg overflow-hidden transition-all duration-300 ease-out ${
     isOpen
       ? "opacity-100 mb-3"
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
@@ -400,10 +400,10 @@ export function PeriodicFrequencyPanel({
                 type="button"
                 onClick=${handleIconClick}
                 disabled=${isTriggering || isStreaming}
-                class="shrink-0 p-1.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-colors ${isTriggering ||
+                class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${isTriggering ||
                 isStreaming
                   ? "opacity-50 cursor-not-allowed"
-                  : "cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700"}"
+                  : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
                 title=${isStreaming
                   ? "Wait for agent to finish responding"
                   : "Click to run this periodic prompt now"}
@@ -421,7 +421,7 @@ export function PeriodicFrequencyPanel({
             />`}
 
         <!-- Run every label -->
-        <span class="text-slate-600 dark:text-mitto-text-300 shrink-0"
+        <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
           >Run every</span
         >
 
@@ -452,7 +452,7 @@ export function PeriodicFrequencyPanel({
         <!-- Time picker (only shown for daily schedules) -->
         ${localUnit === "days" &&
         html`
-          <span class="text-slate-600 dark:text-mitto-text-300 shrink-0"
+          <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
             >at</span
           >
           <input
@@ -461,7 +461,7 @@ export function PeriodicFrequencyPanel({
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
             disabled=${isSaving}
-            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
+            class="h-8 px-2 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             placeholder="HH:MM"
@@ -474,7 +474,7 @@ export function PeriodicFrequencyPanel({
         <!-- Next run time -->
         ${nextTimeDisplay &&
         html`
-          <span class="text-slate-600 dark:text-mitto-text-300 text-xs shrink-0">
+          <span class="text-mitto-text-muted dark:text-mitto-text-300 text-xs shrink-0">
             Next: ${nextTimeDisplay}
           </span>
         `}
@@ -487,18 +487,18 @@ export function PeriodicFrequencyPanel({
       <!-- Fresh context option (only shown when not locked / editing is allowed) -->
       ${!disabled &&
       html`
-        <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-slate-200 dark:border-slate-600 pt-2">
+        <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-mitto-border dark:border-mitto-border-2 pt-2">
           <input
             type="checkbox"
             id="fresh-context-checkbox-${sessionId}"
             checked=${freshContext}
             onInput=${handleFreshContextChange}
-            class="w-4 h-4 rounded border-slate-400 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
+            class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
             data-testid="fresh-context-checkbox"
           />
           <label
             for="fresh-context-checkbox-${sessionId}"
-            class="text-slate-600 dark:text-mitto-text-300 cursor-pointer select-none"
+            class="text-mitto-text-muted dark:text-mitto-text-300 cursor-pointer select-none"
           >
             Start each run with a fresh context
           </label>

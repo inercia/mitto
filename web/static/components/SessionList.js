@@ -824,7 +824,7 @@ export function SessionList({
         return html`
           <div key=${group.key} class="group-section">
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-mitto-text-strong hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none group/header"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-mitto-text-strong hover:bg-mitto-surface-3/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none group/header"
               onClick=${() => handleToggleGroup(group.key, allGroupKeys)}
               onContextMenu=${(e) => {
                 if (group.workingDir) {
@@ -1028,7 +1028,7 @@ export function SessionList({
           <div key=${folder.key} class="folder-group">
             <!-- Level 1: Folder header -->
             <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-mitto-text-strong hover:bg-slate-700/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none"
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-mitto-text-muted hover:text-mitto-text-strong hover:bg-mitto-surface-3/50 transition-colors sticky top-0 bg-mitto-surface-2 z-10 cursor-pointer select-none"
               onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
               onContextMenu=${(e) => {
                 if (folder.workingDir) {

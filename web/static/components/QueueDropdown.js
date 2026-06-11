@@ -126,7 +126,7 @@ export function QueueDropdown({
   // Compute classes for animation - positioned as floating overlay above the input
   // Shadow only on top (negative Y offset) to cast over conversation area, not over input
   // When open: use resizable height, when closed: collapse to 0
-  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 ${
+  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-mitto-surface-3/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 ${
     isDragging ? "" : "transition-all duration-300 ease-out"
   } ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none border-0"}`;
 
@@ -246,8 +246,8 @@ export function QueueDropdown({
     >
       <!-- Resize Handle at top edge -->
       <div
-        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging
-          ? "bg-slate-600/50"
+        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none ${isDragging
+          ? "bg-mitto-surface-4/50"
           : ""}"
         ...${handleProps}
         title="Drag to resize"
@@ -272,7 +272,7 @@ export function QueueDropdown({
                 (msg, index) => html`
                   <div
                     key=${msg.id}
-                    class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0 group"
+                    class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-mitto-surface-3/50 transition-colors border-b border-mitto-border-1/50 last:border-b-0 group"
                     data-testid="queue-item"
                     data-queue-item-index=${index}
                   >

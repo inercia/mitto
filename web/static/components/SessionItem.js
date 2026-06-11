@@ -448,7 +448,7 @@ export function SessionItem({
           onContextMenu=${handleContextMenu}
           onMouseEnter=${() => setShowActions(true)}
           onMouseLeave=${() => setShowActions(false)}
-          class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar overflow-hidden ${isActive
+          class="p-3 cursor-pointer hover:bg-mitto-surface-3/50 relative bg-mitto-sidebar overflow-hidden ${isActive
             ? "bg-mitto-accent-900/30 border-l-2 border-l-mitto-accent-500"
             : ""} ${isSwiping
             ? ""

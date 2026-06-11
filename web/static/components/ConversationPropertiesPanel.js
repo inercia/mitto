@@ -73,7 +73,7 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
       title=${title}
     >
       ${isUnset
-        ? html`<span class="text-slate-500 text-xs font-medium">—</span>`
+        ? html`<span class="text-mitto-text-500 text-xs font-medium">—</span>`
         : isEnabled
           ? html`<svg
               class="w-3 h-3 text-mitto-accent-fg"
@@ -235,7 +235,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
     </select>
     ${selectedOpt?.description &&
     html`
-      <p class="mt-1 text-xs text-slate-500">${selectedOpt.description}</p>
+      <p class="mt-1 text-xs text-mitto-text-500">${selectedOpt.description}</p>
     `}
   `;
 }
@@ -718,7 +718,7 @@ export function ConversationPropertiesPanel({
       <div class="flex-1 overflow-y-auto p-4 space-y-6">
         <!-- Title Section -->
         <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">
+          <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
             Title
           </label>
           ${isEditingTitle
@@ -788,7 +788,7 @@ export function ConversationPropertiesPanel({
             : sessionInfo?.archived
               ? html`
                   <span
-                    class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-slate-400"
+                    class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary"
                   >
                     <span class="w-2 h-2 bg-slate-500 rounded-full"></span>
                     Archived
@@ -805,7 +805,7 @@ export function ConversationPropertiesPanel({
                   `
                 : html`
                     <span
-                      class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-slate-400"
+                      class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary"
                     >
                       Stored
                     </span>
@@ -838,20 +838,20 @@ export function ConversationPropertiesPanel({
 
         <!-- Statistics Section (messages, time, processors, token usage) -->
         <div>
-          <label class="block text-sm font-medium text-slate-400 mb-1">
+          <label class="block text-sm font-medium text-mitto-text-secondary mb-1">
             Statistics
           </label>
-          <div class="text-xs text-slate-400 space-y-0.5">
+          <div class="text-xs text-mitto-text-secondary space-y-0.5">
             ${sessionInfo?.messageCount !== undefined && html`
               <div class="flex justify-between">
                 <span>Messages</span>
-                <span class="text-slate-300">${sessionInfo.messageCount}</span>
+                <span class="text-mitto-text-300">${sessionInfo.messageCount}</span>
               </div>
             `}
             ${sessionInfo?.created_at && html`
               <div class="flex justify-between">
                 <span>Created</span>
-                <span class="text-slate-300" title=${new Date(sessionInfo.created_at).toLocaleString()}>
+                <span class="text-mitto-text-300" title=${new Date(sessionInfo.created_at).toLocaleString()}>
                   ${formatTimeAgo(sessionInfo.created_at)}
                 </span>
               </div>
@@ -864,24 +864,24 @@ export function ConversationPropertiesPanel({
                   : 'No processors applied yet'}
               >
                 <span>Processors</span>
-                <span class="text-slate-300">${sessionInfo.processor_count}${sessionInfo?.processor_activations > 0 ? ` (${sessionInfo.processor_activations} runs)` : ''}</span>
+                <span class="text-mitto-text-300">${sessionInfo.processor_count}${sessionInfo?.processor_activations > 0 ? ` (${sessionInfo.processor_activations} runs)` : ''}</span>
               </div>
             `}
           </div>
 
           ${sessionInfo?.usage && html`
-            <div class="mt-2 pt-2 border-t border-slate-700/50">
+            <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
               <!-- Context usage bar -->
               ${(() => {
                 const contextTokens = sessionInfo.usage.input_tokens;
                 const contextWindow = getContextWindowSize(currentModelId);
                 const pct = contextWindow ? Math.min((contextTokens / contextWindow) * 100, 100) : null;
                 const barColor = pct === null ? "bg-mitto-accent" : pct > 80 ? "bg-mitto-danger" : pct > 50 ? "bg-yellow-500" : "bg-mitto-success";
-                const textColor = pct === null ? "text-slate-300" : pct > 80 ? "text-mitto-danger" : pct > 50 ? "text-mitto-warning" : "text-mitto-success";
+                const textColor = pct === null ? "text-mitto-text-300" : pct > 80 ? "text-mitto-danger" : pct > 50 ? "text-mitto-warning" : "text-mitto-success";
                 return html`
                   <div class="mb-2">
                     <div class="flex justify-between items-baseline mb-1">
-                      <span class="text-xs font-medium text-slate-400">Context</span>
+                      <span class="text-xs font-medium text-mitto-text-secondary">Context</span>
                       <span class="text-xs ${textColor}">
                         ${formatTokenCount(contextTokens)}${contextWindow ? html` / ${formatTokenCount(contextWindow)}` : ''}
                       </span>
@@ -894,7 +894,7 @@ export function ConversationPropertiesPanel({
                     </div>
                     ${pct !== null && html`
                       <div class="text-right mt-0.5">
-                        <span class="text-[10px] text-slate-500">${pct.toFixed(0)}%</span>
+                        <span class="text-[10px] text-mitto-text-500">${pct.toFixed(0)}%</span>
                       </div>
                     `}
                   </div>
@@ -902,38 +902,38 @@ export function ConversationPropertiesPanel({
               })()}
 
               <!-- Last Turn Tokens breakdown -->
-              <label class="block text-xs font-medium text-slate-500 mb-1">
+              <label class="block text-xs font-medium text-mitto-text-500 mb-1">
                 Last Turn Tokens
               </label>
-              <div class="text-xs text-slate-400 space-y-0.5">
+              <div class="text-xs text-mitto-text-secondary space-y-0.5">
                 <div class="flex justify-between">
                   <span>Input</span>
-                  <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.input_tokens)}</span>
+                  <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.input_tokens)}</span>
                 </div>
                 <div class="flex justify-between">
                   <span>Output</span>
-                  <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.output_tokens)}</span>
+                  <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.output_tokens)}</span>
                 </div>
                 <div class="flex justify-between">
                   <span>Total</span>
-                  <span class="text-slate-300 font-medium">${formatTokenCount(sessionInfo.usage.total_tokens)}</span>
+                  <span class="text-mitto-text-300 font-medium">${formatTokenCount(sessionInfo.usage.total_tokens)}</span>
                 </div>
                 ${sessionInfo.usage.cached_read_tokens !== undefined && html`
                   <div class="flex justify-between">
                     <span>Cache Read</span>
-                    <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.cached_read_tokens)}</span>
+                    <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.cached_read_tokens)}</span>
                   </div>
                 `}
                 ${sessionInfo.usage.cached_write_tokens !== undefined && html`
                   <div class="flex justify-between">
                     <span>Cache Write</span>
-                    <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.cached_write_tokens)}</span>
+                    <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.cached_write_tokens)}</span>
                   </div>
                 `}
                 ${sessionInfo.usage.thought_tokens !== undefined && html`
                   <div class="flex justify-between">
                     <span>Thinking</span>
-                    <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.thought_tokens)}</span>
+                    <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.thought_tokens)}</span>
                   </div>
                 `}
               </div>
@@ -943,11 +943,11 @@ export function ConversationPropertiesPanel({
 
         <!-- Workspace Section -->
         <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">
+          <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
             Workspace
           </label>
-          <div class="flex items-center gap-2 text-sm text-slate-300">
-            <${FolderIcon} className="w-4 h-4 shrink-0 text-slate-500" />
+          <div class="flex items-center gap-2 text-sm text-mitto-text-300">
+            <${FolderIcon} className="w-4 h-4 shrink-0 text-mitto-text-500" />
             ${canRevealInFinder() && sessionInfo?.working_dir
               ? html`
                   <button
@@ -974,7 +974,7 @@ export function ConversationPropertiesPanel({
         configOptions.map(
           (configOption) => html`
             <div key=${configOption.id}>
-              <label class="block text-sm font-medium text-slate-400 mb-2">
+              <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
                 ${configOption.name}
               </label>
 
@@ -1014,7 +1014,7 @@ export function ConversationPropertiesPanel({
                 </div>
                 ${configOption.description &&
                 html`
-                  <p class="mt-1 text-xs text-slate-500">
+                  <p class="mt-1 text-xs text-mitto-text-500">
                     ${configOption.description}
                   </p>
                 `}
@@ -1025,14 +1025,14 @@ export function ConversationPropertiesPanel({
               configOption.type !== "toggle" &&
               html`
                 <div
-                  class="w-full bg-slate-700/50 text-slate-400 rounded-lg px-3 py-2 text-sm border border-mitto-border-2"
+                  class="w-full bg-mitto-surface-3/50 text-mitto-text-secondary rounded-lg px-3 py-2 text-sm border border-mitto-border-2"
                   title=${`Unsupported config type: ${configOption.type}`}
                 >
                   ${configOption.current_value || "(not set)"}
                 </div>
                 ${configOption.description &&
                 html`
-                  <p class="mt-1 text-xs text-slate-500">
+                  <p class="mt-1 text-xs text-mitto-text-500">
                     ${configOption.description}
                   </p>
                 `}
@@ -1045,10 +1045,10 @@ export function ConversationPropertiesPanel({
         ${periodicConfig?.enabled &&
         html`
           <div>
-            <label class="block text-sm font-medium text-slate-400 mb-2">
+            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
               Periodic Prompts
             </label>
-            <div class="flex items-center gap-2 text-sm text-slate-300">
+            <div class="flex items-center gap-2 text-sm text-mitto-text-300">
               <${PeriodicFilledIcon}
                 className="w-4 h-4 shrink-0 text-mitto-accent"
               />
@@ -1056,17 +1056,17 @@ export function ConversationPropertiesPanel({
             </div>
             ${periodicConfig.last_sent_at &&
             html`
-              <p class="mt-1 text-xs text-slate-500">
+              <p class="mt-1 text-xs text-mitto-text-500">
                 Last run:
                 ${new Date(periodicConfig.last_sent_at).toLocaleString()}
               </p>
             `}
             ${periodicConfig.next_scheduled_at &&
             html`
-              <p class="mt-1 text-xs text-slate-500">
+              <p class="mt-1 text-xs text-mitto-text-500">
                 Next run:
                 ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
-                <span class="text-slate-400 ml-1">
+                <span class="text-mitto-text-secondary ml-1">
                   (${formatRelativeTime(periodicConfig.next_scheduled_at)})
                 </span>
               </p>
@@ -1083,7 +1083,7 @@ export function ConversationPropertiesPanel({
               />
               <label
                 for="properties-fresh-context-checkbox-${sessionId}"
-                class="text-slate-300 cursor-pointer select-none"
+                class="text-mitto-text-300 cursor-pointer select-none"
               >
                 Start each run with a fresh context
               </label>
@@ -1096,7 +1096,7 @@ export function ConversationPropertiesPanel({
           <div class="pt-4">
             <button
               type="button"
-              class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors"
+              class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
               style="background: transparent; border: none; padding: 0; cursor: pointer;"
               onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}
             >
@@ -1106,7 +1106,7 @@ export function ConversationPropertiesPanel({
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
               <span>MCP Tools</span>
-              <span class="text-xs text-slate-500">(${mcpTools.length})</span>
+              <span class="text-xs text-mitto-text-500">(${mcpTools.length})</span>
             </button>
 
             ${isMcpToolsExpanded && html`
@@ -1114,12 +1114,12 @@ export function ConversationPropertiesPanel({
                 ${mcpTools.map((tool) => html`
                   <div
                     key=${tool.name}
-                    class="text-xs text-slate-300 bg-slate-700/50 rounded px-2 py-1"
+                    class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1"
                     title=${tool.description || tool.name}
                   >
                     <span class="font-mono">${tool.name}</span>
                     ${tool.description && html`
-                      <p class="text-slate-500 mt-0.5 truncate">${tool.description}</p>
+                      <p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>
                     `}
                   </div>
                 `)}
@@ -1145,30 +1145,30 @@ export function ConversationPropertiesPanel({
         <!-- Callback URL Section (only for periodic conversations) -->
         ${periodicConfig && html`
           <div class="mb-4">
-            <label class="block text-sm font-medium text-slate-400 mb-2">Callback URL</label>
+            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Callback URL</label>
             ${periodicConfig.enabled ? html`
               ${callbackConfig?.callback_url ? html`
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Copy callback URL to clipboard">
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors" title="Copy callback URL to clipboard">
                     ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
                   </button>
-                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
+                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-mitto-text-secondary hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
                 </div>
               ` : html`
-                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
+                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
                   🔗 Enable Callback URL
                 </button>
               `}
             ` : html`
               ${callbackConfig?.callback_url ? html`
-                <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
+                <p class="text-xs text-mitto-text-muted mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-slate-500 hover:text-mitto-danger transition-colors">✕ Revoke</button>
+                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-mitto-text-500 hover:text-mitto-text-secondary transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
+                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-mitto-text-500 hover:text-mitto-danger transition-colors">✕ Revoke</button>
                 </div>
               ` : html`
-                <p class="text-xs text-slate-500">No callback URL configured.</p>
+                <p class="text-xs text-mitto-text-500">No callback URL configured.</p>
               `}
             `}
           </div>
@@ -1177,7 +1177,7 @@ export function ConversationPropertiesPanel({
         <!-- Collapsible Header -->
         <button
           type="button"
-          class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors"
+          class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
           style="background: transparent; border: none; padding: 0; cursor: pointer;"
           onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
         >
@@ -1196,7 +1196,7 @@ export function ConversationPropertiesPanel({
         html`
           <div class="mt-3 space-y-3">
             ${isLoadingFlags
-              ? html`<div class="text-sm text-slate-500">Loading...</div>`
+              ? html`<div class="text-sm text-mitto-text-500">Loading...</div>`
               : html`
                   ${flagsError &&
                   html`
@@ -1227,7 +1227,7 @@ export function ConversationPropertiesPanel({
                         </div>
                         <div class="flex-1 min-w-0">
                           <label
-                            class="block text-sm text-slate-300 cursor-pointer"
+                            class="block text-sm text-mitto-text-300 cursor-pointer"
                             onClick=${() =>
                               !isSaving &&
                               handleFlagChange(
@@ -1239,7 +1239,7 @@ export function ConversationPropertiesPanel({
                           </label>
                           ${flag.description &&
                           html`
-                            <p class="text-xs text-slate-500 mt-0.5">
+                            <p class="text-xs text-mitto-text-500 mt-0.5">
                               ${flag.description}
                             </p>
                           `}

@@ -139,7 +139,7 @@ export function FolderListEditor({
       ${mode === "append" &&
       (inheritedFolders || []).length > 0 &&
       html`
-        <div class="space-y-1 opacity-50 pb-1 border-b border-slate-600/40">
+        <div class="space-y-1 opacity-50 pb-1 border-b border-mitto-border-2/40">
           ${(inheritedFolders || []).map(
             (f, idx) => html`
               <div key=${"inh-" + idx} class="flex items-center gap-2">
@@ -396,11 +396,11 @@ export function RunnerRestrictionsEditor({
       runnerConfig.restrictions?.docker);
 
   return html`
-    <div class="border border-slate-600/50 rounded-md overflow-hidden mt-2">
+    <div class="border border-mitto-border-2/50 rounded-md overflow-hidden mt-2">
       <button
         type="button"
         onClick=${() => setExpanded(!expanded)}
-        class="w-full flex items-center justify-between p-3 bg-slate-700/30 hover:bg-slate-700/50 transition-colors"
+        class="w-full flex items-center justify-between p-3 bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
       >
         <div class="flex items-center gap-2">
           <${expanded ? ChevronDownIcon : ChevronRightIcon}
@@ -420,7 +420,7 @@ export function RunnerRestrictionsEditor({
 
       ${expanded &&
       html`
-        <div class="p-4 space-y-4 border-t border-slate-600/50">
+        <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
           <fieldset class="fieldset pt-2">
             <legend class="fieldset-legend">Networking</legend>
             <p class="label">
@@ -541,7 +541,7 @@ export function RunnerRestrictionsEditor({
           `}
 
           <!-- Clear button -->
-          <div class="flex justify-end pt-2 border-t border-slate-600/50">
+          <div class="flex justify-end pt-2 border-t border-mitto-border-2/50">
             <button
               type="button"
               onClick=${() => onChange(null)}
@@ -823,7 +823,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
               (p, idx) => html`
                 <div
                   key=${idx}
-                  class="flex items-center gap-2 p-2 bg-slate-800/50 rounded text-sm border border-slate-700/50"
+                  class="flex items-center gap-2 p-2 bg-mitto-surface-2/50 rounded text-sm border border-mitto-border-1/50"
                   title="From prompts file with acps: ${server.name}"
                 >
                   <div class="flex-1 min-w-0">
@@ -2368,11 +2368,11 @@ export function SettingsDialog({
                                     class="list-row p-0"
                                   >
                                   <div
-                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-slate-700/20 rounded-sm border border-slate-600/50 ${isRCFile ? "opacity-80" : ""} group w-full"
+                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
-                                      class="collapse-title flex items-center gap-3 py-3 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-slate-700/30" : ""} transition-colors"
+                                      class="collapse-title flex items-center gap-3 py-3 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
                                       onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
                                     >
                                       ${!isRCFile && html`
@@ -2520,7 +2520,7 @@ export function SettingsDialog({
                             (runner) => html`
                               <div
                                 key=${runner.type}
-                                class="border border-slate-600/50 rounded-md overflow-hidden"
+                                class="border border-mitto-border-2/50 rounded-md overflow-hidden"
                               >
                                 <!-- Runner header (collapsible) -->
                                 <button
@@ -2531,7 +2531,7 @@ export function SettingsDialog({
                                         ? null
                                         : runner.type,
                                     )}
-                                  class="w-full flex items-center justify-between p-3 bg-slate-700/30 hover:bg-slate-700/50 transition-colors"
+                                  class="w-full flex items-center justify-between p-3 bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                                 >
                                   <div class="flex items-center gap-3">
                                     <${expandedRunner === runner.type
@@ -2562,7 +2562,7 @@ export function SettingsDialog({
                                 ${expandedRunner === runner.type &&
                                 html`
                                   <div
-                                    class="p-4 space-y-4 border-t border-slate-600/50"
+                                    class="p-4 space-y-4 border-t border-mitto-border-2/50"
                                   >
                                     <!-- Allow networking toggle -->
                                     <label
@@ -2874,7 +2874,7 @@ export function SettingsDialog({
                                     html`
                                       <!-- Docker-specific settings -->
                                       <div
-                                        class="space-y-2 pt-2 border-t border-slate-600/50"
+                                        class="space-y-2 pt-2 border-t border-mitto-border-2/50"
                                       >
                                         <label
                                           class="text-sm font-medium text-mitto-text-secondary"
@@ -3046,7 +3046,7 @@ export function SettingsDialog({
 
                                     <!-- Reset to defaults button -->
                                     <div
-                                      class="flex justify-end gap-2 pt-2 border-t border-slate-600/50"
+                                      class="flex justify-end gap-2 pt-2 border-t border-mitto-border-2/50"
                                     >
                                       <button
                                         type="button"
@@ -3092,10 +3092,10 @@ export function SettingsDialog({
                             (runner) => html`
                               <div
                                 key=${runner.type}
-                                class="border border-slate-600/30 rounded-md overflow-hidden opacity-50"
+                                class="border border-mitto-border-2/30 rounded-md overflow-hidden opacity-50"
                               >
                                 <div
-                                  class="flex items-center justify-between p-3 bg-slate-700/20"
+                                  class="flex items-center justify-between p-3 bg-mitto-surface-3/20"
                                 >
                                   <div class="flex items-center gap-3">
                                     <${ChevronRightIcon}
@@ -3159,7 +3159,7 @@ export function SettingsDialog({
                         </label>
 
                         <div
-                          class="p-3 bg-slate-800/50 rounded-md border border-mitto-border-1"
+                          class="p-3 bg-mitto-surface-2/50 rounded-md border border-mitto-border-1"
                         >
                           <p class="text-mitto-text-secondary text-sm leading-relaxed">
                             <span class="text-mitto-accent font-medium"

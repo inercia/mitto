@@ -254,7 +254,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                     html`
                       <button
                         onClick=${() => toggleFolder(workingDir)}
-                        class="w-full px-2 py-1 text-left text-xs text-mitto-text-muted hover:text-mitto-text-secondary hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
+                        class="w-full px-2 py-1 text-left text-xs text-mitto-text-muted hover:text-mitto-text-secondary hover:bg-mitto-surface-3/30 rounded transition-colors flex items-center gap-2"
                       >
                         <span class="font-mono"
                           >${isExpanded ? "▼" : "▶"}</span
@@ -272,7 +272,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                         <button
                           key=${ws.working_dir + "|" + ws.acp_server}
                           onClick=${() => onSelect(ws)}
-                          class="w-full p-3 text-left rounded-md bg-slate-700/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
+                          class="w-full p-3 text-left rounded-md bg-mitto-surface-3/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
                             ? "ml-4"
                             : ""}"
                         >

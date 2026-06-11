@@ -132,7 +132,7 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
       title=${title}
     >
       ${isUnset
-        ? html`<span class="text-slate-500 text-xs font-medium">—</span>`
+        ? html`<span class="text-mitto-text-500 text-xs font-medium">—</span>`
         : isEnabled
           ? html`<svg class="w-3 h-3 text-mitto-accent-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
@@ -178,7 +178,7 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
       )}
     </select>
     ${selectedOpt?.description &&
-    html`<p class="mt-1 text-xs text-slate-500">${selectedOpt.description}</p>`}
+    html`<p class="mt-1 text-xs text-mitto-text-500">${selectedOpt.description}</p>`}
   `;
 }
 
@@ -719,7 +719,7 @@ export function SessionPanel({
       "D": "bg-mitto-danger text-mitto-danger-fg",
       "R": "bg-mitto-accent text-mitto-accent-fg",
       "C": "bg-purple-600 text-white",
-      "?": "bg-mitto-surface-3 text-slate-300 ring-1 ring-slate-500",
+      "?": "bg-mitto-surface-3 text-mitto-text-300 ring-1 ring-mitto-border-3",
     };
 
     const handleRefreshChanges = async () => {
@@ -740,7 +740,7 @@ export function SessionPanel({
 
     if (isLoadingChanges && !changesData) {
       return html`
-        <div class="p-4 text-center text-slate-500">
+        <div class="p-4 text-center text-mitto-text-500">
           <span class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"></span>
           <p class="text-sm">Loading changes...</p>
         </div>
@@ -763,7 +763,7 @@ export function SessionPanel({
 
     if (!changesData || !changesData.is_git_repo) {
       return html`
-        <div class="p-4 text-center text-slate-500 text-sm">
+        <div class="p-4 text-center text-mitto-text-500 text-sm">
           <p>Not a git repository</p>
         </div>
       `;
@@ -775,16 +775,16 @@ export function SessionPanel({
       <div class="p-4 space-y-3">
         <!-- Header with branch and refresh -->
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2 text-sm text-slate-400">
+          <div class="flex items-center gap-2 text-sm text-mitto-text-secondary">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M6 3v12M18 9a3 3 0 01-3 3H9m9-3a3 3 0 00-3-3H9m0 0V3" />
             </svg>
             <span class="font-medium">${changesData.branch || "detached"}</span>
-            <span class="text-slate-600">·</span>
+            <span class="text-mitto-text-muted">·</span>
             <span>${files.length} file${files.length !== 1 ? "s" : ""}</span>
           </div>
           <button
-            class="btn btn-ghost btn-square btn-sm text-slate-400 hover:text-slate-200 ${isLoadingChanges ? "animate-spin opacity-40 pointer-events-none" : ""}"
+            class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:text-mitto-text-200 ${isLoadingChanges ? "animate-spin opacity-40 pointer-events-none" : ""}"
             onClick=${handleRefreshChanges}
             title="Refresh changes"
             aria-disabled=${isLoadingChanges ? "true" : "false"}
@@ -797,7 +797,7 @@ export function SessionPanel({
 
         ${files.length === 0
           ? html`
-              <div class="text-center text-slate-500 text-sm py-6">
+              <div class="text-center text-mitto-text-500 text-sm py-6">
                 No uncommitted changes
               </div>
             `
@@ -808,19 +808,19 @@ export function SessionPanel({
                     <a
                       key=${file.path}
                       href="#"
-                      class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700/50 transition-colors cursor-pointer group no-underline"
+                      class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-mitto-surface-3/50 transition-colors cursor-pointer group no-underline"
                       onClick=${(e) => openFileInViewer(file.path, e, file.status)}
                       title=${file.old_path ? file.old_path + " → " + file.path : file.path}
                     >
                       <span
                         class="shrink-0 w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${statusColors[file.status] || "bg-mitto-surface-4 text-mitto-text-strong"}"
                       >${file.status}</span>
-                      <span class="flex-1 text-sm truncate ${file.status === '?' ? 'text-slate-400 italic' : 'text-slate-300'} group-hover:text-slate-100">${file.path}</span>
+                      <span class="flex-1 text-sm truncate ${file.status === '?' ? 'text-mitto-text-secondary italic' : 'text-mitto-text-300'} group-hover:text-mitto-text-strong">${file.path}</span>
                       ${(file.additions > 0 || file.deletions > 0) &&
                       html`
                         <span class="shrink-0 text-xs font-mono whitespace-nowrap">
                           ${file.additions > 0 && html`<span class="text-mitto-success">+${file.additions}</span>`}
-                          ${file.additions > 0 && file.deletions > 0 && html`<span class="text-slate-600">/</span>`}
+                          ${file.additions > 0 && file.deletions > 0 && html`<span class="text-mitto-text-muted">/</span>`}
                           ${file.deletions > 0 && html`<span class="text-mitto-danger">-${file.deletions}</span>`}
                         </span>
                       `}
@@ -841,7 +841,7 @@ export function SessionPanel({
       <div class="p-4 space-y-6">
         <!-- Title -->
         <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">Title</label>
+          <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Title</label>
           ${isEditingTitle
             ? html`
                 <div class="flex items-center gap-2">
@@ -877,28 +877,28 @@ export function SessionPanel({
           ${isStreaming
             ? html`<span class="badge badge-sm gap-1.5 bg-mitto-accent-500/20 text-mitto-accent"><span class="w-2 h-2 bg-mitto-accent-400 rounded-full streaming-indicator"></span>Streaming</span>`
             : sessionInfo?.archived
-              ? html`<span class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-slate-400"><span class="w-2 h-2 bg-slate-500 rounded-full"></span>Archived</span>`
+              ? html`<span class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary"><span class="w-2 h-2 bg-slate-500 rounded-full"></span>Archived</span>`
               : sessionInfo?.status === "active"
                 ? html`<span class="badge badge-sm gap-1.5 bg-green-500/20 text-mitto-success"><span class="w-2 h-2 bg-green-400 rounded-full"></span>Active</span>`
-                : html`<span class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-slate-400">Stored</span>`}
+                : html`<span class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary">Stored</span>`}
           ${sessionInfo?.acp_server && html`<span class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent" title="ACP Server">${sessionInfo.acp_server}</span>`}
           ${sessionInfo?.runner_type && html`<span class="badge badge-sm ${sessionInfo.runner_restricted ? "bg-yellow-500/20 text-mitto-warning" : "bg-purple-500/20 text-purple-400"}" title="${sessionInfo.runner_restricted ? "Restricted execution mode" : "Sandbox type"}">${sessionInfo.runner_type}</span>`}
         </div>
 
         <!-- Statistics Section -->
         <div>
-          <label class="block text-sm font-medium text-slate-400 mb-1">Statistics</label>
-          <div class="text-xs text-slate-400 space-y-0.5">
+          <label class="block text-sm font-medium text-mitto-text-secondary mb-1">Statistics</label>
+          <div class="text-xs text-mitto-text-secondary space-y-0.5">
             ${sessionInfo?.messageCount !== undefined && html`
               <div class="flex justify-between">
                 <span>Messages</span>
-                <span class="text-slate-300">${sessionInfo.messageCount}</span>
+                <span class="text-mitto-text-300">${sessionInfo.messageCount}</span>
               </div>
             `}
             ${sessionInfo?.created_at && html`
               <div class="flex justify-between">
                 <span>Created</span>
-                <span class="text-slate-300" title=${new Date(sessionInfo.created_at).toLocaleString()}>
+                <span class="text-mitto-text-300" title=${new Date(sessionInfo.created_at).toLocaleString()}>
                   ${formatTimeAgo(sessionInfo.created_at)}
                 </span>
               </div>
@@ -911,23 +911,23 @@ export function SessionPanel({
                   : "No processors applied yet"}
               >
                 <span>Processors</span>
-                <span class="text-slate-300">${sessionInfo.processor_count}${sessionInfo?.processor_activations > 0 ? ` (${sessionInfo.processor_activations} runs)` : ""}</span>
+                <span class="text-mitto-text-300">${sessionInfo.processor_count}${sessionInfo?.processor_activations > 0 ? ` (${sessionInfo.processor_activations} runs)` : ""}</span>
               </div>
             `}
           </div>
 
           ${sessionInfo?.usage && html`
-            <div class="mt-2 pt-2 border-t border-slate-700/50">
+            <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
               ${(() => {
                 const contextTokens = sessionInfo.usage.input_tokens;
                 const contextWindow = getContextWindowSize(currentModelId);
                 const pct = contextWindow ? Math.min((contextTokens / contextWindow) * 100, 100) : null;
                 const barColor = pct === null ? "bg-mitto-accent" : pct > 80 ? "bg-mitto-danger" : pct > 50 ? "bg-yellow-500" : "bg-mitto-success";
-                const textColor = pct === null ? "text-slate-300" : pct > 80 ? "text-mitto-danger" : pct > 50 ? "text-mitto-warning" : "text-mitto-success";
+                const textColor = pct === null ? "text-mitto-text-300" : pct > 80 ? "text-mitto-danger" : pct > 50 ? "text-mitto-warning" : "text-mitto-success";
                 return html`
                   <div class="mb-2">
                     <div class="flex justify-between items-baseline mb-1">
-                      <span class="text-xs font-medium text-slate-400">Context</span>
+                      <span class="text-xs font-medium text-mitto-text-secondary">Context</span>
                       <span class="text-xs ${textColor}">
                         ${formatTokenCount(contextTokens)}${contextWindow ? html` / ${formatTokenCount(contextWindow)}` : ""}
                       </span>
@@ -935,18 +935,18 @@ export function SessionPanel({
                     <div class="w-full h-1.5 bg-mitto-surface-3 rounded-full overflow-hidden">
                       <div class="h-full ${barColor} rounded-full transition-all duration-300" style="width: ${pct !== null ? pct : 0}%" />
                     </div>
-                    ${pct !== null && html`<div class="text-right mt-0.5"><span class="text-[10px] text-slate-500">${pct.toFixed(0)}%</span></div>`}
+                    ${pct !== null && html`<div class="text-right mt-0.5"><span class="text-[10px] text-mitto-text-500">${pct.toFixed(0)}%</span></div>`}
                   </div>
                 `;
               })()}
-              <label class="block text-xs font-medium text-slate-500 mb-1">Last Turn Tokens</label>
-              <div class="text-xs text-slate-400 space-y-0.5">
-                <div class="flex justify-between"><span>Input</span><span class="text-slate-300">${formatTokenCount(sessionInfo.usage.input_tokens)}</span></div>
-                <div class="flex justify-between"><span>Output</span><span class="text-slate-300">${formatTokenCount(sessionInfo.usage.output_tokens)}</span></div>
-                <div class="flex justify-between"><span>Total</span><span class="text-slate-300 font-medium">${formatTokenCount(sessionInfo.usage.total_tokens)}</span></div>
-                ${sessionInfo.usage.cached_read_tokens !== undefined && html`<div class="flex justify-between"><span>Cache Read</span><span class="text-slate-300">${formatTokenCount(sessionInfo.usage.cached_read_tokens)}</span></div>`}
-                ${sessionInfo.usage.cached_write_tokens !== undefined && html`<div class="flex justify-between"><span>Cache Write</span><span class="text-slate-300">${formatTokenCount(sessionInfo.usage.cached_write_tokens)}</span></div>`}
-                ${sessionInfo.usage.thought_tokens !== undefined && html`<div class="flex justify-between"><span>Thinking</span><span class="text-slate-300">${formatTokenCount(sessionInfo.usage.thought_tokens)}</span></div>`}
+              <label class="block text-xs font-medium text-mitto-text-500 mb-1">Last Turn Tokens</label>
+              <div class="text-xs text-mitto-text-secondary space-y-0.5">
+                <div class="flex justify-between"><span>Input</span><span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.input_tokens)}</span></div>
+                <div class="flex justify-between"><span>Output</span><span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.output_tokens)}</span></div>
+                <div class="flex justify-between"><span>Total</span><span class="text-mitto-text-300 font-medium">${formatTokenCount(sessionInfo.usage.total_tokens)}</span></div>
+                ${sessionInfo.usage.cached_read_tokens !== undefined && html`<div class="flex justify-between"><span>Cache Read</span><span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.cached_read_tokens)}</span></div>`}
+                ${sessionInfo.usage.cached_write_tokens !== undefined && html`<div class="flex justify-between"><span>Cache Write</span><span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.cached_write_tokens)}</span></div>`}
+                ${sessionInfo.usage.thought_tokens !== undefined && html`<div class="flex justify-between"><span>Thinking</span><span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.thought_tokens)}</span></div>`}
               </div>
             </div>
           `}
@@ -954,9 +954,9 @@ export function SessionPanel({
 
         <!-- Workspace Section -->
         <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">Workspace</label>
-          <div class="flex items-center gap-2 text-sm text-slate-300">
-            <${FolderIcon} className="w-4 h-4 shrink-0 text-slate-500" />
+          <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Workspace</label>
+          <div class="flex items-center gap-2 text-sm text-mitto-text-300">
+            <${FolderIcon} className="w-4 h-4 shrink-0 text-mitto-text-500" />
             ${canRevealInFinder() && sessionInfo?.working_dir
               ? html`<button type="button" class="truncate text-left hover:text-mitto-accent hover:underline transition-colors cursor-pointer" title="Open in Finder: ${sessionInfo.working_dir}" onClick=${() => revealInFinder(sessionInfo.working_dir)}>${sessionInfo.working_dir}</button>`
               : html`<span class="truncate" title=${sessionInfo?.working_dir || ""}>${sessionInfo?.working_dir || "Unknown"}</span>`}
@@ -966,7 +966,7 @@ export function SessionPanel({
         <!-- Beads Issue Section -->
         ${sessionInfo?.beads_issue && html`
           <div>
-            <label class="block text-sm font-medium text-slate-400 mb-2">Linked beads issue</label>
+            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Linked beads issue</label>
             <div class="flex items-center gap-2">
               ${onOpenBeadsIssue
                 ? html`<button
@@ -983,16 +983,16 @@ export function SessionPanel({
         <!-- Periodic Prompts Section -->
         ${periodicConfig?.enabled && html`
           <div>
-            <label class="block text-sm font-medium text-slate-400 mb-2">Periodic Prompts</label>
-            <div class="flex items-center gap-2 text-sm text-slate-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Periodic Prompts</label>
+            <div class="flex items-center gap-2 text-sm text-mitto-text-300">
               <${PeriodicFilledIcon} className="w-4 h-4 shrink-0 text-mitto-accent" />
               <span>${formatFrequency(periodicConfig.frequency)}</span>
             </div>
-            ${periodicConfig.last_sent_at && html`<p class="mt-1 text-xs text-slate-500">Last run: ${new Date(periodicConfig.last_sent_at).toLocaleString()}</p>`}
+            ${periodicConfig.last_sent_at && html`<p class="mt-1 text-xs text-mitto-text-500">Last run: ${new Date(periodicConfig.last_sent_at).toLocaleString()}</p>`}
             ${periodicConfig.next_scheduled_at && html`
-              <p class="mt-1 text-xs text-slate-500">
+              <p class="mt-1 text-xs text-mitto-text-500">
                 Next run: ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
-                <span class="text-slate-400 ml-1">(${formatRelativeTime(periodicConfig.next_scheduled_at)})</span>
+                <span class="text-mitto-text-secondary ml-1">(${formatRelativeTime(periodicConfig.next_scheduled_at)})</span>
               </p>
             `}
           </div>
@@ -1001,11 +1001,11 @@ export function SessionPanel({
         <!-- User Data Section -->
         ${(() => {
           const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
-          if (isLoadingUserData) return html`<div class="text-sm text-slate-500">Loading user data...</div>`;
+          if (isLoadingUserData) return html`<div class="text-sm text-mitto-text-500">Loading user data...</div>`;
           if (!hasSchema) return null;
           return html`
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-2">User Data</label>
+              <label class="block text-sm font-medium text-mitto-text-secondary mb-2">User Data</label>
               ${userDataError && html`<div role="alert" class="alert alert-error alert-soft text-sm mb-2">${userDataError}</div>`}
               <div class="space-y-3">
                 ${userDataSchema.fields.map((field) => {
@@ -1013,7 +1013,7 @@ export function SessionPanel({
                   const isEditing = editingAttribute === field.name;
                   return html`
                     <div key=${field.name}>
-                      <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>${field.name}</label>
+                      <label class="block text-xs text-mitto-text-500 mb-1" title=${field.description || ""}>${field.name}</label>
                       ${isEditing
                         ? html`
                             <div class="flex items-center gap-2">
@@ -1073,7 +1073,7 @@ export function SessionPanel({
                                   })()
                                 : html`
                                     <span
-                                      class="flex-1 text-sm truncate ${value ? "text-slate-300" : "text-slate-600 italic"} ${field.type === "url" && value ? "cursor-pointer hover:text-mitto-accent" : ""}"
+                                      class="flex-1 text-sm truncate ${value ? "text-mitto-text-300" : "text-mitto-text-muted italic"} ${field.type === "url" && value ? "cursor-pointer hover:text-mitto-accent" : ""}"
                                       onClick=${() => {
                                         if (field.type === "url" && value) window.open(value, "_blank", "noopener,noreferrer");
                                       }}
@@ -1110,7 +1110,7 @@ export function SessionPanel({
         <!-- Session Config Options (Mode, Model) -->
         ${configOptions?.length > 0 && configOptions.map((configOption) => html`
           <div key=${configOption.id}>
-            <label class="block text-sm font-medium text-slate-400 mb-2">${configOption.name}</label>
+            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">${configOption.name}</label>
             ${configOption.type === "select" && html`
               <${ConfigOptionSelect} configOption=${configOption} onSetConfigOption=${onSetConfigOption} isStreaming=${isStreaming} />
             `}
@@ -1127,13 +1127,13 @@ export function SessionPanel({
                   title=${isStreaming ? `Cannot change ${configOption.name.toLowerCase()} while streaming` : configOption.description || `Toggle ${configOption.name.toLowerCase()}`}
                 />
               </div>
-              ${configOption.description && html`<p class="mt-1 text-xs text-slate-500">${configOption.description}</p>`}
+              ${configOption.description && html`<p class="mt-1 text-xs text-mitto-text-500">${configOption.description}</p>`}
             `}
             ${configOption.type !== "select" && configOption.type !== "toggle" && html`
-              <div class="w-full bg-slate-700/50 text-slate-400 rounded-lg px-3 py-2 text-sm border border-mitto-border-2" title=${`Unsupported config type: ${configOption.type}`}>
+              <div class="w-full bg-mitto-surface-3/50 text-mitto-text-secondary rounded-lg px-3 py-2 text-sm border border-mitto-border-2" title=${`Unsupported config type: ${configOption.type}`}>
                 ${configOption.current_value || "(not set)"}
               </div>
-              ${configOption.description && html`<p class="mt-1 text-xs text-slate-500">${configOption.description}</p>`}
+              ${configOption.description && html`<p class="mt-1 text-xs text-mitto-text-500">${configOption.description}</p>`}
             `}
           </div>
         `)}
@@ -1141,7 +1141,7 @@ export function SessionPanel({
         <!-- Callback URL Section (only for periodic conversations) -->
         ${periodicConfig && html`
           <div>
-            <label class="block text-sm font-medium text-slate-400 mb-2">Callback URL</label>
+            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Callback URL</label>
             ${periodicConfig.enabled ? html`
               ${callbackConfig?.callback_url ? html`
                 <div class="flex items-center gap-1.5">
@@ -1158,13 +1158,13 @@ export function SessionPanel({
               `}
             ` : html`
               ${callbackConfig?.callback_url ? html`
-                <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
+                <p class="text-xs text-mitto-text-muted mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
                 <div class="flex items-center gap-1.5">
                   <button onClick=${handleCopyCallbackUrl} class="btn btn-xs btn-soft">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
                   <button onClick=${handleRevokeCallback} class="btn btn-xs btn-soft btn-error">✕ Revoke</button>
                 </div>
               ` : html`
-                <p class="text-xs text-slate-500">No callback URL configured.</p>
+                <p class="text-xs text-mitto-text-500">No callback URL configured.</p>
               `}
             `}
           </div>
@@ -1173,19 +1173,19 @@ export function SessionPanel({
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools && mcpTools.length > 0 && html`
           <div>
-            <button type="button" class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors" style="background: transparent; border: none; padding: 0; cursor: pointer;" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
+            <button type="button" class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors" style="background: transparent; border: none; padding: 0; cursor: pointer;" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
               <span class="transition-transform ${isMcpToolsExpanded ? "" : "-rotate-90"}">
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
               <span>MCP Tools</span>
-              <span class="text-xs text-slate-500">(${mcpTools.length})</span>
+              <span class="text-xs text-mitto-text-500">(${mcpTools.length})</span>
             </button>
             ${isMcpToolsExpanded && html`
               <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
                 ${mcpTools.map((tool) => html`
-                  <div key=${tool.name} class="text-xs text-slate-300 bg-slate-700/50 rounded px-2 py-1" title=${tool.description || tool.name}>
+                  <div key=${tool.name} class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1" title=${tool.description || tool.name}>
                     <span class="font-mono">${tool.name}</span>
-                    ${tool.description && html`<p class="text-slate-500 mt-0.5 truncate">${tool.description}</p>`}
+                    ${tool.description && html`<p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>`}
                   </div>
                 `)}
               </div>
@@ -1210,7 +1210,7 @@ export function SessionPanel({
       <div class="pt-4">
         <button
           type="button"
-          class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors"
+          class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
           style="background: transparent; border: none; padding: 0; cursor: pointer;"
           onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
         >
@@ -1223,7 +1223,7 @@ export function SessionPanel({
         ${isAdvancedExpanded && html`
           <div class="mt-3 space-y-3">
             ${isLoadingFlags
-              ? html`<div class="text-sm text-slate-500">Loading...</div>`
+              ? html`<div class="text-sm text-mitto-text-500">Loading...</div>`
               : html`
                   ${flagsError && html`<div role="alert" class="alert alert-error alert-soft text-sm">${flagsError}</div>`}
                   ${availableFlags.map((flag) => {
@@ -1238,12 +1238,12 @@ export function SessionPanel({
                         </div>
                         <div class="flex-1 min-w-0">
                           <label
-                            class="block text-sm text-slate-300 cursor-pointer"
+                            class="block text-sm text-mitto-text-300 cursor-pointer"
                             onClick=${() => !isSaving && handleFlagChange(flag.name, currentValue === true ? false : true)}
                           >
                             ${flag.label}
                           </label>
-                          ${flag.description && html`<p class="text-xs text-slate-500 mt-0.5">${flag.description}</p>`}
+                          ${flag.description && html`<p class="text-xs text-mitto-text-500 mt-0.5">${flag.description}</p>`}
                         </div>
                       </div>
                     `;

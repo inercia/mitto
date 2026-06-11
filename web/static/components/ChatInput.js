@@ -1859,7 +1859,7 @@ export function ChatInput({
     >
       <!-- Resize handle for ChatInput height -->
       <div
-        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-slate-600/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-slate-600/30' : ''}"
+        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-mitto-surface-4/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-mitto-surface-4/30' : ''}"
         ...${textareaHandleProps}
         title="Drag to resize input area"
       >
@@ -1903,7 +1903,7 @@ export function ChatInput({
                         >
                       </div>
                       <p
-                        class="text-sm font-mono bg-slate-800/50 p-2 rounded mb-3 break-all"
+                        class="text-sm font-mono bg-mitto-surface-2/50 p-2 rounded mb-3 break-all"
                       >
                         ${activeUIPrompt.title}
                       </p>
@@ -1950,8 +1950,8 @@ export function ChatInput({
                     >
                       <!-- Resize handle at top edge -->
                       <div
-                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
-                          ? "bg-slate-600/50"
+                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
+                          ? "bg-mitto-surface-4/50"
                           : ""}"
                         ...${promptHandleProps}
                         title="Drag to resize"
@@ -2036,8 +2036,8 @@ ${activeUIPrompt.text || ""}</textarea
                       >
                         <!-- Resize handle at top edge -->
                         <div
-                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
-                            ? "bg-slate-600/50"
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
+                            ? "bg-mitto-surface-4/50"
                             : ""}"
                           ...${promptHandleProps}
                           title="Drag to resize"
@@ -2132,8 +2132,8 @@ ${activeUIPrompt.text || ""}</textarea
                       >
                         <!-- Resize handle at top edge -->
                         <div
-                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
-                            ? "bg-slate-600/50"
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
+                            ? "bg-mitto-surface-4/50"
                             : ""}"
                           ...${promptHandleProps}
                           title="Drag to resize"
@@ -2159,13 +2159,13 @@ ${activeUIPrompt.text || ""}</textarea
                                 type="button"
                                 onClick=${() =>
                                   handleUIPromptAnswer(opt.id, opt.label)}
-                                class="w-full text-left px-4 py-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3 group"
+                                class="w-full text-left px-4 py-3 hover:bg-mitto-surface-3/50 transition-colors flex items-start gap-3 group"
                               >
                                 <span
                                   class="shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
                                   0
                                     ? "bg-mitto-accent text-mitto-accent-fg"
-                                    : "bg-slate-600/80 text-mitto-text-secondary group-hover:bg-slate-500"} transition-colors"
+                                    : "bg-mitto-surface-4/80 text-mitto-text-secondary group-hover:bg-slate-500"} transition-colors"
                                 >
                                   ${idx + 1}
                                 </span>
@@ -2507,7 +2507,7 @@ ${activeUIPrompt.text || ""}</textarea
                           : html`<div
                               class="w-16 h-16 rounded-lg bg-mitto-surface-3 border border-mitto-border-2 flex items-center justify-center"
                             >
-                              <svg class="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <svg class="w-6 h-6 text-mitto-text-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                               </svg>
                             </div>`}
@@ -2777,7 +2777,7 @@ ${activeUIPrompt.text || ""}</textarea
                             autocorrect="off"
                             autocapitalize="off"
                             spellcheck=${false}
-                            class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent placeholder-gray-500"
+                            class="w-full pl-4 pr-2.5 py-1.5 bg-mitto-surface-3/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent placeholder-gray-500"
                           />
                         </div>
                         <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
@@ -2895,7 +2895,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 (groupName) => html`
                                   <div key=${"group-" + groupName}>
                                     <div
-                                      class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30"
+                                      class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30"
                                     >
                                       ${groupName}
                                     </div>
@@ -2909,7 +2909,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 ? html`
                                     <div key="group-other">
                                       <div
-                                        class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-slate-700/30"
+                                        class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30"
                                       >
                                         Other
                                       </div>

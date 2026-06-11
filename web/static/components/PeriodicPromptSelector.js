@@ -112,7 +112,7 @@ export function PeriodicPromptSelector({
   );
 
   // Panel classes - matches PeriodicFrequencyPanel style
-  const panelClasses = `periodic-prompt-selector w-full bg-slate-100 dark:bg-slate-700/95 backdrop-blur-sm border border-slate-300 dark:border-slate-600 rounded-lg overflow-visible transition-all duration-300 ease-out ${
+  const panelClasses = `periodic-prompt-selector w-full bg-mitto-surface-hover dark:bg-mitto-surface-3/95 backdrop-blur-sm border border-mitto-border dark:border-mitto-border-2 rounded-lg overflow-visible transition-all duration-300 ease-out ${
     isOpen
       ? "opacity-100 mb-3"
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
@@ -158,22 +158,22 @@ export function PeriodicPromptSelector({
     >
       <div class="h-full px-4 flex items-center gap-3 text-sm">
         <!-- Label -->
-        <span class="text-slate-600 dark:text-mitto-text-300 shrink-0 font-medium">Prompt:</span>
+        <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0 font-medium">Prompt:</span>
 
         <!-- Dropdown trigger button -->
         <button
           type="button"
           onClick=${handleToggle}
           disabled=${disabled}
-          class="flex-1 h-8 px-3 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors ${
+          class="flex-1 h-8 px-3 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors ${
             disabled
               ? "opacity-50 cursor-not-allowed"
               : "cursor-pointer hover:border-mitto-accent-500/50"
           }"
           data-testid="periodic-prompt-selector-button"
         >
-          <span class="truncate flex-1 ${selectedPromptName ? "text-slate-900 dark:text-white" : "text-slate-400 dark:text-mitto-text-500"}">${displayName}</span>
-          <svg class="w-4 h-4 shrink-0 text-slate-400 transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <span class="truncate flex-1 ${selectedPromptName ? "text-mitto-text-strong dark:text-white" : "text-mitto-text-secondary dark:text-mitto-text-500"}">${displayName}</span>
+          <svg class="w-4 h-4 shrink-0 text-mitto-text-secondary transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
         </button>

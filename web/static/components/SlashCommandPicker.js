@@ -93,7 +93,7 @@ export function SlashCommandPicker({
   const panelHeight = headerHeight + visibleItems * itemHeight;
 
   // Panel classes - positioned as floating overlay above the input
-  const pickerClasses = `slash-command-picker absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 transition-all duration-200 ease-out ${
+  const pickerClasses = `slash-command-picker absolute bottom-full left-0 right-0 w-full bg-mitto-surface-3/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 transition-all duration-200 ease-out ${
     isOpen && filteredCommands.length > 0
       ? "opacity-100"
       : "opacity-0 pointer-events-none border-0"
@@ -135,7 +135,7 @@ export function SlashCommandPicker({
                 class="slash-picker-item flex items-center gap-3 px-3 py-2.5 rounded-none transition-colors ${index ===
                 selectedIndex
                   ? "bg-mitto-accent-600/40"
-                  : "hover:bg-slate-600/50"}"
+                  : "hover:bg-mitto-surface-4/50"}"
                 onClick=${() => handleSelect(cmd)}
                 onMouseEnter=${() => handleMouseEnter(index)}
               >

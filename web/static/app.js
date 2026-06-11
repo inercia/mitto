@@ -1802,7 +1802,7 @@ function App() {
             <!-- Unified side panel toggle -->
             <button
               onClick=${handleToggleSidePanel}
-              class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-slate-400 hover:text-slate-200"}"
+              class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-mitto-text-secondary hover:text-mitto-text-200"}"
               title="Session details"
             >
               <${SidePanelIcon} className="w-4 h-4" />
@@ -1884,7 +1884,7 @@ function App() {
         html`
           <div class="flex justify-center mb-3">
             <div
-              class="text-xs text-mitto-text-muted bg-slate-800/50 px-3 py-1 rounded-full"
+              class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
             >
               ${getArchiveReasonText(
                 sessionInfo.archive_reason,
