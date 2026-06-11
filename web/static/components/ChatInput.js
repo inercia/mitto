@@ -2207,7 +2207,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
                                 "Type a custom response..."}
-                                class="w-full bg-transparent text-sm text-mitto-text-secondary placeholder-gray-500 outline-none"
+                                class="w-full bg-transparent text-sm text-mitto-text-secondary outline-none"
                               />
                             </div>
                           `}
@@ -2777,7 +2777,7 @@ ${activeUIPrompt.text || ""}</textarea
                             autocorrect="off"
                             autocapitalize="off"
                             spellcheck=${false}
-                            class="w-full pl-4 pr-2.5 py-1.5 bg-mitto-surface-3/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent placeholder-gray-500"
+                            class="w-full pl-4 pr-2.5 py-1.5 bg-mitto-surface-3/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent"
                           />
                         </div>
                         <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">

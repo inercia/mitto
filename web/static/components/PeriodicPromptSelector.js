@@ -221,7 +221,7 @@ export function PeriodicPromptSelector({
               value=${filterText}
               onInput=${(e) => setFilterText(e.target.value)}
               placeholder="Search prompts..."
-              class="w-full h-8 px-3 bg-mitto-surface-1 border border-mitto-border-2 rounded text-sm text-mitto-text-strong placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+              class="w-full h-8 px-3 bg-mitto-surface-1 border border-mitto-border-2 rounded text-sm text-mitto-text-strong focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
               data-testid="periodic-prompt-selector-search"
             />
           </div>

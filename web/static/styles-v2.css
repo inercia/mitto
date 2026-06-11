@@ -488,9 +488,6 @@ a:hover {
 }
 
 /* Light theme: Placeholder text */
-.v2-theme:not(.dark) .placeholder-gray-500::placeholder {
-  color: #a1a1aa !important;
-}
 .v2-theme:not(.dark) textarea::placeholder {
   color: #a1a1aa !important;
 }
@@ -546,9 +543,6 @@ a:hover {
 }
 
 /* Dark theme: Placeholder text */
-.v2-theme.dark .placeholder-gray-500::placeholder {
-  color: #9ca3af !important;
-}
 .v2-theme.dark textarea::placeholder {
   color: #9ca3af !important;
 }

@@ -3107,7 +3107,7 @@ export function SettingsDialog({
                                       >
                                         ${runner.label}
                                       </div>
-                                      <div class="text-xs text-gray-600">
+                                      <div class="text-xs text-mitto-text-muted">
                                         ${runner.warning ||
                                         "Not supported on this platform"}
                                       </div>
@@ -3765,7 +3765,7 @@ export function SettingsDialog({
                                 class="input input-sm flex-1 font-mono"
                               />
                             </div>
-                            <p class="text-xs text-gray-600 mt-1">
+                            <p class="text-xs text-mitto-text-muted mt-1">
                               If set, Mitto monitors this URL and restarts
                               hooks if unreachable.
                             </p>

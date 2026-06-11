@@ -119,7 +119,7 @@ export function MessageList({
                           </p>
                           ${workspaces.length > 1
                             ? html`
-                                <p class="text-sm text-gray-600 mt-3">
+                                <p class="text-sm text-mitto-text-muted mt-3">
                                   You'll be able to choose which workspace
                                   to use
                                 </p>

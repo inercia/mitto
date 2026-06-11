@@ -1277,7 +1277,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             <${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted shrink-0" />
                             <${FolderIcon} className="w-4 h-4 text-mitto-text-muted shrink-0" />
                             <span class="text-sm font-medium truncate flex-1" title=${wsGroup[0]?.working_dir || "No folder selected"}>${displayName}</span>
-                            <span class="text-xs text-gray-600">${wsGroup.length}</span>
+                            <span class="text-xs text-mitto-text-muted">${wsGroup.length}</span>
                           </div>
                           <!-- Workspace children -->
                           <div class="ml-4 pl-3 border-l border-mitto-border mt-1">
@@ -2095,7 +2095,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           value=${editAcpCommandOverride}
                           onInput=${(e) => setEditAcpCommandOverride(e.target.value)}
                           placeholder=${(() => { const s = acpServers.find((s) => s.name === editAcpServer); return s ? s.command : ""; })()}
-                          class="input input-sm w-full placeholder:text-gray-600"
+                          class="input input-sm w-full placeholder:text-mitto-text-muted"
                           style="height: 38px; box-sizing: border-box"
                         />
                         <p class="text-xs text-mitto-text-muted mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
