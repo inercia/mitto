@@ -991,7 +991,7 @@ a:hover {
 .ui-form-content input[type="time"]:focus,
 .ui-form-content select:focus,
 .ui-form-content textarea:focus {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid var(--mitto-accent);
   outline-offset: -1px;
 }
 .ui-form-content input[type="checkbox"],
