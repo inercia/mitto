@@ -1245,7 +1245,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             <${FolderIcon} className="w-5 h-5 opacity-70" />
             Workspaces
           </h3>
-          <button onClick=${handleClose} class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors">
+          <button onClick=${handleClose} class="btn btn-ghost btn-square btn-sm">
             <${CloseIcon} className="w-4 h-4" />
           </button>
         </div>
@@ -1312,32 +1312,32 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             <div class="flex items-center justify-end gap-1 px-3 py-2 border-t border-mitto-border">
               <button
                 onClick=${addWorkspace}
-                disabled=${acpServers.length === 0 || isNewFolderIncomplete}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                aria-disabled=${(acpServers.length === 0 || isNewFolderIncomplete) ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm ${(acpServers.length === 0 || isNewFolderIncomplete) ? "opacity-40 pointer-events-none" : ""}"
                 title="Add folder"
               >
                 <${FolderIcon} className="w-4 h-4" />
               </button>
               <button
                 onClick=${() => selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
-                disabled=${!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-danger hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                aria-disabled=${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm ${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "opacity-40 pointer-events-none" : ""}"
                 title="Delete selected ACP server"
               >
                 <${TrashIcon} className="w-4 h-4" />
               </button>
               <button
                 onClick=${() => selectedWorkspaceKey && duplicateWorkspace(selectedWorkspaceKey)}
-                disabled=${!selectedWorkspaceKey}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                aria-disabled=${!selectedWorkspaceKey ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm ${!selectedWorkspaceKey ? "opacity-40 pointer-events-none" : ""}"
                 title="Duplicate selected workspace"
               >
                 <${DuplicateIcon} className="w-4 h-4" />
               </button>
               <button
                 onClick=${addServerToFolder}
-                disabled=${!selectedFolder || !folderCanAddServer}
-                class="p-1.5 rounded-lg transition-colors hover:bg-mitto-accent-hover hover:text-mitto-text-strong text-mitto-text-muted disabled:opacity-30 disabled:cursor-not-allowed"
+                aria-disabled=${(!selectedFolder || !folderCanAddServer) ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm ${(!selectedFolder || !folderCanAddServer) ? "opacity-40 pointer-events-none" : ""}"
                 title="Add ACP server to folder"
               >
                 <${ServerIcon} className="w-4 h-4" />
@@ -1413,7 +1413,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     ${hasNativeFolderPicker() && html`
                                       <button
                                         onClick=${async () => { const p = await pickFolder(); if (p) updateNewFolderPath(p); }}
-                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-mitto-text-strong transition-colors"
+                                        class="btn btn-ghost btn-square btn-sm"
                                         title="Browse"
                                         style="height: 38px; box-sizing: border-box"
                                       ><${FolderIcon} className="w-4 h-4" /></button>
@@ -1520,7 +1520,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               </div>
                               <button
                                 onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
-                                class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-text-secondary hover:text-mitto-text-strong bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                                class="btn btn-ghost btn-xs gap-1"
                                 title="Add Field"
                               >
                                 <${PlusIcon} className="w-3.5 h-3.5" />
@@ -1571,7 +1571,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <div class="shrink-0 pt-4">
                                       <button
                                         onClick=${() => setEditUserDataFields(prev => prev.filter((_, idx) => idx !== i))}
-                                        class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-mitto-surface-hover rounded transition-colors"
+                                        class="btn btn-ghost btn-square btn-xs"
                                         title="Remove field"
                                       >
                                         <${TrashIcon} className="w-3.5 h-3.5" />
@@ -1688,9 +1688,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             style="height: 38px; box-sizing: border-box"
                                           />
                                           <button
-                                            onClick=${() => unsetBeadsConfigKey(k)}
-                                            disabled=${beadsConfigSaving}
-                                            class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-mitto-danger transition-colors disabled:opacity-50"
+                                            onClick=${() => { if (beadsConfigSaving) return; unsetBeadsConfigKey(k); }}
+                                            aria-disabled=${beadsConfigSaving ? "true" : "false"}
+                                            class="btn btn-ghost btn-square btn-sm ${beadsConfigSaving ? "opacity-40 pointer-events-none" : ""}"
                                             title="Delete this key"
                                             style="height: 38px; box-sizing: border-box"
                                           ><${TrashIcon} className="w-4 h-4" /></button>
@@ -1719,12 +1719,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         onClick=${async () => {
                                           const key = newBeadsKey.trim();
                                           if (!key) return;
+                                          if (beadsConfigSaving) return;
                                           await setBeadsConfigKey(key, newBeadsValue);
                                           setNewBeadsKey("");
                                           setNewBeadsValue("");
                                         }}
-                                        disabled=${beadsConfigSaving || !newBeadsKey.trim()}
-                                        class="px-2 py-1.5 bg-mitto-input border border-mitto-border rounded-lg text-mitto-text-muted hover:text-mitto-accent transition-colors disabled:opacity-50"
+                                        aria-disabled=${(beadsConfigSaving || !newBeadsKey.trim()) ? "true" : "false"}
+                                        class="btn btn-ghost btn-square btn-sm ${(beadsConfigSaving || !newBeadsKey.trim()) ? "opacity-40 pointer-events-none" : ""}"
                                         title="Add key"
                                         style="height: 38px; box-sizing: border-box"
                                       ><${PlusIcon} className="w-4 h-4" /></button>
@@ -1760,7 +1761,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             </p>
                             <button
                               onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${showAddPrompt ? 'bg-mitto-surface-3' : ''}"
+                              class="btn btn-ghost btn-square btn-sm ${showAddPrompt ? 'btn-active' : ''}"
                               title="Add Prompt"
                             >
                               <${PlusIcon} className="w-5 h-5" />
@@ -1805,13 +1806,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               </div>
                               <div class="flex justify-end gap-2">
                                 <button onClick=${() => { setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup(""); }}
-                                  class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">Cancel</button>
+                                  class="btn btn-ghost btn-sm">Cancel</button>
                                 <button onClick=${async () => {
                                     await saveWorkspacePrompt({ name: newPromptName.trim(), prompt: newPromptText.trim(), backgroundColor: newPromptColor || undefined, group: newPromptGroup.trim() || undefined, enabled: true });
                                     setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup("");
                                   }}
                                   disabled=${!newPromptName.trim() || !newPromptText.trim() || promptSaving}
-                                  class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50">
+                                  class="btn btn-primary btn-sm">
                                   ${promptSaving ? 'Saving...' : 'Add Prompt'}
                                 </button>
                               </div>
@@ -1862,12 +1863,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                     setEditingPromptIndex(idx);
                                                   }
                                                 }}
-                                                class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors" title=${isBuiltin ? "View" : "Edit"}>
+                                                class="btn btn-ghost btn-square btn-xs" title=${isBuiltin ? "View" : "Edit"}>
                                                 <${EditIcon} className="w-4 h-4 text-mitto-text-muted" />
                                               </button>
                                               ${!isBuiltin && html`
                                                 <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
-                                                  class="p-1.5 hover:bg-red-500/20 rounded transition-colors" title="Delete">
+                                                  class="btn btn-ghost btn-square btn-xs" title="Delete">
                                                   <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                                 </button>
                                               `}
@@ -1919,7 +1920,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                               `}
                                               <div class="flex justify-end gap-2">
                                                 <button onClick=${() => setEditingPromptIndex(null)}
-                                                  class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors">
+                                                  class="btn btn-ghost btn-sm">
                                                   ${isBuiltin ? 'Close' : 'Cancel'}
                                                 </button>
                                                 ${!isBuiltin && html`
@@ -1934,7 +1935,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                       setEditingPromptIndex(null);
                                                     }}
                                                     disabled=${!editPromptName.trim() || !editPromptText.trim() || promptSaving}
-                                                    class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50">
+                                                    class="btn btn-primary btn-sm">
                                                     ${promptSaving ? 'Saving...' : 'Save'}
                                                   </button>
                                                 `}
@@ -2186,10 +2187,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                         </p>
                         <div class="flex items-center gap-0.5">
                           <button
-                            onClick=${() => loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir)}
-                            class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
+                            onClick=${() => { if (mcpToolsLoading) return; loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir); }}
+                            aria-disabled=${mcpToolsLoading ? "true" : "false"}
+                            class="btn btn-ghost btn-square btn-sm ${mcpToolsLoading ? "opacity-40 pointer-events-none" : ""}"
                             title="Refresh MCP server list"
-                            disabled=${mcpToolsLoading}
                           >
                             <${RefreshIcon} className=${`w-4 h-4 ${mcpToolsLoading ? "animate-spin" : ""}`} />
                           </button>
@@ -2203,7 +2204,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 setMcpInstallError("");
                                 setMcpInstallSuccess("");
                               }}
-                              class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
+                              class="btn btn-ghost btn-square btn-sm"
                               title="Install MCP servers"
                             >
                               <${PlusIcon} className="w-4 h-4" />
@@ -2244,10 +2245,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         ${mcpTools?.has_mcp_remove && html`
                                           <td class="text-center">
                                             <button
-                                              onClick=${() => handleMcpRemoveConfirm(srv.name)}
-                                              class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
+                                              onClick=${() => { if (mcpRemoveLoading) return; handleMcpRemoveConfirm(srv.name); }}
+                                              aria-disabled=${mcpRemoveLoading ? "true" : "false"}
+                                              class="btn btn-ghost btn-square btn-xs ${mcpRemoveLoading ? "opacity-40 pointer-events-none" : ""}"
                                               title="Remove MCP server"
-                                              disabled=${mcpRemoveLoading}
                                             >
                                               <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                             </button>
