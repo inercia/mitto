@@ -33,6 +33,7 @@ import {
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { Modal } from "./Modal.js";
 import { WorkspaceBadge } from "./WorkspaceBadge.js";
 
 import {
@@ -1236,9 +1237,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   };
 
   return html`
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick=${handleClose}>
-      <div class="workspaces-dialog bg-mitto-sidebar rounded-lg w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col" data-testid="workspaces-dialog" onClick=${(e) => e.stopPropagation()}>
-
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${handleClose}
+      testid="workspaces-dialog"
+      boxClass="workspaces-dialog bg-mitto-sidebar w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh]"
+      bodyClass="flex flex-col flex-1 min-h-0 overflow-hidden"
+    >
         <!-- Header -->
         <div class="flex items-center justify-between p-4 border-b border-mitto-border shrink-0">
           <h3 class="text-lg font-semibold flex items-center gap-2">
@@ -2300,8 +2305,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    <//>
 
     <${ConfirmDialog}
       isOpen=${!!confirmDialog}

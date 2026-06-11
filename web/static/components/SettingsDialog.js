@@ -44,6 +44,7 @@ import {
   SearchIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
+import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 
 // Import constants
@@ -2133,15 +2134,13 @@ export function SettingsDialog({
   ];
 
   return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${canClose ? handleClose : null}
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${canClose ? handleClose : undefined}
+      testid="settings-dialog"
+      boxClass="settings-dialog bg-mitto-sidebar w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh]"
+      bodyClass="flex flex-col flex-1 min-h-0 overflow-hidden"
     >
-      <div
-        class="settings-dialog bg-mitto-sidebar rounded-lg w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col"
-        data-testid="settings-dialog"
-        onClick=${(e) => e.stopPropagation()}
-      >
         <!-- Header -->
         <div
           class="flex items-center justify-between p-4 border-b border-mitto-border-1"
@@ -4341,10 +4340,10 @@ export function SettingsDialog({
             </button>
           </div>
         </div>
-      </div>
+    <//>
 
-      <!-- Agent Discovery Dialog (settings mode - returns agents to state without saving) -->
-      <${AgentDiscoveryDialog}
+    <!-- Agent Discovery Dialog (settings mode - returns agents to state without saving) -->
+    <${AgentDiscoveryDialog}
         isOpen=${showDiscoverAgents}
         mode="settings"
         existingServers=${acpServers}
@@ -4360,6 +4359,5 @@ export function SettingsDialog({
           setShowDiscoverAgents(false);
         }}
       />
-    </div>
   `;
 }

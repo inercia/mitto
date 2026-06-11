@@ -21,6 +21,12 @@
 //   testid         {string} - optional data-testid applied to the modal box
 //   closeTestid    {string} - optional data-testid applied to the header ✕ button
 //   backdropTestid {string} - optional data-testid applied to the backdrop
+//   boxClass {string} - optional extra classes appended to the modal-box, e.g.
+//                       sizing overrides for large dialogs (w-[70vw] h-[70vh]).
+//   bodyClass {string} - optional override for the body wrapper classes. Defaults
+//                        to "p-4 overflow-y-auto"; pass a full-height flex value
+//                        (e.g. "flex flex-col flex-1 min-h-0 overflow-hidden") for
+//                        dialogs that own their internal scroll/layout.
 
 const { html, useEffect, useRef } = window.preact;
 
@@ -60,6 +66,8 @@ export function Modal({
   testid,
   closeTestid,
   backdropTestid,
+  boxClass = "",
+  bodyClass = "p-4 overflow-y-auto",
 }) {
   // Hooks must run unconditionally (Rules of Hooks); the open/close behaviour is
   // guarded inside the effect body and the early return happens after the hooks.
@@ -159,7 +167,7 @@ export function Modal({
   return html`
     <div class="modal modal-open">
       <div
-        class="modal-box flex flex-col gap-0 p-0 overflow-hidden"
+        class="modal-box flex flex-col gap-0 p-0 overflow-hidden ${boxClass}"
         role="dialog"
         aria-modal="true"
         aria-labelledby=${title ? titleId : undefined}
@@ -184,7 +192,7 @@ export function Modal({
           </div>
         `}
 
-        <div class="p-4 overflow-y-auto">${children}</div>
+        <div class=${bodyClass}>${children}</div>
 
         ${footer &&
         html`
