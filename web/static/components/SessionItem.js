@@ -475,7 +475,7 @@ export function SessionItem({
                   ${isSpawned
                     ? html`
                           <span
-                            class="spawned-indicator shrink-0"
+                            class="text-mitto-text-muted text-sm leading-none shrink-0"
                             title="Spawned from another conversation"
                             >↳</span
                           >

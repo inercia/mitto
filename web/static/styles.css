@@ -2009,13 +2009,6 @@ mitto-action {
 
 
 
-/* Spawned indicator styling */
-.spawned-indicator {
-  color: #9ca3af;
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
 /* Session children container animation */
 .session-children {
   overflow: hidden;
