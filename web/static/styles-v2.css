@@ -285,37 +285,6 @@ a:hover {
 /* Note: scrollbar-hide, animations (fadeIn, blink), message-enter, and
    streaming-cursor are defined in styles.css and apply to all themes */
 
-/* Legacy toggle (simple switch) */
-.theme-toggle {
-  position: relative;
-  width: 48px;
-  height: 24px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  transition:
-    background var(--duration-normal),
-    border-color var(--duration-normal);
-}
-
-.theme-toggle::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  background: var(--text);
-  border-radius: 50%;
-  transition: transform var(--duration-normal) var(--ease-out);
-  box-shadow: var(--shadow-sm);
-}
-
-.theme-toggle.dark::after {
-  transform: translateX(24px);
-}
-
 /* =============================================================================
    Markdown Content
    ============================================================================= */
