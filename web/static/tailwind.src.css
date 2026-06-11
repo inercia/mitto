@@ -12,16 +12,19 @@
 @source not "../../.augment";
 @source not "../../.agents";
 
-/* daisyUI v5 (mitto-i1r spike): component-styling layer on top of Tailwind v4.
- * Built-in themes are DISABLED — their prefers-color-scheme:dark block would
- * override our :root vars. Instead a single passthrough theme ("mitto", default)
- * maps daisyUI's semantic colors onto the existing runtime --mitto-* variables.
- * Because every theme scope (:root v1-dark, .light v1-light, .v2-theme v2-light,
- * .v2-theme.dark v2-dark) already redefines --mitto-*, daisyUI's primary/error/
- * base-* colors automatically track the active theme with no data-theme attribute
- * and no per-component color overrides. */
+/* daisyUI v5: component-styling layer on top of Tailwind v4.
+ * The custom "mitto" theme (default) maps daisyUI's semantic colors onto the
+ * existing runtime --mitto-* variables, so with NO data-theme the app looks
+ * exactly as before (theming == swapping --mitto-* values via .light/.dark/
+ * .v2-theme scopes; see styles.css).
+ * Built-in themes are ALSO enabled (mitto-woh) so users can pick e.g. dracula/
+ * nord via a data-theme on <html>. None is marked --prefersdark, so "mitto"
+ * stays the :root default and OS dark-mode does not force a built-in theme.
+ * The --mitto-* BRIDGE at the bottom of this file re-points all 41 runtime
+ * tokens onto the active theme's daisyUI colors, so the whole app (not just
+ * daisyUI components) retints when a data-theme is chosen. */
 @plugin "daisyui" {
-  themes: false;
+  themes: light, dark, dracula, nord, sunset, dim, cupcake;
   logs: false;
 }
 @plugin "daisyui/theme" {
@@ -152,5 +155,87 @@
   .v2-theme:not(.dark) {
     color-scheme: light;
   }
+}
+
+/* =============================================================================
+ * --mitto-* BRIDGE (mitto-woh, Strategy A)
+ * -----------------------------------------------------------------------------
+ * When a built-in daisyUI theme is selected (data-theme on <html>, anything
+ * other than the default "mitto" passthrough), re-point ALL 41 runtime
+ * --mitto-* tokens onto that theme's daisyUI semantic colors. This makes the
+ * whole app retint — not just daisyUI components — because the 761 *-mitto-*
+ * color utilities resolve through these runtime vars.
+ *
+ * One generic block covers every enabled theme: var(--color-*) resolves to the
+ * active theme's value, so the mapping text is theme-independent.
+ *
+ * MUST stay UNLAYERED (outside @layer): styles.css defines --mitto-* on
+ * unlayered :root/.light, and unlayered rules always beat @layer rules. The
+ * selectors are also engineered to win on specificity regardless of stylesheet
+ * load order (tailwind.css loads before styles.css / styles-v2.css):
+ *   :root[data-theme]:not([data-theme="mitto"])        => (0,0,3,0)
+ *   :root[data-theme]:not([data-theme="mitto"]) body   => (0,0,3,1)
+ * which beat styles.css :root/.light (0,0,1,0) and styles-v2 .v2-theme .dark
+ * (0,0,2,0) on both <html> and <body>.
+ *
+ * NO PIXEL PARITY: daisyUI's ~12 semantic colors cannot fully express 41 mitto
+ * tokens, so the accent ladder, surface tiers and text/border tiers are
+ * color-mix approximations. If the rich chrome looks poor on a theme, fall back
+ * to Strategy C (curate fewer, hand-tuned themes).
+ * ============================================================================= */
+:root[data-theme]:not([data-theme="mitto"]),
+:root[data-theme]:not([data-theme="mitto"]) body {
+  /* Surfaces / backgrounds */
+  --mitto-bg: var(--color-base-100);
+  --mitto-chat: var(--color-base-100);
+  --mitto-input: var(--color-base-200);
+  --mitto-input-box: var(--color-base-300);
+  --mitto-sidebar: var(--color-base-200);
+  --mitto-agent: var(--color-base-200);
+  --mitto-surface-1: var(--color-base-100);
+  --mitto-surface-2: var(--color-base-200);
+  --mitto-surface-3: var(--color-base-300);
+  --mitto-surface-4: var(--color-neutral);
+  --mitto-surface-hover: var(--color-base-300);
+
+  /* User bubble */
+  --mitto-user: var(--color-base-200);
+  --mitto-user-text: var(--color-base-content);
+  --mitto-user-border: var(--color-primary);
+
+  /* Text tiers (opacity-derived from base-content) */
+  --mitto-text: var(--color-base-content);
+  --mitto-text-strong: var(--color-base-content);
+  --mitto-text-secondary: color-mix(in oklch, var(--color-base-content) 65%, transparent);
+  --mitto-text-muted: color-mix(in oklch, var(--color-base-content) 55%, transparent);
+  --mitto-text-200: color-mix(in oklch, var(--color-base-content) 90%, transparent);
+  --mitto-text-300: color-mix(in oklch, var(--color-base-content) 80%, transparent);
+  --mitto-text-500: color-mix(in oklch, var(--color-base-content) 60%, transparent);
+
+  /* Border tiers (opacity-derived from base-content) */
+  --mitto-border: color-mix(in oklch, var(--color-base-content) 15%, transparent);
+  --mitto-border-1: color-mix(in oklch, var(--color-base-content) 12%, transparent);
+  --mitto-border-2: color-mix(in oklch, var(--color-base-content) 22%, transparent);
+  --mitto-border-3: color-mix(in oklch, var(--color-base-content) 32%, transparent);
+
+  /* Accent (primary) + ladder (mixed toward base-100 for light steps, black for dark) */
+  --mitto-accent: var(--color-primary);
+  --mitto-accent-hover: color-mix(in oklch, var(--color-primary) 85%, black);
+  --mitto-accent-fg: var(--color-primary-content);
+  --mitto-accent-100: color-mix(in oklch, var(--color-primary) 18%, var(--color-base-100));
+  --mitto-accent-300: color-mix(in oklch, var(--color-primary) 45%, var(--color-base-100));
+  --mitto-accent-400: color-mix(in oklch, var(--color-primary) 65%, var(--color-base-100));
+  --mitto-accent-500: var(--color-primary);
+  --mitto-accent-600: color-mix(in oklch, var(--color-primary) 88%, black);
+  --mitto-accent-700: color-mix(in oklch, var(--color-primary) 75%, black);
+  --mitto-accent-900: color-mix(in oklch, var(--color-primary) 55%, black);
+
+  /* Status */
+  --mitto-danger: var(--color-error);
+  --mitto-danger-hover: color-mix(in oklch, var(--color-error) 85%, black);
+  --mitto-danger-fg: var(--color-error-content);
+  --mitto-success: var(--color-success);
+  --mitto-warning: var(--color-warning);
+  --mitto-info: var(--color-info);
 }
 
