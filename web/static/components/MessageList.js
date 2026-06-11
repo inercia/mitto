@@ -266,7 +266,9 @@ export function MessageList({
           >
             <${ArrowDownIcon} className="w-5 h-5" />
             ${hasNewMessages &&
-            html` <span class="new-messages-indicator"></span> `}
+            html` <span
+              class="new-messages-indicator status status-warning"
+            ></span> `}
           </button>
         </div>
       `}

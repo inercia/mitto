@@ -1104,15 +1104,12 @@ a.mailto-link:hover {
   background: #2563eb;
 }
 
+/* Positioning + pulse animation only; daisyUI .status provides the
+   circular shape, size, and theme-aware color (status-warning). */
 .new-messages-indicator {
   position: absolute;
   top: -2px;
   right: -2px;
-  width: 12px;
-  height: 12px;
-  background: #f97316;
-  border-radius: 50%;
-  border: 2px solid #1e293b;
   animation: pulse-indicator 1.5s ease-in-out infinite;
   will-change: opacity, transform;
 }
@@ -1167,10 +1164,6 @@ a.mailto-link:hover {
 
 .light .scroll-to-bottom-btn.has-new:hover {
   background: #2563eb;
-}
-
-.light .new-messages-indicator {
-  border-color: #ffffff;
 }
 
 /* Mobile adjustments */
