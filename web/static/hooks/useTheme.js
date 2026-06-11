@@ -6,27 +6,63 @@
 // the App render consumes; the follow-system and reduced-motion state stays internal.
 const { useState, useEffect, useCallback } = window.preact;
 
-// Named daisyUI themes offered by the theme picker (woh). "mitto" is the
+// Named daisyUI themes offered by the theme picker (l6a). "mitto" is the
 // default passthrough — the legacy --mitto-* light/dark system stays in
 // control. The rest set a data-theme on <html> that drives the --mitto-*
 // bridge in tailwind.css. The value is the theme's inherent light/dark
-// "bucket", used to (a) pick the Mermaid diagram theme and (b) keep residual
-// hardcoded dark:* / *-slate utilities coherent with the bridge. "mitto"
-// (null) follows the live light/dark toggle.
+// "bucket" (derived from color-scheme in the generated tailwind.css), used
+// to (a) pick the Mermaid diagram theme and (b) keep residual hardcoded
+// dark:* / *-slate utilities coherent with the bridge. "mitto" (null)
+// follows the live light/dark toggle.
+// Keep in sync with theme-loader.js (THEME_BUCKETS).
 export const NAMED_THEMES = {
   mitto: null,
+  // Light themes (color-scheme: light)
   light: "light",
-  dark: "dark",
   cupcake: "light",
+  bumblebee: "light",
+  emerald: "light",
+  corporate: "light",
+  retro: "light",
+  cyberpunk: "light",
+  valentine: "light",
+  garden: "light",
+  lofi: "light",
+  pastel: "light",
+  fantasy: "light",
+  wireframe: "light",
+  cmyk: "light",
+  autumn: "light",
+  acid: "light",
+  lemonade: "light",
+  winter: "light",
   nord: "light",
+  caramellatte: "light",
+  silk: "light",
+  // Dark themes (color-scheme: dark)
+  dark: "dark",
+  synthwave: "dark",
+  halloween: "dark",
+  forest: "dark",
+  aqua: "dark",
+  black: "dark",
+  luxury: "dark",
   dracula: "dark",
-  sunset: "dark",
+  business: "dark",
+  night: "dark",
+  coffee: "dark",
   dim: "dark",
+  sunset: "dark",
+  abyss: "dark",
 };
 
 /**
  * Theme / font-size / reduced-motion preferences hook.
- * Returns { theme, toggleTheme, fontSize, toggleFontSize, themeName, setThemeName }.
+ * Returns { theme, toggleTheme, fontSize, toggleFontSize, lightThemeName, darkThemeName }.
+ *
+ * Two-slot model (l6a): lightThemeName is the daisyUI theme used when the
+ * effective mode is light; darkThemeName when dark. The active data-theme on
+ * <html> is whichever slot matches the current effectiveBucket.
  */
 export function useTheme() {
   // Follow system theme state - persisted to localStorage
@@ -73,12 +109,39 @@ export function useTheme() {
     return "dark";
   });
 
-  // Named daisyUI theme (woh): "mitto" passthrough + curated built-ins.
-  const [themeName, setThemeName] = useState(() => {
+  // Two-slot theme state (l6a): one daisyUI theme per light/dark slot.
+  // Persisted to mitto-theme-light / mitto-theme-dark.
+  // One-pass migration: if the old mitto-theme-name key exists, seed the
+  // matching slot from it and ignore the old key going forward.
+  const [lightThemeName, setLightThemeName] = useState(() => {
     if (typeof localStorage !== "undefined") {
-      const saved = localStorage.getItem("mitto-theme-name");
+      const saved = localStorage.getItem("mitto-theme-light");
       if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
         return saved;
+      }
+      // Migration: seed from old single-slot key if it was a light-bucket theme
+      const legacy = localStorage.getItem("mitto-theme-name");
+      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+        if (NAMED_THEMES[legacy] === "light" || legacy === "mitto") {
+          return legacy;
+        }
+      }
+    }
+    return "mitto";
+  });
+
+  const [darkThemeName, setDarkThemeName] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto-theme-dark");
+      if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
+        return saved;
+      }
+      // Migration: seed from old single-slot key if it was a dark-bucket theme
+      const legacy = localStorage.getItem("mitto-theme-name");
+      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+        if (NAMED_THEMES[legacy] === "dark") {
+          return legacy;
+        }
       }
     }
     return "mitto";
@@ -112,12 +175,17 @@ export function useTheme() {
     );
   }, [followSystemTheme]);
 
-  // Apply theme class to document. When a named daisyUI theme is active, the
-  // light/dark class follows that theme's inherent bucket so the residual
-  // hardcoded dark:* / *-slate utilities stay coherent with the --mitto-*
-  // bridge; the "mitto" passthrough follows the explicit light/dark toggle.
+  // Apply theme class to document and active data-theme (two-slot model, l6a).
+  // The effective slot is determined by the current light/dark mode; the active
+  // theme name from that slot drives data-theme on <html>. The slot theme's
+  // own bucket (or "mitto" → follow the explicit toggle) sets the light/dark
+  // body class so residual dark:* / *-slate utilities stay coherent.
   useEffect(() => {
-    const scheme = NAMED_THEMES[themeName];
+    // Pick the theme name from the appropriate slot.
+    const activeTheme = theme === "light" ? lightThemeName : darkThemeName;
+    const scheme = NAMED_THEMES[activeTheme];
+    // Effective bucket: named themes use their inherent scheme; "mitto"
+    // passthrough follows the explicit light/dark toggle.
     const effective = scheme == null ? theme : scheme;
     const root = document.documentElement;
     if (effective === "light") {
@@ -133,6 +201,8 @@ export function useTheme() {
       document.body.classList.add("dark");
       document.body.classList.remove("light");
     }
+    // Apply the active slot's theme as data-theme on <html>.
+    root.setAttribute("data-theme", activeTheme);
     // Persist the explicit light/dark choice (not the effective bucket) so it
     // is restored when switching back to the "mitto" passthrough theme.
     localStorage.setItem("mitto-theme", theme);
@@ -140,29 +210,37 @@ export function useTheme() {
     if (typeof window.updateMermaidTheme === "function") {
       window.updateMermaidTheme(effective);
     }
-  }, [theme, themeName]);
+  }, [theme, lightThemeName, darkThemeName]);
 
-  // Apply the named daisyUI theme as data-theme on <html> (drives the
-  // --mitto-* bridge in tailwind.css) and persist the choice.
+  // Persist slot theme names to their own localStorage keys.
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", themeName);
-    localStorage.setItem("mitto-theme-name", themeName);
-  }, [themeName]);
+    localStorage.setItem("mitto-theme-light", lightThemeName);
+  }, [lightThemeName]);
 
-  // Listen for theme-name changes dispatched by SettingsDialog.
   useEffect(() => {
-    const handleThemeNameChanged = (e) => {
-      const name = e.detail && e.detail.themeName;
+    localStorage.setItem("mitto-theme-dark", darkThemeName);
+  }, [darkThemeName]);
+
+  // Listen for per-slot theme changes dispatched by SettingsDialog (l6a).
+  useEffect(() => {
+    const handleLightThemeChanged = (e) => {
+      const name = e.detail && e.detail.name;
       if (name && Object.prototype.hasOwnProperty.call(NAMED_THEMES, name)) {
-        setThemeName(name);
+        setLightThemeName(name);
       }
     };
-    window.addEventListener("mitto-theme-name-changed", handleThemeNameChanged);
-    return () =>
-      window.removeEventListener(
-        "mitto-theme-name-changed",
-        handleThemeNameChanged,
-      );
+    const handleDarkThemeChanged = (e) => {
+      const name = e.detail && e.detail.name;
+      if (name && Object.prototype.hasOwnProperty.call(NAMED_THEMES, name)) {
+        setDarkThemeName(name);
+      }
+    };
+    window.addEventListener("mitto-theme-light-changed", handleLightThemeChanged);
+    window.addEventListener("mitto-theme-dark-changed", handleDarkThemeChanged);
+    return () => {
+      window.removeEventListener("mitto-theme-light-changed", handleLightThemeChanged);
+      window.removeEventListener("mitto-theme-dark-changed", handleDarkThemeChanged);
+    };
   }, []);
 
   const toggleTheme = useCallback(() => {
@@ -356,7 +434,7 @@ export function useTheme() {
     toggleTheme,
     fontSize,
     toggleFontSize,
-    themeName,
-    setThemeName,
+    lightThemeName,
+    darkThemeName,
   };
 }

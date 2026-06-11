@@ -4,24 +4,55 @@
 // 2. Loads theme configuration and applies the v2-theme class if configured.
 
 (function () {
-  // --- FOUC boot (woh.4) --------------------------------------------------
+  // --- FOUC boot (l6a) ----------------------------------------------------
   // Apply the persisted named daisyUI theme (data-theme) and the matching
   // light/dark class to <html> before first paint. This mirrors useTheme.js
-  // (NAMED_THEMES + effective-bucket logic); useTheme reconciles the body
-  // classes on mount. Runs synchronously because this script is render-
-  // blocking in <head>, before <body> exists.
+  // two-slot model (l6a); useTheme reconciles the body classes on mount.
+  // Runs synchronously because this script is render-blocking in <head>,
+  // before <body> exists.
   try {
     // Inherent light/dark bucket per named theme; null = "mitto" passthrough
-    // (follow the saved light/dark toggle). Keep in sync with useTheme.js.
+    // (follow the saved light/dark toggle). Keep in sync with useTheme.js
+    // NAMED_THEMES. Derived from color-scheme in tailwind.css.
     var THEME_BUCKETS = {
       mitto: null,
+      // Light themes
       light: "light",
-      dark: "dark",
       cupcake: "light",
+      bumblebee: "light",
+      emerald: "light",
+      corporate: "light",
+      retro: "light",
+      cyberpunk: "light",
+      valentine: "light",
+      garden: "light",
+      lofi: "light",
+      pastel: "light",
+      fantasy: "light",
+      wireframe: "light",
+      cmyk: "light",
+      autumn: "light",
+      acid: "light",
+      lemonade: "light",
+      winter: "light",
       nord: "light",
+      caramellatte: "light",
+      silk: "light",
+      // Dark themes
+      dark: "dark",
+      synthwave: "dark",
+      halloween: "dark",
+      forest: "dark",
+      aqua: "dark",
+      black: "dark",
+      luxury: "dark",
       dracula: "dark",
-      sunset: "dark",
+      business: "dark",
+      night: "dark",
+      coffee: "dark",
       dim: "dark",
+      sunset: "dark",
+      abyss: "dark",
     };
     var prefersDark = function () {
       return !!(
@@ -30,26 +61,41 @@
       );
     };
     var root = document.documentElement;
-    var name = localStorage.getItem("mitto-theme-name");
+
+    // Determine effective light/dark bucket for FOUC (mirrors useTheme.js logic).
+    var followSystem = localStorage.getItem("mitto-follow-system-theme");
+    var savedTheme = localStorage.getItem("mitto-theme");
+    var effectiveBucket;
+    if (followSystem === null || followSystem === "true") {
+      effectiveBucket = prefersDark() ? "dark" : "light";
+    } else if (savedTheme === "light" || savedTheme === "dark") {
+      effectiveBucket = savedTheme;
+    } else {
+      effectiveBucket = prefersDark() ? "dark" : "light";
+    }
+
+    // Two-slot: pick the theme name for the active bucket.
+    // One-pass migration: fall back to old mitto-theme-name if new keys absent.
+    var legacy = localStorage.getItem("mitto-theme-name");
+    var slotKey = effectiveBucket === "light" ? "mitto-theme-light" : "mitto-theme-dark";
+    var name = localStorage.getItem(slotKey);
     if (!name || !Object.prototype.hasOwnProperty.call(THEME_BUCKETS, name)) {
-      name = "mitto";
+      // Migration: use legacy key if it matches the active bucket
+      if (legacy && Object.prototype.hasOwnProperty.call(THEME_BUCKETS, legacy)) {
+        var legacyBucket = THEME_BUCKETS[legacy];
+        if (legacyBucket === effectiveBucket || legacyBucket === null) {
+          name = legacy;
+        }
+      }
+      if (!name) name = "mitto";
     }
     root.setAttribute("data-theme", name);
 
     // Effective light/dark bucket: named themes use their inherent scheme; the
-    // "mitto" passthrough follows the saved toggle, or system pref when
-    // following system (the default for new users).
+    // "mitto" passthrough follows the effective slot bucket.
     var bucket = THEME_BUCKETS[name];
     if (bucket === null) {
-      var followSystem = localStorage.getItem("mitto-follow-system-theme");
-      var saved = localStorage.getItem("mitto-theme");
-      if (followSystem === null || followSystem === "true") {
-        bucket = prefersDark() ? "dark" : "light";
-      } else if (saved === "light" || saved === "dark") {
-        bucket = saved;
-      } else {
-        bucket = prefersDark() ? "dark" : "light";
-      }
+      bucket = effectiveBucket;
     }
     if (bucket === "light") {
       root.classList.add("light");

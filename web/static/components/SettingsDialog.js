@@ -52,17 +52,47 @@ import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
 // Import the curated theme list (single source of truth) for the theme picker.
 import { NAMED_THEMES } from "../hooks/useTheme.js";
 
-// Human-friendly labels for the named daisyUI themes (woh). Order follows
+// Human-friendly labels for the named daisyUI themes (l6a). Order follows
 // NAMED_THEMES insertion order; any theme without a label falls back to its key.
 const THEME_LABELS = {
   mitto: "Mitto (default)",
+  // Light themes
   light: "Light",
-  dark: "Dark",
   cupcake: "Cupcake",
+  bumblebee: "Bumblebee",
+  emerald: "Emerald",
+  corporate: "Corporate",
+  retro: "Retro",
+  cyberpunk: "Cyberpunk",
+  valentine: "Valentine",
+  garden: "Garden",
+  lofi: "Lofi",
+  pastel: "Pastel",
+  fantasy: "Fantasy",
+  wireframe: "Wireframe",
+  cmyk: "CMYK",
+  autumn: "Autumn",
+  acid: "Acid",
+  lemonade: "Lemonade",
+  winter: "Winter",
   nord: "Nord",
+  caramellatte: "Caramellatte",
+  silk: "Silk",
+  // Dark themes
+  dark: "Dark",
+  synthwave: "Synthwave",
+  halloween: "Halloween",
+  forest: "Forest",
+  aqua: "Aqua",
+  black: "Black",
+  luxury: "Luxury",
   dracula: "Dracula",
-  sunset: "Sunset",
+  business: "Business",
+  night: "Night",
+  coffee: "Coffee",
   dim: "Dim",
+  sunset: "Sunset",
+  abyss: "Abyss",
 };
 
 // WorkspaceBadge is now a standalone component module (not prop-drilled from app.js)
@@ -1098,13 +1128,37 @@ export function SettingsDialog({
   // Global auto-approve permissions setting - default: true (matches current behavior)
   const [globalAutoApprove, setGlobalAutoApprove] = useState(true);
 
-  // Named daisyUI theme setting (client-side, stored in localStorage). Mirrors
-  // useTheme.js; changes are broadcast via the mitto-theme-name-changed event.
-  const [themeName, setThemeName] = useState(() => {
+  // Two-slot theme setting (l6a). Mirrors useTheme.js two-slot state;
+  // changes are broadcast via mitto-theme-light-changed / mitto-theme-dark-changed.
+  const [lightThemeName, setLightThemeName] = useState(() => {
     if (typeof localStorage !== "undefined") {
-      const saved = localStorage.getItem("mitto-theme-name");
+      const saved = localStorage.getItem("mitto-theme-light");
       if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
         return saved;
+      }
+      // Migration: seed from old single-slot key if it was a light-bucket theme
+      const legacy = localStorage.getItem("mitto-theme-name");
+      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+        if (NAMED_THEMES[legacy] === "light" || legacy === "mitto") {
+          return legacy;
+        }
+      }
+    }
+    return "mitto";
+  });
+
+  const [darkThemeName, setDarkThemeName] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto-theme-dark");
+      if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
+        return saved;
+      }
+      // Migration: seed from old single-slot key if it was a dark-bucket theme
+      const legacy = localStorage.getItem("mitto-theme-name");
+      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+        if (NAMED_THEMES[legacy] === "dark") {
+          return legacy;
+        }
       }
     }
     return "mitto";
@@ -1162,14 +1216,20 @@ export function SettingsDialog({
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
-  // Handle named theme change — persist and broadcast to useTheme.js.
-  const handleThemeNameChange = (name) => {
-    setThemeName(name);
-    localStorage.setItem("mitto-theme-name", name);
+  // Handle per-slot theme changes — persist and broadcast to useTheme.js (l6a).
+  const handleLightThemeChange = (name) => {
+    setLightThemeName(name);
+    localStorage.setItem("mitto-theme-light", name);
     window.dispatchEvent(
-      new CustomEvent("mitto-theme-name-changed", {
-        detail: { themeName: name },
-      }),
+      new CustomEvent("mitto-theme-light-changed", { detail: { name } }),
+    );
+  };
+
+  const handleDarkThemeChange = (name) => {
+    setDarkThemeName(name);
+    localStorage.setItem("mitto-theme-dark", name);
+    window.dispatchEvent(
+      new CustomEvent("mitto-theme-dark-changed", { detail: { name } }),
     );
   };
 
@@ -3753,28 +3813,45 @@ export function SettingsDialog({
                         <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Appearance
                         </h4>
-                        <div class="p-3">
+                        <div class="p-3 space-y-3">
+                          <div class="text-xs text-mitto-text-muted">
+                            Choose a daisyUI color theme for each mode. "Mitto
+                            (default)" uses the built-in Mitto palette.
+                          </div>
                           <div class="flex items-center justify-between gap-3">
-                            <div>
-                              <div class="font-medium text-sm">Theme</div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Color theme for the interface. "Mitto" follows
-                                the light/dark toggle below; other themes apply
-                                their own colors.
-                              </div>
-                            </div>
+                            <div class="font-medium text-sm">Light theme</div>
                             <select
-                              value=${themeName}
-                              onChange=${(e) =>
-                                handleThemeNameChange(e.target.value)}
+                              value=${lightThemeName}
+                              onInput=${(e) =>
+                                handleLightThemeChange(e.target.value)}
                               class="select select-sm"
                             >
-                              ${Object.keys(NAMED_THEMES).map(
-                                (name) =>
+                              <option value="mitto">${THEME_LABELS.mitto}</option>
+                              ${Object.entries(NAMED_THEMES)
+                                .filter(([, bucket]) => bucket === "light")
+                                .map(([name]) =>
                                   html`<option value=${name}>
                                     ${THEME_LABELS[name] || name}
                                   </option>`,
-                              )}
+                                )}
+                            </select>
+                          </div>
+                          <div class="flex items-center justify-between gap-3">
+                            <div class="font-medium text-sm">Default dark theme</div>
+                            <select
+                              value=${darkThemeName}
+                              onInput=${(e) =>
+                                handleDarkThemeChange(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="mitto">${THEME_LABELS.mitto}</option>
+                              ${Object.entries(NAMED_THEMES)
+                                .filter(([, bucket]) => bucket === "dark")
+                                .map(([name]) =>
+                                  html`<option value=${name}>
+                                    ${THEME_LABELS[name] || name}
+                                  </option>`,
+                                )}
                             </select>
                           </div>
                         </div>
