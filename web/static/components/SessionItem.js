@@ -23,6 +23,8 @@ import {
   EditIcon,
   ChevronDownIcon,
   getPromptIconOrDefault,
+  BalloonIcon,
+  ClockIcon,
 } from "./Icons.js";
 
 /**
@@ -130,6 +132,21 @@ export function SessionItem({
 
   // Check if periodic is enabled for this session
   const isPeriodicEnabled = session.periodic_enabled || false;
+
+  // Leading category icon for the unified-tree row:
+  //   regular  -> balloon (muted)
+  //   periodic -> clock (accent)
+  //   archived -> archive (muted)
+  // Spawned/child rows keep their ↳ marker + child-origin glyph instead.
+  let CategoryIcon = BalloonIcon;
+  let categoryIconClass = "text-mitto-text-muted";
+  if (isArchived) {
+    CategoryIcon = ArchiveIcon;
+    categoryIconClass = "text-mitto-text-muted";
+  } else if (isPeriodicEnabled) {
+    CategoryIcon = ClockIcon;
+    categoryIconClass = "text-mitto-accent";
+  }
 
   // Calculate periodic progress background style
   const periodicProgressBg = useMemo(() => {
@@ -482,7 +499,17 @@ export function SessionItem({
                         `
                       : null
                   }
-                  <span class="text-sm font-medium truncate"
+                  ${!isSpawned
+                    ? html`
+                        <span class="shrink-0 ${categoryIconClass}">
+                          <${CategoryIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : null}
+                  <span
+                    class="text-sm font-medium truncate ${isArchived
+                      ? "text-mitto-text-muted"
+                      : ""}"
                     >${displayName}</span
                   >
                   ${session.child_origin === "auto"

@@ -1273,6 +1273,88 @@ export function BeadsIcon({ className = "w-5 h-5" }) {
   `;
 }
 
+/**
+ * Balloon icon for regular (one-off) conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function BalloonIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M12 3c-3.31 0-6 2.69-6 6 0 4 4.5 7.5 6 8.5 1.5-1 6-4.5 6-8.5 0-3.31-2.69-6-6-6z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M12 17.5v1.5m0 0l-1.5 2m1.5-2l1.5 2"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Clock icon for periodic (recurring) conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ClockIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 2" />
+    </svg>
+  `;
+}
+
+/**
+ * Ellipsis (three-dot) icon for per-item overflow menus
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function EllipsisIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <circle cx="19" cy="12" r="2" />
+    </svg>
+  `;
+}
+
+/**
+ * Dashboard icon (2x2 grid) for the top-level Dashboard node
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function DashboardIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M4 4h7v7H4V4zM13 4h7v7h-7V4zM13 13h7v7h-7v-7zM4 13h7v7H4v-7z"
+      />
+    </svg>
+  `;
+}
+
 // PROMPT_ICONS maps the optional "icon" front-matter value of a prompt to an
 // icon component. Names are matched case-insensitively. Keep names stable and
 // kebab-case so they can be referenced from prompt markdown files.
