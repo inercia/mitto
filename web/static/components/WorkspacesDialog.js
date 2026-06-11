@@ -1397,127 +1397,125 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <!-- Folder General tab -->
                       ${activeTab === "general" && html`
                         <div class="space-y-4">
-                          <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1">Working Directory</label>
+                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                            <legend class="fieldset-legend">Location</legend>
+                            <label class="label" for="ws-working-dir">Working Directory</label>
                             ${isNewFolder
                               ? html`
                                   <div class="flex gap-2">
                                     <input
+                                      id="ws-working-dir"
                                       type="text"
                                       value=${firstWs.working_dir}
                                       onInput=${(e) => updateNewFolderPath(e.target.value)}
                                       placeholder="/path/to/project"
                                       class="input input-sm flex-1 ${isIncomplete ? "border-error" : ""}"
-                                      style="height: 38px; box-sizing: border-box"
                                     />
                                     ${hasNativeFolderPicker() && html`
                                       <button
                                         onClick=${async () => { const p = await pickFolder(); if (p) updateNewFolderPath(p); }}
                                         class="btn btn-ghost btn-square btn-sm"
                                         title="Browse"
-                                        style="height: 38px; box-sizing: border-box"
                                       ><${FolderIcon} className="w-4 h-4" /></button>
                                     `}
                                   </div>
-                                  ${isIncomplete && html`<p class="text-xs text-mitto-danger mt-1">Please select a folder for this workspace.</p>`}
+                                  ${isIncomplete && html`<p class="label text-error">Please select a folder for this workspace.</p>`}
                                 `
                               : html`
                                   <input
+                                    id="ws-working-dir"
                                     type="text"
                                     value=${firstWs.working_dir}
                                     readOnly
                                     class="input input-sm w-full cursor-default"
-                                    style="height: 38px; box-sizing: border-box"
                                   />
                                 `
                             }
-                          </div>
-                          <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1">Display Name</label>
+                            <label class="label" for="ws-display-name">Display Name</label>
                             <input
+                              id="ws-display-name"
                               type="text"
                               value=${editName}
                               onInput=${(e) => setEditName(e.target.value)}
                               placeholder=${getBasename(firstWs.working_dir)}
                               class="input input-sm w-full"
-                              style="height: 38px; box-sizing: border-box"
                             />
-                          </div>
-                          <div class="flex gap-4 items-end">
-                            <div class="flex-1 min-w-0">
-                              <label class="block text-sm text-mitto-text-muted mb-1">Badge Code</label>
-                              <input
-                                type="text"
-                                value=${editCode}
-                                onInput=${(e) => setEditCode(e.target.value.toUpperCase().slice(0, 3))}
-                                placeholder="Auto (3 letters max)"
-                                maxlength="3"
-                                class="input input-sm w-full font-mono uppercase"
-                                style="height: 38px; box-sizing: border-box"
-                              />
-                            </div>
-                            <div class="shrink-0">
-                              <label class="block text-sm text-mitto-text-muted mb-1">Badge Color</label>
-                              <div class="flex items-center gap-2">
+                          </fieldset>
+                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                            <legend class="fieldset-legend">Appearance</legend>
+                            <div class="flex gap-4 items-end">
+                              <div class="flex-1 min-w-0">
+                                <label class="label" for="ws-badge-code">Badge Code</label>
                                 <input
-                                  type="color"
-                                  value=${editColor}
-                                  onInput=${(e) => setEditColor(e.target.value)}
-                                  class="rounded cursor-pointer border border-mitto-border"
-                                  style="width: 38px; height: 38px"
+                                  id="ws-badge-code"
+                                  type="text"
+                                  value=${editCode}
+                                  onInput=${(e) => setEditCode(e.target.value.toUpperCase().slice(0, 3))}
+                                  placeholder="Auto (3 letters max)"
+                                  maxlength="3"
+                                  class="input input-sm w-full font-mono uppercase"
                                 />
-                                <span class="text-xs text-mitto-text-muted font-mono">${editColor}</span>
+                              </div>
+                              <div class="shrink-0">
+                                <label class="label" for="ws-badge-color">Badge Color</label>
+                                <div class="flex items-center gap-2">
+                                  <input
+                                    id="ws-badge-color"
+                                    type="color"
+                                    value=${editColor}
+                                    onInput=${(e) => setEditColor(e.target.value)}
+                                    class="rounded cursor-pointer border border-mitto-border"
+                                    style="width: 38px; height: 38px"
+                                  />
+                                  <span class="text-xs text-mitto-text-muted font-mono">${editColor}</span>
+                                </div>
                               </div>
                             </div>
-                          </div>
+                          </fieldset>
                         </div>
                       `}
 
                       <!-- Folder Metadata tab -->
                       ${activeTab === "metadata" && html`
                         <div class="space-y-4">
-                          <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1">Description</label>
+                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                            <legend class="fieldset-legend">Metadata</legend>
+                            <label class="label" for="ws-meta-description">Description</label>
                             <textarea
+                              id="ws-meta-description"
                               value=${editMetaDescription}
                               onInput=${(e) => setEditMetaDescription(e.target.value)}
                               placeholder="A description of this workspace/project..."
                               rows="3"
                               class="textarea textarea-sm w-full resize-vertical"
                             />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1">URL</label>
+                            <label class="label" for="ws-meta-url">URL</label>
                             <input
+                              id="ws-meta-url"
                               type="url"
                               value=${editMetaUrl}
                               onInput=${(e) => setEditMetaUrl(e.target.value)}
                               placeholder="https://github.com/..."
                               class="input input-sm w-full"
-                              style="height: 38px; box-sizing: border-box"
                             />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1">Group</label>
+                            <label class="label" for="ws-meta-group">Group</label>
                             <input
+                              id="ws-meta-group"
                               type="text"
                               value=${editMetaGroup}
                               onInput=${(e) => setEditMetaGroup(e.target.value)}
                               placeholder="e.g., CGW, Infrastructure, Frontend..."
                               class="input input-sm w-full"
-                              style="height: 38px; box-sizing: border-box"
                             />
-                          </div>
+                          </fieldset>
 
                           <!-- User Data Schema Editor -->
-                          <div class="mt-6 pt-4 border-t border-mitto-border">
+                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                            <legend class="fieldset-legend">User Data Schema</legend>
                             <div class="flex items-center justify-between mb-2">
-                              <div>
-                                <h3 class="text-sm font-medium text-mitto-text-secondary">User Data Schema</h3>
-                                <p class="text-xs text-mitto-text-muted mt-0.5">
-                                  Define custom data attributes for conversations in this workspace.
-                                </p>
-                              </div>
+                              <p class="label">
+                                Define custom data attributes for conversations in this workspace.
+                              </p>
                               <button
                                 onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
                                 class="btn btn-ghost btn-xs gap-1"
@@ -1535,8 +1533,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 ${editUserDataFields.map((field, i) => html`
                                   <div key=${i} class="flex gap-2 items-start p-2 rounded-sm ${i % 2 === 0 ? 'bg-slate-800/30' : ''}">
                                     <div class="flex-1 min-w-0">
-                                      <label class="block text-xs text-mitto-text-muted mb-0.5">Name</label>
+                                      <label class="label" for=${"ws-udf-name-" + i}>Name</label>
                                       <input
+                                        id=${"ws-udf-name-" + i}
                                         type="text"
                                         value=${field.name}
                                         onInput=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, name: e.target.value } : f))}
@@ -1546,8 +1545,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       />
                                     </div>
                                     <div class="w-24 shrink-0">
-                                      <label class="block text-xs text-mitto-text-muted mb-0.5">Type</label>
+                                      <label class="label" for=${"ws-udf-type-" + i}>Type</label>
                                       <select
+                                        id=${"ws-udf-type-" + i}
                                         value=${field.type}
                                         onChange=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, type: e.target.value } : f))}
                                         class="select select-sm w-full"
@@ -1558,8 +1558,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       </select>
                                     </div>
                                     <div class="flex-1 min-w-0">
-                                      <label class="block text-xs text-mitto-text-muted mb-0.5">Description</label>
+                                      <label class="label" for=${"ws-udf-desc-" + i}>Description</label>
                                       <input
+                                        id=${"ws-udf-desc-" + i}
                                         type="text"
                                         value=${field.description}
                                         onInput=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, description: e.target.value } : f))}
@@ -1581,7 +1582,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 `)}
                               </div>
                             `}
-                          </div>
+                          </fieldset>
                         </div>
                       `}
 
@@ -1601,9 +1602,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             >${" "}(the <code>bd</code> tool) for managing tasks.
                           </p>
                           <!-- Upstream task system selector (persisted in folders.json) -->
-                          <div>
-                            <label class="block text-sm font-medium text-mitto-text-secondary mb-1">Upstream tasks management</label>
-                            <p class="text-xs text-mitto-text-muted mb-2">
+                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                            <legend class="fieldset-legend">Upstream Tasks</legend>
+                            <p class="label">
                               Select the external task system beads syncs with. When set, Pull/Push/Sync
                               actions appear in the Tasks view for this folder.
                             </p>
@@ -1619,7 +1620,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               <option value="gitlab">GitLab</option>
                               <option value="linear">Linear</option>
                             </select>
-                          </div>
+                          </fieldset>
 
                           ${beadsUpstream !== "none" && BEADS_UPSTREAM_HELP[beadsUpstream] && html`
                             <div class="p-3 bg-mitto-input-box border border-mitto-border rounded-md">
@@ -1733,9 +1734,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   </div>
 
                                   ${system.length > 0 && html`
-                                    <div class="mt-6 pt-4 border-t border-mitto-border">
-                                      <h3 class="text-sm font-medium text-mitto-text-secondary mb-1">System</h3>
-                                      <p class="text-xs text-mitto-text-muted mb-2">Operational beads settings (read-only here; edit via the bd CLI).</p>
+                                    <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4 mt-4">
+                                      <legend class="fieldset-legend">System</legend>
+                                      <p class="label">Operational beads settings (read-only here; edit via the bd CLI).</p>
                                       <div class="space-y-1">
                                         ${system.map(([k, v]) => html`
                                           <div key=${k} class="flex gap-2 text-xs font-mono text-mitto-text-muted">
@@ -1744,7 +1745,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           </div>
                                         `)}
                                       </div>
-                                    </div>
+                                    </fieldset>
                                   `}
                                 `;
                               })()}
@@ -1769,42 +1770,35 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </div>
 
                           ${showAddPrompt && html`
-                            <div class="p-4 bg-slate-800/50 rounded-md border border-mitto-border-1 space-y-3">
-                              <div>
-                                <label class="block text-sm text-mitto-text-muted mb-1">Button Label</label>
-                                <input type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
-                                  placeholder="e.g., Continue"
-                                  class="input input-sm w-full"
+                            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                              <legend class="fieldset-legend">New Prompt</legend>
+                              <label class="label" for="new-prompt-name">Button Label</label>
+                              <input id="new-prompt-name" type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
+                                placeholder="e.g., Continue"
+                                class="input input-sm w-full"
+                              />
+                              <label class="label" for="new-prompt-text">Prompt Text</label>
+                              <textarea id="new-prompt-text" value=${newPromptText} onInput=${(e) => setNewPromptText(e.target.value)}
+                                placeholder="e.g., Please continue with the current task."
+                                rows="8"
+                                class="textarea textarea-sm w-full resize-y"
+                              />
+                              <label class="label" for="new-prompt-group">Group (optional)</label>
+                              <input id="new-prompt-group" type="text" value=${newPromptGroup} onInput=${(e) => setNewPromptGroup(e.target.value)}
+                                placeholder="e.g., Tasks, Code Quality"
+                                class="input input-sm w-full"
+                              />
+                              <label class="label">Background Color (optional)</label>
+                              <div class="flex items-center gap-2">
+                                <input type="color" value=${newPromptColor || '#334155'} onInput=${(e) => setNewPromptColor(e.target.value)}
+                                  class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2"
+                                />
+                                <input type="text" value=${newPromptColor} onInput=${(e) => setNewPromptColor(e.target.value)}
+                                  placeholder="#E8F5E9"
+                                  class="input input-sm flex-1 font-mono"
                                 />
                               </div>
-                              <div>
-                                <label class="block text-sm text-mitto-text-muted mb-1">Prompt Text</label>
-                                <textarea value=${newPromptText} onInput=${(e) => setNewPromptText(e.target.value)}
-                                  placeholder="e.g., Please continue with the current task."
-                                  rows="8"
-                                  class="textarea textarea-sm w-full resize-y"
-                                />
-                              </div>
-                              <div>
-                                <label class="block text-sm text-mitto-text-muted mb-1">Group (optional)</label>
-                                <input type="text" value=${newPromptGroup} onInput=${(e) => setNewPromptGroup(e.target.value)}
-                                  placeholder="e.g., Tasks, Code Quality"
-                                  class="input input-sm w-full"
-                                />
-                              </div>
-                              <div>
-                                <label class="block text-sm text-mitto-text-muted mb-1">Background Color (optional)</label>
-                                <div class="flex items-center gap-2">
-                                  <input type="color" value=${newPromptColor || '#334155'} onInput=${(e) => setNewPromptColor(e.target.value)}
-                                    class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2"
-                                  />
-                                  <input type="text" value=${newPromptColor} onInput=${(e) => setNewPromptColor(e.target.value)}
-                                    placeholder="#E8F5E9"
-                                    class="input input-sm flex-1 font-mono"
-                                  />
-                                </div>
-                              </div>
-                              <div class="flex justify-end gap-2">
+                              <div class="flex justify-end gap-2 mt-2">
                                 <button onClick=${() => { setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup(""); }}
                                   class="btn btn-ghost btn-sm">Cancel</button>
                                 <button onClick=${async () => {
@@ -1816,7 +1810,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   ${promptSaving ? 'Saving...' : 'Add Prompt'}
                                 </button>
                               </div>
-                            </div>
+                            </fieldset>
                           `}
 
                           ${promptsLoading
@@ -1875,50 +1869,43 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             </div>
                                           </div>
                                           <div class="collapse-content px-3 pb-3">
-                                            <div class="space-y-3">
-                                              <div>
-                                                <label class="block text-xs text-mitto-text-muted mb-1">Button Label</label>
-                                                <input type="text" value=${isBuiltin ? prompt.name : editPromptName}
-                                                  onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
-                                                  disabled=${isBuiltin}
-                                                  class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
-                                                />
-                                              </div>
-                                              <div>
-                                                <label class="block text-xs text-mitto-text-muted mb-1">Prompt Text</label>
-                                                <textarea rows="8"
-                                                  value=${isBuiltin ? prompt.prompt : editPromptText}
-                                                  onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
-                                                  disabled=${isBuiltin}
-                                                  class="textarea textarea-sm w-full resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
-                                                />
-                                              </div>
-                                              <div>
-                                                <label class="block text-xs text-mitto-text-muted mb-1">Group (optional)</label>
-                                                <input type="text" value=${isBuiltin ? (prompt.group || '') : editPromptGroup}
-                                                  onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
-                                                  disabled=${isBuiltin}
-                                                  placeholder="e.g., Tasks, Code Quality"
-                                                  class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
-                                                />
-                                              </div>
+                                            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                                              <legend class="fieldset-legend">${isBuiltin ? 'View Prompt' : 'Edit Prompt'}</legend>
+                                              <label class="label" for=${"edit-prompt-name-" + idx}>Button Label</label>
+                                              <input id=${"edit-prompt-name-" + idx} type="text" value=${isBuiltin ? prompt.name : editPromptName}
+                                                onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
+                                                disabled=${isBuiltin}
+                                                class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
+                                              />
+                                              <label class="label" for=${"edit-prompt-text-" + idx}>Prompt Text</label>
+                                              <textarea id=${"edit-prompt-text-" + idx} rows="8"
+                                                value=${isBuiltin ? prompt.prompt : editPromptText}
+                                                onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
+                                                disabled=${isBuiltin}
+                                                class="textarea textarea-sm w-full resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
+                                              />
+                                              <label class="label" for=${"edit-prompt-group-" + idx}>Group (optional)</label>
+                                              <input id=${"edit-prompt-group-" + idx} type="text" value=${isBuiltin ? (prompt.group || '') : editPromptGroup}
+                                                onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
+                                                disabled=${isBuiltin}
+                                                placeholder="e.g., Tasks, Code Quality"
+                                                class="input input-sm w-full ${isBuiltin ? 'opacity-60 cursor-not-allowed' : ''}"
+                                              />
                                               ${!isBuiltin && html`
-                                                <div>
-                                                  <label class="block text-xs text-mitto-text-muted mb-1">Background Color (optional)</label>
-                                                  <div class="flex items-center gap-2">
-                                                    <input type="color" value=${editPromptColor || '#334155'}
-                                                      onInput=${(e) => setEditPromptColor(e.target.value)}
-                                                      class="w-8 h-8 rounded cursor-pointer border border-mitto-border-2"
-                                                    />
-                                                    <input type="text" value=${editPromptColor}
-                                                      onInput=${(e) => setEditPromptColor(e.target.value)}
-                                                      placeholder="#E8F5E9"
-                                                      class="input input-sm flex-1 font-mono"
-                                                    />
-                                                  </div>
+                                                <label class="label">Background Color (optional)</label>
+                                                <div class="flex items-center gap-2">
+                                                  <input type="color" value=${editPromptColor || '#334155'}
+                                                    onInput=${(e) => setEditPromptColor(e.target.value)}
+                                                    class="w-8 h-8 rounded cursor-pointer border border-mitto-border-2"
+                                                  />
+                                                  <input type="text" value=${editPromptColor}
+                                                    onInput=${(e) => setEditPromptColor(e.target.value)}
+                                                    placeholder="#E8F5E9"
+                                                    class="input input-sm flex-1 font-mono"
+                                                  />
                                                 </div>
                                               `}
-                                              <div class="flex justify-end gap-2">
+                                              <div class="flex justify-end gap-2 mt-2">
                                                 <button onClick=${() => setEditingPromptIndex(null)}
                                                   class="btn btn-ghost btn-sm">
                                                   ${isBuiltin ? 'Close' : 'Cancel'}
@@ -1940,7 +1927,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                   </button>
                                                 `}
                                               </div>
-                                            </div>
+                                            </fieldset>
                                           </div>
                                         </div>
                                       `;
