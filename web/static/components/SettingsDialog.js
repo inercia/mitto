@@ -186,9 +186,13 @@ export function AutoChildrenEditor({
   const canAdd = (children || []).length < maxChildren;
 
   return html`
-    <div class="space-y-2">
-      <div class="flex items-center justify-between">
-        <label class="text-sm text-mitto-text-muted">Auto-Create Children</label>
+    <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+      <legend class="fieldset-legend">Auto-Create Children</legend>
+      <p class="label">
+        These conversations are auto-created when a new top-level conversation
+        starts. They are deleted when the parent is deleted.
+      </p>
+      <div class="flex justify-end mb-2">
         ${canAdd
           ? html`
               <button
@@ -203,10 +207,6 @@ export function AutoChildrenEditor({
               <span class="text-xs text-mitto-text-muted">Max ${maxChildren} children</span>
             `}
       </div>
-      <p class="text-xs text-mitto-text-muted">
-        These conversations are auto-created when a new top-level conversation
-        starts. They are deleted when the parent is deleted.
-      </p>
       ${(children || []).length === 0
         ? html`
             <div class="text-xs text-mitto-text-muted italic py-2">
@@ -262,7 +262,7 @@ export function AutoChildrenEditor({
               )}
             </div>
           `}
-    </div>
+    </fieldset>
   `;
 }
 
@@ -375,51 +375,52 @@ export function RunnerRestrictionsEditor({
       ${expanded &&
       html`
         <div class="p-4 space-y-4 border-t border-slate-600/50">
-          <p class="text-xs text-mitto-text-muted">
-            Override inherited restrictions from global/agent config.
-            ${effectiveConfig
-              ? ""
-              : " Loading inherited values..."}
-          </p>
-
-          <!-- Networking -->
-          <div class="space-y-1">
-            <div class="flex items-center gap-3">
-              <input
-                type="checkbox"
-                id="override-networking"
-                checked=${overrideNetworking}
-                onChange=${(e) => handleNetworkingOverride(e.target.checked)}
-                class="checkbox checkbox-sm checkbox-primary"
-              />
-              <label for="override-networking" class="text-sm font-medium"
-                >Override networking</label
-              >
+          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+            <legend class="fieldset-legend">Networking</legend>
+            <p class="label">
+              Override inherited restrictions from global/agent config.
+              ${effectiveConfig
+                ? ""
+                : " Loading inherited values..."}
+            </p>
+            <div class="space-y-1">
+              <div class="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="override-networking"
+                  checked=${overrideNetworking}
+                  onChange=${(e) => handleNetworkingOverride(e.target.checked)}
+                  class="checkbox checkbox-sm checkbox-primary"
+                />
+                <label for="override-networking" class="text-sm font-medium"
+                  >Override networking</label
+                >
+              </div>
+              ${overrideNetworking
+                ? html`
+                    <label class="flex items-center gap-3 ml-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked=${runnerConfig?.restrictions?.allow_networking !==
+                        false}
+                        onChange=${(e) =>
+                          updateRestriction(
+                            "allow_networking",
+                            e.target.checked,
+                          )}
+                        class="checkbox checkbox-sm checkbox-primary"
+                      />
+                      <span class="text-sm">Allow networking</span>
+                    </label>
+                  `
+                : html`
+                    <p class="text-xs text-mitto-text-muted ml-6">
+                      Inherited:
+                      ${inheritedNetworking ? "allowed" : "blocked"}
+                    </p>
+                  `}
             </div>
-            ${overrideNetworking
-              ? html`
-                  <label class="flex items-center gap-3 ml-6 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked=${runnerConfig?.restrictions?.allow_networking !==
-                      false}
-                      onChange=${(e) =>
-                        updateRestriction(
-                          "allow_networking",
-                          e.target.checked,
-                        )}
-                      class="checkbox checkbox-sm checkbox-primary"
-                    />
-                    <span class="text-sm">Allow networking</span>
-                  </label>
-                `
-              : html`
-                  <p class="text-xs text-mitto-text-muted ml-6">
-                    Inherited:
-                    ${inheritedNetworking ? "allowed" : "blocked"}
-                  </p>
-                `}
-          </div>
+          </fieldset>
 
           <!-- Read folders -->
           <${FolderListEditor}
@@ -451,14 +452,13 @@ export function RunnerRestrictionsEditor({
 
           ${runnerType === "docker" &&
           html`
-            <div class="space-y-2 pt-2 border-t border-slate-600/50">
-              <label class="text-sm font-medium text-mitto-text-secondary"
-                >Docker Settings</label
-              >
+            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4 mt-2">
+              <legend class="fieldset-legend">Docker Settings</legend>
               <div class="grid grid-cols-3 gap-3">
                 <div>
-                  <label class="text-xs text-mitto-text-muted">Image</label>
+                  <label class="label" for="docker-image">Image</label>
                   <input
+                    id="docker-image"
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.image || ""}
                     onInput=${(e) => updateDocker("image", e.target.value)}
@@ -467,8 +467,9 @@ export function RunnerRestrictionsEditor({
                   />
                 </div>
                 <div>
-                  <label class="text-xs text-mitto-text-muted">Memory Limit</label>
+                  <label class="label" for="docker-memory">Memory Limit</label>
                   <input
+                    id="docker-memory"
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.memory_limit ||
                     ""}
@@ -479,8 +480,9 @@ export function RunnerRestrictionsEditor({
                   />
                 </div>
                 <div>
-                  <label class="text-xs text-mitto-text-muted">CPU Limit</label>
+                  <label class="label" for="docker-cpu">CPU Limit</label>
                   <input
+                    id="docker-cpu"
                     type="text"
                     value=${runnerConfig?.restrictions?.docker?.cpu_limit || ""}
                     onInput=${(e) => updateDocker("cpu_limit", e.target.value)}
@@ -489,7 +491,7 @@ export function RunnerRestrictionsEditor({
                   />
                 </div>
               </div>
-            </div>
+            </fieldset>
           `}
 
           <!-- Clear button -->
@@ -601,10 +603,12 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
   };
 
   return html`
-    <div class="space-y-3">
+    <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4 space-y-3">
+      <legend class="fieldset-legend">Server Configuration</legend>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1">Server Name</label>
+        <label class="label" for="acp-server-name">Server Name</label>
         <input
+          id="acp-server-name"
           type="text"
           value=${name}
           onInput=${(e) => { setName(e.target.value); emitChange({ name: e.target.value }); }}
@@ -612,8 +616,9 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         />
       </div>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1">Command</label>
+        <label class="label" for="acp-server-command">Command</label>
         <input
+          id="acp-server-command"
           type="text"
           value=${command}
           onInput=${(e) => { setCommand(e.target.value); emitChange({ command: e.target.value }); }}
@@ -622,8 +627,8 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       </div>
       <!-- Model Selection -->
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1">Model Selection</label>
-        <p class="text-xs text-mitto-text-muted mb-2">
+        <label class="label">Model Selection</label>
+        <p class="label">
           Switch to a model based on some selection criteria
         </p>
         <${ModelSelection}
@@ -637,11 +642,12 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         />
       </div>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1"
+        <label class="label" for="acp-server-type"
           >Type
           <span class="text-xs text-mitto-danger ml-1">*</span></label
         >
         <select
+          id="acp-server-type"
           value=${type}
           onChange=${(e) => { setType(e.target.value); emitChange({ type: e.target.value }); }}
           class="select select-sm w-full"
@@ -651,25 +657,26 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
             (t) => html`<option key=${t} value=${t}>${t}</option>`,
           )}
         </select>
-        <p class="text-xs text-mitto-text-muted mt-1">
+        <p class="label">
           Servers with the same type share prompts and agent configuration.
         </p>
       </div>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1"
+        <label class="label" for="acp-server-tags"
           >Tags
           <span class="text-xs text-mitto-text-muted"
             >(optional, for categorization)</span
           ></label
         >
         <input
+          id="acp-server-tags"
           type="text"
           value=${tags}
           onInput=${(e) => { setTags(e.target.value); emitChange({ tags: e.target.value }); }}
           placeholder="e.g., coding, fast-model, production"
           class="input input-sm w-full"
         />
-        <p class="text-xs text-mitto-text-muted mt-1">
+        <p class="label">
           Comma-separated tags for categorization
         </p>
       </div>
@@ -696,7 +703,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       <!-- Environment Variables -->
       <div>
         <div class="flex items-center justify-between mb-2">
-          <label class="block text-sm text-mitto-text-muted"
+          <label class="label"
             >Environment Variables
             <span class="text-xs text-mitto-text-muted">(optional)</span>
           </label>
@@ -759,7 +766,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       ${filePrompts.length > 0 &&
       html`
         <div>
-          <label class="text-sm text-mitto-text-muted mb-2 block"
+          <label class="label"
             >Server-specific prompts
             <span class="text-xs text-mitto-text-muted"
               >(from prompt files)</span
@@ -789,7 +796,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         </div>
       `}
 
-    </div>
+    </fieldset>
   `;
 }
 
@@ -805,10 +812,12 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
   const [group, setGroup] = useState(prompt.group || "");
 
   return html`
-    <div class="space-y-3">
+    <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4 space-y-3">
+      <legend class="fieldset-legend">Action Button</legend>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1">Button Label</label>
+        <label class="label" for="action-btn-label">Button Label</label>
         <input
+          id="action-btn-label"
           type="text"
           value=${name}
           onInput=${(e) => setName(e.target.value)}
@@ -819,8 +828,9 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         />
       </div>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1">Prompt Text</label>
+        <label class="label" for="action-btn-text">Prompt Text</label>
         <textarea
+          id="action-btn-text"
           value=${text}
           onInput=${(e) => setText(e.target.value)}
           rows="8"
@@ -831,10 +841,11 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         />
       </div>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1"
+        <label class="label" for="action-btn-group"
           >Group (optional)</label
         >
         <input
+          id="action-btn-group"
           type="text"
           value=${group}
           onInput=${(e) => setGroup(e.target.value)}
@@ -846,7 +857,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         />
       </div>
       <div>
-        <label class="block text-sm text-mitto-text-muted mb-1"
+        <label class="label"
           >Background Color (optional)</label
         >
         <div class="flex items-center gap-2">
@@ -916,7 +927,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           </button>
         `}
       </div>
-    </div>
+    </fieldset>
   `;
 }
 
@@ -2125,14 +2136,16 @@ export function SettingsDialog({
 
                       ${showAddServer &&
                       html`
-                        <div
-                          class="p-4 bg-slate-800/50 rounded-md border border-mitto-border-1 space-y-3"
+                        <fieldset
+                          class="fieldset bg-base-200 border-base-300 rounded-box border p-4 space-y-3"
                         >
+                          <legend class="fieldset-legend">Add Server</legend>
                           <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1"
+                            <label class="label" for="new-server-name"
                               >Server Name</label
                             >
                             <input
+                              id="new-server-name"
                               type="text"
                               value=${newServerName}
                               onInput=${(e) => setNewServerName(e.target.value)}
@@ -2141,10 +2154,11 @@ export function SettingsDialog({
                             />
                           </div>
                           <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1"
+                            <label class="label" for="new-server-command"
                               >Command</label
                             >
                             <input
+                              id="new-server-command"
                               type="text"
                               value=${newServerCommand}
                               onInput=${(e) =>
@@ -2154,11 +2168,12 @@ export function SettingsDialog({
                             />
                           </div>
                           <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1"
+                            <label class="label" for="new-server-type"
                               >Type
                               <span class="text-xs text-mitto-danger ml-1">*</span></label
                             >
                             <select
+                              id="new-server-type"
                               value=${newServerType}
                               onChange=${(e) =>
                                 setNewServerType(e.target.value)}
@@ -2169,19 +2184,20 @@ export function SettingsDialog({
                                 (t) => html`<option key=${t} value=${t}>${t}</option>`,
                               )}
                             </select>
-                            <p class="text-xs text-mitto-text-muted mt-1">
+                            <p class="label">
                               Servers with the same type share prompts and
                               agent configuration.
                             </p>
                           </div>
                           <div>
-                            <label class="block text-sm text-mitto-text-muted mb-1"
+                            <label class="label" for="new-server-tags"
                               >Tags
                               <span class="text-xs text-mitto-text-muted"
                                 >(optional)</span
                               ></label
                             >
                             <input
+                              id="new-server-tags"
                               type="text"
                               value=${newServerTags}
                               onInput=${(e) =>
@@ -2189,7 +2205,7 @@ export function SettingsDialog({
                               placeholder="e.g., coding, fast-model, production"
                               class="input input-sm w-full"
                             />
-                            <p class="text-xs text-mitto-text-muted mt-1">
+                            <p class="label">
                               Comma-separated tags for categorization
                             </p>
                           </div>
@@ -2225,7 +2241,7 @@ export function SettingsDialog({
                               Add
                             </button>
                           </div>
-                        </div>
+                        </fieldset>
                       `}
                       ${acpServers.length === 0
                         ? html`
