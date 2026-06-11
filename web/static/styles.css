@@ -1791,26 +1791,6 @@ mitto-action {
   color: #2563eb;
 }
 
-
-
-/* Queue badge - small count indicator on queue button */
-.queue-badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
-  color: white;
-  background: #2563eb;
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-
 /* Workspace pill clickable hover effect - uses filter instead of opacity
    to maintain text legibility on colored backgrounds */
 .workspace-pill-clickable {
