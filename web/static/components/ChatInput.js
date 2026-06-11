@@ -2514,7 +2514,7 @@ ${activeUIPrompt.text || ""}</textarea
                         ${img.uploading
                           ? html`
                               <div class="absolute inset-0 flex items-center justify-center">
-                                <span class="loading loading-spinner w-5 h-5 text-white"></span>
+                                <span class="loading loading-spinner w-5 h-5 text-mitto-text-strong"></span>
                               </div>
                             `
                           : html`

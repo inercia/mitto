@@ -112,7 +112,7 @@ export function MessageList({
                           <p>
                             Create a new conversation using the
                             <span
-                              class="inline-flex items-center justify-center w-6 h-6 rounded text-white text-sm font-bold mx-1"
+                              class="inline-flex items-center justify-center w-6 h-6 rounded bg-primary text-primary-content text-sm font-bold mx-1"
                               >+</span
                             >
                             button in the sidebar

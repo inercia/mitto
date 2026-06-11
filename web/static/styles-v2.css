@@ -482,10 +482,6 @@ a:hover {
   color: #18181b !important;
 }
 
-/* Light theme: Text colors */
-.v2-theme:not(.dark) .text-white {
-  color: #18181b !important;
-}
 /* text-gray-200/300/500 migrated to the text-mitto-text-* ladder (Phase 2 Lane B). */
 .v2-theme:not(.dark) .text-gray-400 {
   color: #71717a !important;
@@ -529,10 +525,6 @@ a:hover {
   color: #e4e4e7 !important;
 }
 
-/* Dark theme: Text colors - restore original light text */
-.v2-theme.dark .text-white {
-  color: #ffffff !important;
-}
 /* text-gray-200/300/500 migrated to the text-mitto-text-* ladder (Phase 2 Lane B). */
 .v2-theme.dark .text-gray-400 {
   color: #a1a1aa !important;
@@ -622,7 +614,7 @@ a:hover {
 }
 
 /* Ensure white text on accent-colored buttons (both themes) */
-/* Use high specificity to override .text-white color changes in light theme */
+/* Ensure white label text on accent/danger-colored buttons */
 .v2-theme button.bg-red-500,
 .v2-theme button.bg-red-600,
 .v2-theme button.bg-red-700,
@@ -639,25 +631,7 @@ a:hover {
 .v2-theme button[class*="hover:bg-mitto-accent"]:hover {
   color: #ffffff !important;
 }
-/* Also ensure .text-white inside red/blue buttons stays white */
-.v2-theme button.bg-red-500 .text-white,
-.v2-theme button.bg-red-600 .text-white,
-.v2-theme button.bg-red-700 .text-white,
-.v2-theme button[class*="bg-red-"] .text-white,
-.v2-theme button[class*="bg-blue-"] .text-white,
-.v2-theme button[class*="bg-mitto-accent"] .text-white,
-.v2-theme button[class*="bg-red-"].text-white,
-.v2-theme button[class*="bg-blue-"].text-white,
-.v2-theme button[class*="bg-mitto-accent"].text-white {
-  color: #ffffff !important;
-}
-/* Ensure white text on red/blue badge spans (e.g., queue badge) */
-.v2-theme span.bg-red-500.text-white,
-.v2-theme span[class*="bg-red-"].text-white,
-.v2-theme span[class*="bg-blue-"].text-white,
-.v2-theme span[class*="bg-mitto-accent"].text-white {
-  color: #ffffff !important;
-}
+
 
 /* Toast colors migrated to daisyUI alert-info/success/warning/error (mitto-i1r).
    The alert-* variants carry background + content color via the --mitto-* token

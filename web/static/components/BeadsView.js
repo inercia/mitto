@@ -50,10 +50,10 @@ const DEP_TYPES = [
 
 const PRIORITY_LABELS = { 0: "Critical", 1: "High", 2: "Medium", 3: "Low" };
 const PRIORITY_COLORS = {
-  0: "bg-red-600 text-white",
-  1: "bg-orange-500 text-white",
-  2: "bg-yellow-500 text-black",
-  3: "bg-mitto-surface-4 text-mitto-text-strong",
+  0: "badge-error",
+  1: "badge-warning",
+  2: "badge-info",
+  3: "badge-ghost",
 };
 
 const STATUS_COLORS = {

@@ -714,11 +714,11 @@ export function SessionPanel({
     };
 
     const statusColors = {
-      "A": "bg-green-600 text-white",
-      "M": "bg-amber-600 text-white",
-      "D": "bg-mitto-danger text-mitto-danger-fg",
-      "R": "bg-mitto-accent text-mitto-accent-fg",
-      "C": "bg-purple-600 text-white",
+      "A": "bg-success text-success-content",
+      "M": "bg-warning text-warning-content",
+      "D": "bg-error text-error-content",
+      "R": "bg-primary text-primary-content",
+      "C": "bg-secondary text-secondary-content",
       "?": "bg-mitto-surface-3 text-mitto-text-300 ring-1 ring-mitto-border-3",
     };
 
