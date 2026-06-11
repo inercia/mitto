@@ -1271,7 +1271,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           <!-- Folder header -->
                           <div
                             data-folder-name=${displayName}
-                            class="group flex items-center gap-2 px-3 py-2 rounded-sm cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-slate-700/30"}"
+                            class="group flex items-center gap-2 px-3 py-2 rounded-sm cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-base-200/40"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
                             <${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted shrink-0" />
@@ -1287,7 +1287,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               return html`
                                 <div
                                   key=${key}
-                                  class="group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b border-mitto-border ${isSelected ? "bg-mitto-accent-500/20" : "hover:bg-slate-700/30"}"
+                                  class="group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b border-mitto-border ${isSelected ? "bg-mitto-accent-500/20" : "hover:bg-base-200/40"}"
                                   onClick=${() => guardNewFolder(() => { setSelectedWorkspaceKey(key); setSelectedFolder(null); })}
                                 >
                                   <${WorkspaceBadge}
@@ -1397,7 +1397,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <!-- Folder General tab -->
                       ${activeTab === "general" && html`
                         <div class="space-y-4">
-                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                          <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Location</legend>
                             <label class="label" for="ws-working-dir">Working Directory</label>
                             ${isNewFolder
@@ -1441,7 +1441,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               class="input input-sm w-full"
                             />
                           </fieldset>
-                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                          <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Appearance</legend>
                             <div class="flex gap-4 items-end">
                               <div class="flex-1 min-w-0">
@@ -1478,7 +1478,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <!-- Folder Metadata tab -->
                       ${activeTab === "metadata" && html`
                         <div class="space-y-4">
-                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                          <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Metadata</legend>
                             <label class="label" for="ws-meta-description">Description</label>
                             <textarea
@@ -1510,7 +1510,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </fieldset>
 
                           <!-- User Data Schema Editor -->
-                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                          <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">User Data Schema</legend>
                             <div class="flex items-center justify-between mb-2">
                               <p class="label">
@@ -1602,7 +1602,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             >${" "}(the <code>bd</code> tool) for managing tasks.
                           </p>
                           <!-- Upstream task system selector (persisted in folders.json) -->
-                          <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                          <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Upstream Tasks</legend>
                             <p class="label">
                               Select the external task system beads syncs with. When set, Pull/Push/Sync
@@ -1734,7 +1734,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   </div>
 
                                   ${system.length > 0 && html`
-                                    <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4 mt-4">
+                                    <fieldset class="fieldset pt-2 mt-4">
                                       <legend class="fieldset-legend">System</legend>
                                       <p class="label">Operational beads settings (read-only here; edit via the bd CLI).</p>
                                       <div class="space-y-1">
@@ -1770,7 +1770,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </div>
 
                           ${showAddPrompt && html`
-                            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                            <fieldset class="fieldset pt-2">
                               <legend class="fieldset-legend">New Prompt</legend>
                               <label class="label" for="new-prompt-name">Button Label</label>
                               <input id="new-prompt-name" type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
@@ -1871,7 +1871,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             </div>
                                           </div>
                                           <div class="collapse-content px-3 pb-3">
-                                            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                                            <fieldset class="fieldset pt-2">
                                               <legend class="fieldset-legend">${isBuiltin ? 'View Prompt' : 'Edit Prompt'}</legend>
                                               <label class="label" for=${"edit-prompt-name-" + idx}>Button Label</label>
                                               <input id=${"edit-prompt-name-" + idx} type="text" value=${isBuiltin ? prompt.name : editPromptName}
