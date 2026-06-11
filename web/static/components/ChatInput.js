@@ -76,7 +76,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
     <button
       type="button"
       onClick=${onToggle}
-      class="p-2 text-mitto-text-muted hover:text-mitto-text-strong transition-colors rounded-lg hover:bg-mitto-surface-hover"
+      class="btn btn-ghost btn-square btn-sm"
       title=${collapsed ? "Show prompt area" : "Hide prompt area"}
     >
       <svg
@@ -1917,17 +1917,14 @@ export function ChatInput({
                           kind === "allow_always" ||
                           opt.style === "success"
                         ) {
-                          colorClass =
-                            "bg-emerald-600 hover:bg-emerald-700 border-emerald-500";
+                          colorClass = "btn-success";
                         } else if (
                           kind === "reject_once" ||
                           opt.style === "danger"
                         ) {
-                          colorClass =
-                            "bg-rose-600 hover:bg-rose-700 border-rose-500";
+                          colorClass = "btn-error";
                         } else {
-                          colorClass =
-                            "bg-mitto-surface-4 hover:bg-mitto-surface-hover border-mitto-border-3";
+                          colorClass = "btn-ghost";
                         }
                         return html`
                           <button
@@ -1935,7 +1932,7 @@ export function ChatInput({
                             type="button"
                             onClick=${() =>
                               handleUIPromptAnswer(opt.id, opt.label)}
-                            class="px-4 py-2 ${colorClass} text-mitto-text-strong rounded-lg text-sm font-medium transition-colors border"
+                            class="btn btn-sm ${colorClass}"
                           >
                             ${opt.label}
                           </button>
@@ -2333,7 +2330,7 @@ ${activeUIPrompt.text || ""}</textarea
             <button
               type="button"
               onClick=${() => setUploadError(null)}
-              class="ml-auto text-red-300 hover:text-red-100"
+              class="btn btn-ghost btn-square btn-xs ml-auto"
             >
               <svg
                 class="w-4 h-4"
@@ -2375,7 +2372,7 @@ ${activeUIPrompt.text || ""}</textarea
             <button
               type="button"
               onClick=${() => setImproveError(null)}
-              class="ml-auto text-red-300 hover:text-red-100"
+              class="btn btn-ghost btn-square btn-xs ml-auto"
             >
               <svg
                 class="w-4 h-4"
