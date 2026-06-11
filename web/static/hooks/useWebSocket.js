@@ -3577,6 +3577,23 @@ export function useWebSocket() {
   // Helper to expand the target session's group when navigating
   // Always expands the group containing the session so it's visible in the sidebar
   // In accordion mode, also collapses all other groups
+  // Resolve a session's root-parent working_dir, which is the folder key the
+  // unified sidebar tree groups it under (children are nested below their root
+  // parent's folder). Returns "Unknown" when no working_dir is available.
+  const resolveFolderKey = (session, storedSessions, fallbackWorkingDir) => {
+    let rootParent = session;
+    let depth = 0;
+    while (rootParent?.parent_session_id && depth < 10) {
+      const next = storedSessions.find(
+        (s) => s.session_id === rootParent.parent_session_id,
+      );
+      if (!next) break;
+      rootParent = next;
+      depth++;
+    }
+    return rootParent?.working_dir || fallbackWorkingDir || "Unknown";
+  };
+
   const expandGroupForSession = useCallback(
     (sessionId, workingDir, acpServer) => {
       const storedSessions = storedSessionsRef.current || [];
@@ -3584,91 +3601,48 @@ export function useWebSocket() {
         (s) => s.session_id === sessionId,
       );
 
-      // Determine which tab this session belongs to and use that tab's grouping
-      // mode. Group keys are namespaced per tab (see tabScopedGroupKey in app.js),
-      // so expansion state must be scoped to the session's own tab.
-      const tab = getFilterTabForSession(storedSession);
-      const groupingMode = getFilterTabGrouping(tab);
+      // The unified sidebar tree (mitto-1er.8) groups conversations by folder
+      // (working_dir, resolved to the root parent for nested children) and uses
+      // UNSCOPED keys: folder.key, `archived:<folderKey>`, and `parent:<id>`.
+      // Auto-expand-on-navigate must write those same unscoped keys so the
+      // sidebar (and keyboard/swipe nav) react to the dispatched event.
+      const folderKey = resolveFolderKey(
+        storedSession,
+        storedSessions,
+        workingDir,
+      );
 
-      // Build the raw group key for this session based on its grouping mode.
-      // Must match the key format used by the sidebar rendering in app.js:
-      // - server mode: acpServer || "Unknown"
-      // - workspace mode: `${workingDir}|${acpServer}`
-      // - folder mode: workingDir || "Unknown" (just the folder, no acp server)
-      let rawGroupKey;
-      if (groupingMode === "server") {
-        rawGroupKey = acpServer || "Unknown";
-      } else if (groupingMode === "workspace") {
-        rawGroupKey = `${workingDir || ""}|${acpServer || ""}`;
-      } else if (groupingMode === "folder") {
-        rawGroupKey = workingDir || "Unknown";
+      // In accordion mode, collapse every other folder first (unscoped keys).
+      if (getSingleExpandedGroupMode()) {
+        const allFolderKeys = new Set();
+        for (const s of storedSessions) {
+          allFolderKeys.add(resolveFolderKey(s, storedSessions, null));
+        }
+        for (const key of allFolderKeys) {
+          if (key !== folderKey && isGroupExpanded(key)) {
+            setGroupExpanded(key, false);
+          }
+        }
       }
 
-      // In folder mode, also expand the parent session group if this is a child session.
-      // Folder grouping uses both folder keys (working_dir) and parent keys
-      // (`parent:<parent_session_id>`) for nested child sessions, so if a child
-      // session is selected while its parent group is collapsed it would remain hidden.
-      if (groupingMode === "folder" && storedSession?.parent_session_id) {
+      // Expand the folder so the row is visible (folders default to expanded,
+      // so this only fires when the folder was explicitly collapsed).
+      if (!isGroupExpanded(folderKey)) {
+        setGroupExpanded(folderKey, true);
+      }
+
+      // Archived rows live in a per-folder `archived:<folderKey>` subgroup that
+      // defaults to collapsed in the sidebar — force-expand it (and dispatch the
+      // event) when navigating to an archived row.
+      if (storedSession?.archived) {
+        setGroupExpanded(`archived:${folderKey}`, true);
+      }
+
+      // Child rows live in a `parent:<id>` group; expand it for child sessions.
+      if (storedSession?.parent_session_id) {
         const parentGroupKey = `parent:${storedSession.parent_session_id}`;
         if (!isGroupExpanded(parentGroupKey)) {
           setGroupExpanded(parentGroupKey, true);
-        }
-
-        // For cross-workspace children: resolve the root parent's working_dir so
-        // the folder group key matches where the child is actually displayed.
-        // app.js uses resolveRootParent() to group children under their root parent's
-        // folder, so we must use the root parent's working_dir for the groupKey
-        // rather than the child's own working_dir.
-        let rootParent = storedSessions.find(
-          (s) => s.session_id === storedSession.parent_session_id,
-        );
-        let depth = 0;
-        while (rootParent?.parent_session_id && depth < 10) {
-          const next = storedSessions.find(
-            (s) => s.session_id === rootParent.parent_session_id,
-          );
-          if (!next) break;
-          rootParent = next;
-          depth++;
-        }
-        if (rootParent) {
-          rawGroupKey = rootParent.working_dir || "Unknown";
-        }
-      }
-
-      // Only expand if we have a valid group key and groups are being used
-      if (rawGroupKey && groupingMode && groupingMode !== "none") {
-        const groupKey = tabScopedGroupKey(tab, rawGroupKey);
-        // In accordion mode, collapse all other groups first
-        if (getSingleExpandedGroupMode()) {
-          // Compute all group keys from stored sessions so we can collapse groups
-          // that were never explicitly toggled (which default to expanded).
-          // getExpandedGroups() only contains explicitly-set groups, so groups that
-          // default to expanded would be missed.
-          // Only consider sessions in the SAME tab so we never collapse groups
-          // that belong to a different tab's view.
-          const allGroupKeys = new Set();
-          for (const s of storedSessions) {
-            if (getFilterTabForSession(s) !== tab) continue;
-            let rawKey;
-            if (groupingMode === "server") {
-              rawKey = s.acp_server || "Unknown";
-            } else if (groupingMode === "workspace") {
-              rawKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
-            } else if (groupingMode === "folder") {
-              rawKey = s.working_dir || "Unknown";
-            }
-            if (rawKey) allGroupKeys.add(tabScopedGroupKey(tab, rawKey));
-          }
-          for (const key of allGroupKeys) {
-            if (key !== groupKey && isGroupExpanded(key)) {
-              setGroupExpanded(key, false);
-            }
-          }
-        }
-        // Always expand the session's group so it's visible
-        if (!isGroupExpanded(groupKey)) {
-          setGroupExpanded(groupKey, true);
         }
       }
     },
