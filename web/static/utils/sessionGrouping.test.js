@@ -7,6 +7,7 @@ import {
   computeGroupedSessions,
   computeSessionFingerprint,
   computeUnifiedTree,
+  filterUnifiedTree,
 } from "./sessionGrouping.js";
 
 // ---------------------------------------------------------------------------
@@ -402,5 +403,117 @@ describe("computeGroupedSessions – workspace", () => {
     const s2 = makeSession({ session_id: "s2", working_dir: "/a", acp_server: "aug" });
     const result = computeGroupedSessions([s1, s2], "workspace", [s1, s2], []);
     expect(result).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filterUnifiedTree Tests
+// ---------------------------------------------------------------------------
+
+describe("filterUnifiedTree", () => {
+  function makeRegular(overrides = {}) {
+    return makeSession({ session_id: `r-${Math.random()}`, ...overrides });
+  }
+  function makePeriodic(overrides = {}) {
+    return makeSession({ session_id: `p-${Math.random()}`, periodic_enabled: true, ...overrides });
+  }
+  function makeArchived(overrides = {}) {
+    return makeSession({ session_id: `a-${Math.random()}`, archived: true, ...overrides });
+  }
+
+  const WS = [{ working_dir: "/home/user/project" }];
+
+  test("all-true filter → folders/conversations/archived unchanged; showTasks true", () => {
+    const sessions = [makeRegular(), makePeriodic(), makeArchived()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: true, archived: true, tasks: true });
+    expect(result.folders.length).toBeGreaterThan(0);
+    result.folders.forEach((folder) => {
+      expect(folder.showTasks).toBe(true);
+    });
+    // total conversations (non-archived) should include regular + periodic
+    const totalConvs = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
+    expect(totalConvs).toBeGreaterThanOrEqual(2);
+    const totalArchived = result.folders.reduce((sum, f) => sum + f.archived.length, 0);
+    expect(totalArchived).toBeGreaterThanOrEqual(1);
+  });
+
+  test("regular:false → regular nodes removed; periodic kept", () => {
+    const sessions = [makeRegular(), makePeriodic()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: false, periodic: true, archived: true, tasks: true });
+    result.folders.forEach((folder) => {
+      folder.conversations.forEach((node) => {
+        expect(node.category).not.toBe("conversations");
+      });
+    });
+    const totalPeriodic = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
+    expect(totalPeriodic).toBeGreaterThanOrEqual(1);
+  });
+
+  test("periodic:false → periodic nodes removed", () => {
+    const sessions = [makeRegular(), makePeriodic()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: false, archived: true, tasks: true });
+    result.folders.forEach((folder) => {
+      folder.conversations.forEach((node) => {
+        expect(node.category).not.toBe("periodic");
+      });
+    });
+  });
+
+  test("archived:false → every folder's archived is []", () => {
+    const sessions = [makeRegular(), makeArchived()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: true, archived: false, tasks: true });
+    result.folders.forEach((folder) => {
+      expect(folder.archived).toEqual([]);
+    });
+  });
+
+  test("tasks:false → every folder has showTasks === false", () => {
+    const sessions = [makeRegular()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: true, archived: true, tasks: false });
+    result.folders.forEach((folder) => {
+      expect(folder.showTasks).toBe(false);
+    });
+  });
+
+  test("pruning: folder with only regular sessions is removed when regular:false", () => {
+    const sessions = [makeRegular()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: false, periodic: false, archived: false, tasks: false });
+    expect(result.folders).toHaveLength(0);
+  });
+
+  test("hiding a periodic parent drops the whole subtree", () => {
+    const parent = makePeriodic({ session_id: "parent-1" });
+    const child = makeRegular({ session_id: "child-1", parent_session_id: "parent-1" });
+    const sessions = [parent, child];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: false, archived: true, tasks: true });
+    // parent (periodic) should not appear
+    result.folders.forEach((folder) => {
+      folder.conversations.forEach((node) => {
+        expect(node.session_id).not.toBe("parent-1");
+      });
+    });
+  });
+
+  test("null/undefined tree → { dashboard: null, folders: [] }", () => {
+    expect(filterUnifiedTree(null, {})).toEqual({ dashboard: null, folders: [] });
+    expect(filterUnifiedTree(undefined, {})).toEqual({ dashboard: null, folders: [] });
+  });
+
+  test("missing filter (undefined) → treated as all-true", () => {
+    const sessions = [makeRegular(), makePeriodic(), makeArchived()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, undefined);
+    result.folders.forEach((folder) => {
+      expect(folder.showTasks).toBe(true);
+    });
+    const totalConvs = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
+    expect(totalConvs).toBeGreaterThanOrEqual(2);
   });
 });

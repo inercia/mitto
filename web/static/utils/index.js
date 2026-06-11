@@ -45,6 +45,8 @@ export {
   tabScopedGroupKey,
   stripTabScope,
   getFilterTabForSession,
+  getCategoryFilter,
+  setCategoryFilter,
   getSidebarWidth,
   setSidebarWidth,
   getSidebarWidthConstraints,

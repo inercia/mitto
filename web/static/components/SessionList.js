@@ -1,9 +1,11 @@
 // Mitto Web Interface - Session List Component
 const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = window.preact;
 
-import { computeUnifiedTree } from "../utils/sessionGrouping.js";
+import { computeUnifiedTree, filterUnifiedTree } from "../utils/sessionGrouping.js";
 import {
   getFilterTabForSession,
+  getCategoryFilter,
+  setCategoryFilter,
   getExpandedGroups,
   isGroupExpanded,
   setGroupExpanded,
@@ -27,6 +29,7 @@ import {
   RobotIcon,
   BeadsIcon,
   DashboardIcon,
+  FilterIcon,
   TerminalIcon,
 } from "./Icons.js";
 
@@ -304,6 +307,29 @@ export function SessionList({
     [allSessions, workspaces],
   );
 
+  // Category visibility filter (mitto-1er.10): show/hide Regular/Periodic/
+  // Archived/Tasks. Browser-session scoped (sessionStorage); all visible by
+  // default. Applied as a pure predicate over the unified tree before render.
+  const [categoryFilter, setCategoryFilterState] = useState(() =>
+    getCategoryFilter(),
+  );
+  const handleCategoryToggle = useCallback((key) => {
+    setCategoryFilterState((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      setCategoryFilter(next);
+      return next;
+    });
+  }, []);
+  const anyCategoryHidden =
+    !categoryFilter.regular ||
+    !categoryFilter.periodic ||
+    !categoryFilter.archived ||
+    !categoryFilter.tasks;
+  const filteredTree = useMemo(
+    () => filterUnifiedTree(unifiedTree, categoryFilter),
+    [unifiedTree, categoryFilter],
+  );
+
   // Build a map from session ID → its family's parent group key ("parent:<id>").
   // Covers both the parent session itself and all its children.
   // Used by handleSelectWithCollapse to know which family a clicked session belongs to.
@@ -479,7 +505,7 @@ export function SessionList({
   // SessionItem expand/collapse mechanism. Static Dashboard/Tasks rows are placeholders
   // here — their behavior is wired in mitto-1er.7; per-category icons in mitto-1er.5.
   const renderUnifiedTree = () => {
-    const { dashboard, folders } = unifiedTree;
+    const { dashboard, folders } = filteredTree;
     const allFolderKeys = folders.map((f) => f.key);
 
     // All parent keys across the whole tree, so opening one parent collapses the
@@ -693,23 +719,26 @@ export function SessionList({
                 </summary>
                 <ul>
                   ${renderSessionNodes(folder.conversations)}
-                  <!-- Tasks (static, per-folder) — opens the Beads view for this
-                       folder. Not a conversation; excluded from nav. -->
-                  <li>
-                    <button
-                      type="button"
-                      onClick=${(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onBeadsOpen && onBeadsOpen(folder.workingDir);
-                      }}
-                      class="gap-2 text-sm text-mitto-text-muted"
-                      title="Beads issues: ${folder.workingDir}"
-                    >
-                      <${BeadsIcon} className="w-4 h-4 shrink-0" />
-                      <span class="truncate">${folder.tasksNode.label}</span>
-                    </button>
-                  </li>
+                  ${folder.showTasks &&
+                  html`
+                    <!-- Tasks (static, per-folder) — opens the Beads view for
+                         this folder. Not a conversation; excluded from nav. -->
+                    <li>
+                      <button
+                        type="button"
+                        onClick=${(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onBeadsOpen && onBeadsOpen(folder.workingDir);
+                        }}
+                        class="gap-2 text-sm text-mitto-text-muted"
+                        title="Beads issues: ${folder.workingDir}"
+                      >
+                        <${BeadsIcon} className="w-4 h-4 shrink-0" />
+                        <span class="truncate">${folder.tasksNode.label}</span>
+                      </button>
+                    </li>
+                  `}
                   ${folder.archived.length > 0 &&
                   html`
                     <li class="archived-subgroup">
@@ -813,6 +842,44 @@ export function SessionList({
               ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
               : html`<${PlusIcon} className="w-4 h-4" />`}
           </button>
+          <details class="dropdown dropdown-end">
+            <summary
+              data-testid="category-filter-btn"
+              class="btn btn-ghost btn-square btn-sm list-none ${anyCategoryHidden
+                ? "text-mitto-accent-400"
+                : "text-mitto-text-muted"}"
+              title="Filter categories"
+              aria-label="Filter categories"
+            >
+              <${FilterIcon} className="w-4 h-4" />
+            </summary>
+            <ul
+              class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
+            >
+              <li class="menu-title text-xs">Show categories</li>
+              ${[
+                { key: "regular", label: "Regular" },
+                { key: "periodic", label: "Periodic" },
+                { key: "archived", label: "Archived" },
+                { key: "tasks", label: "Tasks" },
+              ].map(
+                (opt) => html`
+                  <li key=${opt.key}>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        class="checkbox checkbox-sm"
+                        checked=${categoryFilter[opt.key]}
+                        onInput=${() => handleCategoryToggle(opt.key)}
+                        data-testid=${`category-filter-${opt.key}`}
+                      />
+                      <span class="text-sm">${opt.label}</span>
+                    </label>
+                  </li>
+                `,
+              )}
+            </ul>
+          </details>
           ${onClose &&
           html`
             <button

@@ -265,6 +265,61 @@ export function computeUnifiedTree(allSessions, workspaces = []) {
   return { dashboard, folders };
 }
 
+/**
+ * Filter the unified tree by category visibility (mitto-1er.10).
+ *
+ * Pure predicate applied to the unified tree (after grouping/nesting), before
+ * render. Category derives from each conversation node's `category`
+ * (getFilterTabForSession): conversations→regular, periodic→periodic,
+ * archived→archived. Per-folder Tasks nodes are the 'tasks' category.
+ *
+ * Hiding a parent conversation hides its children too (the whole subtree is
+ * dropped). A folder with no visible conversations, no visible archived, and
+ * Tasks hidden is pruned entirely.
+ *
+ * @param {{dashboard: Object, folders: Array}} tree - from computeUnifiedTree
+ * @param {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}} filter
+ * @returns {{dashboard: Object, folders: Array}} new tree; each folder gains showTasks
+ */
+export function filterUnifiedTree(tree, filter) {
+  if (!tree) return { dashboard: null, folders: [] };
+  const f = filter || {};
+  const regular = f.regular !== false;
+  const periodic = f.periodic !== false;
+  const archived = f.archived !== false;
+  const tasks = f.tasks !== false;
+
+  const categoryEnabled = (category) => {
+    if (category === FILTER_TAB.PERIODIC) return periodic;
+    if (category === FILTER_TAB.ARCHIVED) return archived;
+    return regular;
+  };
+
+  const filterNodes = (nodes) =>
+    (nodes || [])
+      .filter((node) => categoryEnabled(node.category))
+      .map((node) => ({
+        ...node,
+        children: filterNodes(node.children || []),
+      }));
+
+  const folders = (tree.folders || [])
+    .map((folder) => ({
+      ...folder,
+      conversations: filterNodes(folder.conversations),
+      archived: archived ? filterNodes(folder.archived) : [],
+      showTasks: tasks,
+    }))
+    .filter(
+      (folder) =>
+        folder.conversations.length > 0 ||
+        folder.archived.length > 0 ||
+        folder.showTasks,
+    );
+
+  return { dashboard: tree.dashboard, folders };
+}
+
 export function computeGroupedSessions(
   filteredSessions,
   groupingMode,

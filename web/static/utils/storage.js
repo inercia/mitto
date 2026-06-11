@@ -829,6 +829,65 @@ export function getFilterTabForSession(session) {
 }
 
 // =============================================================================
+// Category Filter (mitto-1er.10) — sessionStorage (browser-session scope)
+// =============================================================================
+
+const CATEGORY_FILTER_KEY = "mitto_category_filter";
+
+/**
+ * Default category filter: all categories visible.
+ * Shape: { regular, periodic, archived, tasks } (all booleans).
+ */
+export const DEFAULT_CATEGORY_FILTER = {
+  regular: true,
+  periodic: true,
+  archived: true,
+  tasks: true,
+};
+
+/**
+ * Read the category filter from sessionStorage (browser-session scope; resets
+ * in a fresh browser session). Returns the all-visible default when unset or
+ * invalid.
+ * @returns {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}}
+ */
+export function getCategoryFilter() {
+  try {
+    const value = sessionStorage.getItem(CATEGORY_FILTER_KEY);
+    if (!value) return { ...DEFAULT_CATEGORY_FILTER };
+    const parsed = JSON.parse(value);
+    return {
+      regular: parsed.regular !== false,
+      periodic: parsed.periodic !== false,
+      archived: parsed.archived !== false,
+      tasks: parsed.tasks !== false,
+    };
+  } catch (e) {
+    console.warn("Failed to read category filter from sessionStorage:", e);
+    return { ...DEFAULT_CATEGORY_FILTER };
+  }
+}
+
+/**
+ * Persist the category filter to sessionStorage (browser-session scope).
+ * @param {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}} state
+ */
+export function setCategoryFilter(state) {
+  try {
+    const s = state || {};
+    const normalized = {
+      regular: s.regular !== false,
+      periodic: s.periodic !== false,
+      archived: s.archived !== false,
+      tasks: s.tasks !== false,
+    };
+    sessionStorage.setItem(CATEGORY_FILTER_KEY, JSON.stringify(normalized));
+  } catch (e) {
+    console.warn("Failed to save category filter to sessionStorage:", e);
+  }
+}
+
+// =============================================================================
 // Per-Tab Grouping Persistence (localStorage)
 // =============================================================================
 

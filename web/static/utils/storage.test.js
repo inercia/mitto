@@ -16,6 +16,9 @@ import {
   cycleFilterTabGrouping,
   getBeadsFilters,
   setBeadsFilters,
+  getCategoryFilter,
+  setCategoryFilter,
+  DEFAULT_CATEGORY_FILTER,
 } from "./storage.js";
 
 // Simple localStorage mock
@@ -33,6 +36,21 @@ const localStorageMock = {
   },
 };
 
+// Simple sessionStorage mock
+let sessionMockStore = {};
+const sessionStorageMock = {
+  getItem: (key) => sessionMockStore[key] || null,
+  setItem: (key, value) => {
+    sessionMockStore[key] = value;
+  },
+  removeItem: (key) => {
+    delete sessionMockStore[key];
+  },
+  clear: () => {
+    sessionMockStore = {};
+  },
+};
+
 // Mock fetch for server-side storage (to prevent actual network calls)
 global.fetch = () =>
   Promise.resolve({
@@ -42,7 +60,9 @@ global.fetch = () =>
 
 beforeEach(() => {
   mockStore = {};
+  sessionMockStore = {};
   Object.defineProperty(window, "localStorage", { value: localStorageMock });
+  Object.defineProperty(window, "sessionStorage", { value: sessionStorageMock, writable: true });
 });
 
 // =============================================================================
@@ -449,5 +469,44 @@ describe("setBeadsFilters", () => {
     const filters = { type: "task", search: "port" };
     setBeadsFilters(filters);
     expect(getBeadsFilters()).toEqual(filters);
+  });
+});
+
+// =============================================================================
+// getCategoryFilter / setCategoryFilter Tests
+// =============================================================================
+
+describe("getCategoryFilter / setCategoryFilter", () => {
+  test("returns all-true default when sessionStorage empty", () => {
+    const result = getCategoryFilter();
+    expect(result).toEqual(DEFAULT_CATEGORY_FILTER);
+    expect(result.regular).toBe(true);
+    expect(result.periodic).toBe(true);
+    expect(result.archived).toBe(true);
+    expect(result.tasks).toBe(true);
+  });
+
+  test("round-trips: setCategoryFilter then getCategoryFilter", () => {
+    setCategoryFilter({ regular: false, periodic: true, archived: true, tasks: false });
+    const result = getCategoryFilter();
+    expect(result.regular).toBe(false);
+    expect(result.periodic).toBe(true);
+    expect(result.archived).toBe(true);
+    expect(result.tasks).toBe(false);
+  });
+
+  test("invalid JSON in sessionStorage → returns all-true default", () => {
+    sessionMockStore["mitto_category_filter"] = "not-valid-json{{{";
+    const result = getCategoryFilter();
+    expect(result).toEqual(DEFAULT_CATEGORY_FILTER);
+  });
+
+  test("partial object persisted → missing keys normalized to true", () => {
+    sessionMockStore["mitto_category_filter"] = JSON.stringify({ regular: false });
+    const result = getCategoryFilter();
+    expect(result.regular).toBe(false);
+    expect(result.periodic).toBe(true);
+    expect(result.archived).toBe(true);
+    expect(result.tasks).toBe(true);
   });
 });

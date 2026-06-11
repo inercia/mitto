@@ -447,4 +447,55 @@ test.describe("Hierarchical Session Grouping", () => {
       console.log(`[Test] After: ${afterUpdatedAt}`);
     }
   });
+
+  test("should show category filter dropdown with all checkboxes and persist state", async ({
+    page,
+    helpers,
+  }) => {
+    // Ensure sidebar is visible (it may be hidden on narrow viewports)
+    const sidebar = page.locator(".sessions-sidebar, [data-testid='sessions-sidebar'], aside").first();
+    const sidebarVisible = await sidebar.isVisible().catch(() => false);
+    if (!sidebarVisible) {
+      // Try toggling sidebar via button
+      const sidebarToggle = page.locator("[data-testid='sidebar-toggle'], [title='Toggle sidebar']").first();
+      if (await sidebarToggle.isVisible().catch(() => false)) {
+        await sidebarToggle.click();
+        await page.waitForTimeout(300);
+      }
+    }
+
+    // The filter button must be present in the sidebar header
+    const filterBtn = page.locator("[data-testid='category-filter-btn']");
+    await expect(filterBtn).toBeVisible({ timeout: 5000 });
+
+    // Open the dropdown
+    await filterBtn.click();
+
+    // All four category checkboxes must be visible and checked by default
+    for (const key of ["regular", "periodic", "archived", "tasks"]) {
+      const cb = page.locator(`[data-testid="category-filter-${key}"]`);
+      await expect(cb).toBeVisible({ timeout: 3000 });
+      await expect(cb).toBeChecked();
+    }
+
+    // Uncheck "archived"
+    await page.locator('[data-testid="category-filter-archived"]').click();
+
+    // Filter button should gain the active indicator class
+    await expect(filterBtn).toHaveClass(/text-mitto-accent-400/);
+
+    // Reload in the same browser context — sessionStorage persists
+    await page.reload();
+    await helpers.waitForAppReady(page);
+
+    // Re-open the dropdown
+    const filterBtnAfterReload = page.locator("[data-testid='category-filter-btn']");
+    await expect(filterBtnAfterReload).toBeVisible({ timeout: 5000 });
+    await filterBtnAfterReload.click();
+
+    // "archived" checkbox must still be unchecked (sessionStorage persisted)
+    const archivedCb = page.locator('[data-testid="category-filter-archived"]');
+    await expect(archivedCb).toBeVisible({ timeout: 3000 });
+    await expect(archivedCb).not.toBeChecked();
+  });
 });
