@@ -317,6 +317,11 @@ export function SessionList({
     setCategoryFilterState((prev) => {
       const next = { ...prev, [key]: !prev[key] };
       setCategoryFilter(next);
+      window.dispatchEvent(
+        new CustomEvent("mitto-category-filter-changed", {
+          detail: { filter: next },
+        }),
+      );
       return next;
     });
   }, []);
