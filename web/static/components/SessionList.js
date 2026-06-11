@@ -1465,27 +1465,34 @@ export function SessionList({
             <${SunIcon} className="swap-on w-4 h-4" />
             <${MoonIcon} className="swap-off w-4 h-4" />
           </label>
-          <!-- Font size toggle -->
+          <!-- Font size toggle (daisyUI join segmented control) -->
           <div
-            class="font-size-toggle"
-            onClick=${onToggleFontSize}
-            role="button"
-            tabindex="0"
-            title="${isLargeFont
-              ? "Switch to small font"
-              : "Switch to large font"}"
+            class="join"
+            role="group"
             aria-label="Toggle between small and large font size"
           >
-            <span
-              class="font-size-toggle__option ${!isLargeFont ? "active" : ""}"
-              >A</span
+            <button
+              type="button"
+              onClick=${() => isLargeFont && onToggleFontSize()}
+              class="btn btn-sm join-item ${!isLargeFont
+                ? "btn-active"
+                : "btn-ghost"}"
+              title="Switch to small font"
+              aria-pressed=${!isLargeFont}
             >
-            <span
-              class="font-size-toggle__option font-size-toggle__option--large ${isLargeFont
-                ? "active"
-                : ""}"
-              >A</span
+              <span class="text-xs font-semibold">A</span>
+            </button>
+            <button
+              type="button"
+              onClick=${() => !isLargeFont && onToggleFontSize()}
+              class="btn btn-sm join-item ${isLargeFont
+                ? "btn-active"
+                : "btn-ghost"}"
+              title="Switch to large font"
+              aria-pressed=${isLargeFont}
             >
+              <span class="text-base font-semibold">A</span>
+            </button>
           </div>
           <!-- Keyboard shortcuts button -->
           <button
