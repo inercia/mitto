@@ -51,10 +51,10 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
 
   // Opens the project-alpha group context menu and returns its locator.
   async function openGroupMenu(page, timeouts) {
-    // Sticky group/folder headers carry data-has-context-menu; session items do
-    // not use the sticky class, so this targets the folder header specifically.
+    // Folder headers are daisyUI <summary> rows carrying data-has-context-menu;
+    // session items do not carry it, so this targets the folder header specifically.
     const folderHeader = page
-      .locator('div.sticky.top-0[data-has-context-menu="true"]')
+      .locator('summary[data-has-context-menu="true"]')
       .filter({ hasText: "project-alpha" })
       .first();
     await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });

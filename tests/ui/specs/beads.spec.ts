@@ -78,7 +78,7 @@ const PANEL_BACKDROP = "div.properties-backdrop";
 // and waits for the mocked issue list to render. Shared by all Beads specs.
 async function openBeads(page, timeouts) {
   const folderHeader = page
-    .locator('div.sticky.top-0[data-has-context-menu="true"]')
+    .locator('summary[data-has-context-menu="true"]')
     .filter({ hasText: "project-alpha" })
     .first();
   await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });
@@ -518,7 +518,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
   // confirmation dialog is showing. Returns the dialog locator.
   async function openEpicDeleteDialog(page, timeouts) {
     const folderHeader = page
-      .locator('div.sticky.top-0[data-has-context-menu="true"]')
+      .locator('summary[data-has-context-menu="true"]')
       .filter({ hasText: "project-alpha" })
       .first();
     await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });

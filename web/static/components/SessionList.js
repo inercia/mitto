@@ -1,7 +1,7 @@
 // Mitto Web Interface - Session List Component
 const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = window.preact;
 
-import { computeGroupedSessions, computeSessionFingerprint } from "../utils/sessionGrouping.js";
+import { computeGroupedSessions, computeSessionFingerprint, computeUnifiedTree } from "../utils/sessionGrouping.js";
 import { buildSessionTree } from "../utils/sessionTree.js";
 import {
   FILTER_TAB,
@@ -343,6 +343,46 @@ export function SessionList({
     [sidebarExpandedGroups, filterTab],
   );
 
+  // --- Unified tree (mitto-1er.3) expansion helpers ---------------------------
+  // The unified sidebar tree uses a SINGLE, untabbed expansion keyspace (per the
+  // mitto-1er.1 spike): folder keys and the per-folder "archived:<key>" subgroup
+  // key are stored unscoped (no tabScopedGroupKey), unlike the legacy tab-scoped
+  // grouping render. Parent-child keys ("parent:<id>") keep using
+  // handleToggleGroup/isSidebarGroupExpanded (those already pass through unscoped).
+  const isUnifiedFolderExpanded = (folderKey) =>
+    folderKey in sidebarExpandedGroups ? sidebarExpandedGroups[folderKey] : true;
+  const isUnifiedArchivedExpanded = (folderKey) => {
+    const key = `archived:${folderKey}`;
+    return key in sidebarExpandedGroups ? sidebarExpandedGroups[key] : false;
+  };
+
+  // Controlled <details> toggle for unified-tree folders and the archived subgroup.
+  // willOpen is the <details> element's resulting open state. Folder-level toggles
+  // honor accordion (single-expanded) mode across allFolderKeys; the archived
+  // subgroup is exempt (it nests inside a folder).
+  const handleUnifiedToggle = useCallback(
+    (groupKey, willOpen, allFolderKeys = []) => {
+      const isFolderKey = !groupKey.startsWith("archived:");
+      const accordion = willOpen && isFolderKey && getSingleExpandedGroupMode();
+      setSidebarExpandedGroups((prev) => {
+        const next = { ...prev, [groupKey]: willOpen };
+        if (accordion) {
+          for (const k of allFolderKeys) {
+            if (k !== groupKey) next[k] = false;
+          }
+        }
+        return next;
+      });
+      if (accordion) {
+        for (const k of allFolderKeys) {
+          if (k !== groupKey && isGroupExpanded(k)) setGroupExpanded(k, false);
+        }
+      }
+      setGroupExpanded(groupKey, willOpen);
+    },
+    [],
+  );
+
 
   // Get grouping icon based on current mode
   const getGroupingIcon = () => {
@@ -519,6 +559,13 @@ export function SessionList({
     prevGroupedSessions.current = result;
     return result;
   }, [filteredSessions, groupingMode, allSessions, workspaces]);
+
+  // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
+  // sessions (regular + periodic + archived), independent of the filter tab.
+  const unifiedTree = useMemo(
+    () => computeUnifiedTree(allSessions, workspaces),
+    [allSessions, workspaces],
+  );
 
   // Build a map from session ID → its family's parent group key ("parent:<id>").
   // Covers both the parent session itself and all its children.
@@ -1274,6 +1321,263 @@ export function SessionList({
     }
   };
 
+  // Render the unified sidebar tree (mitto-1er.3): daisyUI `menu` with CONTROLLED
+  // <details> expansion. Consumes computeUnifiedTree (Dashboard + folders, each with
+  // conversations[]/archived[] and a Tasks node). Folders and the per-folder Archived
+  // subgroup are controlled <details>; parent-child nesting reuses the existing
+  // SessionItem expand/collapse mechanism. Static Dashboard/Tasks rows are placeholders
+  // here — their behavior is wired in mitto-1er.7; per-category icons in mitto-1er.5.
+  const renderUnifiedTree = () => {
+    const { dashboard, folders } = unifiedTree;
+    const allFolderKeys = folders.map((f) => f.key);
+
+    // All parent keys across the whole tree, so opening one parent collapses the
+    // others (parent groups always behave as an accordion).
+    const allParentKeys = [];
+    folders.forEach((f) => {
+      [...f.conversations, ...f.archived].forEach((s) => {
+        if (s.children && s.children.length > 0) {
+          allParentKeys.push(`parent:${s.session_id}`);
+        }
+      });
+    });
+
+    const countNodes = (nodes) =>
+      nodes.reduce(
+        (sum, s) => sum + 1 + (s.children ? s.children.length : 0),
+        0,
+      );
+    const hasStreaming = (nodes) =>
+      nodes.some(
+        (s) =>
+          streamingMap.has(s.session_id) ||
+          (s.children &&
+            s.children.some((c) => streamingMap.has(c.session_id))),
+      );
+
+    // Render a list of root session nodes (with nested children) — shared by the
+    // folder conversations[] list and the archived[] subgroup.
+    const renderSessionNodes = (nodes) =>
+      nodes.map((session) => {
+        const hasChildren =
+          session.children && session.children.length > 0;
+        const parentKey = `parent:${session.session_id}`;
+        const childrenExpanded = hasChildren
+          ? isSidebarGroupExpanded(parentKey)
+          : false;
+        const hasChildStreaming =
+          hasChildren &&
+          session.children.some((c) => streamingMap.has(c.session_id));
+        return html`
+          <div
+            key=${session.session_id}
+            class="parent-session-group border-b border-mitto-border-1 ${hasChildren
+              ? "has-children"
+              : ""}"
+          >
+            ${renderSessionItem(
+              {
+                ...session,
+                isStreaming: streamingMap.has(session.session_id),
+                isWaitingForChildren: waitingMap.has(session.session_id),
+                isWaitingForUserInput: uiPromptMap.has(session.session_id),
+              },
+              {
+                hideBadge: false,
+                badgeHideAbbreviation: true,
+                badgeHideAcpServer: false,
+                isSpawned: !hasChildren && !!session._parentId,
+                childCount: hasChildren ? session.children.length : 0,
+                hasChildStreaming:
+                  hasChildren && !childrenExpanded && hasChildStreaming,
+                hasChildren: hasChildren,
+                isExpanded: childrenExpanded,
+                onToggleExpand: hasChildren
+                  ? () => handleToggleGroup(parentKey, allParentKeys)
+                  : null,
+              },
+            )}
+            ${hasChildren &&
+            html`
+              <div
+                class="session-children ${childrenExpanded
+                  ? "session-children--expanded"
+                  : ""}"
+              >
+                ${session.children.map(
+                  (child) =>
+                    html`<div class="session-item--child">
+                      ${renderSessionItem(
+                        {
+                          ...child,
+                          isStreaming: streamingMap.has(child.session_id),
+                          isWaitingForChildren: waitingMap.has(
+                            child.session_id,
+                          ),
+                          isWaitingForUserInput: uiPromptMap.has(
+                            child.session_id,
+                          ),
+                        },
+                        {
+                          hideBadge: false,
+                          badgeHideAbbreviation: true,
+                          badgeHideAcpServer: false,
+                          isSpawned: true,
+                          extraLeftPadding: "pl-8",
+                        },
+                      )}
+                    </div>`,
+                )}
+              </div>
+            `}
+          </div>
+        `;
+      });
+
+    return html`
+      <ul class="menu menu-sm w-full p-0 flex-nowrap">
+        <!-- Dashboard (static, top-level) — placeholder; wired in mitto-1er.7 -->
+        <li>
+          <button type="button" class="gap-2">
+            <${FolderIcon} className="w-4 h-4 shrink-0" />
+            <span class="truncate">${dashboard.label}</span>
+          </button>
+        </li>
+        ${folders.map((folder) => {
+          const folderExpanded = isUnifiedFolderExpanded(folder.key);
+          const archivedExpanded = isUnifiedArchivedExpanded(folder.key);
+          const totalSessions =
+            countNodes(folder.conversations) + countNodes(folder.archived);
+          const hasFolderStreaming =
+            hasStreaming(folder.conversations) ||
+            hasStreaming(folder.archived);
+          return html`
+            <li key=${folder.key} class="folder-group">
+              <details
+                open=${folderExpanded}
+                onToggle=${(e) => {
+                  const open = e.currentTarget.open;
+                  if (open !== folderExpanded) {
+                    handleUnifiedToggle(folder.key, open, allFolderKeys);
+                  }
+                }}
+              >
+                <summary
+                  class="gap-2 text-sm font-medium text-mitto-text-muted"
+                  onContextMenu=${(e) => {
+                    if (folder.workingDir) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setGroupContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        workingDir: folder.workingDir,
+                        label: folder.label,
+                      });
+                    }
+                  }}
+                  data-has-context-menu=${folder.workingDir
+                    ? "true"
+                    : undefined}
+                >
+                  <${FolderIcon} className="w-4 h-4 shrink-0" />
+                  <span class="truncate" title=${folder.workingDir}>
+                    ${folder.label}
+                  </span>
+                  <span class="flex-1"></span>
+                  ${!folderExpanded &&
+                  hasFolderStreaming &&
+                  html`
+                    <span
+                      class="w-2 h-2 bg-mitto-accent-400 rounded-full shrink-0 streaming-indicator"
+                      title="Agent responding in this folder"
+                    ></span>
+                  `}
+                  ${folder.workingDir &&
+                  html`
+                    <button
+                      type="button"
+                      onClick=${(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onBeadsOpen && onBeadsOpen(folder.workingDir);
+                      }}
+                      class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
+                      title="Beads issues: ${folder.workingDir}"
+                    >
+                      <${BeadsIcon} className="w-3.5 h-3.5" />
+                    </button>
+                  `}
+                  <button
+                    type="button"
+                    onClick=${(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!isCreatingSession)
+                        handleNewSessionInFolder(folder.workingDir, e);
+                    }}
+                    class="p-0.5 rounded transition-colors ${isCreatingSession
+                      ? "cursor-wait opacity-60 text-mitto-text-muted"
+                      : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-mitto-text-strong"}"
+                    title=${isCreatingSession
+                      ? "Creating conversation\u2026"
+                      : `New conversation in ${folder.label}`}
+                    disabled=${isCreatingSession}
+                  >
+                    ${isCreatingSession
+                      ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                      : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                  </button>
+                  <span class="text-xs text-mitto-text-muted"
+                    >${totalSessions}</span
+                  >
+                </summary>
+                <ul>
+                  ${renderSessionNodes(folder.conversations)}
+                  <!-- Tasks (static, per-folder) — placeholder; wired in mitto-1er.7 -->
+                  <li>
+                    <button type="button" class="gap-2">
+                      <${BeadsIcon} className="w-4 h-4 shrink-0" />
+                      <span class="truncate">${folder.tasksNode.label}</span>
+                    </button>
+                  </li>
+                  ${folder.archived.length > 0 &&
+                  html`
+                    <li class="archived-subgroup">
+                      <details
+                        open=${archivedExpanded}
+                        onToggle=${(e) => {
+                          const open = e.currentTarget.open;
+                          if (open !== archivedExpanded) {
+                            handleUnifiedToggle(
+                              `archived:${folder.key}`,
+                              open,
+                              allFolderKeys,
+                            );
+                          }
+                        }}
+                      >
+                        <summary
+                          class="gap-2 text-sm text-mitto-text-muted"
+                        >
+                          <${ArchiveIcon} className="w-4 h-4 shrink-0" />
+                          <span class="truncate"
+                            >Archived (${folder.archived.length})</span
+                          >
+                        </summary>
+                        <ul>${renderSessionNodes(folder.archived)}</ul>
+                      </details>
+                    </li>
+                  `}
+                </ul>
+              </details>
+            </li>
+          `;
+        })}
+      </ul>
+    `;
+  };
+
   return html`
     <${Fragment}>
       ${groupContextMenu && html`
@@ -1403,15 +1707,13 @@ export function SessionList({
         </button>
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
-        ${filteredSessions.length === 0 &&
+        ${allSessions.length === 0 &&
         html`
           <div class="p-4 text-mitto-text-muted text-sm text-center">
             ${getEmptyMessage()}
           </div>
         `}
-        ${groupingMode === "none"
-          ? renderUngroupedSessions()
-          : renderGroupedSessions()}
+        ${renderUnifiedTree()}
       </div>
       <!-- Footer with settings, theme and font size toggles -->
       <div class="p-4 border-t border-mitto-border-1">
