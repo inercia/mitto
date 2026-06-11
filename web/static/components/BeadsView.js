@@ -822,7 +822,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   const inputClass = "input input-sm w-full";
   const selectClass = "select select-sm w-full";
   const textareaClass = "textarea textarea-sm w-full";
-  const labelClass = "block text-xs font-medium text-mitto-text-secondary mb-1";
 
   return html`
     <${Fragment}>
@@ -905,57 +904,65 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
         ${creating
           ? html`
-            <div>
-              <label class=${labelClass}>Title <span class="text-red-400">*</span></label>
-              <input
-                type="text"
-                class=${inputClass}
-                placeholder="Issue title"
-                value=${title}
-                onInput=${e => setTitle(e.target.value)}
-                disabled=${submitting}
-                autoFocus
-              />
-            </div>
+            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+              <legend class="fieldset-legend">Issue</legend>
 
-            <div class="flex gap-3">
-              <div class="flex-1">
-                <label class=${labelClass}>Type</label>
-                <select
-                  class=${selectClass}
-                  value=${type}
-                  onInput=${e => setType(e.target.value)}
+              <div>
+                <label class="label" for="new-issue-title">Title <span class="text-red-400">*</span></label>
+                <input
+                  id="new-issue-title"
+                  type="text"
+                  class=${inputClass}
+                  placeholder="Issue title"
+                  value=${title}
+                  onInput=${e => setTitle(e.target.value)}
                   disabled=${submitting}
-                >
-                  ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                </select>
+                  autoFocus
+                />
               </div>
-              <div class="flex-1">
-                <label class=${labelClass}>Priority</label>
-                <select
-                  class=${selectClass}
-                  value=${priority}
-                  onInput=${e => setPriority(Number(e.target.value))}
-                  disabled=${submitting}
-                >
-                  ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
-                    html`<option value=${n}>${label}</option>`
-                  )}
-                </select>
-              </div>
-            </div>
 
-            <div>
-              <label class=${labelClass}>Description</label>
-              <textarea
-                class="${textareaClass} resize-none"
-                rows="6"
-                placeholder="Optional description…"
-                value=${description}
-                onInput=${e => setDescription(e.target.value)}
-                disabled=${submitting}
-              ></textarea>
-            </div>
+              <div class="flex gap-3 mt-3">
+                <div class="flex-1">
+                  <label class="label" for="new-issue-type">Type</label>
+                  <select
+                    id="new-issue-type"
+                    class=${selectClass}
+                    value=${type}
+                    onInput=${e => setType(e.target.value)}
+                    disabled=${submitting}
+                  >
+                    ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                  </select>
+                </div>
+                <div class="flex-1">
+                  <label class="label" for="new-issue-priority">Priority</label>
+                  <select
+                    id="new-issue-priority"
+                    class=${selectClass}
+                    value=${priority}
+                    onInput=${e => setPriority(Number(e.target.value))}
+                    disabled=${submitting}
+                  >
+                    ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
+                      html`<option value=${n}>${label}</option>`
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              <div class="mt-3">
+                <label class="label" for="new-issue-desc">Description</label>
+                <textarea
+                  id="new-issue-desc"
+                  class="${textareaClass} resize-none"
+                  rows="6"
+                  placeholder="Optional description…"
+                  value=${description}
+                  onInput=${e => setDescription(e.target.value)}
+                  disabled=${submitting}
+                ></textarea>
+              </div>
+            </fieldset>
           `
           : html`
             <div class="flex flex-wrap gap-2 items-center">
@@ -997,7 +1004,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <div class="text-xs text-mitto-text-secondary mb-0.5">Assignee</div>
+                <label class="label">Assignee</label>
                 ${editingAssignee
                   ? html`
                     <input
@@ -1032,7 +1039,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </div>
 
             <div>
-              <div class="text-xs text-mitto-text-secondary mb-1">Description</div>
+              <label class="label">Description</label>
               ${editingDesc
                 ? html`
                   <textarea
@@ -1066,8 +1073,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </div>
 
             ${subtasks.length > 0 && html`
-              <div>
-                <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Subtasks (${subtasks.length})</div>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Subtasks (${subtasks.length})</legend>
                 <ul class="space-y-1">
                   ${subtasks.map(c => html`
                     <li key=${c.id}>
@@ -1084,11 +1091,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     </li>
                   `)}
                 </ul>
-              </div>
+              </fieldset>
             `}
 
-            <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Dependencies</div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Dependencies</legend>
 
               <datalist id="beads-dep-options">
                 ${(allIssues || [])
@@ -1168,10 +1175,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     </div>
                   </div>
                 `}
-            </div>
+            </fieldset>
 
-            <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Comments${comments.length ? ` (${comments.length})` : ""}</div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Comments${comments.length ? ` (${comments.length})` : ""}</legend>
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
@@ -1225,10 +1232,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   </${Fragment}>
                 `
               }
-            </div>
+            </fieldset>
 
-            <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Notes</div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Notes</legend>
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
@@ -1262,7 +1269,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
                     </div>
                   `}
-            </div>
+            </fieldset>
           `}
       </div>
 
