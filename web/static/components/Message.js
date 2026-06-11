@@ -312,7 +312,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           ${onRetry &&
           html`<button
             type="button"
-            class="shrink-0 p-1.5 text-mitto-text-muted hover:text-mitto-text-300 hover:bg-mitto-surface-hover rounded-full transition-colors"
+            class="btn btn-ghost btn-sm btn-circle shrink-0 text-mitto-text-muted"
             onClick=${onRetry}
             title="Retry — resend the last prompt"
           >

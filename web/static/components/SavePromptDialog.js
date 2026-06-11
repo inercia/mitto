@@ -340,7 +340,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                   type="button"
                   onClick=${handleBrowse}
                   disabled=${isSaving}
-                  class="px-3 py-2 text-sm bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                  class="btn btn-sm whitespace-nowrap"
                   data-testid="save-prompt-browse-btn"
                 >
                   Browse…
