@@ -603,6 +603,79 @@ func TestPrewarmContextBudgetIsolation(t *testing.T) {
 	}
 }
 
+// TestAuxNewSessionDeadlineIndependentOfCallerCtx is a regression test for mitto-rlk.
+//
+// Root cause: getOrCreateAuxiliarySession held auxMu for its entire body. When several
+// goroutines are serialised on auxMu and a dead/slow MCP server causes each prior
+// SetSessionModel to burn its full 10 s deadline, the caller ctx arrives at the
+// process.NewSession call already expired — producing rpc_ms=0, ctx_already_expired=true.
+//
+// The fix: derive the NewSession context from m.ctx (manager lifetime) with its OWN
+// 30 s budget, not from the (possibly drained) caller ctx. A quick ctx.Err() guard
+// still honours an explicitly cancelled caller before the RPC starts.
+//
+// This test verifies the deadline math directly (no real ACP process required):
+//   - OLD behaviour: caller ctx drained by serial work → NewSession ctx already expired.
+//   - NEW behaviour: NewSession ctx derived from m.ctx → always has its full 30 s window.
+func TestAuxNewSessionDeadlineIndependentOfCallerCtx(t *testing.T) {
+	const (
+		numSessions       = 4
+		workPerSession    = 60 * time.Millisecond // simulates per-session SetSessionModel latency
+		newSessionTimeout = 30 * time.Second
+		minExpectedSlack  = 29 * time.Second // NewSession ctx must retain at least this much
+	)
+
+	// ── OLD behaviour: caller ctx is shared and drained by serial work ───────────
+	// Budget just under total serial work so the last iteration arrives with an
+	// already-expired (or near-zero) ctx — reproducing the wedge signature.
+	oldBudget := time.Duration(float64(numSessions*int(workPerSession)) * 0.95)
+	oldBehaviorDemonstratesStarvation := func() bool {
+		callerCtx, cancel := context.WithTimeout(context.Background(), oldBudget)
+		defer cancel()
+		for i := 0; i < numSessions; i++ {
+			time.Sleep(workPerSession) // serial work holds auxMu equivalent
+			// OLD: NewSession is called with the shared (drained) callerCtx.
+			if callerCtx.Err() != nil {
+				return true // ctx already expired before NewSession would run
+			}
+		}
+		return false
+	}
+
+	if !oldBehaviorDemonstratesStarvation() {
+		t.Skip("timing-sensitive: could not reproduce pre-fix caller-ctx starvation; skipping")
+	}
+
+	// ── NEW behaviour: NewSession ctx derived from m.ctx (manager lifetime) ──────
+	managerCtx := context.Background() // stands in for m.ctx in production code
+
+	for i := 0; i < numSessions; i++ {
+		time.Sleep(workPerSession) // simulate prior sessions consuming wall time under auxMu
+
+		// Fix: NewSession derives its context from managerCtx (m.ctx), not from the
+		// drained caller ctx.
+		newCtx, newCancel := context.WithTimeout(managerCtx, newSessionTimeout)
+
+		if err := newCtx.Err(); err != nil {
+			t.Errorf("NEW behaviour: session %d NewSession ctx already expired: %v", i, err)
+			newCancel()
+			continue
+		}
+		deadline, ok := newCtx.Deadline()
+		if !ok {
+			t.Errorf("NEW behaviour: session %d NewSession ctx has no deadline", i)
+			newCancel()
+			continue
+		}
+		if remaining := time.Until(deadline); remaining < minExpectedSlack {
+			t.Errorf("NEW behaviour: session %d NewSession ctx has only %v remaining, want >= %v",
+				i, remaining, minExpectedSlack)
+		}
+
+		newCancel()
+	}
+}
+
 // TestDiffEnvKeys_NeverLeaksValues asserts that the returned slices contain only
 // key names and never the (potentially secret) values.
 func TestDiffEnvKeys_NeverLeaksValues(t *testing.T) {

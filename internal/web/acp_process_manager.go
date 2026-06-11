@@ -721,7 +721,25 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			}
 		}
 	}
-	sessionHandle, err := process.NewSession(ctx, auxCwd, mcpServers)
+	// Guard: honour an explicitly-cancelled caller (e.g. shutdown signal) without
+	// forwarding a drained deadline into the RPC.  This is a quick non-blocking
+	// check only; the actual RPC uses a fresh budget below (mitto-rlk).
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before auxiliary NewSession: %w", err)
+	}
+
+	// Derive a fresh budget from m.ctx (manager lifetime), NOT from the caller ctx.
+	// auxMu serialises all callers of this function; when several auxiliary sessions
+	// are created back-to-back (e.g. four prewarm goroutines), each prior NewSession
+	// RPC consumes wall time while holding auxMu.  If a dead/slow MCP server makes
+	// those RPCs burn their full deadline (~10 s each), the caller ctx can arrive
+	// here already expired — producing rpc_ms=0, ctx_already_expired=true.
+	// Using m.ctx as the base gives every NewSession call its full 30-second window
+	// regardless of how long earlier sessions took.  m.ctx is cancelled on manager
+	// shutdown, so this never hangs indefinitely.  (mitto-rlk)
+	newCtx, newCancel := context.WithTimeout(m.ctx, 30*time.Second)
+	defer newCancel()
+	sessionHandle, err := process.NewSession(newCtx, auxCwd, mcpServers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auxiliary session: %w", err)
 	}
