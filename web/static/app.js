@@ -64,11 +64,6 @@ import {
   setSingleExpandedGroupMode,
   initUIPreferences,
   onUIPreferencesLoaded,
-  FILTER_TAB,
-  getFilterTab,
-  setFilterTab,
-  getFilterTabGrouping,
-  cycleFilterTabGrouping,
   fetchConfig,
   invalidateConfigCache,
   getSidebarWidth,
@@ -346,7 +341,6 @@ function App() {
     session: null,
   });
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
-  const [pendingPeriodicTab, setPendingPeriodicTab] = useState(null); // Track if new session should be periodic
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
     forceOpen: false,
@@ -907,30 +901,11 @@ function App() {
   // Ref for the chat input component to allow focusing from native menu
   const chatInputRef = useRef(null);
 
-  // Helper to configure a newly created session as periodic
-  const applyPeriodicConfig = async (sessionId) => {
-    try {
-      await secureFetch(apiUrl(`/api/sessions/${sessionId}/periodic`), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: "(pending)",
-          frequency: { value: 1, unit: "hours" },
-          enabled: false,
-        }),
-      });
-    } catch (e) {
-      console.error("Failed to create periodic config:", e);
-    }
-  };
-
   // Expose global functions for native macOS menu integration
   useEffect(() => {
     // New Conversation - called from native Cmd+N menu
     window.mittoNewConversation = async () => {
       // Use handleNewSession logic to support workspace selection
-      const currentTab = getFilterTab();
-      const isPeriodic = currentTab === FILTER_TAB.PERIODIC;
       if (workspaces.length === 0) {
         // No workspaces configured - open settings dialog (unless config is read-only)
         if (!configReadonly) {
@@ -940,7 +915,6 @@ function App() {
         return;
       }
       if (workspaces.length > 1) {
-        setPendingPeriodicTab(currentTab);
         setWorkspaceDialog({ isOpen: true });
       } else {
         // Single workspace - create session directly with workspace info
@@ -949,9 +923,6 @@ function App() {
           workingDir: ws.working_dir,
           acpServer: ws.acp_server,
         });
-        if (result?.sessionId && isPeriodic) {
-          await applyPeriodicConfig(result.sessionId);
-        }
         // Handle creation result
         if (result?.errorCode === "session_creation_timeout") {
           // Agent is busy; auto-retry is in progress — toast already meaningful
@@ -1037,9 +1008,8 @@ function App() {
       // Toggle archive state
       await archiveSession(activeSessionId, !isArchived);
 
-      // When unarchiving, switch to conversations tab and select the session
+      // When unarchiving, select the session
       if (isArchived) {
-        setFilterTab(FILTER_TAB.CONVERSATIONS);
         switchSession(activeSessionId);
       }
     };
@@ -1121,9 +1091,7 @@ function App() {
     archiveSession,
   ]);
 
-  const handleNewSession = async (workspace = null, folderFilter = null, currentFilterTab = null) => {
-    const isPeriodic = currentFilterTab === FILTER_TAB.PERIODIC;
-
+  const handleNewSession = async (workspace = null, folderFilter = null) => {
     // If a specific workspace is provided, create session directly in that workspace
     if (workspace) {
       setShowSidebar(false);
@@ -1131,9 +1099,6 @@ function App() {
         workingDir: workspace.working_dir,
         acpServer: workspace.acp_server,
       });
-      if (result?.sessionId && isPeriodic) {
-        await applyPeriodicConfig(result.sessionId);
-      }
       // Handle creation result
       if (result?.errorCode === "session_creation_timeout") {
         showToast({
@@ -1171,9 +1136,6 @@ function App() {
           workingDir: filteredWs[0].working_dir,
           acpServer: filteredWs[0].acp_server,
         });
-        if (result?.sessionId && isPeriodic) {
-          await applyPeriodicConfig(result.sessionId);
-        }
         if (result?.errorCode === "session_creation_timeout") {
           showToast({
             style: "warning",
@@ -1192,7 +1154,6 @@ function App() {
           }, 100);
         }
       } else if (filteredWs.length > 1) {
-        setPendingPeriodicTab(currentFilterTab);
         setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
         setShowSidebar(false);
       }
@@ -1209,7 +1170,6 @@ function App() {
     }
     // If multiple workspaces, show workspace selector
     if (workspaces.length > 1) {
-      setPendingPeriodicTab(currentFilterTab);
       setWorkspaceDialog({ isOpen: true });
       setShowSidebar(false);
     } else {
@@ -1220,9 +1180,6 @@ function App() {
         workingDir: ws.working_dir,
         acpServer: ws.acp_server,
       });
-      if (result?.sessionId && isPeriodic) {
-        await applyPeriodicConfig(result.sessionId);
-      }
       // Handle creation result
       if (result?.errorCode === "session_creation_timeout") {
         showToast({
@@ -1249,15 +1206,10 @@ function App() {
 
   const handleWorkspaceSelect = async (workspace) => {
     setWorkspaceDialog({ isOpen: false });
-    const isPeriodic = pendingPeriodicTab === FILTER_TAB.PERIODIC;
-    setPendingPeriodicTab(null);
     const result = await newSession({
       workingDir: workspace.working_dir,
       acpServer: workspace.acp_server,
     });
-    if (result?.sessionId && isPeriodic) {
-      await applyPeriodicConfig(result.sessionId);
-    }
     // Handle creation result
     if (result?.errorCode === "session_creation_timeout") {
       showToast({
@@ -1523,25 +1475,18 @@ function App() {
     await archiveSession(session.session_id, archived);
 
     if (!archived) {
-      // When unarchiving, switch to conversations tab and select the session
-      setFilterTab(FILTER_TAB.CONVERSATIONS);
+      // When unarchiving, select the session
       switchSession(session.session_id);
     } else if (session.session_id === activeSessionId) {
-      // When archiving the active session, switch to another session in the same tab.
+      // When archiving the active session, switch to another non-archived session.
       // The session_archived WebSocket event handler also handles this, but we do it here
       // too (via switchSession for a full load) in case the event arrives late.
-      const currentTab = getFilterTab();
       const allSess = computeAllSessions(activeSessions, storedSessions);
-      const tabFiltered = allSess.filter((s) => {
-        if (s.session_id === session.session_id) return false; // exclude the one being archived
-        if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-        if (currentTab === FILTER_TAB.PERIODIC) return !s.archived && s.periodic_enabled;
-        return !s.archived && !s.periodic_enabled; // conversations tab
-      });
-      if (tabFiltered.length > 0) {
-        switchSession(tabFiltered[0].session_id);
+      const remaining = allSess.filter((s) => s.session_id !== session.session_id && !s.archived);
+      if (remaining.length > 0) {
+        switchSession(remaining[0].session_id);
       }
-      // If no sessions left in this tab, the session_archived WebSocket event handler
+      // If no sessions left, the session_archived WebSocket event handler
       // will call setActiveSessionId(null) to clear the active session.
     }
   };
