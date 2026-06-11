@@ -8,6 +8,7 @@ import {
   computeSessionFingerprint,
   computeUnifiedTree,
   filterUnifiedTree,
+  flattenUnifiedTreeForNav,
 } from "./sessionGrouping.js";
 
 // ---------------------------------------------------------------------------
@@ -515,5 +516,80 @@ describe("filterUnifiedTree", () => {
     });
     const totalConvs = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
     expect(totalConvs).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// flattenUnifiedTreeForNav Tests
+// ---------------------------------------------------------------------------
+
+describe("flattenUnifiedTreeForNav", () => {
+  function makeS(id, working_dir, overrides = {}) {
+    return makeSession({ session_id: id, working_dir, ...overrides });
+  }
+
+  test("ordering: folder '/a' entries come before folder '/z' (alphabetical by label)", () => {
+    const sA = makeS("s-a", "/a");
+    const sZ = makeS("s-z", "/z");
+    const tree = computeUnifiedTree([sA, sZ], [{ working_dir: "/a" }, { working_dir: "/z" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    const ids = entries.map((e) => e.session.session_id);
+    expect(ids.indexOf("s-a")).toBeLessThan(ids.indexOf("s-z"));
+  });
+
+  test("children placement: child immediately follows parent; parentKey and folderKey correct", () => {
+    const parent = makeS("parent-1", "/home/user/project");
+    const child = makeS("child-1", "/home/user/project", { parent_session_id: "parent-1" });
+    const tree = computeUnifiedTree([parent, child], [{ working_dir: "/home/user/project" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    const parentIdx = entries.findIndex((e) => e.session.session_id === "parent-1");
+    const childIdx = entries.findIndex((e) => e.session.session_id === "child-1");
+    expect(parentIdx).toBeGreaterThanOrEqual(0);
+    expect(childIdx).toBe(parentIdx + 1);
+    expect(entries[parentIdx].parentKey).toBeNull();
+    expect(entries[childIdx].parentKey).toBe("parent:parent-1");
+    expect(entries[parentIdx].folderKey).toBe(entries[childIdx].folderKey);
+  });
+
+  test("archived flagging: active entry archived:false before archived entry archived:true", () => {
+    const active = makeS("active-1", "/home/user/project");
+    const archived = makeS("archived-1", "/home/user/project", { archived: true });
+    const tree = computeUnifiedTree([active, archived], [{ working_dir: "/home/user/project" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    const activeIdx = entries.findIndex((e) => e.session.session_id === "active-1");
+    const archivedIdx = entries.findIndex((e) => e.session.session_id === "archived-1");
+    expect(entries[activeIdx].archived).toBe(false);
+    expect(entries[archivedIdx].archived).toBe(true);
+    expect(activeIdx).toBeLessThan(archivedIdx);
+  });
+
+  test("static nodes excluded: every entry has a session_id; count equals session nodes", () => {
+    const sessions = [
+      makeS("r1", "/home/user/project"),
+      makeS("a1", "/home/user/project", { archived: true }),
+    ];
+    const tree = computeUnifiedTree(sessions, [{ working_dir: "/home/user/project" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    entries.forEach((e) => {
+      expect(e.session.session_id).toBeDefined();
+    });
+    expect(entries).toHaveLength(2);
+  });
+
+  test("filterUnifiedTree interaction: archived:false → no archived:true entries", () => {
+    const active = makeS("active-2", "/home/user/project");
+    const archived = makeS("archived-2", "/home/user/project", { archived: true });
+    const tree = computeUnifiedTree([active, archived], [{ working_dir: "/home/user/project" }]);
+    const filtered = filterUnifiedTree(tree, { regular: true, periodic: true, archived: false, tasks: true });
+    const entries = flattenUnifiedTreeForNav(filtered);
+    expect(entries.some((e) => e.archived === true)).toBe(false);
+    expect(entries.some((e) => e.session.session_id === "active-2")).toBe(true);
+  });
+
+  test("edge cases: null/undefined/empty return []", () => {
+    expect(flattenUnifiedTreeForNav(null)).toEqual([]);
+    expect(flattenUnifiedTreeForNav(undefined)).toEqual([]);
+    expect(flattenUnifiedTreeForNav({})).toEqual([]);
+    expect(flattenUnifiedTreeForNav({ folders: [] })).toEqual([]);
   });
 });

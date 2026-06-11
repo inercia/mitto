@@ -320,6 +320,47 @@ export function filterUnifiedTree(tree, filter) {
   return { dashboard: tree.dashboard, folders };
 }
 
+/**
+ * Flatten the unified tree into the keyboard/swipe navigation order
+ * (mitto-1er.8). Produces the exact sidebar visual order: for each folder (in
+ * render order — folders are alphabetical by label), emit each conversation
+ * root followed by its children, then each archived root followed by its
+ * children. Static nodes (Dashboard, per-folder Tasks) are NOT sessions and are
+ * excluded.
+ *
+ * Each entry carries navigation metadata so visible-groups filtering can
+ * consult expansion state without re-deriving keys:
+ *   - session:   the session node (children stripped is NOT required)
+ *   - folderKey: the folder's key (unscoped; equals working_dir)
+ *   - archived:  true when the entry is in the Archived subgroup
+ *   - parentKey: 'parent:<rootId>' when the entry is a nested child, else null
+ *
+ * @param {{dashboard: Object, folders: Array}} tree - filtered unified tree
+ * @returns {Array<{session: Object, folderKey: string, archived: boolean, parentKey: (string|null)}>}
+ */
+export function flattenUnifiedTreeForNav(tree) {
+  if (!tree || !Array.isArray(tree.folders)) return [];
+
+  const entries = [];
+
+  const emitRoots = (roots, folderKey, archived) => {
+    (roots || []).forEach((root) => {
+      entries.push({ session: root, folderKey, archived, parentKey: null });
+      const parentKey = `parent:${root.session_id}`;
+      (root.children || []).forEach((child) => {
+        entries.push({ session: child, folderKey, archived, parentKey });
+      });
+    });
+  };
+
+  tree.folders.forEach((folder) => {
+    emitRoots(folder.conversations, folder.key, false);
+    emitRoots(folder.archived, folder.key, true);
+  });
+
+  return entries;
+}
+
 export function computeGroupedSessions(
   filteredSessions,
   groupingMode,
