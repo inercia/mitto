@@ -15,8 +15,8 @@
 /* daisyUI v5: component-styling layer on top of Tailwind v4.
  * The custom "mitto" theme (default) maps daisyUI's semantic colors onto the
  * existing runtime --mitto-* variables, so with NO data-theme the app looks
- * exactly as before (theming == swapping --mitto-* values via .light/.dark/
- * .v2-theme scopes; see styles.css).
+ * exactly as before (theming == swapping --mitto-* values via .light/.dark
+ * scopes; see styles-v2.css).
  * Built-in themes are ALSO enabled (mitto-woh) so users can pick e.g. dracula/
  * nord via a data-theme on <html>. None is marked --prefersdark, so "mitto"
  * stays the :root default and OS dark-mode does not force a built-in theme.
@@ -145,14 +145,12 @@
   }
 
   /* Theme-aware color-scheme: the daisyUI theme plugin sets color-scheme:dark on
-   * :root (default). Override to light for the two light-mode states so that
-   * native browser chrome (scrollbars, form controls, date pickers) renders in
-   * light mode. Dark states (v1 default, v2 .dark) inherit the daisyUI default.
-   *   v1 light  → .light class on <html>/<body>
-   *   v2 light  → .v2-theme without .dark
+   * :root (default). Override to light for light mode so that native browser
+   * chrome (scrollbars, form controls, date pickers) renders in light mode.
+   * Dark mode inherits the daisyUI default.
+   *   light mode → .light class on <html>/<body>
    */
-  .light,
-  .v2-theme:not(.dark) {
+  .light {
     color-scheme: light;
   }
 }
@@ -169,13 +167,14 @@
  * One generic block covers every enabled theme: var(--color-*) resolves to the
  * active theme's value, so the mapping text is theme-independent.
  *
- * MUST stay UNLAYERED (outside @layer): styles.css defines --mitto-* on
- * unlayered :root/.light, and unlayered rules always beat @layer rules. The
- * selectors are also engineered to win on specificity regardless of stylesheet
- * load order (tailwind.css loads before styles.css / styles-v2.css):
+ * MUST stay UNLAYERED (outside @layer): styles-v2.css defines --mitto-* on
+ * unlayered :root (light) / :root.dark, .dark (dark), and unlayered rules
+ * always beat @layer rules. The selectors are also engineered to win on
+ * specificity regardless of stylesheet load order (tailwind.css loads before
+ * styles.css / styles-v2.css):
  *   :root[data-theme]:not([data-theme="mitto"])        => (0,0,3,0)
  *   :root[data-theme]:not([data-theme="mitto"]) body   => (0,0,3,1)
- * which beat styles.css :root/.light (0,0,1,0) and styles-v2 .v2-theme .dark
+ * which beat styles-v2 :root/.light (0,0,1,0) and :root.dark/.dark
  * (0,0,2,0) on both <html> and <body>.
  *
  * NO PIXEL PARITY: daisyUI's ~12 semantic colors cannot fully express 41 mitto

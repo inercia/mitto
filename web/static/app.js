@@ -720,7 +720,6 @@ function App() {
   ]);
 
   // State for UI theme style (v2 = Clawdbot-inspired)
-  const [uiTheme, setUiTheme] = useState("default");
 
   // UI settings (macOS only)
   const [agentCompletedSoundEnabled, setAgentCompletedSoundEnabled] =
@@ -766,21 +765,6 @@ function App() {
           if (config?.rc_file_path) {
             setRcFilePath(config.rc_file_path);
           }
-        }
-        // Load v2 stylesheet if configured
-        if (config?.web?.theme === "v2") {
-          setUiTheme("v2");
-          // Dynamically load the v2 stylesheet
-          const existingLink = document.getElementById("mitto-theme-v2");
-          if (!existingLink) {
-            const link = document.createElement("link");
-            link.id = "mitto-theme-v2";
-            link.rel = "stylesheet";
-            link.href = "./styles-v2.css";
-            document.head.appendChild(link);
-          }
-          // Add v2-theme class to body for CSS overrides
-          document.body.classList.add("v2-theme");
         }
         // Load UI confirmation settings
         if (config?.ui?.confirmations?.delete_session === false) {

@@ -99,13 +99,6 @@ export function useTheme() {
       ).matches;
       return prefersDark ? "dark" : "light";
     }
-    // Fallback: If v2 theme is active (set by index.html script), default to light
-    if (
-      window.mittoTheme === "v2" ||
-      document.documentElement.classList.contains("v2-theme")
-    ) {
-      return "light";
-    }
     return "dark";
   });
 
@@ -191,13 +184,13 @@ export function useTheme() {
     if (effective === "light") {
       root.classList.add("light");
       root.classList.remove("dark");
-      // Also apply to body for v2-theme CSS selectors (which use .v2-theme.dark)
+      // Also apply to body so .light/.dark component selectors match.
       document.body.classList.add("light");
       document.body.classList.remove("dark");
     } else {
       root.classList.add("dark");
       root.classList.remove("light");
-      // Also apply to body for v2-theme CSS selectors (which use .v2-theme.dark)
+      // Also apply to body so .light/.dark component selectors match.
       document.body.classList.add("dark");
       document.body.classList.remove("light");
     }

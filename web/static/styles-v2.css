@@ -114,12 +114,11 @@
 }
 
 /* =============================================================================
-   Override Mitto CSS Variables (from index.html)
-   These ensure the v2 theme colors are applied to the base layout
-   Using direct color values to avoid CSS variable resolution issues
+   Mitto theme tokens — light defaults on :root, dark overrides on .dark.
+   These define the --mitto-* runtime variables consumed across the app.
    ============================================================================= */
 
-.v2-theme {
+:root {
   /* Light theme - direct color values */
   --mitto-bg: #fafafa;
   --mitto-sidebar: #ffffff;
@@ -160,7 +159,7 @@
   --mitto-text-strong: #18181b;
   --mitto-text-muted: #71717a;
   /* Neutral text ladder (Phase 2 Lane B): v2-light gray scale — values match
-   * the former .v2-theme:not(.dark) .text-gray-* overrides. */
+   * the former .light .text-gray-* overrides. */
   --mitto-text-200: #3f3f46;
   --mitto-text-300: #52525b;
   --mitto-text-500: #71717a;
@@ -172,8 +171,8 @@
   --mitto-info: #2563eb;
 }
 
-.v2-theme.dark,
-.v2-theme .dark {
+:root.dark,
+.dark {
   /* Dark theme - direct color values */
   --mitto-bg: #12141a;
   --mitto-sidebar: #1a1d25;
@@ -212,7 +211,7 @@
   --mitto-text-strong: #ffffff;
   --mitto-text-muted: #9ca3af;
   /* Neutral text ladder (Phase 2 Lane B): v2-dark gray scale — values match
-   * the former .v2-theme.dark .text-gray-* overrides. */
+   * the former .dark .text-gray-* overrides. */
   --mitto-text-200: #e5e7eb;
   --mitto-text-300: #d1d5db;
   --mitto-text-500: #9ca3af;
@@ -437,7 +436,7 @@ a:hover {
 
 /* =============================================================================
    Utility Classes (Tailwind-compatible overrides)
-   Light theme overrides (default for v2-theme)
+   Light theme overrides (applied via the .light bucket class)
    ============================================================================= */
 
 
@@ -446,21 +445,21 @@ a:hover {
    utilities already resolve to the same per-theme --mitto-* vars. Only
    bg-mitto-input-box is kept: its background differs from the var (#f5f5f5 vs
    #f0f0f0) and its color forces text-strong over .text-mitto-text. */
-.v2-theme:not(.dark) .bg-mitto-input-box {
+.light .bg-mitto-input-box {
   background: #f5f5f5 !important;
   color: #18181b !important;
 }
 
 /* text-gray-200/300/500 migrated to the text-mitto-text-* ladder (Phase 2 Lane B). */
-.v2-theme:not(.dark) .text-gray-400 {
+.light .text-gray-400 {
   color: #71717a !important;
 }
 
 /* Light theme: Placeholder text */
-.v2-theme:not(.dark) textarea::placeholder {
+.light textarea::placeholder {
   color: #a1a1aa !important;
 }
-.v2-theme:not(.dark) input::placeholder {
+.light input::placeholder {
   color: #a1a1aa !important;
 }
 
@@ -469,7 +468,7 @@ a:hover {
 /* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
 /* Light theme: Focus states */
-.v2-theme:not(.dark) .focus\:ring-mitto-accent-500:focus {
+.light .focus\:ring-mitto-accent-500:focus {
   --tw-ring-color: #dc2626 !important;
   box-shadow:
     0 0 0 2px #fafafa,
@@ -478,7 +477,7 @@ a:hover {
 
 /* =============================================================================
    Dark Theme Overrides
-   Applied when .v2-theme.dark is present
+   Applied when .dark is present
    ============================================================================= */
 
 
@@ -486,36 +485,36 @@ a:hover {
 /* Dark theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
    utilities already resolve to the same per-theme --mitto-* vars. Only
    bg-mitto-input-box is kept (its color forces text-strong over .text-mitto-text). */
-.v2-theme.dark .bg-mitto-input-box {
+.dark .bg-mitto-input-box {
   background: #262a35 !important;
   color: #e4e4e7 !important;
 }
 
 /* text-gray-200/300/500 migrated to the text-mitto-text-* ladder (Phase 2 Lane B). */
-.v2-theme.dark .text-gray-400 {
+.dark .text-gray-400 {
   color: #a1a1aa !important;
 }
 
 /* Allow inline styles to override text color for prompt buttons with custom backgrounds */
 /* Use attribute selector to detect when inline color is set, then use revert to ignore !important rules */
-.v2-theme.dark .prompt-item[style*="color: rgb(0, 0, 0)"] {
+.dark .prompt-item[style*="color: rgb(0, 0, 0)"] {
   color: #000000 !important;
 }
-.v2-theme.dark .prompt-item[style*="color: rgb(255, 255, 255)"] {
+.dark .prompt-item[style*="color: rgb(255, 255, 255)"] {
   color: #ffffff !important;
 }
-.v2-theme:not(.dark) .prompt-item[style*="color: rgb(0, 0, 0)"] {
+.light .prompt-item[style*="color: rgb(0, 0, 0)"] {
   color: #000000 !important;
 }
-.v2-theme:not(.dark) .prompt-item[style*="color: rgb(255, 255, 255)"] {
+.light .prompt-item[style*="color: rgb(255, 255, 255)"] {
   color: #ffffff !important;
 }
 
 /* Dark theme: Placeholder text */
-.v2-theme.dark textarea::placeholder {
+.dark textarea::placeholder {
   color: #9ca3af !important;
 }
-.v2-theme.dark input::placeholder {
+.dark input::placeholder {
   color: #9ca3af !important;
 }
 
@@ -524,7 +523,7 @@ a:hover {
 /* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
 /* Dark theme: Focus states */
-.v2-theme.dark .focus\:ring-mitto-accent-500:focus {
+.dark .focus\:ring-mitto-accent-500:focus {
   --tw-ring-color: #ff5c5c !important;
   box-shadow:
     0 0 0 2px #12141a,
@@ -532,73 +531,91 @@ a:hover {
 }
 
 /* Status colors - keep these vibrant for visibility (both themes) */
-.v2-theme .bg-green-400 {
+.light .bg-green-400,
+.dark .bg-green-400 {
   background: #22c55e !important;
 }
-.v2-theme .bg-green-500 {
+.light .bg-green-500,
+.dark .bg-green-500 {
   background: #16a34a !important;
 }
-.v2-theme:not(.dark) .text-green-400 {
+.light .text-green-400 {
   color: #16a34a !important;
 }
-.v2-theme:not(.dark) .text-green-500 {
+.light .text-green-500 {
   color: #16a34a !important;
 }
-.v2-theme.dark .text-green-400 {
+.dark .text-green-400 {
   color: #4ade80 !important;
 }
-.v2-theme.dark .text-green-500 {
+.dark .text-green-500 {
   color: #22c55e !important;
 }
 
-.v2-theme .bg-red-500 {
+.light .bg-red-500,
+.dark .bg-red-500 {
   background: #ef4444 !important;
 }
-.v2-theme .bg-red-600 {
+.light .bg-red-600,
+.dark .bg-red-600 {
   background: #dc2626 !important;
 }
-.v2-theme .hover\:bg-red-600:hover {
+.light .hover\:bg-red-600:hover,
+.dark .hover\:bg-red-600:hover {
   background: #dc2626 !important;
 }
-.v2-theme .hover\:bg-red-700:hover {
+.light .hover\:bg-red-700:hover,
+.dark .hover\:bg-red-700:hover {
   background: #b91c1c !important;
 }
-.v2-theme:not(.dark) .text-red-400 {
+.light .text-red-400 {
   color: #dc2626 !important;
 }
-.v2-theme:not(.dark) .text-red-500 {
+.light .text-red-500 {
   color: #dc2626 !important;
 }
-.v2-theme.dark .text-red-400 {
+.dark .text-red-400 {
   color: #f87171 !important;
 }
-.v2-theme.dark .text-red-500 {
+.dark .text-red-500 {
   color: #ef4444 !important;
 }
 
 /* Ensure white text on accent-colored buttons (both themes) */
 /* Ensure white label text on accent/danger-colored buttons */
-.v2-theme button.bg-red-500,
-.v2-theme button.bg-red-600,
-.v2-theme button.bg-red-700,
-.v2-theme button[class*="bg-red-"],
-.v2-theme button[class*="bg-blue-"],
-.v2-theme button[class*="bg-mitto-accent"] {
+.light button.bg-red-500,
+.dark button.bg-red-500,
+.light button.bg-red-600,
+.dark button.bg-red-600,
+.light button.bg-red-700,
+.dark button.bg-red-700,
+.light button[class*="bg-red-"],
+.dark button[class*="bg-red-"],
+.light button[class*="bg-blue-"],
+.dark button[class*="bg-blue-"],
+.light button[class*="bg-mitto-accent"],
+.dark button[class*="bg-mitto-accent"] {
   color: #ffffff !important;
 }
-.v2-theme button.bg-red-500:hover,
-.v2-theme button.bg-red-600:hover,
-.v2-theme button.bg-red-700:hover,
-.v2-theme button[class*="hover:bg-red"]:hover,
-.v2-theme button[class*="hover:bg-blue"]:hover,
-.v2-theme button[class*="hover:bg-mitto-accent"]:hover {
+.light button.bg-red-500:hover,
+.dark button.bg-red-500:hover,
+.light button.bg-red-600:hover,
+.dark button.bg-red-600:hover,
+.light button.bg-red-700:hover,
+.dark button.bg-red-700:hover,
+.light button[class*="hover:bg-red"]:hover,
+.dark button[class*="hover:bg-red"]:hover,
+.light button[class*="hover:bg-blue"]:hover,
+.dark button[class*="hover:bg-blue"]:hover,
+.light button[class*="hover:bg-mitto-accent"]:hover,
+.dark button[class*="hover:bg-mitto-accent"]:hover {
   color: #ffffff !important;
 }
 
 
 /* Toast colors migrated to daisyUI alert-info/success/warning/error (mitto-i1r).
    The alert-* variants carry background + content color via the --mitto-* token
-   bridge, so the old .toast-enter .bg-*/text-white remaps are no longer needed. */
+   bridge, so the old .toast-enter bg-* and text-white remaps are no longer needed. */
 
 /* =============================================================================
    Beads semantic blue: in-progress status + feature type (don't remap to accent)
@@ -607,43 +624,45 @@ a:hover {
 /* The in_progress status badge/toggle and the feature type tag use bg-blue-700.
    Pin the original blue for these specific marker classes in both themes so the
    v2 accent normalization never tints them (red stays reserved for bugs). */
-.v2-theme:not(.dark) .beads-status-inprogress,
-.v2-theme:not(.dark) .beads-type-feature,
-.v2-theme.dark .beads-status-inprogress,
-.v2-theme.dark .beads-type-feature {
+.light .beads-status-inprogress,
+.light .beads-type-feature,
+.dark .beads-status-inprogress,
+.dark .beads-type-feature {
   background: #1d4ed8 !important;  /* Original blue-700 */
 }
 
-.v2-theme .bg-yellow-400 {
+.light .bg-yellow-400,
+.dark .bg-yellow-400 {
   background: #facc15 !important;
 }
-.v2-theme .bg-yellow-500 {
+.light .bg-yellow-500,
+.dark .bg-yellow-500 {
   background: #eab308 !important;
 }
-.v2-theme:not(.dark) .text-yellow-400 {
+.light .text-yellow-400 {
   color: #ca8a04 !important;
 }
-.v2-theme:not(.dark) .text-yellow-500 {
+.light .text-yellow-500 {
   color: #ca8a04 !important;
 }
-.v2-theme.dark .text-yellow-400 {
+.dark .text-yellow-400 {
   color: #fbbf24 !important;
 }
-.v2-theme.dark .text-yellow-500 {
+.dark .text-yellow-500 {
   color: #f59e0b !important;
 }
 
 
 
 /* Buttons - light theme: ensure visible borders and backgrounds */
-.v2-theme:not(.dark)
+.light
   button:not([class*="bg-blue"]):not([class*="bg-red"]):not(
     [class*="bg-green"]
   ) {
   border: 1px solid #e4e4e7;
 }
 
-.v2-theme:not(.dark)
+.light
   button:hover:not(.menu-active):not([class*="bg-blue"]):not(
     [class*="bg-red"]
   ):not([class*="bg-green"]) {
@@ -652,14 +671,14 @@ a:hover {
 }
 
 /* Buttons - dark theme */
-.v2-theme.dark
+.dark
   button:not([class*="bg-blue"]):not([class*="bg-red"]):not(
     [class*="bg-green"]
   ) {
   border: 1px solid #334155;
 }
 
-.v2-theme.dark
+.dark
   button:hover:not(.menu-active):not([class*="bg-blue"]):not(
     [class*="bg-red"]
   ):not([class*="bg-green"]) {
@@ -668,58 +687,58 @@ a:hover {
 }
 
 /* Session list items - light theme */
-.v2-theme:not(.dark) .cursor-pointer {
+.light .cursor-pointer {
   border-bottom: 1px solid #e4e4e7 !important;
 }
 
-.v2-theme:not(.dark) .cursor-pointer:hover {
+.light .cursor-pointer:hover {
   background: #f5f5f5 !important;
 }
 
 /* Session list items - dark theme */
-.v2-theme.dark .cursor-pointer {
+.dark .cursor-pointer {
   border-bottom: 1px solid #334155 !important;
 }
 
-.v2-theme.dark .cursor-pointer:hover {
+.dark .cursor-pointer:hover {
   background: #1e293b !important;
 }
 
 /* Session action buttons (rename/delete) - light theme styling */
-.v2-theme:not(.dark) .cursor-pointer button.p-1\.5 {
+.light .cursor-pointer button.p-1\.5 {
   background: transparent !important;
   border: 1px solid #e4e4e7 !important;
   color: #71717a !important;
 }
 
-.v2-theme:not(.dark) .cursor-pointer button.p-1\.5:hover {
+.light .cursor-pointer button.p-1\.5:hover {
   background: #f0f0f0 !important;
   border-color: #d4d4d8 !important;
   color: #3f3f46 !important;
 }
 
 /* Session action buttons - dark theme styling */
-.v2-theme.dark .cursor-pointer button.p-1\.5 {
+.dark .cursor-pointer button.p-1\.5 {
   background: transparent !important;
   border: 1px solid #475569 !important;
   color: #9ca3af !important;
 }
 
-.v2-theme.dark .cursor-pointer button.p-1\.5:hover {
+.dark .cursor-pointer button.p-1\.5:hover {
   background: #334155 !important;
   border-color: #64748b !important;
   color: #e5e7eb !important;
 }
 
 /* Delete button hover - light theme */
-.v2-theme:not(.dark) .cursor-pointer button[title="Delete"]:hover {
+.light .cursor-pointer button[title="Delete"]:hover {
   background: #fef2f2 !important;
   border-color: #fecaca !important;
   color: #dc2626 !important;
 }
 
 /* Delete button hover - dark theme */
-.v2-theme.dark .cursor-pointer button[title="Delete"]:hover {
+.dark .cursor-pointer button[title="Delete"]:hover {
   background: rgba(239, 68, 68, 0.2) !important;
   border-color: #f87171 !important;
   color: #f87171 !important;
@@ -728,32 +747,32 @@ a:hover {
 
 
 /* Scrollbar - light theme */
-.v2-theme:not(.dark) ::-webkit-scrollbar-thumb {
+.light ::-webkit-scrollbar-thumb {
   background: #d4d4d8;
 }
 
-.v2-theme:not(.dark) ::-webkit-scrollbar-thumb:hover {
+.light ::-webkit-scrollbar-thumb:hover {
   background: #a1a1aa;
 }
 
 /* Scrollbar - dark theme */
-.v2-theme.dark ::-webkit-scrollbar-thumb {
+.dark ::-webkit-scrollbar-thumb {
   background: #475569;
 }
 
-.v2-theme.dark ::-webkit-scrollbar-thumb:hover {
+.dark ::-webkit-scrollbar-thumb:hover {
   background: #64748b;
 }
 
 /* System message badges - light theme */
-.v2-theme:not(.dark) .rounded-full.text-xs:not(.workspace-pill) {
+.light .rounded-full.text-xs:not(.workspace-pill) {
   background: #f5f5f5 !important;
   color: #71717a !important;
   border: 1px solid #e4e4e7;
 }
 
 /* System message badges - dark theme */
-.v2-theme.dark .rounded-full.text-xs:not(.workspace-pill) {
+.dark .rounded-full.text-xs:not(.workspace-pill) {
   background: #1e293b !important;
   color: #9ca3af !important;
   border: 1px solid #334155;
@@ -765,25 +784,26 @@ a:hover {
  * ============================================================================= */
 
 /* Session item container - no individual borders when inside a group (border is on parent-session-group) */
-.v2-theme .parent-session-group .session-item-container {
+.light .parent-session-group .session-item-container,
+.dark .parent-session-group .session-item-container {
   border-bottom: none !important;
 }
 
 /* Standalone session items (ungrouped mode) keep their own border */
-.v2-theme:not(.dark) .session-item-container {
+.light .session-item-container {
   border-bottom: 1px solid #e4e4e7;
 }
 
-.v2-theme.dark .session-item-container {
+.dark .session-item-container {
   border-bottom: 1px solid #334155;
 }
 
 /* Parent-session-group gets the border: parent + children are one visual cell */
-.v2-theme:not(.dark) .parent-session-group {
+.light .parent-session-group {
   border-bottom: 1px solid #e4e4e7 !important;
 }
 
-.v2-theme.dark .parent-session-group {
+.dark .parent-session-group {
   border-bottom: 1px solid #334155 !important;
 }
 
@@ -800,16 +820,16 @@ a:hover {
 }
 
 /* Swipe delete background - light theme (softer red) */
-.v2-theme:not(.dark) .session-item-container .bg-red-600 {
+.light .session-item-container .bg-red-600 {
   background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%) !important;
 }
 
 /* Swipe delete button - light theme */
-.v2-theme:not(.dark) .session-item-container .bg-red-700 {
+.light .session-item-container .bg-red-700 {
   background: #dc2626 !important;
 }
 
-.v2-theme:not(.dark) .session-item-container .bg-red-700:hover {
+.light .session-item-container .bg-red-700:hover {
   background: #b91c1c !important;
 }
 
@@ -818,32 +838,32 @@ a:hover {
    ============================================================================= */
 
 /* Light theme - light background with dark text for contrast */
-.v2-theme:not(.dark) .ui-prompt-panel {
+.light .ui-prompt-panel {
   background: #ffffff !important;
   border: 1px solid #dc2626 !important;
 }
 
-.v2-theme:not(.dark) .ui-prompt-question {
+.light .ui-prompt-question {
   color: #18181b !important;
 }
 
 /* Dark theme - dark background with light text for contrast */
-.v2-theme.dark .ui-prompt-panel {
+.dark .ui-prompt-panel {
   background: rgba(30, 41, 59, 0.95) !important;
   border: 1px solid #ff5c5c !important;
 }
 
-.v2-theme.dark .ui-prompt-question {
+.dark .ui-prompt-question {
   color: #e5e7eb !important;
 }
 
 /* UI Textbox textarea (mitto_ui_textbox) */
-.v2-theme:not(.dark) .ui-textbox-textarea {
+.light .ui-textbox-textarea {
   background: #f8fafc !important;
   border-color: #d1d5db !important;
   color: #18181b !important;
 }
-.v2-theme.dark .ui-textbox-textarea {
+.dark .ui-textbox-textarea {
   background: rgba(30, 41, 59, 0.8) !important;
   border-color: #475569 !important;
   color: #e5e7eb !important;
@@ -888,14 +908,14 @@ a:hover {
    ============================================================================= */
 
 /* Light theme: dark red text on very subtle red background */
-.v2-theme:not(.dark) .error-message-bubble {
+.light .error-message-bubble {
   background: #fef2f2 !important;
   color: #991b1b !important;
   border-color: #fecaca !important;
 }
 
 /* Dark theme: light red text on dark red background */
-.v2-theme.dark .error-message-bubble {
+.dark .error-message-bubble {
   background: rgba(127, 29, 29, 0.3) !important;
   color: #fca5a5 !important;
   border-color: #991b1b !important;
@@ -977,49 +997,49 @@ a:hover {
 }
 
 /* Light theme form elements */
-.v2-theme:not(.dark) .ui-form-content label { color: #18181b; }
-.v2-theme:not(.dark) .ui-form-content input,
-.v2-theme:not(.dark) .ui-form-content select,
-.v2-theme:not(.dark) .ui-form-content textarea {
+.light .ui-form-content label { color: #18181b; }
+.light .ui-form-content input,
+.light .ui-form-content select,
+.light .ui-form-content textarea {
   background: #f8fafc;
   border-color: #d1d5db;
   color: #18181b;
 }
-.v2-theme:not(.dark) .ui-form-content fieldset { border-color: #d1d5db; }
-.v2-theme:not(.dark) .ui-form-content legend { color: #18181b; }
-.v2-theme:not(.dark) .ui-form-content small { color: #6b7280; }
-.v2-theme:not(.dark) .ui-form-content hr { border-color: #d1d5db; }
+.light .ui-form-content fieldset { border-color: #d1d5db; }
+.light .ui-form-content legend { color: #18181b; }
+.light .ui-form-content small { color: #6b7280; }
+.light .ui-form-content hr { border-color: #d1d5db; }
 
 /* Dark theme form elements */
-.v2-theme.dark .ui-form-content label { color: #e5e7eb; }
-.v2-theme.dark .ui-form-content input,
-.v2-theme.dark .ui-form-content select,
-.v2-theme.dark .ui-form-content textarea {
+.dark .ui-form-content label { color: #e5e7eb; }
+.dark .ui-form-content input,
+.dark .ui-form-content select,
+.dark .ui-form-content textarea {
   background: rgba(30, 41, 59, 0.8);
   border-color: #475569;
   color: #e5e7eb;
 }
-.v2-theme.dark .ui-form-content fieldset { border-color: #475569; }
-.v2-theme.dark .ui-form-content legend { color: #e5e7eb; }
-.v2-theme.dark .ui-form-content small { color: #9ca3af; }
-.v2-theme.dark .ui-form-content hr { border-color: #475569; }
+.dark .ui-form-content fieldset { border-color: #475569; }
+.dark .ui-form-content legend { color: #e5e7eb; }
+.dark .ui-form-content small { color: #9ca3af; }
+.dark .ui-form-content hr { border-color: #475569; }
 
 /* =============================================================================
    Properties Panel - Light Theme Overrides
    ============================================================================= */
 
 /* Mode select dropdown - light theme */
-.v2-theme:not(.dark) .properties-panel select {
+.light .properties-panel select {
   background: var(--bg-elevated) !important;
   color: var(--text) !important;
   border-color: var(--border) !important;
 }
 
-.v2-theme:not(.dark) .properties-panel select:focus {
+.light .properties-panel select:focus {
   border-color: var(--accent) !important;
 }
 
-.v2-theme:not(.dark) .properties-panel select option {
+.light .properties-panel select option {
   background: var(--bg-elevated);
   color: var(--text);
 }
@@ -1032,81 +1052,81 @@ a:hover {
    ============================================================================= */
 
 /* Light theme */
-.v2-theme:not(.dark) .chat-input-box {
+.light .chat-input-box {
   border-color: #e2e8f0 !important;
   background: #ffffff !important;
 }
 
-.v2-theme:not(.dark) .chat-input-box:focus-within {
+.light .chat-input-box:focus-within {
   border-color: #cbd5e1 !important;
 }
 
-.v2-theme:not(.dark) .chat-input-textarea {
+.light .chat-input-textarea {
   color: #18181b !important;
 }
 
-.v2-theme:not(.dark) .chat-input-textarea::placeholder {
+.light .chat-input-textarea::placeholder {
   color: #94a3b8 !important;
 }
 
-.v2-theme:not(.dark) .chat-input-bottom-bar {
+.light .chat-input-bottom-bar {
   border-top-color: #f1f5f9 !important;
 }
 
-.v2-theme:not(.dark) .chat-input-action {
+.light .chat-input-action {
   color: #94a3b8 !important;
 }
 
-.v2-theme:not(.dark) .chat-input-action:hover {
+.light .chat-input-action:hover {
   background: rgba(203, 213, 225, 0.5) !important;
   color: #334155 !important;
 }
 
-.v2-theme:not(.dark) .chat-input-action:disabled {
+.light .chat-input-action:disabled {
   color: #cbd5e1 !important;
 }
 
-.v2-theme:not(.dark) .chat-input-action:disabled:hover {
+.light .chat-input-action:disabled:hover {
   background: transparent !important;
   color: #cbd5e1 !important;
 }
 
 /* Dark theme */
-.v2-theme.dark .chat-input-box {
+.dark .chat-input-box {
   border-color: var(--border) !important;
   background: var(--mitto-input) !important;
 }
 
-.v2-theme.dark .chat-input-box:focus-within {
+.dark .chat-input-box:focus-within {
   border-color: var(--border-strong, #475569) !important;
 }
 
-.v2-theme.dark .chat-input-textarea {
+.dark .chat-input-textarea {
   color: var(--text) !important;
 }
 
-.v2-theme.dark .chat-input-textarea::placeholder {
+.dark .chat-input-textarea::placeholder {
   color: var(--muted) !important;
 }
 
-.v2-theme.dark .chat-input-bottom-bar {
+.dark .chat-input-bottom-bar {
   border-top-color: var(--border) !important;
 }
 
-.v2-theme.dark .chat-input-action {
+.dark .chat-input-action {
   color: var(--muted-strong, #64748b) !important;
 }
 
-.v2-theme.dark .chat-input-action:hover {
+.dark .chat-input-action:hover {
   background: rgba(71, 85, 105, 0.4) !important;
   color: var(--text-muted, #cbd5e1) !important;
 }
 
-.v2-theme.dark .chat-input-action:disabled {
+.dark .chat-input-action:disabled {
   color: var(--border, #334155) !important;
 }
 
-.v2-theme.dark .chat-input-action:disabled:hover {
+.dark .chat-input-action:disabled:hover {
   background: transparent !important;
   color: var(--border, #334155) !important;
 }
@@ -1114,42 +1134,43 @@ a:hover {
 
 /* Small screens: model selector row separator */
 @media (max-width: 640px) {
-  .v2-theme:not(.dark) .chat-input-model-selector {
+  .light .chat-input-model-selector {
     border-bottom-color: #f1f5f9 !important;
   }
 
-  .v2-theme.dark .chat-input-model-selector {
+  .dark .chat-input-model-selector {
     border-bottom-color: var(--border, #27272a) !important;
   }
 }
 
-.v2-theme .chat-input-context-pct {
+.light .chat-input-context-pct,
+.dark .chat-input-context-pct {
   font-size: 11px;
   white-space: nowrap;
   padding: 1px 4px;
 }
 
 /* Send/Stop buttons — filled accent in both v2 themes */
-.v2-theme:not(.dark) .chat-input-action.send-active,
-.v2-theme:not(.dark) .chat-input-action.stop-active {
+.light .chat-input-action.send-active,
+.light .chat-input-action.stop-active {
   background: var(--accent, #dc2626) !important;
   color: var(--accent-foreground, #ffffff) !important;
 }
 
-.v2-theme:not(.dark) .chat-input-action.send-active:hover,
-.v2-theme:not(.dark) .chat-input-action.stop-active:hover {
+.light .chat-input-action.send-active:hover,
+.light .chat-input-action.stop-active:hover {
   background: var(--accent-hover, #ef4444) !important;
   color: var(--accent-foreground, #ffffff) !important;
 }
 
-.v2-theme.dark .chat-input-action.send-active,
-.v2-theme.dark .chat-input-action.stop-active {
+.dark .chat-input-action.send-active,
+.dark .chat-input-action.stop-active {
   background: var(--accent, #ff5c5c) !important;
   color: var(--accent-foreground, #fafafa) !important;
 }
 
-.v2-theme.dark .chat-input-action.send-active:hover,
-.v2-theme.dark .chat-input-action.stop-active:hover {
+.dark .chat-input-action.send-active:hover,
+.dark .chat-input-action.stop-active:hover {
   background: var(--accent-hover, #ff7070) !important;
   color: var(--accent-foreground, #fafafa) !important;
 }

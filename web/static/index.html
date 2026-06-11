@@ -16,10 +16,10 @@
 
     <!-- Tailwind CSS (pre-built, run 'make tailwind' to regenerate) -->
     <link rel="stylesheet" href="./tailwind.css" />
-    <!-- Custom styles (design tokens now live at the top of styles.css) -->
+    <!-- Custom styles (components keyed on the .light/.dark bucket classes) -->
     <link rel="stylesheet" href="./styles.css" />
 
-    <!-- V2 theme stylesheet - always loaded, only applies when .v2-theme class is on body -->
+    <!-- Theme tokens + overrides (light defaults on :root, dark on .dark) -->
     <link rel="stylesheet" href="./styles-v2.css" />
 
     <!-- API prefix for all API calls and WebSocket connections -->
@@ -30,7 +30,7 @@
       window.mittoIsExternal = {{IS_EXTERNAL}};
     </script>
 
-    <!-- Theme loader - adds v2-theme class to body if configured -->
+    <!-- Theme loader - FOUC boot: applies the saved theme + light/dark bucket before render -->
     <script nonce="{{CSP_NONCE}}" src="./theme-loader.js"></script>
   </head>
   <body class="bg-mitto-bg text-white h-screen-safe overflow-hidden">

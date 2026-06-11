@@ -1,7 +1,6 @@
 // Theme loader for Mitto
-// 1. FOUC boot (woh): synchronously apply the saved named theme + light/dark
-//    bucket to <html> before the app renders, so there is no flash.
-// 2. Loads theme configuration and applies the v2-theme class if configured.
+// FOUC boot (woh): synchronously apply the saved named theme + light/dark
+// bucket to <html> before the app renders, so there is no flash.
 
 (function () {
   // --- FOUC boot (l6a) ----------------------------------------------------
@@ -108,30 +107,4 @@
     // localStorage/matchMedia may be unavailable — fall back to default styling.
   }
 
-  // Get API prefix (injected by server into the page)
-  var apiPrefix = window.mittoApiPrefix || "";
-
-  fetch(apiPrefix + "/api/config", { credentials: "same-origin" })
-    .then(function (res) {
-      return res.json();
-    })
-    .then(function (config) {
-      if (config && config.web && config.web.theme === "v2") {
-        // Add v2-theme class to html element immediately
-        document.documentElement.classList.add("v2-theme");
-        // Add v2-theme class to body when it's ready
-        if (document.body) {
-          document.body.classList.add("v2-theme");
-        } else {
-          document.addEventListener("DOMContentLoaded", function () {
-            document.body.classList.add("v2-theme");
-          });
-        }
-        // Store theme for app.js to use
-        window.mittoTheme = "v2";
-      }
-    })
-    .catch(function (err) {
-      console.error("Failed to load theme config:", err);
-    });
 })();
