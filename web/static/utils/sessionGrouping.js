@@ -4,6 +4,7 @@
 
 import { buildSessionTree } from "./sessionTree.js";
 import { getBasename, getGlobalWorkingDir } from "../lib.js";
+import { getFilterTabForSession, FILTER_TAB } from "./storage.js";
 
 // ---------------------------------------------------------------------------
 // Fingerprint
@@ -194,6 +195,76 @@ function computeFlatGroups(filteredSessions, groupingMode, allSessions, workspac
  * @param {Array}  workspaces       - Workspace metadata list (for labels / names)
  * @returns {Array|null} null when groupingMode is 'none'; array of group objects otherwise
  */
+// ---------------------------------------------------------------------------
+// Unified tree (new sidebar model)
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively annotate a list of conversation nodes with a `category` field.
+ * Children arrays are also annotated (new objects; inputs are not mutated).
+ *
+ * @param {Array} nodes - Array of session nodes (may have .children)
+ * @returns {Array} New array of annotated nodes
+ */
+function annotateWithCategory(nodes) {
+  return nodes.map((node) => ({
+    ...node,
+    category: getFilterTabForSession(node),
+    children: annotateWithCategory(node.children || []),
+  }));
+}
+
+/**
+ * Compute the unified sidebar tree over ALL sessions (regular + periodic +
+ * archived) without any tab pre-filtering. Returns a stable data model with
+ * static injected nodes (dashboard, per-folder tasks) and conversation nodes
+ * annotated with their category and partitioned into active vs. archived roots.
+ *
+ * @param {Array}  allSessions - Full session list (may be undefined/null)
+ * @param {Array}  workspaces  - Workspace metadata list (for labels / names)
+ * @returns {{ dashboard: Object, folders: Array }}
+ */
+export function computeUnifiedTree(allSessions, workspaces = []) {
+  const sessions = allSessions || [];
+
+  const dashboard = { type: "dashboard", id: "__dashboard__", label: "Dashboard" };
+
+  if (sessions.length === 0) {
+    return { dashboard, folders: [] };
+  }
+
+  const folderGroups = computeFolderGroups(sessions, sessions, workspaces);
+
+  const folders = folderGroups.map((folder) => {
+    const annotated = annotateWithCategory(folder.sessions);
+
+    const conversations = annotated.filter(
+      (node) => node.category !== FILTER_TAB.ARCHIVED,
+    );
+    const archived = annotated.filter(
+      (node) => node.category === FILTER_TAB.ARCHIVED,
+    );
+
+    const key = folder.key;
+    return {
+      key,
+      label: folder.label,
+      workingDir: folder.workingDir,
+      tasksNode: {
+        type: "tasks",
+        id: `tasks:${key}`,
+        label: "Tasks",
+        workingDir: folder.workingDir,
+        folderKey: key,
+      },
+      conversations,
+      archived,
+    };
+  });
+
+  return { dashboard, folders };
+}
+
 export function computeGroupedSessions(
   filteredSessions,
   groupingMode,
