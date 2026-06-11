@@ -25,6 +25,7 @@ import {
   getPromptIconOrDefault,
   BalloonIcon,
   ClockIcon,
+  EllipsisIcon,
 } from "./Icons.js";
 
 /**
@@ -120,7 +121,6 @@ export function SessionItem({
   isExpanded = false, // If true, chevron points down (expanded state)
   onToggleExpand = null, // Callback when expand/collapse is clicked
 }) {
-  const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
   // when the context menu opens (enabledWhen depends on this conversation's own
@@ -311,18 +311,33 @@ export function SessionItem({
     onArchive(session, !isArchived);
   };
 
-  const handleContextMenu = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-    // Evaluate menus:conversation prompts against THIS conversation's context so
-    // the submenu reflects the right-clicked conversation (e.g. "Report to
-    // parent" only for children), not the active session.
+  // Open the per-item context menu at a viewport position. Used by both
+  // right-click (handleContextMenu) and the explicit three-dot button
+  // (handleMenuButtonClick). Evaluates menus:conversation prompts against THIS
+  // conversation's context so the submenu reflects the clicked conversation
+  // (e.g. "Report to parent" only for children), not the active session.
+  const openContextMenuAt = (x, y) => {
+    setContextMenu({ x, y });
     if (onFetchConversationPrompts) {
       onFetchConversationPrompts(session, workingDir).then((prompts) => {
         setMenuPrompts(prompts || []);
       });
     }
+  };
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenuAt(e.clientX, e.clientY);
+  };
+
+  // Explicit three-dot button: anchor the menu at the button's bottom-left.
+  // ContextMenu is viewport-aware and will flip/shift to stay on-screen.
+  const handleMenuButtonClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    openContextMenuAt(rect.left, rect.bottom);
   };
 
   const closeContextMenu = () => {
@@ -463,8 +478,6 @@ export function SessionItem({
         <div
           onClick=${handleClick}
           onContextMenu=${handleContextMenu}
-          onMouseEnter=${() => setShowActions(true)}
-          onMouseLeave=${() => setShowActions(false)}
           class="p-3 cursor-pointer hover:bg-mitto-surface-3/50 relative bg-mitto-sidebar overflow-hidden ${isActive
             ? "bg-mitto-accent-900/30 border-l-2 border-l-mitto-accent-500"
             : ""} ${isSwiping
@@ -588,76 +601,33 @@ export function SessionItem({
                   hideAcpServer=${badgeHideAcpServer}
                 />
               `}
-            </div>
-            ${!isSpawned && html`
-            <!-- Bottom row: children count and action buttons -->
-            <div class="flex items-center justify-between mt-1">
-              <div class="flex items-center gap-2">
-                ${hasChildren && childCount > 0
-                  ? html`
-                      <button
-                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-mitto-surface-3'} text-mitto-text-muted hover:text-mitto-text-strong hover:bg-mitto-surface-hover transition-colors cursor-pointer"
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          if (onToggleExpand) onToggleExpand();
-                        }}
-                        title="${isExpanded ? 'Collapse children' : 'Expand children'}"
-                      >
-                        <span class="inline-block transition-transform ${isExpanded ? '' : '-rotate-90'}">
-                          <${ChevronDownIcon} className="w-3 h-3" />
-                        </span>
-                        <span>+${childCount}</span>
-                      </button>
-                    `
-                  : null}
-              </div>
-              <div
-                class="flex items-center gap-1 ${showActions
-                  ? "opacity-100"
-                  : "opacity-0"} transition-opacity shrink-0"
+              <button
+                type="button"
+                onClick=${handleMenuButtonClick}
+                class="btn btn-ghost btn-square btn-xs shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                title="More actions"
+                aria-label="More actions"
+                data-testid="session-item-menu"
               >
-                ${isSpawned
-                  ? html`<button
-                      onClick=${handleDelete}
-                      class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:bg-mitto-danger hover:text-mitto-text-strong"
-                      title="Delete"
-                    >
-                      <${TrashIcon} className="w-4 h-4" />
-                    </button>`
-                  : html`<button
-                      onClick=${canArchive ? handleArchive : undefined}
-                      aria-disabled=${!canArchive ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm ${!canArchive
-                        ? "opacity-40 pointer-events-none text-mitto-text-muted"
-                        : isArchived
-                          ? "text-mitto-text-muted"
-                          : "text-mitto-text-secondary hover:text-mitto-text-strong"}"
-                      title="${!canArchive
-                        ? archiveBlockedReason
-                        : isArchived
-                          ? `Unarchive${session.archive_reason ? " — " + getArchiveReasonText(session.archive_reason, session.archived_at) : ""}`
-                          : "Archive"}"
-                    >
-                      ${isArchived
-                        ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
-                        : html`<${ArchiveIcon} className="w-4 h-4" />`}
-                    </button>`
-                }
-                <button
-                  onClick=${handleRename}
-                  class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:text-mitto-text-strong"
-                  title="Properties"
-                >
-                  <${EditIcon} className="w-4 h-4" />
-                </button>
-                <button
-                  onClick=${handleDelete}
-                  class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:bg-mitto-danger hover:text-mitto-text-strong"
-                  title="Delete"
-                >
-                  <${TrashIcon} className="w-4 h-4" />
-                </button>
-              </div>
+                <${EllipsisIcon} className="w-4 h-4" />
+              </button>
+            </div>
+            ${!isSpawned && hasChildren && childCount > 0 && html`
+            <!-- Bottom row: children count expand button -->
+            <div class="flex items-center mt-1">
+              <button
+                class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-mitto-surface-3'} text-mitto-text-muted hover:text-mitto-text-strong hover:bg-mitto-surface-hover transition-colors cursor-pointer"
+                onClick=${(e) => {
+                  e.stopPropagation();
+                  if (onToggleExpand) onToggleExpand();
+                }}
+                title="${isExpanded ? 'Collapse children' : 'Expand children'}"
+              >
+                <span class="inline-block transition-transform ${isExpanded ? '' : '-rotate-90'}">
+                  <${ChevronDownIcon} className="w-3 h-3" />
+                </span>
+                <span>+${childCount}</span>
+              </button>
             </div>
             `}
           </div>
