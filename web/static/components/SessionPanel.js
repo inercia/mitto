@@ -613,7 +613,7 @@ export function SessionPanel({
           <div class="p-4 border-b border-mitto-border-1 flex items-center justify-between shrink-0">
             <h2 class="font-semibold text-lg">Conversation</h2>
             <button
-              class="p-1 hover:bg-mitto-surface-hover rounded transition-colors"
+              class="btn btn-ghost btn-square btn-sm"
               onClick=${handleClose}
               title="Close"
             >
@@ -754,7 +754,7 @@ export function SessionPanel({
             Failed to load changes: ${changesError}
           </div>
           <button
-            class="mt-3 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-mitto-surface-hover rounded transition-colors"
+            class="btn btn-ghost btn-xs mt-3"
             onClick=${handleRefreshChanges}
           >Retry</button>
         </div>
@@ -784,10 +784,10 @@ export function SessionPanel({
             <span>${files.length} file${files.length !== 1 ? "s" : ""}</span>
           </div>
           <button
-            class="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-mitto-surface-hover rounded transition-colors ${isLoadingChanges ? "animate-spin" : ""}"
+            class="btn btn-ghost btn-square btn-sm text-slate-400 hover:text-slate-200 ${isLoadingChanges ? "animate-spin opacity-40 pointer-events-none" : ""}"
             onClick=${handleRefreshChanges}
             title="Refresh changes"
-            disabled=${isLoadingChanges}
+            aria-disabled=${isLoadingChanges ? "true" : "false"}
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -855,7 +855,7 @@ export function SessionPanel({
                     onBlur=${() => { setTimeout(() => { if (isEditingTitle && !isSavingTitle) setIsEditingTitle(false); }, 150); }}
                     disabled=${isSavingTitle}
                   />
-                  <button class="p-2 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-success" onClick=${handleSaveTitle} title="Save" disabled=${isSavingTitle}>
+                  <button class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingTitle ? "opacity-40 pointer-events-none" : ""}" onClick=${handleSaveTitle} title="Save" aria-disabled=${isSavingTitle ? "true" : "false"}>
                     <${CheckIcon} className="w-4 h-4" />
                   </button>
                 </div>
@@ -865,7 +865,7 @@ export function SessionPanel({
                   <span class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors" onClick=${handleStartEditTitle} title="Click to edit title">
                     ${sessionInfo?.name || "New conversation"}
                   </span>
-                  <button class="p-1 hover:bg-mitto-surface-hover rounded transition-colors opacity-0 group-hover:opacity-100" onClick=${handleStartEditTitle} title="Edit title">
+                  <button class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100" onClick=${handleStartEditTitle} title="Edit title">
                     <${EditIcon} className="w-4 h-4" />
                   </button>
                 </div>
@@ -1027,7 +1027,7 @@ export function SessionPanel({
                                 onBlur=${() => { setTimeout(() => { if (editingAttribute && !isSavingAttribute) setEditingAttribute(null); }, 150); }}
                                 disabled=${isSavingAttribute}
                               />
-                              <button class="p-1 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-success" onClick=${handleSaveAttribute} title="Save" disabled=${isSavingAttribute}>
+                              <button class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingAttribute ? "opacity-40 pointer-events-none" : ""}" onClick=${handleSaveAttribute} title="Save" aria-disabled=${isSavingAttribute ? "true" : "false"}>
                                 <${CheckIcon} className="w-4 h-4" />
                               </button>
                             </div>
@@ -1081,7 +1081,7 @@ export function SessionPanel({
                                     >${value || "(not set)"}</span>
                                   `}
                               <button
-                                class="p-1 hover:bg-mitto-surface-hover rounded transition-colors opacity-0 group-hover:opacity-100"
+                                class="btn btn-ghost btn-square btn-xs opacity-0 group-hover:opacity-100"
                                 onClick=${() => handleStartEditAttribute({ name: field.name, value })}
                                 title="Edit"
                               >
@@ -1145,14 +1145,14 @@ export function SessionPanel({
             ${periodicConfig.enabled ? html`
               ${callbackConfig?.callback_url ? html`
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Copy callback URL to clipboard">
+                  <button onClick=${handleCopyCallbackUrl} class="btn btn-xs btn-soft" title="Copy callback URL to clipboard">
                     ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
                   </button>
-                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
+                  <button onClick=${handleRotateCallback} class="btn btn-xs btn-soft" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
+                  <button onClick=${handleRevokeCallback} class="btn btn-xs btn-soft btn-error" title="Revoke callback URL">✕</button>
                 </div>
               ` : html`
-                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-slate-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
+                <button onClick=${handleEnableCallback} class="btn btn-xs btn-soft" title="Generate a callback URL for triggering this periodic conversation externally">
                   🔗 Enable Callback URL
                 </button>
               `}
@@ -1160,8 +1160,8 @@ export function SessionPanel({
               ${callbackConfig?.callback_url ? html`
                 <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-slate-500 hover:text-slate-400 transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-slate-500 hover:text-mitto-danger transition-colors">✕ Revoke</button>
+                  <button onClick=${handleCopyCallbackUrl} class="btn btn-xs btn-soft">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
+                  <button onClick=${handleRevokeCallback} class="btn btn-xs btn-soft btn-error">✕ Revoke</button>
                 </div>
               ` : html`
                 <p class="text-xs text-slate-500">No callback URL configured.</p>
