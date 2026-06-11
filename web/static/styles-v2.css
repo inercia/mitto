@@ -471,14 +471,7 @@ a:hover {
    Light theme overrides (default for v2-theme)
    ============================================================================= */
 
-/* Light theme: slate bg — bare classes migrated to bg-mitto-surface-*; only the
-   opacity variants remain (no mitto opacity equivalent yet) */
-.v2-theme:not(.dark) .bg-slate-800\/50 {
-  background: rgba(245, 245, 245, 0.8) !important;
-}
-.v2-theme:not(.dark) .bg-slate-700\/50 {
-  background: rgba(240, 240, 240, 0.5) !important;
-}
+
 
 /* Light theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
    utilities already resolve to the same per-theme --mitto-* vars. Only
@@ -509,16 +502,7 @@ a:hover {
   color: #a1a1aa !important;
 }
 
-/* Light theme: Hover states - backgrounds */
-.v2-theme:not(.dark) .hover\:bg-slate-700:hover {
-  background: #f0f0f0 !important;
-}
-.v2-theme:not(.dark) .hover\:bg-slate-700\/50:hover {
-  background: rgba(240, 240, 240, 0.7) !important;
-}
-.v2-theme:not(.dark) .hover\:bg-slate-600:hover {
-  background: #e5e5e5 !important;
-}
+
 
 /* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
@@ -535,14 +519,7 @@ a:hover {
    Applied when .v2-theme.dark is present
    ============================================================================= */
 
-/* Dark theme: slate bg — bare classes migrated to bg-mitto-surface-*; only the
-   opacity variants remain (no mitto opacity equivalent yet) */
-.v2-theme.dark .bg-slate-800\/50 {
-  background: rgba(30, 41, 59, 0.5) !important;
-}
-.v2-theme.dark .bg-slate-700\/50 {
-  background: rgba(51, 65, 85, 0.5) !important;
-}
+
 
 /* Dark theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
    utilities already resolve to the same per-theme --mitto-* vars. Only
@@ -587,16 +564,7 @@ a:hover {
   color: #9ca3af !important;
 }
 
-/* Dark theme: Hover states - backgrounds */
-.v2-theme.dark .hover\:bg-slate-700:hover {
-  background: #334155 !important;
-}
-.v2-theme.dark .hover\:bg-slate-700\/50:hover {
-  background: rgba(51, 65, 85, 0.5) !important;
-}
-.v2-theme.dark .hover\:bg-slate-600:hover {
-  background: #475569 !important;
-}
+
 
 /* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
@@ -728,15 +696,7 @@ a:hover {
   color: #f59e0b !important;
 }
 
-/* Disabled states - light theme */
-.v2-theme:not(.dark) .disabled\:bg-slate-700:disabled {
-  background: #e5e5e5 !important;
-  color: #9ca3af !important; /* Light gray text for better contrast on disabled bg */
-}
-/* Disabled states - dark theme */
-.v2-theme.dark .disabled\:bg-slate-700:disabled {
-  background: #334155 !important;
-}
+
 
 /* Buttons - light theme: ensure visible borders and backgrounds */
 .v2-theme:not(.dark)
@@ -828,19 +788,7 @@ a:hover {
   color: #f87171 !important;
 }
 
-/* Stored badge - light theme */
-.v2-theme:not(.dark) .cursor-pointer .bg-slate-700.text-gray-400 {
-  background: #f5f5f5 !important;
-  color: #71717a !important;
-  border: 1px solid #e4e4e7;
-}
 
-/* Stored badge - dark theme */
-.v2-theme.dark .cursor-pointer .bg-slate-700.text-gray-400 {
-  background: #334155 !important;
-  color: #9ca3af !important;
-  border: 1px solid #475569;
-}
 
 /* Scrollbar - light theme */
 .v2-theme:not(.dark) ::-webkit-scrollbar-thumb {
@@ -1237,18 +1185,7 @@ a:hover {
   color: var(--text);
 }
 
-/* Advanced settings labels - light theme */
-.v2-theme:not(.dark) .properties-panel .text-slate-300 {
-  color: var(--text) !important;
-}
 
-.v2-theme:not(.dark) .properties-panel .text-slate-400 {
-  color: var(--muted-strong) !important;
-}
-
-.v2-theme:not(.dark) .properties-panel .text-slate-500 {
-  color: var(--muted) !important;
-}
 
 
 /* =============================================================================
