@@ -1331,7 +1331,7 @@ export function SessionList({
         <div class="flex items-center gap-0.5">
           <button
             onClick=${handleToggleGrouping}
-            class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors"
+            class="btn btn-ghost btn-square btn-sm"
             title=${getGroupingTooltip()}
           >
             ${getGroupingIcon()}
@@ -1339,9 +1339,9 @@ export function SessionList({
           <button
             data-testid="new-conversation-btn"
             onClick=${() => !isCreatingSession && onNewSession(null, null, filterTab)}
-            class="p-1.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60" : "hover:bg-mitto-surface-hover"}"
+            aria-disabled=${isCreatingSession ? "true" : "false"}
+            class="btn btn-ghost btn-square btn-sm ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
             title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
-            disabled=${isCreatingSession}
           >
             ${isCreatingSession
               ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
@@ -1351,7 +1351,7 @@ export function SessionList({
           html`
             <button
               onClick=${onClose}
-              class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors md:hidden"
+              class="btn btn-ghost btn-square btn-sm md:hidden"
               title="Close"
             >
               <${CloseIcon} className="w-4 h-4" />
@@ -1422,14 +1422,14 @@ export function SessionList({
                 <div class="flex items-center gap-0.5">
                   <button
                     onClick=${onShowSettings}
-                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
+                    class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:text-mitto-text-strong"
                     title="Settings"
                   >
                     <${SettingsIcon} className="w-4 h-4" />
                   </button>
                   <button
                     onClick=${onShowWorkspaces}
-                    class="p-1.5 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
+                    class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:text-mitto-text-strong"
                     title="Workspaces"
                   >
                     <${FolderIcon} className="w-4 h-4" />
@@ -1439,8 +1439,8 @@ export function SessionList({
             : rcFilePath
               ? html`
                   <button
-                    disabled
-                    class="p-2 rounded-lg opacity-50 cursor-not-allowed"
+                    aria-disabled="true"
+                    class="btn btn-ghost btn-square btn-sm opacity-40 pointer-events-none"
                     title="Using ${rcFilePath}"
                   >
                     <${SettingsIcon} className="w-5 h-5 text-mitto-text-muted" />
@@ -1490,7 +1490,7 @@ export function SessionList({
           <!-- Keyboard shortcuts button -->
           <button
             onClick=${onShowKeyboardShortcuts}
-            class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors group"
+            class="btn btn-ghost btn-square btn-sm group"
             title="Keyboard Shortcuts"
           >
             <${KeyboardIcon}
