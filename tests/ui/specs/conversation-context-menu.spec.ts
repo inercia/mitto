@@ -216,4 +216,30 @@ testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
       ).toHaveCount(0);
     },
   );
+
+  testWithCleanup(
+    "opens the conversation menu via the three-dot (ellipsis) button",
+    async ({ page, timeouts }) => {
+      const sessionItem = page
+        .locator(`[data-session-id="${sessionId}"]`)
+        .first();
+      await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
+
+      const ellipsisBtn = sessionItem.locator(
+        '[data-testid="session-item-menu"]',
+      );
+      await expect(ellipsisBtn).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Left-click the explicit ellipsis button (not right-click)
+      await ellipsisBtn.click();
+
+      const menu = page.locator(MENU).first();
+      await expect(menu).toBeVisible({ timeout: timeouts.appReady });
+
+      // Standard actions must be present
+      const menuButtons = page.locator(`${MENU} button`);
+      await expect(menuButtons.filter({ hasText: "Properties" })).toBeVisible();
+      await expect(menuButtons.filter({ hasText: "Delete" })).toBeVisible();
+    },
+  );
 });
