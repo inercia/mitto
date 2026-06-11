@@ -1529,9 +1529,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               <p class="text-xs text-mitto-text-muted italic py-2">No fields defined. Click "Add Field" to create one.</p>
                             `}
                             ${editUserDataFields.length > 0 && html`
-                              <div class="space-y-2">
+                              <ul class="list">
                                 ${editUserDataFields.map((field, i) => html`
-                                  <div key=${i} class="flex gap-2 items-start p-2 rounded-sm ${i % 2 === 0 ? 'bg-slate-800/30' : ''}">
+                                  <li key=${i} class="list-row items-start gap-2">
                                     <div class="flex-1 min-w-0">
                                       <label class="label" for=${"ws-udf-name-" + i}>Name</label>
                                       <input
@@ -1578,9 +1578,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         <${TrashIcon} className="w-3.5 h-3.5" />
                                       </button>
                                     </div>
-                                  </div>
+                                  </li>
                                 `)}
-                              </div>
+                              </ul>
                             `}
                           </fieldset>
                         </div>
@@ -1816,15 +1816,17 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           ${promptsLoading
                             ? html`<div class="flex items-center justify-center p-4"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
                             : html`
-                              <div class="space-y-2">
+                              <ul class="list">
                                 ${folderPrompts.length === 0
-                                  ? html`<div class="p-4 text-center text-mitto-text-muted text-sm">No prompts found. Click + to add a workspace prompt.</div>`
+                                  ? html`<li class="list-row"><div class="p-4 text-center text-mitto-text-muted text-sm">No prompts found. Click + to add a workspace prompt.</div></li>`
                                   : [...folderPrompts].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((prompt, idx) => {
                                       const isBuiltin = prompt.source === "builtin" || prompt.source === "file";
                                       const isEnabled = prompt.enabled !== false;
                                       return html`
-                                        <div key=${prompt.name}
-                                             class="collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-sm border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'}">
+                                        <li key=${prompt.name}
+                                            class="list-row p-0">
+                                          <div
+                                             class="collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-slate-700/20 rounded-sm border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'} w-full">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12">
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => togglePromptEnabled(prompt)}
@@ -1930,10 +1932,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             </fieldset>
                                           </div>
                                         </div>
+                                        </li>
                                       `;
                                     })
                                 }
-                              </div>
+                              </ul>
                             `
                           }
                         </div>

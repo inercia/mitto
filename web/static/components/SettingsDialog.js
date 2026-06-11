@@ -2243,6 +2243,8 @@ export function SettingsDialog({
                           </div>
                         </fieldset>
                       `}
+                      <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+                        <legend class="fieldset-legend">ACP Servers</legend>
                       ${acpServers.length === 0
                         ? html`
                             <div class="text-center py-8 text-mitto-text-muted">
@@ -2256,15 +2258,18 @@ export function SettingsDialog({
                             </div>
                           `
                         : html`
-                            <div class="space-y-2">
+                            <ul class="list">
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
                                 const isExpanded = editingServer === srv._key && !isRCFile;
                                 return html`
-                                  <div
+                                  <li
                                     key=${srv._key}
-                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-slate-700/20 rounded-sm border border-slate-600/50 ${isRCFile ? "opacity-80" : ""} group"
+                                    class="list-row p-0"
+                                  >
+                                  <div
+                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-slate-700/20 rounded-sm border border-slate-600/50 ${isRCFile ? "opacity-80" : ""} group w-full"
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
@@ -2370,10 +2375,12 @@ export function SettingsDialog({
                                       `}
                                     </div>
                                   </div>
+                                  </li>
                                 `;
                               })}
-                            </div>
+                            </ul>
                           `}
+                      </fieldset>
                     </div>
                   `}
 
