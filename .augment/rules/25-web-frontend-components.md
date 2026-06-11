@@ -27,6 +27,10 @@ keywords:
   - toast
   - component
   - hook
+  - tabs
+  - radio tabs
+  - WorkspacesDialog
+  - daisyUI tabs
 ---
 
 # Frontend Components and Hooks
@@ -82,12 +86,7 @@ function badge(label, className = "") {
 
 ## Side Panel Overlay Pattern
 
-`SessionPanel` is a unified tabbed panel that replaced the old separate `ConversationPropertiesPanel` and `UserDataPanel`. It has three tabs: **Changes**, **Properties**, and **User Data** (in that order). The parent (`app.js`) manages open/close state; default tab is `"changes"`.
-
-### Changes Tab
-Fetches `GET /api/sessions/{id}/changes` when active. Displays branch name, file count, refresh button, and file list with color-coded status badges (A=green, M=amber, D=red, R=blue, ?=gray) and `+N/-N` stats. Clicking a file opens the viewer in diff mode (`view=diff` param).
-
-Animation: `isClosing`/`shouldRender` pair for slide-in/slide-out (150ms). Use `TagIcon` for metadata panels.
+`SessionPanel` is a unified tabbed panel (replaces old `ConversationPropertiesPanel`/`UserDataPanel`) with three tabs: **Changes**, **Properties**, **User Data**. Parent (`app.js`) manages open/close state. Changes tab fetches `GET /api/sessions/{id}/changes`, displays file list with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` pair (150ms).
 
 ## useToast Hook (Unified Notification System)
 
@@ -106,46 +105,44 @@ Severity durations: info/success=5s, warning/error=10s. Max 5 simultaneous. Rend
 - `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key)
 - `useSwipeNavigation`: swipe left/right with threshold, 500ms window
 
-## Hooks in Conditionals (Anti-Pattern)
+## daisyUI Tabs (Radio-based + State-Driven Content)
 
-Preact/React hooks must be called unconditionally. When a hook is needed inside a conditional, extract a dedicated sub-component:
+The **radio tabs-border** pattern (WorkspacesDialog, folder/workspace tabs) uses daisyUI radio inputs with a separate state-driven content region:
 
 ```javascript
-// BAD: useState inside if-block — violates Rules of Hooks
-function Message({ isThought }) {
-  if (isThought) {
-    const [collapsed, setCollapsed] = useState(true);  // ❌
-    return html`...`;
-  }
-}
+// Tab bar: radio inputs with daisyUI styling
+html`
+  <div class="tabs tabs-border">
+    ${tabDefs.map(tab => html`
+      <input
+        type="radio"
+        name="ws-folder-tabs"
+        role="tab"
+        aria-label=${tab.label}
+        data-testid=${`ws-tab-${tab.id}`}
+        checked=${activeTab === tab.id}
+        onChange=${() => setActiveTab(tab.id)}
+        class=${"tab " + (activeTab === tab.id ? "tab-active text-mitto-accent" : "")}
+      />
+    `)}
+  </div>
 
-// GOOD: extract ThoughtBubble so hooks always run at top level
-function ThoughtBubble({ message }) {
-  const [collapsed, setCollapsed] = useState(true);  // ✓ always called
-  return html`...`;
-}
-function Message({ isThought, ...props }) {
-  if (isThought) return html`<${ThoughtBubble} ...${props} />`;
-}
+  <!-- Separate content region (state-driven, NOT pure CSS) -->
+  <div data-testid="ws-tab-content" class="mt-4">
+    ${activeTab === "folders" && html`<${FolderPanel} />`}
+    ${activeTab === "workspaces" && html`<${WorkspacePanel} />`}
+  </div>
+`
 ```
 
-Define extracted components in the **same file** — no new files needed.
+**Key points**:
+- `type="radio"` with `tabs-border` class (daisyUI variant)
+- `aria-label` provides visible tab text (radio inputs can't have text children)
+- `onChange` (not `onInput`) for checkable inputs
+- Preserve `role="tab"`, `data-testid`, distinct radio-group names, and active accent styling
+- **Content kept state-driven** (conditional rendering) rather than pure-CSS interleaved `tab-content` divs — preserves lazy-loading effects (panels load only when active)
+- Content region must satisfy test assertions like `ws-tab-content > *`
 
 ## Session List Tab Filtering
 
-The SessionList component filters conversations by a tab (Conversations, Periodic, Archived) derived via `getFilterTabForSession(session)`:
-
-```javascript
-function getFilterTabForSession(session) {
-  if (session.archived) return "archived";
-  if (session.periodic_enabled) return "periodic";
-  return "conversations";
-}
-```
-
-**Multi-click behavior**: Clicking a tab button fires `handleFilterTabChange` which:
-1. Sets the active filter tab (updates UI list)
-2. If the session for that tab still exists and belongs to it, restores the last-focused conversation via `getLastActiveSessionIdForTab(tab)`
-3. Only user clicks trigger restoration (programmatic changes skip it)
-
-**Guard against races**: Keep `(prevTab, prevSession)` refs in the recording effect to avoid redundant localStorage updates during streaming.
+SessionList filters conversations by tab (Conversations, Periodic, Archived) via `getFilterTabForSession(session)`. On tab click, restore the last-focused conversation using `getLastActiveSessionIdForTab(tab)` — but only on user clicks, not programmatic changes. Guard against races with `(prevTab, prevSession)` refs to avoid redundant localStorage updates during streaming.
