@@ -592,19 +592,19 @@ export function SessionItem({
                 ${isSpawned
                   ? html`<button
                       onClick=${handleDelete}
-                      class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-mitto-text-strong"
+                      class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:bg-mitto-danger hover:text-mitto-text-strong"
                       title="Delete"
                     >
                       <${TrashIcon} className="w-4 h-4" />
                     </button>`
                   : html`<button
                       onClick=${canArchive ? handleArchive : undefined}
-                      disabled=${!canArchive}
-                      class="p-1.5 bg-mitto-surface-3 rounded transition-colors ${!canArchive
-                        ? "opacity-50 cursor-not-allowed text-mitto-text-muted"
+                      aria-disabled=${!canArchive ? "true" : "false"}
+                      class="btn btn-ghost btn-square btn-sm ${!canArchive
+                        ? "opacity-40 pointer-events-none text-mitto-text-muted"
                         : isArchived
-                          ? "hover:bg-mitto-surface-hover text-mitto-text-muted"
-                          : "hover:bg-mitto-surface-hover text-mitto-text-secondary hover:text-mitto-text-strong"}"
+                          ? "text-mitto-text-muted"
+                          : "text-mitto-text-secondary hover:text-mitto-text-strong"}"
                       title="${!canArchive
                         ? archiveBlockedReason
                         : isArchived
@@ -618,14 +618,14 @@ export function SessionItem({
                 }
                 <button
                   onClick=${handleRename}
-                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-text-secondary hover:text-mitto-text-strong"
+                  class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:text-mitto-text-strong"
                   title="Properties"
                 >
                   <${EditIcon} className="w-4 h-4" />
                 </button>
                 <button
                   onClick=${handleDelete}
-                  class="p-1.5 bg-mitto-surface-3 hover:bg-mitto-danger rounded transition-colors text-mitto-text-secondary hover:text-mitto-text-strong"
+                  class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:bg-mitto-danger hover:text-mitto-text-strong"
                   title="Delete"
                 >
                   <${TrashIcon} className="w-4 h-4" />
