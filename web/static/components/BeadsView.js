@@ -904,7 +904,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
         ${creating
           ? html`
-            <fieldset class="fieldset bg-base-200 border-base-300 rounded-box border p-4">
+            <fieldset class="fieldset">
               <legend class="fieldset-legend">Issue</legend>
 
               <div>
