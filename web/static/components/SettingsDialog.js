@@ -2357,16 +2357,13 @@ export function SettingsDialog({
                             </div>
                           `
                         : html`
-                            <ul class="list">
+                            <div class="space-y-2">
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
                                 const isExpanded = editingServer === srv._key && !isRCFile;
                                 return html`
-                                  <li
-                                    key=${srv._key}
-                                    class="list-row p-0"
-                                  >
+                                  <div key=${srv._key}>
                                   <div
                                     class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
                                   >
@@ -2474,10 +2471,10 @@ export function SettingsDialog({
                                       `}
                                     </div>
                                   </div>
-                                  </li>
+                                  </div>
                                 `;
                               })}
-                            </ul>
+                            </div>
                           `}
                       </fieldset>
                     </div>
