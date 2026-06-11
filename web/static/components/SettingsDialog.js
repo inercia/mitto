@@ -130,7 +130,7 @@ export function FolderListEditor({
               <button
                 type="button"
                 onClick=${() => removeFolder(idx)}
-                class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
+                class="btn btn-ghost btn-square btn-xs"
                 title="Remove folder"
               >
                 <${TrashIcon} className="w-4 h-4" />
@@ -141,7 +141,7 @@ export function FolderListEditor({
         <button
           type="button"
           onClick=${addFolder}
-          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
+          class="btn btn-ghost btn-xs"
         >
           <${PlusIcon} className="w-3 h-3" />
           Add folder
@@ -194,7 +194,7 @@ export function AutoChildrenEditor({
               <button
                 type="button"
                 onClick=${addChild}
-                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-mitto-accent-hover hover:text-mitto-text-strong border border-mitto-border rounded-lg transition-colors"
+                class="btn btn-ghost btn-xs"
               >
                 + Add Child
               </button>
@@ -252,7 +252,7 @@ export function AutoChildrenEditor({
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="p-1.5 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
+                      class="btn btn-ghost btn-square btn-xs"
                       title="Remove child"
                     >
                       <${TrashIcon} className="w-4 h-4" />
@@ -497,7 +497,7 @@ export function RunnerRestrictionsEditor({
             <button
               type="button"
               onClick=${() => onChange(null)}
-              class="px-3 py-1.5 text-xs text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
+              class="btn btn-ghost btn-xs"
             >
               Clear Restrictions
             </button>
@@ -703,7 +703,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           <button
             type="button"
             onClick=${addEnvVar}
-            class="text-xs px-2 py-1 bg-mitto-surface-3 hover:bg-mitto-surface-hover rounded transition-colors"
+            class="btn btn-ghost btn-xs"
           >
             + Add Variable
           </button>
@@ -739,7 +739,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                       <button
                         type="button"
                         onClick=${() => removeEnvVar(idx)}
-                        class="p-1.5 text-mitto-danger hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                        class="btn btn-ghost btn-square btn-xs"
                         title="Remove variable"
                       >
                         <${TrashIcon} className="w-4 h-4" />
@@ -876,7 +876,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             <button
               type="button"
               onClick=${() => setBackgroundColor("")}
-              class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+              class="btn btn-ghost btn-square btn-xs"
               title="Clear color"
             >
               <svg
@@ -898,17 +898,19 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
       </div>
       <div class="flex justify-end gap-2">
         <button
+          type="button"
           onClick=${onCancel}
-          class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
+          class="btn btn-ghost btn-sm"
         >
           ${readOnly ? "Close" : "Cancel"}
         </button>
         ${!readOnly &&
         html`
           <button
+            type="button"
             onClick=${() => onSave(name, text, backgroundColor, group)}
             disabled=${!name.trim() || !text.trim()}
-            class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors disabled:opacity-50"
+            class="btn btn-primary btn-sm"
           >
             Save
           </button>
@@ -2104,17 +2106,17 @@ export function SettingsDialog({
                           for each workspace.
                         </p>
                         <button
+                          type="button"
                           onClick=${() => setShowDiscoverAgents(true)}
-                          class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                          class="btn btn-ghost btn-square btn-sm"
                           title="Discover Agents"
                         >
                           <${SearchIcon} className="w-5 h-5" />
                         </button>
                         <button
+                          type="button"
                           onClick=${() => setShowAddServer(!showAddServer)}
-                          class="p-1.5 hover:bg-mitto-surface-hover rounded-lg transition-colors ${showAddServer
-                            ? "bg-mitto-surface-3"
-                            : ""}"
+                          class="btn btn-ghost btn-square btn-sm ${showAddServer ? "btn-active" : ""}"
                           title="Add Server"
                         >
                           <${PlusIcon} className="w-5 h-5" />
@@ -2202,6 +2204,7 @@ export function SettingsDialog({
                           `}
                           <div class="flex justify-end gap-2">
                             <button
+                              type="button"
                               onClick=${() => {
                                 setShowAddServer(false);
                                 setNewServerName("");
@@ -2210,13 +2213,14 @@ export function SettingsDialog({
                                 setNewServerTags("");
                                 setError("");
                               }}
-                              class="px-3 py-1.5 text-sm hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                              class="btn btn-ghost btn-sm"
                             >
                               Cancel
                             </button>
                             <button
+                              type="button"
                               onClick=${addServer}
-                              class="px-3 py-1.5 text-sm bg-mitto-accent hover:bg-mitto-accent-500 rounded-lg transition-colors"
+                              class="btn btn-primary btn-sm"
                             >
                               Add
                             </button>
@@ -2306,21 +2310,23 @@ export function SettingsDialog({
                                       </div>
                                       ${!isRCFile && html`
                                         <button
+                                          type="button"
                                           onClick=${(e) => {
                                             e.stopPropagation();
                                             duplicateServer(srv.name);
                                           }}
-                                          class="p-1.5 text-mitto-text-muted hover:text-mitto-success hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100"
                                           title="Duplicate server"
                                         >
                                           <${DuplicateIcon} className="w-4 h-4" />
                                         </button>
                                         <button
+                                          type="button"
                                           onClick=${(e) => {
                                             e.stopPropagation();
                                             removeServer(srv.name);
                                           }}
-                                          class="p-1.5 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100"
                                           title="Remove server"
                                         >
                                           <${TrashIcon} className="w-4 h-4" />
@@ -2563,7 +2569,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
+                                                class="btn btn-ghost btn-square btn-xs"
                                                 title="Remove folder"
                                               >
                                                 <${TrashIcon}
@@ -2601,7 +2607,7 @@ export function SettingsDialog({
                                               [runner.type]: newConfig,
                                             });
                                           }}
-                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
+                                          class="btn btn-ghost btn-xs"
                                         >
                                           <${PlusIcon} className="w-3 h-3" />
                                           Add folder
@@ -2696,7 +2702,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="p-1 text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
+                                                class="btn btn-ghost btn-square btn-xs"
                                                 title="Remove folder"
                                               >
                                                 <${TrashIcon}
@@ -2734,7 +2740,7 @@ export function SettingsDialog({
                                               [runner.type]: newConfig,
                                             });
                                           }}
-                                          class="flex items-center gap-1 px-2 py-1 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
+                                          class="btn btn-ghost btn-xs"
                                         >
                                           <${PlusIcon} className="w-3 h-3" />
                                           Add folder
@@ -2930,7 +2936,7 @@ export function SettingsDialog({
                                           delete newRunners[runner.type];
                                           setRestrictedRunners(newRunners);
                                         }}
-                                        class="px-3 py-1.5 text-xs text-mitto-text-muted hover:text-mitto-danger hover:bg-red-500/10 rounded transition-colors"
+                                        class="btn btn-ghost btn-xs"
                                       >
                                         Clear Configuration
                                       </button>
@@ -2946,7 +2952,7 @@ export function SettingsDialog({
                                             });
                                           }
                                         }}
-                                        class="px-3 py-1.5 text-xs text-mitto-accent hover:text-mitto-accent-300 hover:bg-mitto-accent-500/10 rounded transition-colors"
+                                        class="btn btn-ghost btn-xs"
                                       >
                                         Reset to Defaults
                                       </button>
