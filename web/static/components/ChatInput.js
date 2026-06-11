@@ -1971,7 +1971,7 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea block w-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 border"
+                          class="ui-textbox-textarea textarea textarea-sm font-mono w-full resize-none"
                           style="min-height: 120px;"
                           maxlength=${16384}
                           onInput=${(e) => {

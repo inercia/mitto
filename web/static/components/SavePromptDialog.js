@@ -294,7 +294,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               placeholder="A brief description of what this prompt does..."
               disabled=${isSaving}
               rows="2"
-              class="w-full px-3 py-2 bg-mitto-input border border-mitto-border-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 resize-none"
+              class="textarea textarea-sm w-full resize-none disabled:opacity-50"
               data-testid="save-prompt-description-input"
             />
           </div>
