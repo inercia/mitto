@@ -41,9 +41,11 @@ const PROMPT_NAME = "Context Menu Test";
 // Conditional prompt: enabledWhen "permissions.canPromptUser" (default true).
 const CONDITIONAL_PROMPT_NAME = "Conditional Test";
 
-// Context menus render as fixed-position panels; this matches both the main menu
-// and any open submenu while avoiding dialogs (which use different classes).
-const MENU = ".fixed.z-50.bg-mitto-surface-2.shadow-xl";
+// Context menus render as fixed-position daisyUI menus; this matches both the
+// main menu and any open submenu while avoiding dialogs (which use different
+// classes). The menu chrome is the daisyUI `menu` component on a fixed-position
+// <ul> (bg-base-200 rounded-box shadow-xl fixed z-50).
+const MENU = ".menu.fixed.z-50.shadow-xl";
 
 testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
   let sessionId: string;
