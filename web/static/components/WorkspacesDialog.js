@@ -1378,16 +1378,20 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                     setSelectedFolder(newDisplayName);
                   };
                   return html`
-                    <!-- Folder tab bar -->
+                    <!-- Folder tab bar (daisyUI radio tabs-border) -->
                     <div role="tablist" class="tabs tabs-border px-4 shrink-0">
                       ${folderTabs.map((tab) => html`
-                        <button
+                        <input
                           key=${tab.id}
+                          type="radio"
+                          name="ws-folder-tabs"
                           role="tab"
+                          aria-label=${tab.label}
                           data-testid=${`ws-tab-${tab.id}`}
-                          onClick=${() => setActiveTab(tab.id)}
+                          checked=${activeTab === tab.id}
+                          onChange=${() => setActiveTab(tab.id)}
                           class="tab ${activeTab === tab.id ? "tab-active text-mitto-accent" : ""}"
-                        >${tab.label}</button>
+                        />
                       `)}
                     </div>
 
@@ -2058,16 +2062,20 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                     }
                   </div>`
                 : html`
-                <!-- Workspace tab bar -->
+                <!-- Workspace tab bar (daisyUI radio tabs-border) -->
                 <div role="tablist" class="tabs tabs-border px-4 shrink-0">
                   ${workspaceTabs.map((tab) => html`
-                    <button
+                    <input
                       key=${tab.id}
+                      type="radio"
+                      name="ws-workspace-tabs"
                       role="tab"
+                      aria-label=${tab.label}
                       data-testid=${`ws-tab-${tab.id}`}
-                      onClick=${() => setActiveTab(tab.id)}
+                      checked=${activeTab === tab.id}
+                      onChange=${() => setActiveTab(tab.id)}
                       class="tab ${activeTab === tab.id ? "tab-active text-mitto-accent" : ""}"
-                    >${tab.label}</button>
+                    />
                   `)}
                 </div>
 
