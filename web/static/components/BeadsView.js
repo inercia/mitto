@@ -966,7 +966,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   type="button"
                   onClick=${() => !savingPriority && setEditingPriority(o => !o)}
                   disabled=${savingPriority}
-                  class="cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-default"
+                  class="btn btn-ghost btn-xs"
                   title="Click to change priority"
                 >
                   ${priorityBadge(data.priority)}
@@ -982,7 +982,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                           key=${n}
                           type="button"
                           onClick=${() => handleSetPriority(num)}
-                          class="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-mitto-text hover:bg-mitto-surface-hover transition-colors"
+                          class="btn btn-ghost btn-sm w-full justify-start"
                         >
                           ${priorityBadge(num)}
                           <span class="flex-1">${label}</span>
@@ -1074,7 +1074,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       <button
                         type="button"
                         onClick=${() => onSelectIssue && onSelectIssue(c)}
-                        class="w-full flex items-center gap-2 text-sm text-mitto-text text-left rounded px-1 py-0.5 hover:bg-mitto-input-box transition-colors"
+                        class="btn btn-ghost btn-xs w-full justify-start"
                         title="Open ${c.id}"
                       >
                         ${statusBadge(c.status)}
@@ -1213,7 +1213,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                           type="button"
                           onClick=${startAddComment}
                           disabled=${savingComment}
-                          class="mt-2 flex items-center gap-1 text-xs text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          class="btn btn-ghost btn-xs mt-2"
                           title="Add comment"
                         >
                           ${savingComment
@@ -1972,7 +1972,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
-          class="md:hidden p-2 -ml-2 rounded-lg hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text shrink-0"
+          class="btn btn-ghost btn-square btn-sm md:hidden shrink-0"
           title="Show conversations"
         >
           <${MenuIcon} className="w-6 h-6" />
