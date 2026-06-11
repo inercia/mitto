@@ -28,19 +28,13 @@ import {
 
 import {
   setLastActiveSessionId,
-  getLastActiveSessionIdForTab,
-  setLastActiveSessionIdForTab,
+  getLastActiveSessionId,
   getLastSeenSeq,
   setLastSeenSeq,
   getSingleExpandedGroupMode,
   setGroupExpanded,
   isGroupExpanded,
   getExpandedGroups,
-  getFilterTab,
-  getFilterTabGrouping,
-  FILTER_TAB,
-  tabScopedGroupKey,
-  getFilterTabForSession,
 } from "../utils/storage.js";
 
 import { playAgentCompletedSound } from "../utils/audio.js";
@@ -3846,14 +3840,10 @@ export function useWebSocket() {
           const parentKey = `parent:${msg.data.parent_session_id}`;
           setGroupExpanded(parentKey, true);
 
-          // Also expand the folder containing the parent session.
-          // Folder keys are namespaced by the filter tab the new session
-          // belongs to, matching the sidebar's tab-scoped keys.
-          if (msg.data.working_dir) {
-            const tab = getFilterTabForSession(msg.data);
-            const folderKey = tabScopedGroupKey(tab, msg.data.working_dir);
-            setGroupExpanded(folderKey, true);
-          }
+          // Also expand the folder containing the parent session (unscoped key).
+          const folderKey = resolveFolderKey(msg.data, storedSessionsRef.current, msg.data.working_dir);
+          if (folderKey) setGroupExpanded(folderKey, true);
+          if (msg.data.archived && folderKey) setGroupExpanded(`archived:${folderKey}`, true);
         }
 
         setStoredSessions((prev) => {
@@ -3953,24 +3943,17 @@ export function useWebSocket() {
             },
           };
         });
-        // If the active session was just archived, switch to another session in the same tab.
-        // storedSessionsRef.current still has the pre-archive state here, so we can filter by tab.
+        // If the active session was just archived, switch to another non-archived session.
         if (
           msg.data.archived &&
           msg.data.session_id === activeSessionIdRef.current
         ) {
-          const currentTab = getFilterTab();
-          const remaining = (storedSessionsRef.current || []).filter((s) => {
-            if (s.session_id === msg.data.session_id) return false; // exclude the one being archived
-            if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-            if (currentTab === FILTER_TAB.PERIODIC)
-              return !s.archived && s.periodic_enabled;
-            return !s.archived && !s.periodic_enabled; // conversations tab
-          });
+          const remaining = (storedSessionsRef.current || []).filter(
+            (s) => s.session_id !== msg.data.session_id && !s.archived,
+          );
           if (remaining.length > 0) {
             setActiveSessionId(remaining[0].session_id);
           } else {
-            // No sessions left in this tab — clear active session, don't switch tabs
             setActiveSessionId(null);
           }
         }
@@ -4194,20 +4177,11 @@ export function useWebSocket() {
         setSessions((prev) => {
           const { [deletedId]: removed, ...rest } = prev;
           if (deletedId === currentId) {
-            // Filter remaining stored sessions to the current tab so we don't
-            // jump to a session in a different tab (e.g., archived when on conversations).
-            const currentTab = getFilterTab();
             const remainingStored = (storedSessionsRef.current || []).filter(
-              (s) => s.session_id !== deletedId,
+              (s) => s.session_id !== deletedId && !s.archived,
             );
-            const tabFiltered = remainingStored.filter((s) => {
-              if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-              if (currentTab === FILTER_TAB.PERIODIC)
-                return !s.archived && s.periodic_enabled;
-              return !s.archived && !s.periodic_enabled; // conversations tab
-            });
-            if (tabFiltered.length > 0) {
-              setActiveSessionId(tabFiltered[0].session_id);
+            if (remainingStored.length > 0) {
+              setActiveSessionId(remainingStored[0].session_id);
             } else {
               // Don't create a new session here - let the user do it manually
               // or let the initiating window handle it. This prevents multiple
@@ -4381,13 +4355,10 @@ export function useWebSocket() {
         // back to the most recent session within that same tab.
         fetchStoredSessions().then((storedSessionsList) => {
           const sessions = storedSessionsList || [];
-          const persistedTab = getFilterTab();
 
-          // Candidate: the session last focused in the persisted tab.
-          const lastTabSessionId = getLastActiveSessionIdForTab(persistedTab);
-          const lastTabSession =
-            lastTabSessionId &&
-            sessions.find((s) => s.session_id === lastTabSessionId);
+          const lastSessionId = getLastActiveSessionId();
+          const lastSession =
+            lastSessionId && sessions.find((s) => s.session_id === lastSessionId);
 
           // Lazy-connect: only the active session opens a per-session WebSocket
           // at startup. Background sessions are NOT pre-connected — they connect
@@ -4395,30 +4366,19 @@ export function useWebSocket() {
           // prevents the "startup storm" where every non-archived session resumes
           // its ACP process simultaneously, spiking CPU and memory. Sidebar status
           // for background sessions stays live via the global events WebSocket.
-          if (
-            lastTabSession &&
-            getFilterTabForSession(lastTabSession) === persistedTab
-          ) {
-            switchSession(lastTabSession.session_id);
+          if (lastSession) {
+            switchSession(lastSession.session_id);
           } else {
-            // Stale or missing per-tab session — clear the stale reference and
-            // fall back to the most recent session within the persisted tab.
-            if (lastTabSessionId) {
+            if (lastSessionId) {
               console.log(
-                `Last active session ${lastTabSessionId} for tab "${persistedTab}" no longer exists, clearing localStorage`,
+                `Last active session ${lastSessionId} no longer exists, clearing`,
               );
-              setLastActiveSessionIdForTab(persistedTab, null);
+              setLastActiveSessionId(null);
             }
-            // sessions is sorted by updated_at desc, so the first match is the
-            // most recent session belonging to the persisted tab.
-            const mostRecentInTab = sessions.find(
-              (s) => getFilterTabForSession(s) === persistedTab,
-            );
-            if (mostRecentInTab) {
-              switchSession(mostRecentInTab.session_id);
+            // sessions is sorted by updated_at desc — pick the most recent overall.
+            if (sessions.length > 0) {
+              switchSession(sessions[0].session_id);
             }
-            // No session in the persisted tab — keep the tab selected and show
-            // the empty state; do NOT jump to a different tab's session.
           }
         });
       }
@@ -5362,7 +5322,6 @@ export function useWebSocket() {
         (s) => s.session_id === sessionId,
       );
       const deletedWorkingDir = deletedSession?.working_dir || "";
-      const deletedAcpServer = deletedSession?.acp_server || "";
 
       // Cancel any pending reconnect for this session
       if (sessionReconnectRefs.current[sessionId]) {
@@ -5395,54 +5354,31 @@ export function useWebSocket() {
         // Fetch remaining sessions from server to get accurate list
         const remainingSessions = await fetchStoredSessions();
         if (remainingSessions && remainingSessions.length > 0) {
-          // Filter to sessions in the same tab so we don't jump to a different tab
-          const currentTab = getFilterTab();
-          const tabFiltered = remainingSessions.filter((s) => {
-            if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-            if (currentTab === FILTER_TAB.PERIODIC)
-              return !s.archived && s.periodic_enabled;
-            return !s.archived && !s.periodic_enabled; // conversations tab
-          });
+          const remainingActive = remainingSessions.filter((s) => !s.archived);
 
-          if (tabFiltered.length > 0) {
-            // In accordion mode with grouping, prefer a session from the same group
-            // so we don't jump to a session in a different (possibly collapsed) group
-            let nextSession = tabFiltered[0];
-            const groupingMode = getFilterTabGrouping(currentTab);
-            if (
-              getSingleExpandedGroupMode() &&
-              groupingMode &&
-              groupingMode !== "none"
-            ) {
-              // Compute the deleted session's group key (mirrors expandGroupForSession logic)
-              let deletedGroupKey;
-              if (groupingMode === "server") {
-                deletedGroupKey = deletedAcpServer || "Unknown";
-              } else if (groupingMode === "workspace") {
-                deletedGroupKey = `${deletedWorkingDir}|${deletedAcpServer}`;
-              } else if (groupingMode === "folder") {
-                deletedGroupKey = deletedWorkingDir || "Unknown";
-              }
-              if (deletedGroupKey) {
-                const sameGroupSession = tabFiltered.find((s) => {
-                  let sessionGroupKey;
-                  if (groupingMode === "server") {
-                    sessionGroupKey = s.acp_server || "Unknown";
-                  } else if (groupingMode === "workspace") {
-                    sessionGroupKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
-                  } else if (groupingMode === "folder") {
-                    sessionGroupKey = s.working_dir || "Unknown";
-                  }
-                  return sessionGroupKey === deletedGroupKey;
-                });
-                if (sameGroupSession) {
-                  nextSession = sameGroupSession;
+          if (remainingActive.length > 0) {
+            // In accordion mode, prefer a session from the same folder
+            let nextSession = remainingActive[0];
+            if (getSingleExpandedGroupMode()) {
+              const deletedFolderKey = resolveFolderKey(
+                deletedSession,
+                remainingSessions,
+                deletedWorkingDir,
+              );
+              if (deletedFolderKey) {
+                const sameFolderSession = remainingActive.find(
+                  (s) =>
+                    resolveFolderKey(s, remainingSessions, s.working_dir) ===
+                    deletedFolderKey,
+                );
+                if (sameFolderSession) {
+                  nextSession = sameFolderSession;
                 }
               }
             }
             switchSession(nextSession.session_id);
           } else {
-            // No sessions left in this tab — clear active session, don't switch tabs
+            // No sessions left — clear active session, don't switch tabs
             setActiveSessionId(null);
           }
         } else {
