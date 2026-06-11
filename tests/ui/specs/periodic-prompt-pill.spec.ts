@@ -99,7 +99,7 @@ test.describe("Periodic Prompt Pill", () => {
     //    elapsed time to prove the fix is working (the pill should not need a
     //    full reconnect cycle to appear).
     const pillLocator = page
-      .locator(".named-prompt-pill")
+      .locator('[data-testid="named-prompt-pill"]')
       .filter({ hasText: "Hello Greeting" });
 
     await expect(pillLocator).toBeVisible({ timeout: 10_000 });

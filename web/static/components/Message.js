@@ -58,7 +58,8 @@ function NamedPromptPill({ message }) {
       ${timeStr &&
       html`<span class="message-timestamp">${timeStr}</span>`}
       <div
-        class="named-prompt-pill flex items-center gap-2 px-4 py-2 rounded-full"
+        class="badge badge-primary badge-lg gap-2"
+        data-testid="named-prompt-pill"
       >
         <svg
           class="w-4 h-4 shrink-0"
