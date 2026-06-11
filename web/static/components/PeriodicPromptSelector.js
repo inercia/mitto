@@ -209,7 +209,7 @@ export function PeriodicPromptSelector({
       <!-- Dropdown panel (appears ABOVE the selector) -->
       ${showDropdown && html`
         <div
-          class="absolute bottom-full left-0 right-0 mb-1 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl z-50 overflow-hidden"
+          class="absolute bottom-full left-0 right-0 mb-1 bg-base-200 rounded-box shadow-xl z-50 overflow-hidden"
           style="max-height: 360px; display: flex; flex-direction: column;"
           data-testid="periodic-prompt-selector-dropdown"
         >
