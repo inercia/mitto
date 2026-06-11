@@ -60,54 +60,47 @@ function ContextMenuItem({ item, onClose }) {
             e.stopPropagation();
             openSubmenu();
           }}
-          class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 text-mitto-text hover:bg-mitto-surface-hover"
         >
           ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
           <span class="flex-1">${item.label}</span>
-          <${ChevronRightIcon} className="w-4 h-4 text-mitto-text-muted" />
+          <${ChevronRightIcon} className="w-4 h-4 opacity-50" />
         </button>
         ${submenuOpen &&
         html`
-          <div
-            class="fixed z-50 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl py-1 min-w-[140px] max-h-[60vh] overflow-y-auto"
+          <ul
+            class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px] max-h-[60vh] overflow-y-auto"
             style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
             onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
             onMouseLeave=${scheduleClose}
           >
-            <ul class="menu menu-sm w-full p-0 gap-0">
-              ${item.submenu.map(
-                (sub) => html`
-                  <li key=${sub.label}>
-                    <button
-                      onClick=${(e) => {
-                        e.stopPropagation();
-                        if (!sub.disabled) {
-                          sub.onClick();
-                          onClose();
-                        }
-                      }}
-                      disabled=${sub.disabled}
-                      class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${sub.disabled
-                        ? "text-mitto-text-muted cursor-not-allowed"
-                        : sub.danger
-                          ? "text-mitto-danger hover:text-red-300 hover:bg-mitto-surface-hover"
-                          : "text-mitto-text hover:bg-mitto-surface-hover"}"
-                    >
-                      ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
-                      ${sub.label}
-                    </button>
-                  </li>
-                `,
-              )}
-            </ul>
-          </div>
+            ${item.submenu.map(
+              (sub) => html`
+                <li key=${sub.label} class="${sub.disabled ? "menu-disabled" : ""}">
+                  <button
+                    onClick=${(e) => {
+                      e.stopPropagation();
+                      if (!sub.disabled) {
+                        sub.onClick();
+                        onClose();
+                      }
+                    }}
+                    disabled=${sub.disabled}
+                    class="${sub.danger ? "text-error" : ""}"
+                  >
+                    ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
+                    ${sub.label}
+                  </button>
+                </li>
+              `,
+            )}
+          </ul>
         `}
       </li>
     `;
   }
 
   return html`
-    <li>
+    <li class="${item.disabled ? "menu-disabled" : ""}">
       <button
         onClick=${(e) => {
           e.stopPropagation();
@@ -117,11 +110,7 @@ function ContextMenuItem({ item, onClose }) {
           }
         }}
         disabled=${item.disabled}
-        class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
-          ? "text-mitto-text-muted cursor-not-allowed"
-          : item.danger
-            ? "text-mitto-danger hover:text-red-300 hover:bg-mitto-surface-hover"
-            : "text-mitto-text hover:bg-mitto-surface-hover"}"
+        class="${item.danger ? "text-error" : ""}"
       >
         ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
         ${item.label}
@@ -181,22 +170,20 @@ export function ContextMenu({ x, y, items, onClose }) {
   }, [x, y, menuRef.current]);
 
   return html`
-    <div
+    <ul
       ref=${menuRef}
-      class="fixed z-50 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg shadow-xl py-1 min-w-[140px]"
+      class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px]"
       style="left: ${position.x}px; top: ${position.y}px;"
     >
-      <ul class="menu menu-sm w-full p-0 gap-0">
-        ${items.map(
-          (item) => html`
-            <${ContextMenuItem}
-              key=${item.label}
-              item=${item}
-              onClose=${onClose}
-            />
-          `,
-        )}
-      </ul>
-    </div>
+      ${items.map(
+        (item) => html`
+          <${ContextMenuItem}
+            key=${item.label}
+            item=${item}
+            onClose=${onClose}
+          />
+        `,
+      )}
+    </ul>
   `;
 }
