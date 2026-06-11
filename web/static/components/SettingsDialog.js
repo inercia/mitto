@@ -49,6 +49,22 @@ import { ModelSelection } from "./ModelSelection.js";
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
 
+// Import the curated theme list (single source of truth) for the theme picker.
+import { NAMED_THEMES } from "../hooks/useTheme.js";
+
+// Human-friendly labels for the named daisyUI themes (woh). Order follows
+// NAMED_THEMES insertion order; any theme without a label falls back to its key.
+const THEME_LABELS = {
+  mitto: "Mitto (default)",
+  light: "Light",
+  dark: "Dark",
+  cupcake: "Cupcake",
+  nord: "Nord",
+  dracula: "Dracula",
+  sunset: "Sunset",
+  dim: "Dim",
+};
+
 // WorkspaceBadge is now a standalone component module (not prop-drilled from app.js)
 
 /**
@@ -1082,6 +1098,18 @@ export function SettingsDialog({
   // Global auto-approve permissions setting - default: true (matches current behavior)
   const [globalAutoApprove, setGlobalAutoApprove] = useState(true);
 
+  // Named daisyUI theme setting (client-side, stored in localStorage). Mirrors
+  // useTheme.js; changes are broadcast via the mitto-theme-name-changed event.
+  const [themeName, setThemeName] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto-theme-name");
+      if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
+        return saved;
+      }
+    }
+    return "mitto";
+  });
+
   // Follow system theme setting (client-side, stored in localStorage)
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
     if (typeof localStorage !== "undefined") {
@@ -1133,6 +1161,17 @@ export function SettingsDialog({
 
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
+
+  // Handle named theme change — persist and broadcast to useTheme.js.
+  const handleThemeNameChange = (name) => {
+    setThemeName(name);
+    localStorage.setItem("mitto-theme-name", name);
+    window.dispatchEvent(
+      new CustomEvent("mitto-theme-name-changed", {
+        detail: { themeName: name },
+      }),
+    );
+  };
 
   // Handle follow system theme toggle
   const handleFollowSystemThemeChange = (enabled) => {
@@ -3714,6 +3753,31 @@ export function SettingsDialog({
                         <h4 class="text-sm font-medium text-mitto-text-secondary">
                           Appearance
                         </h4>
+                        <div class="p-3">
+                          <div class="flex items-center justify-between gap-3">
+                            <div>
+                              <div class="font-medium text-sm">Theme</div>
+                              <div class="text-xs text-mitto-text-muted">
+                                Color theme for the interface. "Mitto" follows
+                                the light/dark toggle below; other themes apply
+                                their own colors.
+                              </div>
+                            </div>
+                            <select
+                              value=${themeName}
+                              onChange=${(e) =>
+                                handleThemeNameChange(e.target.value)}
+                              class="select select-sm"
+                            >
+                              ${Object.keys(NAMED_THEMES).map(
+                                (name) =>
+                                  html`<option value=${name}>
+                                    ${THEME_LABELS[name] || name}
+                                  </option>`,
+                              )}
+                            </select>
+                          </div>
+                        </div>
                         <label
                           class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
                         >
