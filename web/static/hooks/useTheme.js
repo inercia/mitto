@@ -6,9 +6,27 @@
 // the App render consumes; the follow-system and reduced-motion state stays internal.
 const { useState, useEffect, useCallback } = window.preact;
 
+// Named daisyUI themes offered by the theme picker (woh). "mitto" is the
+// default passthrough — the legacy --mitto-* light/dark system stays in
+// control. The rest set a data-theme on <html> that drives the --mitto-*
+// bridge in tailwind.css. The value is the theme's inherent light/dark
+// "bucket", used to (a) pick the Mermaid diagram theme and (b) keep residual
+// hardcoded dark:* / *-slate utilities coherent with the bridge. "mitto"
+// (null) follows the live light/dark toggle.
+export const NAMED_THEMES = {
+  mitto: null,
+  light: "light",
+  dark: "dark",
+  cupcake: "light",
+  nord: "light",
+  dracula: "dark",
+  sunset: "dark",
+  dim: "dark",
+};
+
 /**
  * Theme / font-size / reduced-motion preferences hook.
- * Returns { theme, toggleTheme, fontSize, toggleFontSize }.
+ * Returns { theme, toggleTheme, fontSize, toggleFontSize, themeName, setThemeName }.
  */
 export function useTheme() {
   // Follow system theme state - persisted to localStorage
@@ -55,6 +73,17 @@ export function useTheme() {
     return "dark";
   });
 
+  // Named daisyUI theme (woh): "mitto" passthrough + curated built-ins.
+  const [themeName, setThemeName] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto-theme-name");
+      if (saved && Object.prototype.hasOwnProperty.call(NAMED_THEMES, saved)) {
+        return saved;
+      }
+    }
+    return "mitto";
+  });
+
   // Listen for OS theme changes when followSystemTheme is enabled
   useEffect(() => {
     if (
@@ -83,10 +112,15 @@ export function useTheme() {
     );
   }, [followSystemTheme]);
 
-  // Apply theme class to document
+  // Apply theme class to document. When a named daisyUI theme is active, the
+  // light/dark class follows that theme's inherent bucket so the residual
+  // hardcoded dark:* / *-slate utilities stay coherent with the --mitto-*
+  // bridge; the "mitto" passthrough follows the explicit light/dark toggle.
   useEffect(() => {
+    const scheme = NAMED_THEMES[themeName];
+    const effective = scheme == null ? theme : scheme;
     const root = document.documentElement;
-    if (theme === "light") {
+    if (effective === "light") {
       root.classList.add("light");
       root.classList.remove("dark");
       // Also apply to body for v2-theme CSS selectors (which use .v2-theme.dark)
@@ -99,12 +133,37 @@ export function useTheme() {
       document.body.classList.add("dark");
       document.body.classList.remove("light");
     }
+    // Persist the explicit light/dark choice (not the effective bucket) so it
+    // is restored when switching back to the "mitto" passthrough theme.
     localStorage.setItem("mitto-theme", theme);
-    // Update Mermaid.js theme for new diagrams
+    // Update Mermaid.js theme for new diagrams to match the effective bucket.
     if (typeof window.updateMermaidTheme === "function") {
-      window.updateMermaidTheme(theme);
+      window.updateMermaidTheme(effective);
     }
-  }, [theme]);
+  }, [theme, themeName]);
+
+  // Apply the named daisyUI theme as data-theme on <html> (drives the
+  // --mitto-* bridge in tailwind.css) and persist the choice.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", themeName);
+    localStorage.setItem("mitto-theme-name", themeName);
+  }, [themeName]);
+
+  // Listen for theme-name changes dispatched by SettingsDialog.
+  useEffect(() => {
+    const handleThemeNameChanged = (e) => {
+      const name = e.detail && e.detail.themeName;
+      if (name && Object.prototype.hasOwnProperty.call(NAMED_THEMES, name)) {
+        setThemeName(name);
+      }
+    };
+    window.addEventListener("mitto-theme-name-changed", handleThemeNameChanged);
+    return () =>
+      window.removeEventListener(
+        "mitto-theme-name-changed",
+        handleThemeNameChanged,
+      );
+  }, []);
 
   const toggleTheme = useCallback(() => {
     // When user manually toggles theme, disable follow system theme
@@ -292,5 +351,12 @@ export function useTheme() {
     setFontSize((prev) => (prev === "small" ? "large" : "small"));
   }, []);
 
-  return { theme, toggleTheme, fontSize, toggleFontSize };
+  return {
+    theme,
+    toggleTheme,
+    fontSize,
+    toggleFontSize,
+    themeName,
+    setThemeName,
+  };
 }
