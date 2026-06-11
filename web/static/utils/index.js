@@ -21,8 +21,6 @@ export {
 export {
   getLastActiveSessionId,
   setLastActiveSessionId,
-  getLastActiveSessionIdForTab,
-  setLastActiveSessionIdForTab,
   getQueueDropdownHeight,
   setQueueDropdownHeight,
   getQueueHeightConstraints,
@@ -37,13 +35,6 @@ export {
   initUIPreferences,
   onUIPreferencesLoaded,
   FILTER_TAB,
-  getFilterTab,
-  setFilterTab,
-  getFilterTabGrouping,
-  setFilterTabGrouping,
-  cycleFilterTabGrouping,
-  tabScopedGroupKey,
-  stripTabScope,
   getFilterTabForSession,
   getCategoryFilter,
   setCategoryFilter,
@@ -52,6 +43,7 @@ export {
   getSidebarWidthConstraints,
   getBeadsFilters,
   setBeadsFilters,
+  migrateLegacyTabStorage,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

@@ -61,6 +61,7 @@ export async function initUIPreferences() {
   }
 
   uiPreferencesSyncPromise = (async () => {
+    migrateLegacyTabStorage();
     try {
       // Use authFetch to include credentials for cross-origin requests
       const response = await authFetch(apiUrl("/api/ui-preferences"));
@@ -78,12 +79,6 @@ export async function initUIPreferences() {
             JSON.stringify(prefs.expanded_groups),
           );
         }
-        if (prefs.filter_tab_grouping) {
-          localStorage.setItem(
-            FILTER_TAB_GROUPING_KEY,
-            JSON.stringify(prefs.filter_tab_grouping),
-          );
-        }
         if (prefs.prompt_sort_mode) {
           localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
         }
@@ -93,8 +88,6 @@ export async function initUIPreferences() {
           prefs.grouping_mode,
           "groups:",
           Object.keys(prefs.expanded_groups || {}).length,
-          "tab groupings:",
-          Object.keys(prefs.filter_tab_grouping || {}).length,
         );
 
         // Notify listeners that preferences have been loaded
@@ -153,7 +146,6 @@ function getCurrentUIPreferences() {
   return {
     grouping_mode: getGroupingMode(),
     expanded_groups: getExpandedGroups(),
-    filter_tab_grouping: getAllFilterTabGroupings(),
     prompt_sort_mode: getPromptSortMode(),
   };
 }
@@ -228,35 +220,67 @@ export function setLastActiveSessionId(sessionId) {
   }
 }
 
-/**
- * Get the last active session ID for a specific filter tab from localStorage.
- * Each tab (conversations, periodic, archived) remembers its own last-focused
- * conversation so switching tabs restores the conversation last viewed there.
- * @param {string} tab - The filter tab (conversations, periodic, archived)
- * @returns {string|null} The last active session ID for that tab, or null
- */
-export function getLastActiveSessionIdForTab(tab) {
-  try {
-    return localStorage.getItem(`mitto_last_session_id_${tab}`) || null;
-  } catch (e) {
-    return null;
-  }
-}
+// =============================================================================
+// Legacy Tab Storage Migration (mitto-1er.8.4-C)
+// =============================================================================
+
+const DETAB_MIGRATION_KEY = "mitto_detab_migration_done";
 
 /**
- * Save the last active session ID for a specific filter tab to localStorage.
- * @param {string} tab - The filter tab (conversations, periodic, archived)
- * @param {string|null} sessionId - The session ID to save, or null to clear
+ * One-time idempotent migration that removes orphaned per-tab localStorage
+ * keys left over from the 3-tab sidebar (removed in mitto-1er.8.4). Safe to
+ * call on every startup — the guard key prevents redundant work.
+ *
+ * Cleans up:
+ *   - mitto_conversation_filter_tab       (persisted active tab)
+ *   - mitto_filter_tab_grouping           (per-tab grouping modes)
+ *   - mitto_last_session_id_{tab}         (per-tab last-focused session)
+ *   - Tab-scoped expanded-group entries.  OLD keys contain the control-char
+ *     separator \u0001 (e.g. "conversations\u0001/path"). NEW unscoped keys
+ *     (bare folder paths, "archived:<key>", "parent:<id>") never contain
+ *     \u0001, so pruning by \u0001 presence is collision-free.
  */
-export function setLastActiveSessionIdForTab(tab, sessionId) {
+export function migrateLegacyTabStorage() {
   try {
-    if (sessionId) {
-      localStorage.setItem(`mitto_last_session_id_${tab}`, sessionId);
-    } else {
-      localStorage.removeItem(`mitto_last_session_id_${tab}`);
+    if (localStorage.getItem(DETAB_MIGRATION_KEY)) return;
+
+    // Remove orphaned top-level keys (use string literals; constants deleted)
+    localStorage.removeItem("mitto_conversation_filter_tab");
+    localStorage.removeItem("mitto_filter_tab_grouping");
+    ["conversations", "periodic", "archived"].forEach((t) =>
+      localStorage.removeItem("mitto_last_session_id_" + t),
+    );
+
+    // Strip tab-scoped entries from the expanded-groups object. Old tab-scoped
+    // keys contain \u0001; new unscoped keys (folder paths, "archived:…",
+    // "parent:…") never do — so this is safe and collision-free.
+    try {
+      const raw = localStorage.getItem("mitto_conversation_expanded_groups");
+      if (raw) {
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj === "object") {
+          let changed = false;
+          for (const key of Object.keys(obj)) {
+            if (key.includes("\u0001")) {
+              delete obj[key];
+              changed = true;
+            }
+          }
+          if (changed) {
+            localStorage.setItem(
+              "mitto_conversation_expanded_groups",
+              JSON.stringify(obj),
+            );
+          }
+        }
+      }
+    } catch (innerErr) {
+      console.warn("[Mitto] Failed to prune tab-scoped expanded groups:", innerErr);
     }
+
+    localStorage.setItem(DETAB_MIGRATION_KEY, "1");
   } catch (e) {
-    console.warn("Failed to save per-tab last session ID to localStorage:", e);
+    console.warn("[Mitto] Failed to run legacy tab storage migration:", e);
   }
 }
 
@@ -556,8 +580,6 @@ export function getTextareaMinHeightConstraints() {
 // (allows multiple workspaces to share the same folder with different agents)
 const GROUPING_MODE_KEY = "mitto_conversation_grouping_mode";
 const EXPANDED_GROUPS_KEY = "mitto_conversation_expanded_groups";
-// Per-tab grouping (each filter tab can have its own grouping mode)
-const FILTER_TAB_GROUPING_KEY = "mitto_filter_tab_grouping";
 // Prompt sorting mode: "alphabetical" (default) or "color"
 const PROMPT_SORT_MODE_KEY = "mitto_prompt_sort_mode";
 
@@ -714,11 +736,9 @@ export function isGroupExpanded(groupKey) {
 }
 
 // =============================================================================
-// Conversation Filter Tab Persistence (localStorage)
+// Conversation Filter Tab Enum (kept for sessionGrouping.js / SessionItem.js /
+// SessionList.js which classify sessions by category)
 // =============================================================================
-
-// Filter tabs: 'conversations' | 'periodic' | 'archived'
-const FILTER_TAB_KEY = "mitto_conversation_filter_tab";
 
 /**
  * Filter tab values
@@ -728,91 +748,6 @@ export const FILTER_TAB = {
   PERIODIC: "periodic",
   ARCHIVED: "archived",
 };
-
-/**
- * Get the current conversation filter tab from localStorage
- * @returns {'conversations' | 'periodic' | 'archived'} The current filter tab
- */
-export function getFilterTab() {
-  try {
-    const value = localStorage.getItem(FILTER_TAB_KEY);
-    if (
-      value === FILTER_TAB.CONVERSATIONS ||
-      value === FILTER_TAB.PERIODIC ||
-      value === FILTER_TAB.ARCHIVED
-    ) {
-      return value;
-    }
-    return FILTER_TAB.CONVERSATIONS; // Default
-  } catch (e) {
-    console.warn("Failed to read filter tab from localStorage:", e);
-    return FILTER_TAB.CONVERSATIONS;
-  }
-}
-
-/**
- * Save the conversation filter tab to localStorage
- * @param {'conversations' | 'periodic' | 'archived'} tab - The filter tab to save
- */
-export function setFilterTab(tab) {
-  try {
-    if (
-      tab === FILTER_TAB.CONVERSATIONS ||
-      tab === FILTER_TAB.PERIODIC ||
-      tab === FILTER_TAB.ARCHIVED
-    ) {
-      localStorage.setItem(FILTER_TAB_KEY, tab);
-    } else {
-      localStorage.removeItem(FILTER_TAB_KEY);
-    }
-    // Dispatch event for components that need to react to filter tab changes
-    // (e.g., App component for navigableSessions filtering)
-    window.dispatchEvent(
-      new CustomEvent("mitto-filter-tab-changed", {
-        detail: { tab },
-      }),
-    );
-  } catch (e) {
-    console.warn("Failed to save filter tab to localStorage:", e);
-  }
-}
-
-// Separator used to prefix a group key with its filter tab. A control
-// character is used so it can never collide with real key content such as
-// filesystem paths, ACP server names, or the "|" workspace-key delimiter.
-const TAB_SCOPE_SEP = "\u0001";
-
-/**
- * Prefix a raw group key with the filter tab it belongs to so that expand/
- * collapse state is isolated per tab. Without this, tabs that share group
- * identifiers (e.g. the same folder path) would interfere with each other —
- * notably in accordion mode, where switching tabs would collapse groups in
- * the previously viewed tab.
- *
- * Session-scoped keys ("parent:<id>") and the special "__archived__" key are
- * globally unique and are returned unchanged.
- * @param {string} tab - The filter tab (conversations, periodic, archived)
- * @param {string} rawKey - The raw group key (folder path, server, workspace key)
- * @returns {string} The tab-scoped group key
- */
-export function tabScopedGroupKey(tab, rawKey) {
-  if (!rawKey) return rawKey;
-  if (rawKey === "__archived__" || rawKey.startsWith("parent:")) return rawKey;
-  return `${tab}${TAB_SCOPE_SEP}${rawKey}`;
-}
-
-/**
- * Remove the filter-tab prefix from a tab-scoped group key, returning the raw
- * key. Keys without a prefix (special/session-scoped) are returned unchanged.
- * @param {string} scopedKey - A key produced by tabScopedGroupKey
- * @returns {string} The raw group key
- */
-export function stripTabScope(scopedKey) {
-  if (!scopedKey) return scopedKey;
-  const idx = scopedKey.indexOf(TAB_SCOPE_SEP);
-  if (idx === -1) return scopedKey;
-  return scopedKey.slice(idx + 1);
-}
 
 /**
  * Derive which filter tab a session belongs to from its state. Mirrors the
@@ -892,154 +827,6 @@ export function setCategoryFilter(state) {
 // =============================================================================
 
 /**
- * Default grouping modes for each filter tab:
- * - Conversations: group by folder
- * - Periodic: no grouping (flat list)
- * - Archived: group by folder
- */
-const DEFAULT_TAB_GROUPING = {
-  [FILTER_TAB.CONVERSATIONS]: "folder",
-  [FILTER_TAB.PERIODIC]: "none",
-  [FILTER_TAB.ARCHIVED]: "folder",
-};
-
-/**
- * Get the grouping mode for a specific filter tab from localStorage
- * @param {string} tabId - The filter tab ID (conversations, periodic, archived)
- * @returns {'none' | 'server' | 'folder' | 'workspace'} The grouping mode for that tab
- */
-export function getFilterTabGrouping(tabId) {
-  try {
-    const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
-    if (value) {
-      const tabGroupings = JSON.parse(value);
-      const mode = tabGroupings[tabId];
-      if (
-        mode === "none" ||
-        mode === "server" ||
-        mode === "folder" ||
-        mode === "workspace"
-      ) {
-        return mode;
-      }
-    }
-    // Return default for this tab
-    return DEFAULT_TAB_GROUPING[tabId] || "none";
-  } catch (e) {
-    console.warn("Failed to read filter tab grouping from localStorage:", e);
-    return DEFAULT_TAB_GROUPING[tabId] || "none";
-  }
-}
-
-/**
- * Save the grouping mode for a specific filter tab to localStorage and server
- * @param {string} tabId - The filter tab ID (conversations, periodic, archived)
- * @param {'none' | 'server' | 'folder' | 'workspace'} mode - The grouping mode to save
- */
-export function setFilterTabGrouping(tabId, mode) {
-  try {
-    // Get current tab groupings
-    let tabGroupings = {};
-    const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
-    if (value) {
-      tabGroupings = JSON.parse(value);
-    }
-
-    // Update the grouping for this tab
-    if (
-      mode === "none" ||
-      mode === "server" ||
-      mode === "folder" ||
-      mode === "workspace"
-    ) {
-      tabGroupings[tabId] = mode;
-    } else {
-      // Use default for invalid modes
-      tabGroupings[tabId] = DEFAULT_TAB_GROUPING[tabId] || "none";
-    }
-
-    localStorage.setItem(FILTER_TAB_GROUPING_KEY, JSON.stringify(tabGroupings));
-
-    // Also save to server for persistence across app launches
-    saveUIPreferencesToServer(getCurrentUIPreferences());
-
-    // Dispatch event for components that need to react to grouping mode changes
-    window.dispatchEvent(
-      new CustomEvent("mitto-grouping-mode-changed", {
-        detail: { mode, tabId },
-      }),
-    );
-  } catch (e) {
-    console.warn("Failed to save filter tab grouping to localStorage:", e);
-  }
-}
-
-// Valid filter tabs for validation
-const VALID_FILTER_TABS = new Set([
-  FILTER_TAB.CONVERSATIONS,
-  FILTER_TAB.PERIODIC,
-  FILTER_TAB.ARCHIVED,
-]);
-
-// Valid grouping modes for validation
-const VALID_GROUPING_MODES = new Set(["none", "server", "folder", "workspace"]);
-
-/**
- * Get all filter tab groupings from localStorage.
- * Filters to only known tabs and valid grouping modes to prevent
- * invalid data from being sent to the server API.
- * @returns {Object} Map of tabId to grouping mode
- */
-export function getAllFilterTabGroupings() {
-  try {
-    const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
-    if (value) {
-      const parsed = JSON.parse(value);
-      // Filter to only valid tabs and modes
-      const validated = {};
-      for (const [tabId, mode] of Object.entries(parsed)) {
-        if (VALID_FILTER_TABS.has(tabId) && VALID_GROUPING_MODES.has(mode)) {
-          validated[tabId] = mode;
-        }
-      }
-      return validated;
-    }
-    return {};
-  } catch (e) {
-    console.warn("Failed to read filter tab groupings from localStorage:", e);
-    return {};
-  }
-}
-
-/**
- * Cycle to the next grouping mode for a specific filter tab
- * Cycle order: none -> server -> folder -> workspace -> none
- * @param {string} tabId - The filter tab ID
- * @returns {'none' | 'server' | 'folder' | 'workspace'} The new grouping mode
- */
-export function cycleFilterTabGrouping(tabId) {
-  const current = getFilterTabGrouping(tabId);
-  let next;
-  switch (current) {
-    case "none":
-      next = "server";
-      break;
-    case "server":
-      next = "folder";
-      break;
-    case "folder":
-      next = "workspace";
-      break;
-    case "workspace":
-      next = "none";
-      break;
-    default:
-      next = "none";
-  }
-  setFilterTabGrouping(tabId, next);
-  return next;
-}
-
 // =============================================================================
 // Prompt Sorting Mode
 // =============================================================================

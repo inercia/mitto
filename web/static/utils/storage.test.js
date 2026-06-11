@@ -9,16 +9,12 @@ import {
   getExpandedGroups,
   isGroupExpanded,
   setGroupExpanded,
-  FILTER_TAB,
-  getFilterTabGrouping,
-  setFilterTabGrouping,
-  getAllFilterTabGroupings,
-  cycleFilterTabGrouping,
   getBeadsFilters,
   setBeadsFilters,
   getCategoryFilter,
   setCategoryFilter,
   DEFAULT_CATEGORY_FILTER,
+  migrateLegacyTabStorage,
 } from "./storage.js";
 
 // Simple localStorage mock
@@ -227,185 +223,6 @@ describe("setGroupExpanded", () => {
 });
 
 // =============================================================================
-// getFilterTabGrouping Tests
-// =============================================================================
-
-describe("getFilterTabGrouping", () => {
-  test("returns default 'folder' for conversations tab when localStorage is empty", () => {
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("folder");
-  });
-
-  test("returns default 'none' for periodic tab when localStorage is empty", () => {
-    expect(getFilterTabGrouping(FILTER_TAB.PERIODIC)).toBe("none");
-  });
-
-  test("returns default 'folder' for archived tab when localStorage is empty", () => {
-    expect(getFilterTabGrouping(FILTER_TAB.ARCHIVED)).toBe("folder");
-  });
-
-  test("returns saved grouping mode for a specific tab", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "server",
-    });
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("server");
-  });
-
-  test("returns default for tab not in localStorage", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "server",
-    });
-    // Periodic tab not saved, should return default 'none'
-    expect(getFilterTabGrouping(FILTER_TAB.PERIODIC)).toBe("none");
-  });
-
-  test("returns default for invalid JSON", () => {
-    mockStore["mitto_filter_tab_grouping"] = "invalid json";
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("folder");
-  });
-
-  test("returns default for invalid mode value", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "invalid_mode",
-    });
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("folder");
-  });
-});
-
-// =============================================================================
-// setFilterTabGrouping Tests
-// =============================================================================
-
-describe("setFilterTabGrouping", () => {
-  test("saves grouping mode for a specific tab", () => {
-    setFilterTabGrouping(FILTER_TAB.CONVERSATIONS, "server");
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("server");
-  });
-
-  test("saves 'none' mode correctly", () => {
-    setFilterTabGrouping(FILTER_TAB.PERIODIC, "none");
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    expect(stored[FILTER_TAB.PERIODIC]).toBe("none");
-  });
-
-  test("saves 'workspace' mode correctly", () => {
-    setFilterTabGrouping(FILTER_TAB.ARCHIVED, "workspace");
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    expect(stored[FILTER_TAB.ARCHIVED]).toBe("workspace");
-  });
-
-  test("preserves existing tab groupings when adding new one", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "server",
-    });
-    setFilterTabGrouping(FILTER_TAB.PERIODIC, "workspace");
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("server");
-    expect(stored[FILTER_TAB.PERIODIC]).toBe("workspace");
-  });
-
-  test("updates existing tab grouping", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "server",
-    });
-    setFilterTabGrouping(FILTER_TAB.CONVERSATIONS, "workspace");
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("workspace");
-  });
-
-  test("uses default for invalid mode", () => {
-    setFilterTabGrouping(FILTER_TAB.CONVERSATIONS, "invalid_mode");
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    // Should use default for conversations tab which is 'folder'
-    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("folder");
-  });
-});
-
-// =============================================================================
-// getAllFilterTabGroupings Tests
-// =============================================================================
-
-describe("getAllFilterTabGroupings", () => {
-  test("returns empty object when localStorage is empty", () => {
-    expect(getAllFilterTabGroupings()).toEqual({});
-  });
-
-  test("returns all saved tab groupings", () => {
-    const savedGroupings = {
-      [FILTER_TAB.CONVERSATIONS]: "server",
-      [FILTER_TAB.PERIODIC]: "workspace",
-      [FILTER_TAB.ARCHIVED]: "none",
-    };
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify(savedGroupings);
-    expect(getAllFilterTabGroupings()).toEqual(savedGroupings);
-  });
-
-  test("returns empty object for invalid JSON", () => {
-    mockStore["mitto_filter_tab_grouping"] = "invalid json";
-    expect(getAllFilterTabGroupings()).toEqual({});
-  });
-});
-
-// =============================================================================
-// cycleFilterTabGrouping Tests
-// =============================================================================
-
-describe("cycleFilterTabGrouping", () => {
-  test("cycles from default 'folder' to 'workspace' for conversations tab", () => {
-    // Conversations tab defaults to 'folder'
-    const result = cycleFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    expect(result).toBe("workspace");
-  });
-
-  test("cycles from 'none' to 'server'", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "none",
-    });
-    const result = cycleFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    expect(result).toBe("server");
-  });
-
-  test("cycles from 'server' to 'folder'", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "server",
-    });
-    const result = cycleFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    expect(result).toBe("folder");
-  });
-
-  test("cycles from 'workspace' to 'none'", () => {
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "workspace",
-    });
-    const result = cycleFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    expect(result).toBe("none");
-  });
-
-  test("cycles independently for different tabs", () => {
-    // Set conversations to server
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
-      [FILTER_TAB.CONVERSATIONS]: "server",
-    });
-
-    // Cycle periodic tab (defaults to 'none', should go to 'server')
-    const periodicResult = cycleFilterTabGrouping(FILTER_TAB.PERIODIC);
-    expect(periodicResult).toBe("server");
-
-    // Verify conversations tab is unchanged
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("server");
-    expect(stored[FILTER_TAB.PERIODIC]).toBe("server");
-  });
-
-  test("saves cycled value to localStorage", () => {
-    cycleFilterTabGrouping(FILTER_TAB.ARCHIVED);
-    const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    // Archived defaults to 'folder', cycling goes to 'workspace'
-    expect(stored[FILTER_TAB.ARCHIVED]).toBe("workspace");
-  });
-});
-
-// =============================================================================
 // getBeadsFilters / setBeadsFilters Tests
 // =============================================================================
 
@@ -508,5 +325,64 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     expect(result.periodic).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
+  });
+});
+
+// =============================================================================
+// migrateLegacyTabStorage Tests
+// =============================================================================
+
+describe("migrateLegacyTabStorage", () => {
+  const EXPANDED_KEY = "mitto_conversation_expanded_groups";
+  const DONE_KEY = "mitto_detab_migration_done";
+
+  test("removes orphaned tab keys and strips \\u0001-scoped expanded-group entries", () => {
+    // Seed orphaned top-level keys
+    mockStore["mitto_conversation_filter_tab"] = "conversations";
+    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({ conversations: "folder" });
+    mockStore["mitto_last_session_id_conversations"] = "s1";
+    mockStore["mitto_last_session_id_periodic"] = "s2";
+    mockStore["mitto_last_session_id_archived"] = "s3";
+
+    // Seed expanded-groups with a mix of old tab-scoped (\u0001) and new unscoped keys
+    mockStore[EXPANDED_KEY] = JSON.stringify({
+      "conversations\u0001/home/user/project": true,  // OLD — must be removed
+      "/home/user/project": false,                     // NEW bare folder — must survive
+      "archived:/home/user/project": true,             // NEW — must survive
+      "parent:abc123": true,                           // NEW — must survive
+    });
+
+    migrateLegacyTabStorage();
+
+    // Orphaned top-level keys gone
+    expect(mockStore["mitto_conversation_filter_tab"]).toBeUndefined();
+    expect(mockStore["mitto_filter_tab_grouping"]).toBeUndefined();
+    expect(mockStore["mitto_last_session_id_conversations"]).toBeUndefined();
+    expect(mockStore["mitto_last_session_id_periodic"]).toBeUndefined();
+    expect(mockStore["mitto_last_session_id_archived"]).toBeUndefined();
+
+    // Tab-scoped entry stripped; unscoped entries survive
+    const groups = JSON.parse(mockStore[EXPANDED_KEY]);
+    expect(groups["conversations\u0001/home/user/project"]).toBeUndefined();
+    expect(groups["/home/user/project"]).toBe(false);
+    expect(groups["archived:/home/user/project"]).toBe(true);
+    expect(groups["parent:abc123"]).toBe(true);
+
+    // Done flag set
+    expect(mockStore[DONE_KEY]).toBe("1");
+  });
+
+  test("idempotency: second call is a no-op when guard is already set", () => {
+    // Run migration once to set the done flag
+    mockStore["mitto_conversation_filter_tab"] = "conversations";
+    migrateLegacyTabStorage();
+    expect(mockStore[DONE_KEY]).toBe("1");
+
+    // Re-seed the orphaned key (simulating stale state)
+    mockStore["mitto_conversation_filter_tab"] = "periodic";
+
+    // Second call should not touch anything
+    migrateLegacyTabStorage();
+    expect(mockStore["mitto_conversation_filter_tab"]).toBe("periodic");
   });
 });
