@@ -76,4 +76,48 @@ test.describe("Make periodic — context menu action", () => {
     const periodicPanel = page.locator('[data-testid="periodic-frequency-panel"]');
     await expect(periodicPanel).toBeVisible({ timeout: timeouts.appReady });
   });
+
+  test("clicking 'Make non-periodic' reverts the conversation and hides the periodic editor", async ({
+    page,
+    timeouts,
+  }) => {
+    // Step 1: Convert to periodic via "Make periodic" (reuse existing flow).
+    const sessionItem = page.locator(`[data-session-id="${sessionId}"]`).first();
+    await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
+    await sessionItem.click({ button: "right" });
+
+    let menu = page.locator(MENU).first();
+    await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
+
+    const makePeriodicBtn = menu.locator("button").filter({ hasText: "Make periodic" });
+    await expect(makePeriodicBtn).toBeVisible({ timeout: timeouts.shortAction });
+    await makePeriodicBtn.click();
+
+    await expect(page.locator(MENU)).toHaveCount(0, { timeout: timeouts.shortAction });
+
+    // Wait for the periodic editor to appear (confirms conversion succeeded).
+    const periodicPanel = page.locator('[data-testid="periodic-frequency-panel"]');
+    await expect(periodicPanel).toBeVisible({ timeout: timeouts.appReady });
+
+    // Step 2: Right-click again — now "Make non-periodic" should be visible
+    // and "Make periodic" should be gone (they are mutually exclusive).
+    await sessionItem.click({ button: "right" });
+    menu = page.locator(MENU).first();
+    await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
+
+    const makeNonPeriodicBtn = menu.locator("button").filter({ hasText: "Make non-periodic" });
+    await expect(makeNonPeriodicBtn).toBeVisible({ timeout: timeouts.shortAction });
+
+    // "Make periodic" must NOT appear for an already-periodic session.
+    await expect(menu.locator("button").filter({ hasText: "Make periodic" })).toHaveCount(0);
+
+    // Step 3: Click "Make non-periodic" and confirm the editor disappears.
+    await makeNonPeriodicBtn.click();
+    await expect(page.locator(MENU)).toHaveCount(0, { timeout: timeouts.shortAction });
+
+    // The periodic_updated broadcast (nil) flips periodic_enabled=false.
+    // PeriodicFrequencyPanel stays in the DOM but collapses to h-0/opacity-0
+    // (CSS transition), so Playwright sees it as not visible.
+    await expect(periodicPanel).not.toBeVisible({ timeout: timeouts.appReady });
+  });
 });

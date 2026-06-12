@@ -2044,6 +2044,67 @@ func TestHandleSessionPeriodic_MakePeriodicDraft(t *testing.T) {
 	}
 }
 
+// TestHandleSessionPeriodic_DeleteRemovesConfig verifies the "Make non-periodic" frontend flow:
+// PUT a draft config, confirm it exists, then DELETE it via handleSessionPeriodic,
+// assert HTTP 204, and confirm the config is gone from the store.
+func TestHandleSessionPeriodic_DeleteRemovesConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-delete-periodic"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		store:         store,
+		eventsManager: NewGlobalEventsManager(),
+	}
+
+	// Step 1: PUT a draft periodic config so there is something to delete.
+	putBody, _ := json.Marshal(PeriodicPromptRequest{
+		Prompt:    "(pending)",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   false,
+	})
+	putReq := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/periodic", bytes.NewReader(putBody))
+	putReq.Header.Set("Content-Type", "application/json")
+	putW := httptest.NewRecorder()
+	server.handleSessionPeriodic(putW, putReq, sid, "")
+	if putW.Code != http.StatusOK {
+		t.Fatalf("PUT periodic: Status = %d, want 200. Body: %s", putW.Code, putW.Body.String())
+	}
+
+	// Confirm the config exists before deleting.
+	if _, err := store.Periodic(sid).Get(); err != nil {
+		t.Fatalf("Get periodic before DELETE: %v", err)
+	}
+
+	// Step 2: DELETE — mirrors what handleMakeNonPeriodic in app.js sends.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/periodic", nil)
+	delW := httptest.NewRecorder()
+	server.handleSessionPeriodic(delW, delReq, sid, "")
+
+	// handleDeletePeriodic calls writeNoContent → HTTP 204.
+	if delW.Code != http.StatusNoContent {
+		t.Errorf("DELETE periodic: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
+	}
+
+	// Step 3: Confirm the config is gone.
+	_, getErr := store.Periodic(sid).Get()
+	if getErr == nil {
+		t.Errorf("Expected error (config gone) after DELETE, got nil")
+	}
+}
+
 // makePrompt is a helper for constructing config.WebPrompt in tests.
 func makePrompt(name string, opts ...func(*config.WebPrompt)) config.WebPrompt {
 	p := config.WebPrompt{Name: name, Prompt: "Do something useful."}

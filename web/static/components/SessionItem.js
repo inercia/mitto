@@ -111,6 +111,7 @@ export function SessionItem({
   onFetchConversationPrompts, // Async (session, workingDir) => menus:conversation prompts evaluated for THIS conversation
   onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
   onMakePeriodic, // Called with (session) to convert a regular session to periodic
+  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -412,6 +413,16 @@ export function SessionItem({
             label: "Make periodic",
             icon: html`<${ClockIcon} />`,
             onClick: () => onMakePeriodic && onMakePeriodic(session),
+          },
+        ]
+      : []),
+    // "Make non-periodic" — inverse: only for periodic, non-spawned sessions
+    ...(isPeriodicEnabled && !isSpawned
+      ? [
+          {
+            label: "Make non-periodic",
+            icon: html`<${BalloonIcon} />`,
+            onClick: () => onMakeNonPeriodic && onMakeNonPeriodic(session),
           },
         ]
       : []),

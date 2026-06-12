@@ -65,6 +65,7 @@ export function SessionList({
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
   onMakePeriodic, // Called with (session) to convert a regular session to periodic
+  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
   isCreatingSession = false, // True while a new-conversation request is in-flight or retrying
 }) {
   // Combine active and stored sessions using shared helper function
@@ -466,6 +467,7 @@ export function SessionList({
         onFetchConversationPrompts=${onFetchConversationPrompts}
         onSendPromptToConversation=${onSendPromptToConversation}
         onMakePeriodic=${onMakePeriodic}
+        onMakeNonPeriodic=${onMakeNonPeriodic}
         isSpawned=${isSpawned}
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}

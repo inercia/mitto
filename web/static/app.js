@@ -1533,6 +1533,36 @@ function App() {
     [focusSession, showToast],
   );
 
+  // Remove the periodic config from a conversation, reverting it to a regular one.
+  // DELETE /api/sessions/{id}/periodic broadcasts periodic_updated (nil), which
+  // flips session.periodic_enabled=false and hides the inline periodic editor.
+  const handleMakeNonPeriodic = useCallback(
+    async (session) => {
+      const sessionId = session?.session_id;
+      if (!sessionId) return;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          { method: "DELETE" },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast({
+          style: "success",
+          title: "Periodic scheduling removed",
+          message: "The conversation is now a regular conversation.",
+          duration: 6000,
+        });
+      } catch (e) {
+        showToast({
+          style: "error",
+          title: "Failed to remove periodic scheduling",
+          duration: 5000,
+        });
+      }
+    },
+    [showToast],
+  );
+
   // Send a context-menu prompt to a specific conversation by enqueueing its full
   // text. The queue delivers it to the agent when the conversation is idle, so
   // this works for any conversation (not just the active one).
@@ -2011,6 +2041,7 @@ function App() {
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
             onMakePeriodic=${handleMakePeriodic}
+            onMakeNonPeriodic=${handleMakeNonPeriodic}
             isCreatingSession=${isCreatingSession}
           />
           <!-- Resize handle on right edge (desktop: drag to resize sidebarWidth) -->
