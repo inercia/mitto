@@ -120,70 +120,17 @@ func (c *SessionWSClient) getServerMaxSeq() int64 {
 
 `GetMaxAssignedSeq()` returns `nextSeq - 1` (highest ever assigned), preventing false stale detection during streaming.
 
-## Terminal Session Messages (`session_gone`)
+## Terminal Session Messages
 
-When sending `session_gone` for a deleted session, the write pump must have time to flush the message before the connection closes:
+When sending `session_gone` for a deleted session: start pumps → send terminal message → close after 100ms delay (ensures writePump delivers).
 
-```go
-// Start pumps so the message can be written
-go client.writePump()
-go client.readPump()
+## Send Buffer Backpressure
 
-// Send terminal message
-client.sendMessage(WSMsgTypeSessionGone, map[string]interface{}{
-    "session_id": sessionID,
-    "reason":     "session not found",
-})
+On full buffer: wait up to 100ms, then close connection. Never silently drop (unrecoverable sequence gaps). Client reconnects and syncs from persisted events.
 
-// Close after flush delay (100ms lets writePump deliver the message)
-go func() {
-    time.Sleep(100 * time.Millisecond)
-    client.wsConn.Close()
-}()
-```
+## WritePump Close Frames
 
-This pattern ensures the client receives the `session_gone` message before the WebSocket close frame.
-
-## Send Buffer Backpressure (`ws_conn.go`)
-
-`WSConn.SendMessage` and `SendRaw` use **backpressure** instead of silently dropping messages when the send buffer is full:
-
-```go
-func (w *WSConn) sendWithBackpressure(data []byte, msgType string) {
-    // Fast path: non-blocking send
-    select {
-    case w.send <- data:
-        return
-    default:
-    }
-    // Slow path: wait up to 100ms, then close connection
-    timer := time.NewTimer(sendBackpressureTimeout) // 100ms
-    defer timer.Stop()
-    select {
-    case w.send <- data:
-        // Buffer drained, message sent
-    case <-timer.C:
-        w.conn.Close() // Force reconnect — client syncs via load_events
-    }
-}
-```
-
-**Why not drop?** Silent drops cause unrecoverable sequence gaps — the client has no way to detect the loss. Closing the connection triggers the client's reconnection flow, which syncs from persisted events.
-
-**Why 100ms timeout?** Observer notifications call `SendMessage` on all observers sequentially. A long wait would delay healthy clients. The 100ms absorbs short bursts without blocking.
-
-## WritePump Close Frames (`ws_conn.go`)
-
-The `WritePump` goroutine sends proper WebSocket close frames before exiting, so clients receive a clean close code instead of an abrupt TCP teardown (code 1006):
-
-| Exit Path | Close Code | Reason | Notes |
-|-----------|-----------|--------|-------|
-| Send channel closed (`!ok`) | 1000 (NormalClosure) | `""` | Clean shutdown |
-| Ping write failed | 1001 (GoingAway) | `"ping failed"` | Best-effort: write may fail |
-| Context cancelled | 1001 (GoingAway) | `"server shutdown"` | Best-effort: write may fail |
-| Backpressure timeout | 1006 (Abnormal) | _(no close frame)_ | `conn.Close()` from `sendWithBackpressure` |
-
-> For the complete close code table, backpressure flow, and client-side handling, see [synchronization.md — WebSocket Close Codes](../../docs/devel/websockets/synchronization.md#websocket-close-codes).
+WritePump sends proper close frames (1000 for clean, 1001 for shutdown/error, 1006 for backpressure timeout) instead of abrupt TCP teardown. See [synchronization.md — WebSocket Close Codes](../../docs/devel/websockets/synchronization.md#websocket-close-codes) for full table.
 
 ## Backend Anti-Pattern: lastSentSeq Reset
 

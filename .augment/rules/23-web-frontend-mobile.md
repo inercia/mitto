@@ -55,43 +55,13 @@ const stateSeq = Math.max(
 const lastSeq = Math.max(refSeq, persistedSeq, stateSeq);
 ```
 
-### App-restart context-load fallback
+### App-restart Context Load
 
-When `lastSeq > 0` but no messages are in memory (app restart / WKWebView reload),
-the `ws.onopen` handler sends `{ after_seq: lastSeq }` and sets
-`needsContextLoadRef.current[sessionId] = true`.
-
-If the server returns **0 new events** (nothing happened while app was closed) and
-the session has history (`total_count > 0`), the `events_loaded` handler
-automatically issues a secondary `{ limit: 50 }` request so the conversation is
-not shown as empty:
-
-```javascript
-// In events_loaded handler — context-load fallback:
-if (
-  needsContextLoadRef.current[sessionId] &&
-  !isPrepend &&
-  newMessages.length === 0 &&
-  (currentSession?.messages?.length || 0) === 0 &&
-  totalCount > 0
-) {
-  delete needsContextLoadRef.current[sessionId];
-  ws.send(JSON.stringify({ type: "load_events", data: { limit: INITIAL_EVENTS_LIMIT } }));
-}
-```
-
-`needsContextLoadRef` is cleared by `clearPendingSync` on WebSocket close so stale flags
-never carry over to the next connection.
-
-> See [Sequence Numbers — Frontend Responsibilities](../../docs/devel/websockets/sequence-numbers.md#frontend-responsibilities) for the full pattern.
+On app restart with stale seq but no messages in memory: request messages since that seq. If server has 0 new events but has history (`total_count > 0`), auto-request initial batch so conversation isn't empty.
 
 ## Stale Client Recovery & Cooldown
 
-When the client has stale state (e.g., localStorage watermark of seq 735 but server only has 730 after a restart), the `events_loaded` handler detects `clientLastSeq > serverMaxSeq` and runs the **M1 fix**: clears the seq tracker, resets `lastKnownSeqRef` and localStorage, and replaces all messages with fresh data from the server.
-
-**Cooldown**: After stale recovery, a 30-second per-session cooldown (`staleRecoveryCooldownRef`) prevents the keepalive handler from re-triggering stale detection. Without this, React's async state batching can leave `getMaxSeq(sessionMessages)` returning the old stale value when the next keepalive fires (5 seconds later), creating a feedback loop of repeated stale recoveries. The cooldown is cleared on WebSocket close so fresh connections always get an unguarded stale check.
-
-> **See also**: [Sequence Numbers — M1 Fix](../../docs/devel/websockets/sequence-numbers.md#m1-client-side-deduplication) for the full reset logic, and [WebSocket Patterns — Stale Recovery Cooldown](../../.augment/rules/22-web-frontend-websocket.md#stale-recovery-cooldown) for the implementation pattern.
+Stale state (client seq > server seq) triggers M1 fix: clear seq tracker, reset `lastKnownSeqRef` + localStorage, replace messages. 30s cooldown prevents re-triggering feedback loops from React state batching. See `24-web-frontend-sync.md` for details.
 
 ## Force Reconnect on Visibility Change
 
@@ -131,11 +101,7 @@ if (hiddenDuration > STALE_THRESHOLD_MS) {
 
 ## Extended Timeouts for Mobile
 
-| Timeout      | Desktop | Mobile | Reason                    |
-| ------------ | ------- | ------ | ------------------------- |
-| Prompt ACK   | 15s     | 30s    | Higher latency            |
-| Keepalive    | 15s     | 30s    | iOS may suspend WebSocket |
-| Reconnect    | 1s      | 2s     | Network stabilization     |
+Prompt ACK 30s (vs 15s desktop), Keepalive 30s, Reconnect 2s (vs 1s) — account for higher latency and iOS WebSocket suspension.
 
 ## Agent Response as Implicit ACK
 

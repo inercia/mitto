@@ -29,33 +29,7 @@ keywords:
 
 ## Config Layering (RC File + Settings)
 
-Mitto uses a layered configuration approach for ACP servers:
-
-1. **RC file** (`~/.mittorc`): Optional YAML config, read-only in UI, version-controllable
-2. **Settings** (`MITTO_DIR/settings.json`): JSON, UI-editable, auto-created on first run
-
-### How It Works
-
-When both exist, ACP servers are **merged**:
-- RC file servers have higher priority (override settings servers with same name)
-- RC file servers are marked with `Source: "rcfile"` and cannot be edited/deleted via UI
-- Settings servers are marked with `Source: "settings"` and can be managed via UI
-- Users can add new servers via UI → saved to `settings.json` only
-
-```go
-// At load time:
-result := LoadSettingsWithFallback()
-// result.Config.ACPServers contains merged servers from both sources
-// result.HasRCFileServers indicates if any servers came from RC file
-
-// When saving (via UI):
-// Only servers with Source != SourceRCFile are written to settings.json
-// RC file servers remain in .mittorc (never modified by Mitto)
-```
-
-### Source Tracking
-
-`ConfigItemSource`: `"rcfile"` (from `~/.mittorc`), `"settings"` (from `settings.json`), `"default"` (embedded). `ACPServer.Source` tracks origin; UI hides edit/delete for `rcfile` servers.
+**RC file** (`~/.mittorc`, version-controllable, read-only in UI) + **Settings** (`MITTO_DIR/settings.json`, UI-editable). Servers merge with RC priority (marked `Source: "rcfile"`). `LoadSettingsWithFallback()` merges both; saving only touches `settings.json` servers.
 
 ## Key Functions
 
@@ -133,14 +107,7 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 
 ### Folder-Level Settings (folders.json)
 
-`folders.json` (`$MITTO_DIR`, keyed by `working_dir`) is the **authoritative store** for folder-level settings — NOT just a deduplication cache. It holds `name`, `color`, `code`, the organizational `group` label, `auto_children`, and the folder-native `beads` block. It is created the **first time via a one-time migration** that lifts inline folder fields out of `workspaces.json`; thereafter all common folder-level info always lives here. This is **transparent**: `LoadWorkspaces()` returns fully-populated `[]WorkspaceSettings`, so no other code (SessionManager, REST, frontend) is affected.
-
-- **Load** (`LoadWorkspaces`): merges the authoritative `folders.json` via `ApplyFolderDefaults` — the folder value **wins** over any value still on a workspace (divergent legacy values collapse). Auto-migrates legacy inline files; idempotent thereafter.
-- **Save** (`SaveWorkspaces`): `extractFolderSettings` hoists each folder-level field (first non-empty value across the group; divergence collapses, field stripped from every workspace), then `preserveFolderNativeFields` merges folder-native fields (`beads`) back from the existing `folders.json`. Writes `folders.json` **first**, then cleaned `workspaces.json` (crash-safe ordering). Orphan folders pruned; empty map deletes the file.
-- **Folder-native fields** (`beads`): set directly via `SetFolderBeadsUpstream`/`FolderBeadsUpstream`, never via a workspace; `foldersEqual` compares them so no spurious rewrites occur.
-- **`--folders FILE` flag**: loads folder settings via `LoadFoldersFromFile` (JSON/YAML, not persisted), applied via `ApplyFolderDefaults` after workspace loading. Overlays onto workspaces from any source (CLI, file, or `workspaces.json`).
-- Code lives in `internal/config/folders.go`; path via `appdir.FoldersPath()` / `appdir.FoldersFileName`.
-- **Metadata stays in `.mittorc`**: `description`/`url`/`group`/`user_data_schema` are version-controllable and are NOT moved to `folders.json`. NOTE: the `.mittorc` metadata `group` is a SEPARATE concept from the Mitto-local folder `group` (an organizational label hoisted into `folders.json` alongside name/color/code).
+`folders.json` (authoritative store, keyed by `working_dir`) holds folder-level settings: `name`, `color`, `code`, `group` label, `auto_children`, folder-native `beads`. Created via one-time migration, then all common info lives here. `LoadWorkspaces` auto-migrates + merges via `ApplyFolderDefaults`. `SaveWorkspaces` extracts fields, writes `folders.json` first (crash-safe), then `workspaces.json`. Metadata (`description`/`url`/`group`/`user_data_schema`) stays in `.mittorc` (version-controllable). Code: `internal/config/folders.go`.
 
 ## Global Settings REST API
 
@@ -154,15 +121,9 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 
 Note: `/mitto/api/settings` manages global `settings.json`. For per-session feature flags, see `16-web-backend-settings.md`.
 
-## ACP Server Constraints (Auto-Selection)
+## ACP Server Constraints
 
-`ACPServer.Constraints` (`map[string]*ACPServerConstraint`): auto-select config options (e.g., model) when a session starts. Applied in `BackgroundSession.applyConfigConstraints()` after ACP initialization provides available options.
-
-```json
-{ "constraints": { "model": { "matchMode": "contains", "pattern": "Opus 4.6" } } }
-```
-
-`ACPServerConstraint`: `MatchMode` (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`), `Pattern` (case-insensitive). `lookAlike` splits the pattern into words and checks all words appear in the name. Exposed via `GET /mitto/api/config` response.
+`ACPServer.Constraints`: auto-select config options (model, etc.) on session start. MatchModes: `"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"` (word-based). Applied in `applyConfigConstraints()` after ACP init.
 
 ## WorkspaceSettings Override Pattern
 

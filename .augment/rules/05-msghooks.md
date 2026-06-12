@@ -106,24 +106,17 @@ processors:
     enabled: false
 ```
 
-| Processor             | Mode    | `enabledWhen` condition                                         | Purpose                            |
-| --------------------- | ------- | --------------------------------------------------------------- | ---------------------------------- |
-| `session-context`     | text    | _(none)_                                                        | Prepend session metadata           |
-| `check-mcp-tools`     | text    | `!tools.hasPattern("mitto_*")`                                  | Suggest MCP install if missing     |
-| `delegate-to-coder`   | text    | _(varies)_                                                      | Delegate work to coder session     |
-| `delegate-playwright` | text    | _(varies)_                                                      | Delegate Playwright tests          |
-| `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
-| `use-ui-tools`        | text    | `tools.hasPattern("mitto_ui_*")`                                | Remind agent to use Mitto UI tools |
-| `beads-track-tasks`   | text    | `commandExists("bd")`                                           | Remind agent to track tasks in beads |
-| `beads-ready-tasks`   | text    | `commandExists("bd") && dirExists(".beads")`                    | Remind agent to review ready beads tasks |
-| `beads-prime`         | command | `commandExists("bd") && dirExists(".beads")`                    | Inject `bd prime --memories-only` memories at conversation start (output: prepend, outputFormat: raw) |
-| `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")` | Generate initial `.augment/rules/` files |
-| `auggie-update-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")`  | Update rules from conversation insights (agentIdle, cadence: every 6 turns/15k tokens/5m) |
-| `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")` | Generate initial memory files |
-| `claude-update-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic && (fileExists("CLAUDE.md") \|\| dirExists(".claude"))` | Update memory from conversation insights (agentIdle, cadence: every 6 turns/15k tokens/5m) |
-| `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md` (agentIdle, cadence: every 3 turns/8k tokens/3m) |
-| `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields (agentIdle, cadence: every 2 turns/6k tokens) |
-| `identify-workspace-metadata` | prompt | `workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic` | Auto-fill `metadata.description` and `metadata.url` in `.mittorc` |
+| Processor             | Mode    | Purpose                            |
+| --------------------- | ------- | ---------------------------------- |
+| `session-context`     | text    | Prepend session metadata           |
+| `check-mcp-tools`     | text    | Suggest MCP install if missing     |
+| `delegate-to-coder`   | text    | Delegate work to coder session     |
+| `beads-track-tasks`   | text    | Remind agent to track tasks in `bd` |
+| `beads-prime`         | command | Inject `bd prime --memories-only`  |
+| `auggie-manage-rules` | prompt  | Generate/update `.augment/rules/`  |
+| `claude-manage-memory`| prompt  | Generate/update Claude memory      |
+| `memorize-preferences`| prompt  | Save user prefs to `AGENTS.md`     |
+| `identify-user-data`  | prompt  | Auto-fill workspace user data      |
 
 ## CEL Context for `enabledWhen`
 
@@ -140,28 +133,16 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | `fileExists(path)`    | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
 | `dirExists(path)`     | `dirExists(".github")`, `dirExists("src")` — checks if directory exists; workspace-relative |
 
-## Skip Reasons & Common Pitfalls
+## Common Mistakes
 
-| Log `reason=`       | Cause                                               |
-| ------------------- | --------------------------------------------------- |
-| `enabled_false`     | `enabled: false` in YAML, no workspace override     |
-| `enabledWhen_false` | CEL expression evaluated to false                   |
-| `when_mismatch`     | `match: first` processor on a non-first message     |
-
-Common mistakes rejected by the loader:
 - **Missing `on:` or `match:`** — both required
-- **`sent:` key** — old syntax; use `on: userPrompt` + `match: <value>`
-- **`all-except-first`** (kebab) — use `allExceptFirst` (camelCase)
-- **Text-mode without `mutate:`** — required; `prepend` or `append`
+- **`all-except-first`** — use camelCase: `allExceptFirst`
+- **Text-mode without `mutate:`** — required field
 - **`rerun:` with `match: all`** — only valid with `match: first`
-- **`cadence:` with `on: userPrompt`** — only valid with `agentResponded`/`agentIdle` (rule 12)
-- **`cadence:` with `match: first`** — not valid; firing once needs no cadence (rule 13)
-- **`cadence:` with no threshold fields** — at least one must be set (rule 14)
-- **Negative `everyNTurns`/`everyNTokens`** — must be non-negative (rule 15)
-- **Unparseable `afterInterval`** — must be a valid Go duration string like `"5m"` (rule 16)
-
-`cadence` and `rerun` are mutually exclusive by construction: `rerun` only applies to `on:
-userPrompt` and `cadence` only applies to `on: agentResponded` / `on: agentIdle`.
+- **`cadence:` with `on: userPrompt`** — only valid with `agentResponded`/`agentIdle`
+- **`cadence:` with `match: first`** — not needed; firing once requires no cadence
+- **`cadence:` with no thresholds** — at least one field required
+- `cadence` and `rerun` are mutually exclusive (different `on:` values)
 
 ## Defaults
 

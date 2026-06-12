@@ -132,20 +132,10 @@ install:
 
 ### Agent Commands
 
-| Command | Script | Input/Output Types | Purpose |
-|---------|--------|--------------------|---------|
-| `CommandMCPList` | `mcp-list.sh` | `MCPListInput`/`MCPListOutput` | List MCP servers |
-| `CommandMCPInstall` | `mcp-install.sh` | `MCPInstallInput`/`MCPInstallOutput` | Install MCP server |
-| `CommandMCPRemove` | `mcp-remove.sh` | `MCPRemoveInput`/`MCPRemoveOutput` | Remove MCP server |
+- `CommandMCPList` (via `mcp-list.sh`) — List MCP servers
+- `CommandMCPInstall` (via `mcp-install.sh`) — Install MCP server
+- `CommandMCPRemove` (via `mcp-remove.sh`) — Remove MCP server (scope must match metadata)
 
-`MCPRemoveInput` includes `Scope` field — must match one of `metadata.yaml`'s `mcp.scopes`.
+### Adding Agents
 
-### Adding a new agent
-
-1. Create `config/agents/builtin/<name>/metadata.yaml`
-2. Add `cmds/` scripts: `install.sh`, `status.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`
-3. Set `mcp.scopes` in metadata to reflect what MCP scripts support
-
-### ACP Connection Testing
-
-Test each `internal/acp/` method. Cover error paths (empty command, prompt without session, double-close).
+Create `config/agents/builtin/<name>/metadata.yaml` + scripts (`install.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`). Set `mcp.scopes` in metadata.

@@ -87,35 +87,9 @@ var publicAPIPaths = map[string]bool{
 
 ## Session Management
 
-### Session Cookie
+Sessions persist to `auth_sessions.json`. Cookie: `mitto_session`, 32-byte token, 24h duration, max 10 per user (oldest evicted).
 
-```go
-const (
-    sessionCookieName  = "mitto_session"
-    sessionTokenLength = 32           // bytes
-    sessionDuration    = 24 * time.Hour
-    maxSessionsPerUser = 10
-)
-```
-
-### Session Persistence
-
-Sessions are persisted to `auth_sessions.json` in the data directory:
-
-- Survives server restarts
-- Cleaned up on expiration
-- Limited to `maxSessionsPerUser` per user (oldest evicted)
-
-## Rate Limiting
-
-Failed login attempts are rate-limited per IP:
-
-```go
-const (
-    maxFailedAttempts = 5              // Before lockout
-    lockoutDuration   = 15 * time.Minute
-)
-```
+Rate limiting: 5 failed attempts → 15m lockout per IP.
 
 ## CSRF Protection
 
@@ -169,29 +143,6 @@ func TestAuthMiddleware(t *testing.T) {
 }
 ```
 
-## External Connection Detection
+## External Connections and IP Allow List
 
-Requests through the external listener are marked in context:
-
-```go
-// Mark external connections
-ctx := context.WithValue(r.Context(), ContextKeyExternalConnection, true)
-
-// Check in middleware
-if IsExternalConnection(r) {
-    // Always require auth, even from localhost
-}
-```
-
-## IP Allow List
-
-Bypass authentication for trusted IPs/networks:
-
-```yaml
-web:
-  auth:
-    allow:
-      ips:
-        - "192.168.1.0/24" # CIDR notation
-        - "10.0.0.5" # Single IP
-```
+External listener requests are always authenticated, regardless of source IP. CIDR-based allow list (config `web.auth.allow.ips`) bypasses auth for trusted networks.
