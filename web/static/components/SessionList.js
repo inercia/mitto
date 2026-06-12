@@ -690,7 +690,10 @@ export function SessionList({
                           ),
                         },
                         {
-                          hideBadge: false,
+                          // The folder tree already groups by workspace, so the
+                          // child pill would only show the agent/ACP name — hide
+                          // the badge entirely to match the parent rows.
+                          hideBadge: true,
                           badgeHideAbbreviation: true,
                           badgeHideAcpServer: false,
                           isSpawned: true,

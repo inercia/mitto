@@ -23,7 +23,7 @@
   --muted: #71717a;
   --muted-strong: #52525b;
 
-  --border: #e4e4e7;
+  --border-color: #e4e4e7;
   --border-strong: #d4d4d8;
   --border-hover: #a1a1aa;
 
@@ -85,7 +85,7 @@
   --muted: #a1a1aa;
   --muted-strong: #71717a;
 
-  --border: #27272a;
+  --border-color: #27272a;
   --border-strong: #3f3f46;
   --border-hover: #52525b;
 
@@ -273,7 +273,7 @@ a:hover {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border-color);
   border-radius: var(--radius-full);
 }
 
@@ -308,7 +308,7 @@ a:hover {
 .markdown-content h1 {
   font-size: 1.4em;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .markdown-content h2 {
@@ -345,7 +345,7 @@ a:hover {
 .markdown-content pre {
   margin: 0.75em 0;
   padding: 12px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background: var(--bg-muted);
   overflow-x: auto;
@@ -361,7 +361,7 @@ a:hover {
 
 .markdown-content :not(pre) > code {
   padding: 0.15em 0.4em;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   background: var(--bg-muted);
 }
@@ -406,7 +406,7 @@ a:hover {
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-color);
   padding: 8px 12px;
   text-align: left;
   color: var(--text);
@@ -421,7 +421,7 @@ a:hover {
 
 .markdown-content hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-color);
   margin: 1.5em 0;
 }
 
@@ -905,7 +905,7 @@ a:hover {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--border);
+  background: var(--border-color);
 }
 
 /* =============================================================================
@@ -1037,7 +1037,7 @@ a:hover {
 .light .properties-panel select {
   background: var(--bg-elevated) !important;
   color: var(--text) !important;
-  border-color: var(--border) !important;
+  border-color: var(--border-color) !important;
 }
 
 .light .properties-panel select:focus {
@@ -1098,7 +1098,7 @@ a:hover {
 
 /* Dark theme */
 .dark .chat-input-box {
-  border-color: var(--border) !important;
+  border-color: var(--border-color) !important;
   background: var(--mitto-input) !important;
 }
 
@@ -1115,7 +1115,7 @@ a:hover {
 }
 
 .dark .chat-input-bottom-bar {
-  border-top-color: var(--border) !important;
+  border-top-color: var(--border-color) !important;
 }
 
 .dark .chat-input-action {
@@ -1128,12 +1128,12 @@ a:hover {
 }
 
 .dark .chat-input-action:disabled {
-  color: var(--border, #334155) !important;
+  color: var(--border-color, #334155) !important;
 }
 
 .dark .chat-input-action:disabled:hover {
   background: transparent !important;
-  color: var(--border, #334155) !important;
+  color: var(--border-color, #334155) !important;
 }
 
 
@@ -1144,7 +1144,7 @@ a:hover {
   }
 
   .dark .chat-input-model-selector {
-    border-bottom-color: var(--border, #27272a) !important;
+    border-bottom-color: var(--border-color, #27272a) !important;
   }
 }
 

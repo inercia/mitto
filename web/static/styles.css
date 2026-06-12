@@ -1297,6 +1297,25 @@ a.mailto-link:hover {
   background: #94a3b8;
 }
 
+/* Beads issue list (daisyUI .list): tighten and add contrast.
+   daisyUI defaults make the list feel sparse and undifferentiated here:
+   row padding is 1rem and the row divider is base-content at 5% opacity
+   (nearly invisible). Scope these overrides to the Beads list so other
+   daisyUI .list usages keep their defaults.
+     - smaller gap between rows for clear separation
+     - tighter row padding (content sits closer to the row edges)
+     - a clearly visible divider using the standard --mitto-border color */
+.beads-table-scroll .list {
+  gap: 0.25rem;
+}
+.beads-table-scroll .list-row {
+  padding: 0.5rem 0.75rem;
+}
+.beads-table-scroll .list > :not(:last-child) .list-row::after,
+.beads-table-scroll .list > :not(:last-child).list-row::after {
+  border-color: var(--mitto-border);
+}
+
 /* =============================================================================
    Agent Plan Panel - Light Theme
    ============================================================================= */

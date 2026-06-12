@@ -1260,7 +1260,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
           <!-- Left panel: workspace list -->
           <div class="shrink-0 flex flex-col" style="width: ${leftPanelWidth}px">
-            <div ref=${scrollContainerRef} class="flex-1 overflow-y-auto p-3 space-y-1.5">
+            <div ref=${scrollContainerRef} class="flex-1 overflow-y-auto p-3 space-y-0.5">
               ${loading
                 ? html`<div class="flex items-center justify-center py-8"><${SpinnerIcon} className="w-6 h-6 text-mitto-accent" /></div>`
                 : workspaces.length === 0
@@ -1272,11 +1272,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                   : groupedWorkspaces.map(({ displayName, workspaces: wsGroup }) => {
                       const isFolderSelected = selectedFolder === displayName && !selectedWorkspaceKey;
                       return html`
-                        <div key=${displayName} class="mb-1.5">
+                        <div key=${displayName} class="mb-0.5">
                           <!-- Folder header -->
                           <div
                             data-folder-name=${displayName}
-                            class="group flex items-center gap-2 px-3 py-2 rounded-sm cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-base-200/40"}"
+                            class="group flex items-center gap-2 px-3 py-1 rounded-sm cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-base-200/40"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
                             <${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted shrink-0" />
@@ -1285,14 +1285,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             <span class="text-xs text-mitto-text-muted">${wsGroup.length}</span>
                           </div>
                           <!-- Workspace children -->
-                          <div class="ml-4 pl-3 border-l border-mitto-border mt-1">
+                          <div class="ml-4 pl-3 border-l border-mitto-border mt-0.5">
                             ${wsGroup.map((ws) => {
                               const key = getWorkspaceKey(ws);
                               const isSelected = key === selectedWorkspaceKey;
                               return html`
                                 <div
                                   key=${key}
-                                  class="group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b border-mitto-border ${isSelected ? "bg-mitto-accent-500/20" : "hover:bg-base-200/40"}"
+                                  class="group flex items-center gap-2 px-3 py-1 cursor-pointer transition-colors ${isSelected ? "bg-mitto-accent-500/20" : "hover:bg-base-200/40"}"
                                   onClick=${() => guardNewFolder(() => { setSelectedWorkspaceKey(key); setSelectedFolder(null); })}
                                 >
                                   <${WorkspaceBadge}

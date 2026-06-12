@@ -1046,7 +1046,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 ? html`
                   <textarea
                     ref=${descRef}
-                    class="${textareaClass} resize-y"
+                    class="w-full resize-y border border-mitto-border rounded p-3 bg-mitto-input-box text-sm text-mitto-text transition-colors focus:outline-none focus:border-mitto-text-secondary"
                     rows="6"
                     style=${descMinHeight ? `min-height:${descMinHeight}px` : null}
                     placeholder="Add a description…"
