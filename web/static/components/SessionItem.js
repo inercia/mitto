@@ -110,6 +110,7 @@ export function SessionItem({
   groupingMode = "none", // Current grouping mode (to hide spawned indicator in hierarchical mode)
   onFetchConversationPrompts, // Async (session, workingDir) => menus:conversation prompts evaluated for THIS conversation
   onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
+  onMakePeriodic, // Called with (session) to convert a regular session to periodic
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -404,6 +405,16 @@ export function SessionItem({
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
     },
+    // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
+    ...(!isPeriodicEnabled && !isSpawned && !isArchived
+      ? [
+          {
+            label: "Make periodic",
+            icon: html`<${ClockIcon} />`,
+            onClick: () => onMakePeriodic && onMakePeriodic(session),
+          },
+        ]
+      : []),
     // Hide archive option for child (spawned) sessions
     ...(isSpawned
       ? []

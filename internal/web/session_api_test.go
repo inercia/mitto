@@ -1990,6 +1990,60 @@ func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
 	}
 }
 
+// TestHandleSessionPeriodic_MakePeriodicDraft verifies the "Make periodic" frontend flow:
+// PUT /api/sessions/{id}/periodic with a draft body (enabled:false, prompt:"(pending)")
+// on an existing top-level session succeeds and stores the draft config.
+func TestHandleSessionPeriodic_MakePeriodicDraft(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-make-periodic-draft",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		store:         store,
+		eventsManager: NewGlobalEventsManager(),
+	}
+
+	// Draft body — mirrors what handleMakePeriodic in app.js sends.
+	body, _ := json.Marshal(PeriodicPromptRequest{
+		Prompt:    "(pending)",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   false,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-make-periodic-draft/periodic", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w, req, "test-make-periodic-draft", "")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("PUT periodic draft: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// Verify the stored periodic config reflects the draft state.
+	ps := store.Periodic("test-make-periodic-draft")
+	stored, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get periodic after PUT: %v", err)
+	}
+	if stored.Enabled {
+		t.Errorf("Draft periodic should have Enabled=false, got true")
+	}
+	if stored.Prompt != "(pending)" {
+		t.Errorf("Draft periodic prompt = %q, want %q", stored.Prompt, "(pending)")
+	}
+}
+
 // makePrompt is a helper for constructing config.WebPrompt in tests.
 func makePrompt(name string, opts ...func(*config.WebPrompt)) config.WebPrompt {
 	p := config.WebPrompt{Name: name, Prompt: "Do something useful."}
