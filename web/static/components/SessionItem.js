@@ -536,7 +536,9 @@ export function SessionItem({
                   }
                   ${!isSpawned
                     ? html`
-                        <span class="shrink-0 ${categoryIconClass}">
+                        <span class="shrink-0 ${isActive
+                          ? "text-mitto-accent-fg"
+                          : categoryIconClass}">
                           <${CategoryIcon} className="w-4 h-4" />
                         </span>
                       `
