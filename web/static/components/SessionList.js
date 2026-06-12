@@ -658,7 +658,7 @@ export function SessionList({
                 }}
               >
                 <summary
-                  class="gap-2 text-sm font-medium text-mitto-text-muted after:hidden"
+                  class="flex items-center gap-2 text-sm font-medium text-mitto-text-muted after:hidden"
                   onContextMenu=${(e) => {
                     if (folder.workingDir) {
                       e.preventDefault();
@@ -676,7 +676,7 @@ export function SessionList({
                     : undefined}
                 >
                   <${FolderIcon} className="w-4 h-4 shrink-0" />
-                  <span class="truncate" title=${folder.workingDir}>
+                  <span class="truncate min-w-0" title=${folder.workingDir}>
                     ${folder.label}
                   </span>
                   <span
