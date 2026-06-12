@@ -70,7 +70,6 @@ Configure the web server, authentication, hooks, and more. See [Web Configuratio
 web:
   host: 127.0.0.1
   port: 8080
-  theme: v2
   # ... see web/README.md for full options
 ```
 
@@ -143,7 +142,6 @@ prompts:
 web:
   host: 127.0.0.1
   port: 8080
-  theme: v2
 
 # UI Settings
 ui:
@@ -192,8 +190,7 @@ When using `settings.json`, the format is slightly different:
   ],
   "web": {
     "host": "127.0.0.1",
-    "port": 8080,
-    "theme": "v2"
+    "port": 8080
   },
   "ui": {
     "confirmations": {
