@@ -45,6 +45,8 @@ export {
   getSidebarWidthConstraints,
   getBeadsFilters,
   setBeadsFilters,
+  getBeadsGrouping,
+  setBeadsGrouping,
   migrateLegacyTabStorage,
 } from "./storage.js";
 

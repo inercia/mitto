@@ -970,3 +970,51 @@ export function setBeadsFilters(filters) {
     console.warn("Failed to save Beads filters to localStorage:", e);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Beads grouping state (toolbar toggle + per-epic expand/collapse)
+// ---------------------------------------------------------------------------
+// The status filter is deliberately in-memory only (beadsStatusToggles) so it
+// is NOT included here. This key stores the grouping toggle and the set of
+// expanded epic IDs, both of which survive a full reload.
+
+const BEADS_GROUPING_KEY = "mitto_beads_grouping";
+
+const DEFAULT_BEADS_GROUPING = { enabled: false, expandedEpics: [] };
+
+/**
+ * Get the persisted Beads grouping state from localStorage.
+ * @returns {{enabled: boolean, expandedEpics: string[]}} Grouping state,
+ *          falling back to defaults for any missing or malformed fields.
+ */
+export function getBeadsGrouping() {
+  try {
+    const value = localStorage.getItem(BEADS_GROUPING_KEY);
+    if (value) {
+      const parsed = JSON.parse(value);
+      return {
+        enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_BEADS_GROUPING.enabled,
+        expandedEpics: Array.isArray(parsed.expandedEpics) ? parsed.expandedEpics.filter(x => typeof x === "string") : DEFAULT_BEADS_GROUPING.expandedEpics,
+      };
+    }
+  } catch (e) {
+    console.warn("Failed to read Beads grouping from localStorage:", e);
+  }
+  return { ...DEFAULT_BEADS_GROUPING, expandedEpics: [] };
+}
+
+/**
+ * Persist the Beads grouping state to localStorage.
+ * @param {{enabled?: boolean, expandedEpics?: string[]}} state - Grouping state to save.
+ */
+export function setBeadsGrouping(state) {
+  try {
+    const toStore = {
+      enabled: typeof state?.enabled === "boolean" ? state.enabled : DEFAULT_BEADS_GROUPING.enabled,
+      expandedEpics: Array.isArray(state?.expandedEpics) ? state.expandedEpics : DEFAULT_BEADS_GROUPING.expandedEpics,
+    };
+    localStorage.setItem(BEADS_GROUPING_KEY, JSON.stringify(toStore));
+  } catch (e) {
+    console.warn("Failed to save Beads grouping to localStorage:", e);
+  }
+}

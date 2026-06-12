@@ -11,6 +11,8 @@ import {
   setGroupExpanded,
   getBeadsFilters,
   setBeadsFilters,
+  getBeadsGrouping,
+  setBeadsGrouping,
   getCategoryFilter,
   setCategoryFilter,
   DEFAULT_CATEGORY_FILTER,
@@ -286,6 +288,66 @@ describe("setBeadsFilters", () => {
     const filters = { type: "task", search: "port" };
     setBeadsFilters(filters);
     expect(getBeadsFilters()).toEqual(filters);
+  });
+});
+
+// =============================================================================
+// getBeadsGrouping / setBeadsGrouping Tests
+// =============================================================================
+
+const BEADS_GROUPING_KEY = "mitto_beads_grouping";
+
+describe("getBeadsGrouping", () => {
+  test("returns defaults when localStorage is empty", () => {
+    expect(getBeadsGrouping()).toEqual({ enabled: false, expandedEpics: [] });
+  });
+
+  test("returns stored grouping when present", () => {
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: true, expandedEpics: ["mitto-abc", "mitto-xyz"] });
+    expect(getBeadsGrouping()).toEqual({ enabled: true, expandedEpics: ["mitto-abc", "mitto-xyz"] });
+  });
+
+  test("fills missing fields with defaults", () => {
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: true });
+    expect(getBeadsGrouping()).toEqual({ enabled: true, expandedEpics: [] });
+  });
+
+  test("ignores non-boolean enabled and uses default", () => {
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: "yes", expandedEpics: [] });
+    expect(getBeadsGrouping()).toEqual({ enabled: false, expandedEpics: [] });
+  });
+
+  test("filters non-string entries from expandedEpics", () => {
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: false, expandedEpics: ["ok", 42, null, "also-ok"] });
+    expect(getBeadsGrouping()).toEqual({ enabled: false, expandedEpics: ["ok", "also-ok"] });
+  });
+
+  test("returns defaults for corrupt JSON", () => {
+    mockStore[BEADS_GROUPING_KEY] = "not-json{";
+    expect(getBeadsGrouping()).toEqual({ enabled: false, expandedEpics: [] });
+  });
+});
+
+describe("setBeadsGrouping", () => {
+  test("persists grouping state to localStorage", () => {
+    setBeadsGrouping({ enabled: true, expandedEpics: ["mitto-1"] });
+    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({ enabled: true, expandedEpics: ["mitto-1"] });
+  });
+
+  test("fills missing fields with defaults when saving", () => {
+    setBeadsGrouping({ enabled: true });
+    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({ enabled: true, expandedEpics: [] });
+  });
+
+  test("uses all defaults when given no argument", () => {
+    setBeadsGrouping();
+    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({ enabled: false, expandedEpics: [] });
+  });
+
+  test("round-trips through getBeadsGrouping", () => {
+    const state = { enabled: true, expandedEpics: ["mitto-abc", "mitto-def"] };
+    setBeadsGrouping(state);
+    expect(getBeadsGrouping()).toEqual(state);
   });
 });
 

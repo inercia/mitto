@@ -1919,6 +1919,20 @@ mitto-action {
   opacity: 1;
 }
 
+/* Beads epic group: hide the native <summary> disclosure triangle so the
+   full list-row card acts as the clickable header without a duplicate arrow. */
+.beads-epic-summary {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.beads-epic-summary::-webkit-details-marker {
+  display: none;
+}
+.beads-epic-summary::marker {
+  display: none;
+}
+
 /* Child count badge */
 .child-count-badge {
   font-size: 0.6875rem;

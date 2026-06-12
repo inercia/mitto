@@ -3,7 +3,7 @@
 
 const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
 
-import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters } from "../utils/index.js";
+import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping } from "../utils/index.js";
 import { getBasename } from "../lib.js";
 import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
@@ -1434,6 +1434,16 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setBeadsFilters({ type: typeFilter, search });
   }, [typeFilter, search]);
 
+  // Grouping toggle (persisted) and per-epic expand/collapse state (persisted).
+  // Status toggles are deliberately in-memory only; these are separate.
+  const [grouping, setGrouping] = useState(() => getBeadsGrouping().enabled);
+  const [expandedEpics, setExpandedEpics] = useState(() => new Set(getBeadsGrouping().expandedEpics));
+
+  // Write-through: persist grouping state whenever it changes.
+  useEffect(() => {
+    setBeadsGrouping({ enabled: grouping, expandedEpics: [...expandedEpics] });
+  }, [grouping, expandedEpics]);
+
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
   // in the "Prompts" submenu. Actions are not wired to behavior yet.
@@ -1643,6 +1653,91 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }
     return counts;
   }, [issues]);
+
+  // Grouped render model — only computed when the grouping toggle is on.
+  // Produces a sorted top-level array of { type: "epic"|"orphan", ... } items.
+  // Epics that survived the filter are shown with their filtered children;
+  // epics that were filtered out but have surviving children are kept as ghost
+  // header rows (context row). Two indent levels only: all grandchild+ issues
+  // are attributed to their nearest TOP-LEVEL epic ancestor.
+  const groupedItems = useMemo(() => {
+    if (!grouping) return null;
+
+    const issueById = new Map(issues.map(i => [i.id, i]));
+
+    // Epics from the full list: typed as "epic" or has at least one child.
+    const epicSet = new Set();
+    for (const i of issues) {
+      if (i.issue_type === "epic" || (childCountById[i.id] || 0) > 0) epicSet.add(i.id);
+    }
+
+    // Walk up the parent chain and return the ID of the topmost epic ancestor,
+    // or null if the issue itself is a top-level epic or has no epic ancestor.
+    // Guards against cycles with a seen set (mirrors deleteTargetDescendants).
+    function topLevelEpicOf(issue) {
+      const seen = new Set([issue.id]);
+      let cur = issue;
+      let result = null;
+      while (cur.parent) {
+        if (seen.has(cur.parent)) break;
+        seen.add(cur.parent);
+        const parent = issueById.get(cur.parent);
+        if (!parent) break;
+        cur = parent;
+        if (epicSet.has(cur.id)) result = cur.id;
+      }
+      return result;
+    }
+
+    // Assign each filtered issue to a top-level epic group or orphan.
+    // epicGroups: epicId -> { epic: issue|null, children: issue[] }
+    const epicGroups = new Map();
+    const epicOrderIds = [];
+    const orphans = [];
+
+    for (const issue of filtered) {
+      const ancestorId = topLevelEpicOf(issue);
+      if (epicSet.has(issue.id) && ancestorId === null) {
+        // Top-level epic
+        if (!epicGroups.has(issue.id)) {
+          epicGroups.set(issue.id, { epic: issue, children: [] });
+          epicOrderIds.push(issue.id);
+        } else {
+          epicGroups.get(issue.id).epic = issue;
+        }
+      } else if (ancestorId !== null) {
+        // Belongs to a top-level epic (direct child, sub-epic, grandchild, …)
+        if (!epicGroups.has(ancestorId)) {
+          // Ghost header: epic filtered out but a child survived
+          epicGroups.set(ancestorId, { epic: issueById.get(ancestorId) || null, children: [] });
+          epicOrderIds.push(ancestorId);
+        }
+        epicGroups.get(ancestorId).children.push(issue);
+      } else {
+        orphans.push(issue);
+      }
+    }
+
+    function cmpIssue(a, b) {
+      const pa = typeof a.priority === "number" ? a.priority : 3;
+      const pb = typeof b.priority === "number" ? b.priority : 3;
+      if (pa !== pb) return pa - pb;
+      return (a.id || "").localeCompare(b.id || "");
+    }
+
+    for (const [, group] of epicGroups) group.children.sort(cmpIssue);
+
+    // Top-level: epics and orphans sorted together by priority then id.
+    const topLevel = [];
+    for (const id of epicOrderIds) topLevel.push({ type: "epic", group: epicGroups.get(id) });
+    for (const issue of orphans) topLevel.push({ type: "orphan", issue });
+    topLevel.sort((a, b) => {
+      const ia = a.type === "epic" ? (a.group.epic || { priority: 3, id: "" }) : a.issue;
+      const ib = b.type === "epic" ? (b.group.epic || { priority: 3, id: "" }) : b.issue;
+      return cmpIssue(ia, ib);
+    });
+    return topLevel;
+  }, [filtered, issues, childCountById, grouping]);
 
   // Every descendant (children, grandchildren, ...) of the issue queued for
   // deletion, each tagged with its depth below the target. Used to offer the
@@ -1979,6 +2074,69 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     },
   ];
 
+  // Shared row renderer for both flat and grouped render paths.
+  // Treat an issue as an epic when it is typed as one or has at least one
+  // child issue, giving it a purple left accent. Selected card always wins
+  // on background/border. The hovered (non-selected) row gets Mitto's solid
+  // brand red — the same red used for the active session item and delete
+  // buttons; priority/status/type badge pills are opaque so they stay
+  // readable on the red background.
+  function renderIssueRow(issue) {
+    const linkedSessionId = issueSessionMap[issue.id];
+    const isSelected = selectedIssue && selectedIssue.id === issue.id;
+    const childCount = childCountById[issue.id] || 0;
+    const isEpic = issue.issue_type === "epic" || childCount > 0;
+    const bgTone = isSelected
+      ? "bg-mitto-surface-3/30"
+      : "bg-mitto-surface-3/20 hover:bg-red-600";
+    // Each issue renders as a self-contained card with a delicate border,
+    // matching the ACP Servers / Runners lists. The base border is applied
+    // here as Tailwind utilities (not in CSS) so the two distinctive Mitto
+    // state treatments — a full accent border when selected, and the purple
+    // left-accent for epics — share equal specificity and override correctly.
+    const borderTone = isSelected
+      ? "border border-mitto-accent-500/60"
+      : isEpic
+        ? "border border-mitto-border border-l-4 border-l-purple-500"
+        : "border border-mitto-border";
+    return html`
+      <div
+        key=${issue.id}
+        data-has-context-menu
+        class="list-row cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
+        onClick=${() => selectIssue(issue)}
+        onContextMenu=${(e) => handleRowContextMenu(e, issue)}
+      >
+        <div class="list-col-grow flex flex-col gap-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
+              ${linkedSessionId && onOpenConversation
+                ? html`<a
+                    href="#"
+                    class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
+                    onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
+                  >${issue.id}</a>`
+                : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
+            </span>
+            ${typeBadge(issue.issue_type)}
+            ${statusBadge(issue.status)}
+            ${priorityBadge(issue.priority)}
+            ${childCount > 0 ? html`
+              <span
+                class="inline-flex items-center gap-1 text-xs text-purple-300"
+                title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+              >
+                <${LayersIcon} className="w-3.5 h-3.5" />
+                ${childCount}
+              </span>
+            ` : null}
+          </div>
+          <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
+        </div>
+      </div>
+    `;
+  }
+
   return html`
     <div class="relative flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
@@ -2022,6 +2180,17 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           onInput=${e => setSearch(e.target.value)}
           class="input input-xs flex-1 min-w-0"
         />
+        <div class="join shrink-0" role="group" aria-label="View mode">
+          <button
+            type="button"
+            onClick=${() => setGrouping(g => !g)}
+            aria-pressed=${grouping ? "true" : "false"}
+            title=${grouping ? "Switch to flat list" : "Group issues by epic"}
+            class="btn btn-xs join-item ${grouping ? "btn-active" : "btn-ghost opacity-50"}"
+          >
+            <${LayersIcon} className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll">
@@ -2041,76 +2210,46 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         `}
         ${!loading && !error && filtered.length > 0 && html`
           <div class="list p-2">
-            ${filtered.map(issue => {
-              // If a conversation is linked to this issue, render the ID as a
-              // link that opens that conversation. stopPropagation keeps the
-              // card's own click (which opens the detail panel) from firing.
-              const linkedSessionId = issueSessionMap[issue.id];
-              const isSelected = selectedIssue && selectedIssue.id === issue.id;
-              // Treat an issue as an epic when it is typed as one or has at
-              // least one child issue, and give it a purple left accent so it
-              // reads as a distinct container row. Epics share the same grey
-              // background as regular issues — only the left border differs. A
-              // selected card always wins on background/border.
-              //
-              // The hovered (non-selected) row gets Mitto's solid brand red
-              // (bg-red-600 / #dc2626 — the same red used for the active session
-              // item, delete buttons, and swipe-to-delete). The priority/status/
-              // type badges (Critical, High, blocked, bug) are solid opaque pills,
-              // so they keep strong contrast on top of the red and never blend in.
-              const childCount = childCountById[issue.id] || 0;
-              const isEpic = issue.issue_type === "epic" || childCount > 0;
-              const bgTone = isSelected
-                ? "bg-mitto-surface-3/30"
-                : "bg-mitto-surface-3/20 hover:bg-red-600";
-              // Each issue renders as a self-contained card with a delicate
-              // border, matching the ACP Servers / Runners lists. The base
-              // border is applied here as Tailwind utilities (not in CSS) so
-              // the two distinctive Mitto state treatments — a full accent
-              // border when selected, and the purple left-accent for epics —
-              // share equal specificity and override the base correctly.
-              const borderTone = isSelected
-                ? "border border-mitto-accent-500/60"
-                : isEpic
-                  ? "border border-mitto-border border-l-4 border-l-purple-500"
-                  : "border border-mitto-border";
-              return html`
-              <div
-                key=${issue.id}
-                data-has-context-menu
-                class="list-row cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
-                onClick=${() => selectIssue(issue)}
-                onContextMenu=${(e) => handleRowContextMenu(e, issue)}
-              >
-                <div class="list-col-grow flex flex-col gap-1 min-w-0">
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
-                      ${linkedSessionId && onOpenConversation
-                        ? html`<a
-                            href="#"
-                            class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
-                            onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
-                          >${issue.id}</a>`
-                        : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
-                    </span>
-                    ${typeBadge(issue.issue_type)}
-                    ${statusBadge(issue.status)}
-                    ${priorityBadge(issue.priority)}
-                    ${childCount > 0 ? html`
-                      <span
-                        class="inline-flex items-center gap-1 text-xs text-purple-300"
-                        title="${childCount} child issue${childCount === 1 ? "" : "s"}"
-                      >
-                        <${LayersIcon} className="w-3.5 h-3.5" />
-                        ${childCount}
-                      </span>
-                    ` : null}
-                  </div>
-                  <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
-                </div>
-              </div>
-            `;
-            })}
+            ${grouping && groupedItems
+              ? groupedItems.map(item => {
+                  if (item.type === "orphan") return renderIssueRow(item.issue);
+                  // Epic group: render a <details> with the epic as the
+                  // clickable <summary> header and its children indented below.
+                  const { group } = item;
+                  const epicIssue = group.epic;
+                  const epicId = epicIssue ? epicIssue.id : null;
+                  const isOpen = epicId ? expandedEpics.has(epicId) : true;
+                  return html`
+                    <details
+                      key=${epicId || ("ghost-" + (group.children[0] && group.children[0].id))}
+                      class="beads-epic-group"
+                      open=${isOpen}
+                      onToggle=${(e) => {
+                        if (!epicId) return;
+                        const open = e.currentTarget.open;
+                        setExpandedEpics(prev => {
+                          const next = new Set(prev);
+                          if (open) next.add(epicId);
+                          else next.delete(epicId);
+                          return next;
+                        });
+                      }}
+                    >
+                      <summary class="beads-epic-summary">
+                        ${epicIssue
+                          ? renderIssueRow(epicIssue)
+                          : html`<div class="list-row opacity-60 border border-dashed border-mitto-border">
+                              <div class="list-col-grow text-xs text-mitto-text-muted italic">Epic (not in current filter)</div>
+                            </div>`}
+                      </summary>
+                      <div class="pl-8">
+                        ${group.children.map(child => renderIssueRow(child))}
+                      </div>
+                    </details>
+                  `;
+                })
+              : filtered.map(issue => renderIssueRow(issue))
+            }
           </div>
         `}
       </div>
