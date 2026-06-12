@@ -60,7 +60,11 @@ const MOCK_ISSUES = [
 ];
 
 // Mobile sidebar overlay (z-40); modal dialogs use z-50, so this is unambiguous.
-const MOBILE_OVERLAY = ".fixed.inset-0.z-40";
+// The mobile sidebar is a daisyUI `drawer` (side="start", zClass="z-40"); its
+// full-viewport container is `.drawer-side` (position:fixed/inset via daisyUI),
+// which becomes visible when the permanently-checked drawer-toggle resolves the
+// open state and holds the panel with the "Conversations" heading.
+const MOBILE_OVERLAY = ".drawer-side.z-40";
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 // The detail panel carries the shared `properties-panel` class; no other panel
@@ -72,17 +76,28 @@ const PANEL_BACKDROP = "div.properties-backdrop";
 
 // Opens the Beads view from the project-alpha folder header (desktop sidebar)
 // and waits for the mocked issue list to render. Shared by all Beads specs.
-async function openBeads(page, timeouts) {
+// Clicks the per-folder Tasks/Beads button to open the Beads view. The button
+// lives in the folder's expandable content <ul> (a sibling of the <summary>),
+// so the folder <details> must be open for it to render — expand it if needed.
+async function clickBeadsButton(page, timeouts) {
   const folderHeader = page
-    .locator('div.sticky.top-0[data-has-context-menu="true"]')
+    .locator('summary[data-has-context-menu="true"]')
     .filter({ hasText: "project-alpha" })
     .first();
   await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });
 
-  const beadsButton = folderHeader
+  const folderDetails = folderHeader.locator("xpath=ancestor::details[1]");
+  if (!(await folderDetails.evaluate((el: HTMLDetailsElement) => el.open))) {
+    await folderHeader.click();
+  }
+  await folderDetails
     .locator('button[title^="Beads issues:"]')
-    .first();
-  await beadsButton.click();
+    .first()
+    .click();
+}
+
+async function openBeads(page, timeouts) {
+  await clickBeadsButton(page, timeouts);
 
   // A mocked row confirms the BeadsView mounted and loaded the list.
   await expect(page.getByText("Short issue").first()).toBeVisible({
@@ -513,12 +528,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
   // Open the Beads view and the epic's detail panel, then click Delete so the
   // confirmation dialog is showing. Returns the dialog locator.
   async function openEpicDeleteDialog(page, timeouts) {
-    const folderHeader = page
-      .locator('div.sticky.top-0[data-has-context-menu="true"]')
-      .filter({ hasText: "project-alpha" })
-      .first();
-    await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });
-    await folderHeader.locator('button[title^="Beads issues:"]').first().click();
+    await clickBeadsButton(page, timeouts);
     await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
       timeout: timeouts.appReady,
     });
@@ -665,6 +675,123 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         .poll(() => deletedIds, { timeout: timeouts.shortAction })
         .toEqual(["mitto-epic"]);
       expect(statusCalled).toBe(false);
+    },
+  );
+});
+
+/**
+ * Beads epic grouping tests (desktop).
+ *
+ * The Beads toolbar has an opt-in "Group issues by epic" toggle (LayersIcon, in
+ * the "View mode" join group). When enabled, top-level epics render as a
+ * collapsible <details> whose children (and grandchildren, attributed to the
+ * nearest top-level epic) are shown indented in a `.pl-8` container.
+ *
+ * These tests pin two behaviors:
+ *  1. Enabling grouping immediately reveals the hierarchy — epics are EXPANDED
+ *     by default, so the indented children are visible without extra clicks.
+ *  2. The toggle state and any explicitly-collapsed epics are persisted, so the
+ *     grouped view (with the same epic still collapsed) survives a reload.
+ *
+ * Reuses the EPIC_ISSUES mock tree (epic + children + grandchild) defined above.
+ */
+testWithCleanup.describe("Beads view - epic grouping", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+    await page.route("**/api/beads/list**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(EPIC_ISSUES),
+      });
+    });
+
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+    const createResp = await request.post(apiUrl("/api/sessions"), {
+      data: { name: `Beads Seed ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    await helpers.navigateAndWait(page);
+  });
+
+  // The grouping toggle is the single aria-pressed button in the "View mode"
+  // join group (status toggles live in a separate group).
+  const groupingToggle = (page) =>
+    page.locator('[aria-label="View mode"] button[aria-pressed]').first();
+
+  testWithCleanup(
+    "grouping is on by default, showing epic children indented and expanded",
+    async ({ page, timeouts }) => {
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+
+      // Grouping is enabled by default, so the toggle starts pressed and the
+      // epic renders as a collapsible group that is OPEN by default — its
+      // children are immediately visible (the fix for "I don't see the
+      // hierarchy").
+      const toggle = groupingToggle(page);
+      await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+      const epicGroup = page.locator("details.beads-epic-group").first();
+      await expect(epicGroup).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(epicGroup).toHaveJSProperty("open", true);
+
+      // Children, and the grandchild (attributed to the top epic), appear in the
+      // indented (pl-8) container under the epic summary.
+      const indented = epicGroup.locator(".pl-8");
+      await expect(indented.getByText("Child one", { exact: true })).toBeVisible();
+      await expect(indented.getByText("Child two", { exact: true })).toBeVisible();
+      await expect(indented.getByText("Grandchild one", { exact: true })).toBeVisible();
+
+      // Turning grouping off switches back to a flat list (no epic groups).
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await expect(page.locator("details.beads-epic-group")).toHaveCount(0);
+    },
+  );
+
+  testWithCleanup(
+    "collapsing an epic hides its children and persists across reload",
+    async ({ page, timeouts, helpers }) => {
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+
+      // Grouping is on by default; the epic starts open with children visible.
+      const epicGroup = page.locator("details.beads-epic-group").first();
+      await expect(epicGroup).toHaveJSProperty("open", true);
+      await expect(
+        epicGroup.locator(".pl-8").getByText("Child one", { exact: true }),
+      ).toBeVisible();
+
+      // Collapse the epic via its summary; the indented children disappear.
+      await epicGroup.locator("summary").click();
+      await expect(epicGroup).toHaveJSProperty("open", false);
+      await expect(
+        epicGroup.locator(".pl-8").getByText("Child one", { exact: true }),
+      ).toBeHidden();
+
+      // Reload: the grouping toggle (enabled) and the collapsed epic are both
+      // persisted, so the view returns grouped with the epic still collapsed.
+      await helpers.navigateAndWait(page);
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+      await expect(groupingToggle(page)).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      const epicGroup2 = page.locator("details.beads-epic-group").first();
+      await expect(epicGroup2).toHaveJSProperty("open", false);
+      await expect(
+        epicGroup2.locator(".pl-8").getByText("Child one", { exact: true }),
+      ).toBeHidden();
     },
   );
 });

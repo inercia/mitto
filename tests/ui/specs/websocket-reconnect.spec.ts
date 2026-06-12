@@ -249,7 +249,7 @@ test.describe("WebSocket Reconnection During Send", () => {
       expect(value).toBe(testMessage);
 
       // Error message should be visible
-      const errorMessage = page.locator(".bg-orange-900, .text-orange-200");
+      const errorMessage = page.locator(".alert.alert-warning");
       await expect(errorMessage).toBeVisible({ timeout: 1000 });
     }
   });

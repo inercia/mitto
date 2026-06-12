@@ -93,7 +93,7 @@ export function SlashCommandPicker({
   const panelHeight = headerHeight + visibleItems * itemHeight;
 
   // Panel classes - positioned as floating overlay above the input
-  const pickerClasses = `slash-command-picker absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-slate-600 rounded-t-lg overflow-hidden z-20 transition-all duration-200 ease-out ${
+  const pickerClasses = `slash-command-picker absolute bottom-full left-0 right-0 w-full bg-mitto-surface-3/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 transition-all duration-200 ease-out ${
     isOpen && filteredCommands.length > 0
       ? "opacity-100"
       : "opacity-0 pointer-events-none border-0"
@@ -112,47 +112,48 @@ export function SlashCommandPicker({
       data-testid="slash-command-picker"
     >
       <div
-        class="slash-picker-header px-3 py-2 border-b border-slate-700 flex items-center justify-between"
+        class="slash-picker-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between"
       >
-        <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">
+        <span class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide">
           Commands ${filter ? `(/${filter})` : ""}
         </span>
-        <span class="text-xs text-gray-500">
+        <span class="text-xs text-mitto-text-muted">
           ${filteredCommands.length}
           command${filteredCommands.length !== 1 ? "s" : ""}
         </span>
       </div>
-      <div
+      <ul
         ref=${listRef}
-        class="slash-picker-list overflow-y-auto"
+        class="slash-picker-list menu menu-sm w-full p-0 gap-0 flex-nowrap overflow-y-auto"
         style="max-height: ${maxVisibleItems * itemHeight}px;"
       >
         ${filteredCommands.map(
           (cmd, index) => html`
-            <div
-              key=${cmd.name}
-              data-index=${index}
-              class="slash-picker-item flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${index ===
-              selectedIndex
-                ? "bg-blue-600/40"
-                : "hover:bg-slate-600/50"}"
-              onClick=${() => handleSelect(cmd)}
-              onMouseEnter=${() => handleMouseEnter(index)}
-            >
-              <span
-                class="slash-command-name font-mono text-sm text-blue-300 flex-shrink-0"
+            <li key=${cmd.name} data-index=${index}>
+              <button
+                type="button"
+                class="slash-picker-item flex items-center gap-3 px-3 py-2.5 rounded-none transition-colors ${index ===
+                selectedIndex
+                  ? "menu-active"
+                  : "hover:bg-mitto-surface-4/50"}"
+                onClick=${() => handleSelect(cmd)}
+                onMouseEnter=${() => handleMouseEnter(index)}
               >
-                /${cmd.name}
-              </span>
-              <span
-                class="slash-command-desc text-sm text-gray-400 truncate flex-1"
-              >
-                ${cmd.description || ""}
-              </span>
-            </div>
+                <span
+                  class="slash-command-name font-mono text-sm text-mitto-accent-300 shrink-0"
+                >
+                  /${cmd.name}
+                </span>
+                <span
+                  class="slash-command-desc text-sm text-mitto-text-muted truncate flex-1 text-left"
+                >
+                  ${cmd.description || ""}
+                </span>
+              </button>
+            </li>
           `,
         )}
-      </div>
+      </ul>
     </div>
   `;
 }

@@ -75,6 +75,12 @@ type WorkspaceSettings struct {
 	// Code is the optional three-letter code for the workspace badge
 	// If not set, a code is automatically generated from the workspace path
 	Code string `json:"code,omitempty" yaml:"code,omitempty"`
+	// Group is an optional organizational label for the folder (e.g.
+	// "development", "personal", "operations"). It is a folder-level field:
+	// like Name/Color/Code it is hoisted into folders.json on save and merged
+	// back on load, so it is shared by all workspaces in the same folder. It is
+	// distinct from the .mittorc metadata group (see WorkspaceMetadata.Group).
+	Group string `json:"group,omitempty" yaml:"group,omitempty"`
 	// AutoApprove enables automatic approval of permission requests for sessions in this workspace.
 	// When true, all permission requests (file writes, command execution, etc.) are auto-approved.
 	// When false or nil, the global auto_approve setting or per-conversation settings apply.

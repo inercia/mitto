@@ -6,6 +6,12 @@
 import {
   computeGroupedSessions,
   computeSessionFingerprint,
+  computeUnifiedTree,
+  filterUnifiedTree,
+  flattenUnifiedTreeForNav,
+  computeFolderGroupSections,
+  UNGROUPED_FOLDER_SECTION_LABEL,
+  UNGROUPED_FOLDER_SECTION_KEY,
 } from "./sessionGrouping.js";
 
 // ---------------------------------------------------------------------------
@@ -223,6 +229,171 @@ describe("computeGroupedSessions – folder", () => {
 // computeGroupedSessions – workspace mode
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// computeUnifiedTree
+// ---------------------------------------------------------------------------
+
+describe("computeUnifiedTree", () => {
+  test("always returns a dashboard node and folders array", () => {
+    const result = computeUnifiedTree([]);
+    expect(result).toHaveProperty("dashboard");
+    expect(result.dashboard).toMatchObject({ type: "dashboard", id: "__dashboard__" });
+    expect(result).toHaveProperty("folders");
+    expect(Array.isArray(result.folders)).toBe(true);
+  });
+
+  test("empty input → folders: []", () => {
+    expect(computeUnifiedTree([]).folders).toHaveLength(0);
+    expect(computeUnifiedTree(undefined).folders).toHaveLength(0);
+    expect(computeUnifiedTree(null).folders).toHaveLength(0);
+  });
+
+  test("sessions in two different working_dirs produce two folders sorted alphabetically", () => {
+    const s1 = makeSession({ session_id: "s1", working_dir: "/home/user/zebra" });
+    const s2 = makeSession({ session_id: "s2", working_dir: "/home/user/alpha" });
+    const result = computeUnifiedTree([s1, s2], []);
+    expect(result.folders).toHaveLength(2);
+    // Sorted alphabetically by label (basename)
+    expect(result.folders[0].label).toBe("alpha");
+    expect(result.folders[1].label).toBe("zebra");
+  });
+
+  test("each folder has a tasks node with correct id, type, workingDir, and folderKey", () => {
+    const s1 = makeSession({ session_id: "s1", working_dir: "/home/user/project" });
+    const result = computeUnifiedTree([s1], [ws1]);
+    const folder = result.folders[0];
+    expect(folder.tasksNode).toMatchObject({
+      type: "tasks",
+      id: `tasks:${folder.key}`,
+      label: "Tasks",
+      workingDir: "/home/user/project",
+      folderKey: folder.key,
+    });
+  });
+
+  test("parent-child nesting: child appears in parent.children, not as root", () => {
+    const parent = makeSession({
+      session_id: "parent",
+      working_dir: "/home/user/project",
+      parent_session_id: null,
+      created_at: "2024-01-01T10:00:00Z",
+    });
+    const child = makeSession({
+      session_id: "child",
+      working_dir: "/home/user/project",
+      parent_session_id: "parent",
+      created_at: "2024-01-02T10:00:00Z",
+    });
+    const result = computeUnifiedTree([parent, child], []);
+    const folder = result.folders[0];
+    const allRoots = [...folder.conversations, ...folder.archived];
+    const rootIds = allRoots.map((n) => n.session_id);
+    expect(rootIds).toContain("parent");
+    expect(rootIds).not.toContain("child");
+    const parentNode = allRoots.find((n) => n.session_id === "parent");
+    expect(parentNode.children.some((c) => c.session_id === "child")).toBe(true);
+  });
+
+  test("category tagging: regular → conversations, periodic → periodic, archived → archived", () => {
+    const regular = makeSession({ session_id: "r1", working_dir: "/proj" });
+    const periodic = makeSession({
+      session_id: "p1",
+      working_dir: "/proj",
+      periodic_enabled: true,
+      created_at: "2024-01-02T00:00:00Z",
+    });
+    const archived = makeSession({
+      session_id: "a1",
+      working_dir: "/proj",
+      archived: true,
+      created_at: "2024-01-03T00:00:00Z",
+    });
+    const result = computeUnifiedTree([regular, periodic, archived], []);
+    const folder = result.folders[0];
+    const allNodes = [...folder.conversations, ...folder.archived];
+    const r = allNodes.find((n) => n.session_id === "r1");
+    const p = allNodes.find((n) => n.session_id === "p1");
+    const a = allNodes.find((n) => n.session_id === "a1");
+    expect(r.category).toBe("conversations");
+    expect(p.category).toBe("periodic");
+    expect(a.category).toBe("archived");
+  });
+
+  test("category tagging propagates to nested children", () => {
+    const parent = makeSession({
+      session_id: "parent",
+      working_dir: "/proj",
+      parent_session_id: null,
+      created_at: "2024-01-01T00:00:00Z",
+    });
+    const child = makeSession({
+      session_id: "child",
+      working_dir: "/proj",
+      parent_session_id: "parent",
+      periodic_enabled: true,
+      created_at: "2024-01-02T00:00:00Z",
+    });
+    const result = computeUnifiedTree([parent, child], []);
+    const folder = result.folders[0];
+    const parentNode = folder.conversations.find((n) => n.session_id === "parent");
+    const childNode = parentNode.children.find((c) => c.session_id === "child");
+    expect(childNode.category).toBe("periodic");
+  });
+
+  test("archived partitioning: archived root → folder.archived, active root → folder.conversations", () => {
+    const active = makeSession({
+      session_id: "active",
+      working_dir: "/proj",
+      created_at: "2024-01-02T00:00:00Z",
+    });
+    const archived = makeSession({
+      session_id: "archived",
+      working_dir: "/proj",
+      archived: true,
+      created_at: "2024-01-01T00:00:00Z",
+    });
+    const result = computeUnifiedTree([active, archived], []);
+    const folder = result.folders[0];
+    expect(folder.conversations).toHaveLength(1);
+    expect(folder.conversations[0].session_id).toBe("active");
+    expect(folder.archived).toHaveLength(1);
+    expect(folder.archived[0].session_id).toBe("archived");
+  });
+
+  test("created_at desc ordering preserved within conversations[]", () => {
+    const older = makeSession({
+      session_id: "older",
+      working_dir: "/proj",
+      created_at: "2024-01-01T00:00:00Z",
+    });
+    const newer = makeSession({
+      session_id: "newer",
+      working_dir: "/proj",
+      created_at: "2024-01-03T00:00:00Z",
+    });
+    const middle = makeSession({
+      session_id: "middle",
+      working_dir: "/proj",
+      created_at: "2024-01-02T00:00:00Z",
+    });
+    const result = computeUnifiedTree([older, newer, middle], []);
+    const ids = result.folders[0].conversations.map((n) => n.session_id);
+    expect(ids).toEqual(["newer", "middle", "older"]);
+  });
+
+  test("does NOT mutate input session objects", () => {
+    const s1 = makeSession({ session_id: "s1", working_dir: "/proj" });
+    const s2 = makeSession({ session_id: "s2", working_dir: "/proj", archived: true });
+    const inputCopy1 = { ...s1 };
+    const inputCopy2 = { ...s2 };
+    computeUnifiedTree([s1, s2], []);
+    expect(s1).toEqual(inputCopy1);
+    expect(s2).toEqual(inputCopy2);
+    expect(Object.prototype.hasOwnProperty.call(s1, "category")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(s2, "category")).toBe(false);
+  });
+});
+
 describe("computeGroupedSessions – workspace", () => {
   test("groups by composite working_dir|acp_server key", () => {
     const s1 = makeSession({ session_id: "s1", working_dir: "/a", acp_server: "aug" });
@@ -236,5 +407,303 @@ describe("computeGroupedSessions – workspace", () => {
     const s2 = makeSession({ session_id: "s2", working_dir: "/a", acp_server: "aug" });
     const result = computeGroupedSessions([s1, s2], "workspace", [s1, s2], []);
     expect(result).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filterUnifiedTree Tests
+// ---------------------------------------------------------------------------
+
+describe("filterUnifiedTree", () => {
+  function makeRegular(overrides = {}) {
+    return makeSession({ session_id: `r-${Math.random()}`, ...overrides });
+  }
+  function makePeriodic(overrides = {}) {
+    return makeSession({ session_id: `p-${Math.random()}`, periodic_enabled: true, ...overrides });
+  }
+  function makeArchived(overrides = {}) {
+    return makeSession({ session_id: `a-${Math.random()}`, archived: true, ...overrides });
+  }
+
+  const WS = [{ working_dir: "/home/user/project" }];
+
+  test("all-true filter → folders/conversations/archived unchanged; showTasks true", () => {
+    const sessions = [makeRegular(), makePeriodic(), makeArchived()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: true, archived: true, tasks: true });
+    expect(result.folders.length).toBeGreaterThan(0);
+    result.folders.forEach((folder) => {
+      expect(folder.showTasks).toBe(true);
+    });
+    // total conversations (non-archived) should include regular + periodic
+    const totalConvs = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
+    expect(totalConvs).toBeGreaterThanOrEqual(2);
+    const totalArchived = result.folders.reduce((sum, f) => sum + f.archived.length, 0);
+    expect(totalArchived).toBeGreaterThanOrEqual(1);
+  });
+
+  test("regular:false → regular nodes removed; periodic kept", () => {
+    const sessions = [makeRegular(), makePeriodic()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: false, periodic: true, archived: true, tasks: true });
+    result.folders.forEach((folder) => {
+      folder.conversations.forEach((node) => {
+        expect(node.category).not.toBe("conversations");
+      });
+    });
+    const totalPeriodic = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
+    expect(totalPeriodic).toBeGreaterThanOrEqual(1);
+  });
+
+  test("periodic:false → periodic nodes removed", () => {
+    const sessions = [makeRegular(), makePeriodic()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: false, archived: true, tasks: true });
+    result.folders.forEach((folder) => {
+      folder.conversations.forEach((node) => {
+        expect(node.category).not.toBe("periodic");
+      });
+    });
+  });
+
+  test("archived:false → every folder's archived is []", () => {
+    const sessions = [makeRegular(), makeArchived()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: true, archived: false, tasks: true });
+    result.folders.forEach((folder) => {
+      expect(folder.archived).toEqual([]);
+    });
+  });
+
+  test("tasks:false → every folder has showTasks === false", () => {
+    const sessions = [makeRegular()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: true, archived: true, tasks: false });
+    result.folders.forEach((folder) => {
+      expect(folder.showTasks).toBe(false);
+    });
+  });
+
+  test("pruning: folder with only regular sessions is removed when regular:false", () => {
+    const sessions = [makeRegular()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: false, periodic: false, archived: false, tasks: false });
+    expect(result.folders).toHaveLength(0);
+  });
+
+  test("hiding a periodic parent drops the whole subtree", () => {
+    const parent = makePeriodic({ session_id: "parent-1" });
+    const child = makeRegular({ session_id: "child-1", parent_session_id: "parent-1" });
+    const sessions = [parent, child];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, { regular: true, periodic: false, archived: true, tasks: true });
+    // parent (periodic) should not appear
+    result.folders.forEach((folder) => {
+      folder.conversations.forEach((node) => {
+        expect(node.session_id).not.toBe("parent-1");
+      });
+    });
+  });
+
+  test("null/undefined tree → { dashboard: null, folders: [] }", () => {
+    expect(filterUnifiedTree(null, {})).toEqual({ dashboard: null, folders: [] });
+    expect(filterUnifiedTree(undefined, {})).toEqual({ dashboard: null, folders: [] });
+  });
+
+  test("missing filter (undefined) → treated as all-true", () => {
+    const sessions = [makeRegular(), makePeriodic(), makeArchived()];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, undefined);
+    result.folders.forEach((folder) => {
+      expect(folder.showTasks).toBe(true);
+    });
+    const totalConvs = result.folders.reduce((sum, f) => sum + f.conversations.length, 0);
+    expect(totalConvs).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// flattenUnifiedTreeForNav Tests
+// ---------------------------------------------------------------------------
+
+describe("flattenUnifiedTreeForNav", () => {
+  function makeS(id, working_dir, overrides = {}) {
+    return makeSession({ session_id: id, working_dir, ...overrides });
+  }
+
+  test("ordering: folder '/a' entries come before folder '/z' (alphabetical by label)", () => {
+    const sA = makeS("s-a", "/a");
+    const sZ = makeS("s-z", "/z");
+    const tree = computeUnifiedTree([sA, sZ], [{ working_dir: "/a" }, { working_dir: "/z" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    const ids = entries.map((e) => e.session.session_id);
+    expect(ids.indexOf("s-a")).toBeLessThan(ids.indexOf("s-z"));
+  });
+
+  test("children placement: child immediately follows parent; parentKey and folderKey correct", () => {
+    const parent = makeS("parent-1", "/home/user/project");
+    const child = makeS("child-1", "/home/user/project", { parent_session_id: "parent-1" });
+    const tree = computeUnifiedTree([parent, child], [{ working_dir: "/home/user/project" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    const parentIdx = entries.findIndex((e) => e.session.session_id === "parent-1");
+    const childIdx = entries.findIndex((e) => e.session.session_id === "child-1");
+    expect(parentIdx).toBeGreaterThanOrEqual(0);
+    expect(childIdx).toBe(parentIdx + 1);
+    expect(entries[parentIdx].parentKey).toBeNull();
+    expect(entries[childIdx].parentKey).toBe("parent:parent-1");
+    expect(entries[parentIdx].folderKey).toBe(entries[childIdx].folderKey);
+  });
+
+  test("archived flagging: active entry archived:false before archived entry archived:true", () => {
+    const active = makeS("active-1", "/home/user/project");
+    const archived = makeS("archived-1", "/home/user/project", { archived: true });
+    const tree = computeUnifiedTree([active, archived], [{ working_dir: "/home/user/project" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    const activeIdx = entries.findIndex((e) => e.session.session_id === "active-1");
+    const archivedIdx = entries.findIndex((e) => e.session.session_id === "archived-1");
+    expect(entries[activeIdx].archived).toBe(false);
+    expect(entries[archivedIdx].archived).toBe(true);
+    expect(activeIdx).toBeLessThan(archivedIdx);
+  });
+
+  test("static nodes excluded: every entry has a session_id; count equals session nodes", () => {
+    const sessions = [
+      makeS("r1", "/home/user/project"),
+      makeS("a1", "/home/user/project", { archived: true }),
+    ];
+    const tree = computeUnifiedTree(sessions, [{ working_dir: "/home/user/project" }]);
+    const entries = flattenUnifiedTreeForNav(tree);
+    entries.forEach((e) => {
+      expect(e.session.session_id).toBeDefined();
+    });
+    expect(entries).toHaveLength(2);
+  });
+
+  test("filterUnifiedTree interaction: archived:false → no archived:true entries", () => {
+    const active = makeS("active-2", "/home/user/project");
+    const archived = makeS("archived-2", "/home/user/project", { archived: true });
+    const tree = computeUnifiedTree([active, archived], [{ working_dir: "/home/user/project" }]);
+    const filtered = filterUnifiedTree(tree, { regular: true, periodic: true, archived: false, tasks: true });
+    const entries = flattenUnifiedTreeForNav(filtered);
+    expect(entries.some((e) => e.archived === true)).toBe(false);
+    expect(entries.some((e) => e.session.session_id === "active-2")).toBe(true);
+  });
+
+  test("edge cases: null/undefined/empty return []", () => {
+    expect(flattenUnifiedTreeForNav(null)).toEqual([]);
+    expect(flattenUnifiedTreeForNav(undefined)).toEqual([]);
+    expect(flattenUnifiedTreeForNav({})).toEqual([]);
+    expect(flattenUnifiedTreeForNav({ folders: [] })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Folder `group` attribute (computeUnifiedTree)
+// ---------------------------------------------------------------------------
+
+describe("computeUnifiedTree – folder group attribute", () => {
+  test("attaches workspace group to the folder; empty string when unassigned", () => {
+    const s1 = makeSession({ session_id: "s1", working_dir: "/home/user/grouped" });
+    const s2 = makeSession({ session_id: "s2", working_dir: "/home/user/plain" });
+    const wsGrouped = { working_dir: "/home/user/grouped", group: "development" };
+    const wsPlain = { working_dir: "/home/user/plain" };
+    const result = computeUnifiedTree([s1, s2], [wsGrouped, wsPlain]);
+    const grouped = result.folders.find((f) => f.workingDir === "/home/user/grouped");
+    const plain = result.folders.find((f) => f.workingDir === "/home/user/plain");
+    expect(grouped.group).toBe("development");
+    expect(plain.group).toBe("");
+  });
+
+  test("group-aware ordering: grouped folders precede ungrouped; alphabetical within", () => {
+    const sZebra = makeSession({ session_id: "z", working_dir: "/dirs/zebra" });
+    const sAlpha = makeSession({ session_id: "a", working_dir: "/dirs/alpha" });
+    const sPlain = makeSession({ session_id: "p", working_dir: "/dirs/plain" });
+    const workspaces = [
+      { working_dir: "/dirs/zebra", group: "development" },
+      { working_dir: "/dirs/alpha", group: "development" },
+      { working_dir: "/dirs/plain" }, // no group → sorts last
+    ];
+    const result = computeUnifiedTree([sZebra, sAlpha, sPlain], workspaces);
+    const labels = result.folders.map((f) => f.label);
+    // Both grouped folders (alpha, zebra) come first alphabetically, ungrouped last.
+    expect(labels).toEqual(["alpha", "zebra", "plain"]);
+  });
+
+  test("no groups → alphabetical-by-label order is unchanged", () => {
+    const sZebra = makeSession({ session_id: "z", working_dir: "/dirs/zebra" });
+    const sAlpha = makeSession({ session_id: "a", working_dir: "/dirs/alpha" });
+    const result = computeUnifiedTree([sZebra, sAlpha], []);
+    expect(result.folders.map((f) => f.label)).toEqual(["alpha", "zebra"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeFolderGroupSections
+// ---------------------------------------------------------------------------
+
+describe("computeFolderGroupSections", () => {
+  const f = (label, group) => ({ key: label, label, workingDir: `/d/${label}`, group });
+
+  test("no folder has a group → grouped:false, empty sections (flat list)", () => {
+    const result = computeFolderGroupSections([f("a", ""), f("b", "")]);
+    expect(result.grouped).toBe(false);
+    expect(result.sections).toEqual([]);
+  });
+
+  test("missing/whitespace group treated as ungrouped", () => {
+    const result = computeFolderGroupSections([
+      { key: "a", label: "a", group: undefined },
+      { key: "b", label: "b", group: "   " },
+    ]);
+    expect(result.grouped).toBe(false);
+  });
+
+  test("mixed → named sections (alphabetical) plus trailing Other", () => {
+    const result = computeFolderGroupSections([
+      f("proj", "development"),
+      f("notes", "personal"),
+      f("scratch", ""),
+    ]);
+    expect(result.grouped).toBe(true);
+    expect(result.sections.map((s) => s.name)).toEqual([
+      "development",
+      "personal",
+      UNGROUPED_FOLDER_SECTION_LABEL,
+    ]);
+    const other = result.sections.find((s) => s.isOther);
+    expect(other.key).toBe(UNGROUPED_FOLDER_SECTION_KEY);
+    expect(other.folders.map((x) => x.label)).toEqual(["scratch"]);
+  });
+
+  test("all folders grouped → no Other section", () => {
+    const result = computeFolderGroupSections([
+      f("proj", "development"),
+      f("notes", "personal"),
+    ]);
+    expect(result.grouped).toBe(true);
+    expect(result.sections.every((s) => !s.isOther)).toBe(true);
+    expect(result.sections.map((s) => s.name)).toEqual(["development", "personal"]);
+  });
+
+  test("groups multiple folders under the same section name", () => {
+    const result = computeFolderGroupSections([
+      f("alpha", "development"),
+      f("zebra", "development"),
+    ]);
+    const dev = result.sections.find((s) => s.name === "development");
+    expect(dev.folders.map((x) => x.label)).toEqual(["alpha", "zebra"]);
+    expect(dev.key).toBe("group:development");
+  });
+
+  test("group whitespace is trimmed for the section name", () => {
+    const result = computeFolderGroupSections([f("proj", "  development  "), f("x", "")]);
+    const names = result.sections.map((s) => s.name);
+    expect(names).toContain("development");
+  });
+
+  test("empty/null input → grouped:false", () => {
+    expect(computeFolderGroupSections([]).grouped).toBe(false);
+    expect(computeFolderGroupSections(null).grouped).toBe(false);
+    expect(computeFolderGroupSections(undefined).grouped).toBe(false);
   });
 });

@@ -61,7 +61,7 @@ export function WorkspaceBadge({
       html`
         <div class="min-w-0 flex-1">
           <div class="font-medium text-sm">${displayName}</div>
-          <div class="text-xs text-gray-500 truncate" title=${path}>
+          <div class="text-xs text-mitto-text-muted truncate" title=${path}>
             ${path}
           </div>
         </div>
@@ -124,7 +124,7 @@ export function WorkspacePill({
 
   return html`
     <div
-      class="workspace-pill inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cursorClass} ${className}"
+      class="workspace-pill badge badge-sm gap-1 px-2 font-medium ${cursorClass} ${className}"
       style=${{
         backgroundColor: color.background,
         color: color.text,

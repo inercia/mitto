@@ -127,7 +127,7 @@ conversations:
 
 ### Folder-Level Fields (folders.json)
 
-Settings shared by every ACP server entry in the same folder — the display `name`, badge `code`, badge `color`, `auto_children`, and the Beads `beads` subsection — are stored once per folder in a `folders.json` file in the Mitto data directory (`$MITTO_DIR`), keyed by working directory.
+Settings shared by every ACP server entry in the same folder — the display `name`, badge `code`, badge `color`, the organizational `group` label, `auto_children`, and the Beads `beads` subsection — are stored once per folder in a `folders.json` file in the Mitto data directory (`$MITTO_DIR`), keyed by working directory. The folder `group` (e.g. "development", "personal", "operations") is Mitto-local and distinct from the `.mittorc` metadata `group`.
 
 `folders.json` is the **authoritative store** for these values, not merely a deduplication of `workspaces.json`. It is created the first time via a one-time automatic migration that lifts any inline folder fields out of `workspaces.json`; thereafter all common folder-level information always lives there. The split is fully transparent — the UI and API always see complete workspace records, because Mitto merges `folders.json` into each workspace on load (the folder value always wins). Workspace metadata (`description`, `url`, `group`, `user_data_schema`) is **not** stored here; it stays in the committable `.mittorc` so it remains version-controllable. See [docs/devel/workspaces.md](../devel/workspaces.md#folder-level-settings-foldersjson) for details.
 
@@ -140,6 +140,7 @@ Example `folders.json`:
       "name": "My Project",
       "code": "MYP",
       "color": "#ff5500",
+      "group": "development",
       "beads": { "upstream": "github" }
     }
   }

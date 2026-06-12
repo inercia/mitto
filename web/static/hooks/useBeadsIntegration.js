@@ -233,13 +233,17 @@ export function useBeadsIntegration({
     [beadsWorkingDir, workspaces, newSession, showToast],
   );
 
-  // Handle Beads button — switch main view to the beads panel for the given workspace
-  const handleBeadsOpen = useCallback((workingDir) => {
+  // Handle Beads button — switch main view to the beads panel for the given workspace.
+  // opts.keepSidebarOpen is set when this is the Tasks auto-open triggered by
+  // expanding a folder (see SessionList.handleFolderOpened); in that case the
+  // mobile sidebar drawer stays open and the beads view loads underneath. A
+  // direct Tasks/beads-button click leaves it unset so the drawer closes.
+  const handleBeadsOpen = useCallback((workingDir, opts) => {
     setBeadsWorkingDir(workingDir);
     setMainView("beads");
-    // On mobile the beads button lives inside the sidebar overlay; close it so
-    // the beads view is not obscured by the still-open left side panel.
-    setShowSidebar(false);
+    if (!opts?.keepSidebarOpen) {
+      setShowSidebar(false);
+    }
   }, []);
 
   // Open the beads view in "create" mode for the given workspace, switching the

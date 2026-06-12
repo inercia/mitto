@@ -7,12 +7,17 @@ import (
 	"path/filepath"
 )
 
-// isInitialized reports whether dir already has a beads database. It is
-// detected by the presence of .beads/config.yaml — the exact file bd complains
-// about when "run 'bd init' first" is required.
+// isInitialized reports whether dir already has a beads database. It is detected
+// by the presence of either .beads/config.yaml (older file-backed databases) or
+// .beads/metadata.json (Dolt-backed databases, which have no config.yaml). Both
+// are markers bd writes on init, so finding either means "bd init" already ran.
 func isInitialized(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, ".beads", "config.yaml"))
-	return err == nil
+	for _, marker := range []string{"config.yaml", "metadata.json"} {
+		if _, err := os.Stat(filepath.Join(dir, ".beads", marker)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureInitialized makes bd commands usable in workingDir by running a minimal

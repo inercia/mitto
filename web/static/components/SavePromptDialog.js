@@ -1,13 +1,13 @@
 // Mitto Web Interface - Save Prompt Dialog Component
 // Modal dialog for saving the current prompt text as a markdown file with frontmatter
 
-const { useState, useEffect, useCallback, useRef, html } = window.preact;
+const { useState, useEffect, useCallback, useRef, html, Fragment } = window.preact;
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { CloseIcon } from "./Icons.js";
+import { Modal } from "./Modal.js";
 
 /**
  * Sanitize a prompt name into a safe filename.
@@ -230,41 +230,43 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
   const canSave = name.trim() && fullPath && !isSaving;
 
-  return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${handleBackdropClick}
-      data-testid="save-prompt-dialog-backdrop"
+  const footer = html`
+    <button
+      onClick=${handleClose}
+      disabled=${isSaving}
+      class="btn btn-sm btn-ghost"
+      data-testid="save-prompt-cancel-btn"
     >
-      <div
-        class="bg-mitto-sidebar rounded-xl w-[500px] max-w-[90vw] overflow-hidden shadow-2xl flex flex-col"
-        onClick=${(e) => e.stopPropagation()}
-        data-testid="save-prompt-dialog"
-      >
-        <!-- Header -->
-        <div
-          class="flex items-center justify-between p-4 border-b border-slate-700"
-        >
-          <h3 class="text-lg font-semibold">Save Prompt</h3>
-          <button
-            onClick=${handleClose}
-            disabled=${isSaving}
-            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isSaving
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="save-prompt-dialog-close"
-          >
-            <${CloseIcon} className="w-5 h-5" />
-          </button>
-        </div>
+      Cancel
+    </button>
+    <button
+      onClick=${handleSave}
+      disabled=${!canSave}
+      class="btn btn-sm btn-primary"
+      data-testid="save-prompt-save-btn"
+    >
+      ${isSaving && html`<span class="loading loading-spinner loading-xs"></span>`}
+      Save
+    </button>
+  `;
 
-        <!-- Content -->
-        <div class="p-4 space-y-4">
+  return html`
+    <${Fragment}>
+      <${Modal}
+        isOpen=${isOpen}
+        onClose=${handleClose}
+        title="Save Prompt"
+        testid="save-prompt-dialog"
+        backdropTestid="save-prompt-dialog-backdrop"
+        closeTestid="save-prompt-dialog-close"
+        footer=${footer}
+      >
+        <div class="space-y-4">
           <!-- Name field -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Name
-              <span class="text-red-400 ml-0.5">*</span>
+              <span class="text-mitto-danger ml-0.5">*</span>
             </label>
             <input
               ref=${nameInputRef}
@@ -274,16 +276,16 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               onKeyDown=${handleKeyDown}
               placeholder="My Prompt"
               disabled=${isSaving}
-              class="w-full px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+              class="input input-sm w-full"
               data-testid="save-prompt-name-input"
             />
           </div>
 
           <!-- Description field -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Description
-              <span class="text-gray-500 text-xs ml-1">(optional)</span>
+              <span class="text-mitto-text-muted text-xs ml-1">(optional)</span>
             </label>
             <textarea
               value=${description}
@@ -292,14 +294,14 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               placeholder="A brief description of what this prompt does..."
               disabled=${isSaving}
               rows="2"
-              class="w-full px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 resize-none"
+              class="textarea textarea-sm w-full resize-none disabled:opacity-50"
               data-testid="save-prompt-description-input"
             />
           </div>
 
           <!-- Filename field with optional Browse button -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Filename
             </label>
             <div class="flex gap-2">
@@ -310,7 +312,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="my-prompt.md"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50"
+                class="input input-sm flex-1"
                 data-testid="save-prompt-filename-input"
               />
             </div>
@@ -318,7 +320,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
           <!-- Save directory with optional Browse button -->
           <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-gray-300">
+            <label class="block text-sm font-medium text-mitto-text-secondary">
               Save to
             </label>
             <div class="flex gap-2">
@@ -329,7 +331,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="/path/to/save/directory"
                 disabled=${isSaving}
-                class="flex-1 px-3 py-2 bg-mitto-input border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:opacity-50 font-mono text-xs"
+                class="input input-sm flex-1 font-mono text-xs"
                 data-testid="save-prompt-directory-input"
               />
               ${hasNativeFolderPicker() &&
@@ -338,7 +340,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                   type="button"
                   onClick=${handleBrowse}
                   disabled=${isSaving}
-                  class="px-3 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                  class="btn btn-sm whitespace-nowrap"
                   data-testid="save-prompt-browse-btn"
                 >
                   Browse…
@@ -348,7 +350,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
             ${fullPath &&
             html`
               <p
-                class="text-xs text-gray-500 mt-1 font-mono truncate"
+                class="text-xs text-mitto-text-muted mt-1 font-mono truncate"
                 title=${fullPath}
               >
                 ${fullPath}
@@ -360,68 +362,27 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
           ${error &&
           html`
             <div
-              class="text-red-400 text-sm bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2"
+              role="alert"
+              class="alert alert-error alert-soft text-sm"
               data-testid="save-prompt-error"
             >
               ${error}
             </div>
           `}
         </div>
+      </${Modal}>
 
-        <!-- Footer with buttons -->
-        <div class="flex justify-end gap-3 p-4 border-t border-slate-700">
-          <button
-            onClick=${handleClose}
-            disabled=${isSaving}
-            class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors ${isSaving
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="save-prompt-cancel-btn"
-          >
-            Cancel
-          </button>
-          <button
-            onClick=${handleSave}
-            disabled=${!canSave}
-            class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors flex items-center gap-2 ${!canSave
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="save-prompt-save-btn"
-          >
-            ${isSaving &&
-            html`
-              <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-            `}
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Overwrite confirmation dialog -->
-    <${ConfirmDialog}
-      isOpen=${showOverwriteConfirm}
-      title="File Already Exists"
-      message="A file with this name already exists at the specified location. Do you want to overwrite it?"
-      confirmLabel="Overwrite"
-      cancelLabel="Cancel"
-      confirmVariant="danger"
-      onConfirm=${handleOverwriteConfirm}
-      onCancel=${handleOverwriteCancel}
-    />
+      <!-- Overwrite confirmation dialog -->
+      <${ConfirmDialog}
+        isOpen=${showOverwriteConfirm}
+        title="File Already Exists"
+        message="A file with this name already exists at the specified location. Do you want to overwrite it?"
+        confirmLabel="Overwrite"
+        cancelLabel="Cancel"
+        confirmVariant="danger"
+        onConfirm=${handleOverwriteConfirm}
+        onCancel=${handleOverwriteCancel}
+      />
+    </${Fragment}>
   `;
 }

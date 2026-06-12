@@ -1,38 +1,33 @@
 // Mitto Web Interface - Session List Component
 const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = window.preact;
 
-import { computeGroupedSessions, computeSessionFingerprint } from "../utils/sessionGrouping.js";
-import { buildSessionTree } from "../utils/sessionTree.js";
 import {
-  FILTER_TAB,
-  getFilterTab,
-  setFilterTab,
-  getFilterTabGrouping,
-  cycleFilterTabGrouping,
+  computeUnifiedTree,
+  filterUnifiedTree,
+  computeFolderGroupSections,
+} from "../utils/sessionGrouping.js";
+import {
+  getFilterTabForSession,
+  getCategoryFilter,
+  setCategoryFilter,
   getExpandedGroups,
   isGroupExpanded,
   setGroupExpanded,
   getSingleExpandedGroupMode,
   onUIPreferencesLoaded,
-  tabScopedGroupKey,
+  getLastSessionForGroup,
+  setLastSessionForGroup,
 } from "../utils/index.js";
 import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
-import { WorkspacePill } from "./WorkspaceBadge.js";
 import { ContextMenu } from "./ContextMenu.js";
+import { Modal } from "./Modal.js";
 import {
-  ChevronDownIcon,
-  ServerIcon,
   FolderIcon,
   FolderOpenIcon,
-  LayersIcon,
-  ListIcon,
   SpinnerIcon,
   PlusIcon,
   CloseIcon,
-  ChatBubbleIcon,
-  PeriodicIcon,
-  PeriodicFilledIcon,
   ArchiveIcon,
   SunIcon,
   MoonIcon,
@@ -40,8 +35,28 @@ import {
   SettingsIcon,
   RobotIcon,
   BeadsIcon,
+  HomeIcon,
+  FilterIcon,
   TerminalIcon,
+  EllipsisIcon,
+  ChatBubbleIcon,
+  LayersIcon,
+  CheckIcon,
+  SlidersIcon,
+  SearchIcon,
 } from "./Icons.js";
+
+// The Archived subgroup expansion is intentionally NOT memorized: it always
+// resets to collapsed when a group is (re)opened. Strip any persisted
+// "archived:<folderKey>" entries when hydrating React state so stale values
+// never leak an expanded Archived subgroup across loads.
+function withoutArchivedKeys(groups) {
+  const out = {};
+  for (const key in groups) {
+    if (!key.startsWith("archived:")) out[key] = groups[key];
+  }
+  return out;
+}
 
 export function SessionList({
   activeSessions,
@@ -68,11 +83,17 @@ export function SessionList({
   onBadgeClick,
   terminalActionEnabled = false,
   onFolderOpen,
+  onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
   onTerminalClick,
   onBeadsOpen,
+  onShowDashboard,
+  mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
+  beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
+  onMakePeriodic, // Called with (session) to convert a regular session to periodic
+  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
   isCreatingSession = false, // True while a new-conversation request is in-flight or retrying
 }) {
   // Combine active and stored sessions using shared helper function
@@ -84,22 +105,82 @@ export function SessionList({
   const isLight = theme === "light";
   const isLargeFont = fontSize === "large";
 
-  // Filter tab state - initialized from localStorage
-  const [filterTab, setFilterTabState] = useState(() => getFilterTab());
-
-  // Grouping state - initialized from the current filter tab's grouping setting
-  const [groupingMode, setGroupingModeState] = useState(() =>
-    getFilterTabGrouping(getFilterTab()),
-  );
+  // Unified sidebar (mitto-1er.4): folder is the only grouping mode; the filter
+  // tabs and per-tab grouping were removed. SessionItem still takes a grouping hint.
+  const groupingMode = "folder";
   // Track expanded groups in React state to avoid stale localStorage reads in WKWebView.
   // This mirrors the fix applied for navigableSessions (see expandedGroupsForNav in app.js).
   const [sidebarExpandedGroups, setSidebarExpandedGroups] = useState(() =>
-    getExpandedGroups(),
+    withoutArchivedKeys(getExpandedGroups()),
   );
 
   // Group header context menu state: { x, y, workingDir, label }
   const [groupContextMenu, setGroupContextMenu] = useState(null);
   const closeGroupContextMenu = () => setGroupContextMenu(null);
+
+  // "New group…" dialog state: { workingDir, label } when open, else null.
+  const [newGroupDialog, setNewGroupDialog] = useState(null);
+  const [newGroupName, setNewGroupName] = useState("");
+  const newGroupInputRef = useRef(null);
+
+  // Which side-panel toolbar dropdown is open ("filter" | "density" | null).
+  // Controlled so the menus are mutually exclusive — opening one closes the other.
+  const [openToolbarMenu, setOpenToolbarMenu] = useState(null);
+  const toolbarRef = useRef(null);
+  const handleToolbarMenuToggle = useCallback((key, willOpen) => {
+    setOpenToolbarMenu((prev) => (willOpen ? key : prev === key ? null : prev));
+  }, []);
+
+  // Close the open toolbar dropdown when clicking outside the toolbar.
+  useEffect(() => {
+    if (!openToolbarMenu) return;
+    const handleClickOutside = (e) => {
+      if (toolbarRef.current && !toolbarRef.current.contains(e.target)) {
+        setOpenToolbarMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [openToolbarMenu]);
+
+  // All organizational groups currently in use across folders (folders.json
+  // group label, shared by all workspaces in a folder). Sorted case-insensitively.
+  const allGroups = useMemo(() => {
+    const set = new Set();
+    (workspaces || []).forEach((ws) => {
+      const g = (ws.group || "").trim();
+      if (g) set.add(g);
+    });
+    return Array.from(set).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+  }, [workspaces]);
+
+  // Current group for a given folder working dir (empty string when unassigned).
+  const getFolderGroup = useCallback(
+    (workingDir) => {
+      const ws = (workspaces || []).find((w) => w.working_dir === workingDir);
+      return (ws && ws.group ? ws.group.trim() : "") || "";
+    },
+    [workspaces],
+  );
+
+  // Focus the input when the new-group dialog opens.
+  useEffect(() => {
+    if (newGroupDialog) {
+      setNewGroupName("");
+      const t = setTimeout(() => newGroupInputRef.current?.focus(), 50);
+      return () => clearTimeout(t);
+    }
+  }, [newGroupDialog]);
+
+  const submitNewGroup = useCallback(() => {
+    const name = newGroupName.trim();
+    if (!name || !newGroupDialog) return;
+    if (onMoveFolderToGroup) onMoveFolderToGroup(newGroupDialog.workingDir, name);
+    setNewGroupDialog(null);
+    setNewGroupName("");
+  }, [newGroupName, newGroupDialog, onMoveFolderToGroup]);
 
   // Track new sessions for blink animation
   const [newSessionIds, setNewSessionIds] = useState(new Set());
@@ -132,19 +213,9 @@ export function SessionList({
 
   // Subscribe to UI preferences loaded from server (for macOS app where localStorage doesn't persist)
   useEffect(() => {
-    const unsubscribe = onUIPreferencesLoaded((prefs) => {
-      // Re-read grouping mode for the current tab from localStorage (which was just synced from server)
-      const currentTab = getFilterTab();
-      const newMode = getFilterTabGrouping(currentTab);
-      setGroupingModeState(newMode);
-      // Sync expanded groups from localStorage (just updated by server sync)
-      setSidebarExpandedGroups(getExpandedGroups());
-      console.debug(
-        "[Mitto] SessionList: UI preferences synced from server, tab:",
-        currentTab,
-        "mode:",
-        newMode,
-      );
+    const unsubscribe = onUIPreferencesLoaded(() => {
+      setSidebarExpandedGroups(withoutArchivedKeys(getExpandedGroups()));
+      console.debug("[Mitto] SessionList: UI preferences synced from server");
     });
     return unsubscribe;
   }, []);
@@ -161,7 +232,7 @@ export function SessionList({
         setSidebarExpandedGroups((prev) => ({ ...prev, [groupKey]: expanded }));
       } else {
         // Fallback: re-read from localStorage if no detail provided
-        setSidebarExpandedGroups(getExpandedGroups());
+        setSidebarExpandedGroups(withoutArchivedKeys(getExpandedGroups()));
       }
     };
     window.addEventListener(
@@ -176,79 +247,12 @@ export function SessionList({
     };
   }, []);
 
-  // Listen for programmatic filter tab changes (e.g., when unarchiving a session)
-  useEffect(() => {
-    const handleFilterTabChanged = (e) => {
-      const newTab = e.detail.tab;
-      setFilterTabState(newTab);
-      // Also update grouping mode for the new tab
-      const tabGroupingMode = getFilterTabGrouping(newTab);
-      setGroupingModeState(tabGroupingMode);
-    };
-    window.addEventListener("mitto-filter-tab-changed", handleFilterTabChanged);
-    return () => {
-      window.removeEventListener(
-        "mitto-filter-tab-changed",
-        handleFilterTabChanged,
-      );
-    };
-  }, []);
-
   // Auto-scroll sidebar to show the active session when it changes programmatically
   // (e.g., from notification click, swipe navigation, or keyboard shortcut)
   useEffect(() => {
     if (!activeSessionId) return;
 
-    // Find the session to determine which tab it belongs to
-    const session = allSessions.find((s) => s.session_id === activeSessionId);
-    let tabSwitched = false;
-    if (session) {
-      // Determine target tab.
-      // Child sessions don't have periodic_enabled — they inherit their parent's
-      // category. Follow the parent chain (like getSessionCategory does) to find
-      // the root ancestor and use its properties to pick the correct tab.
-      let targetTab = FILTER_TAB.CONVERSATIONS;
-      if (session.archived) {
-        targetTab = FILTER_TAB.ARCHIVED;
-      } else {
-        // Find the root parent to determine the correct tab category
-        let categorySession = session;
-        if (session.parent_session_id) {
-          const sessionMap = new Map(allSessions.map((s) => [s.session_id, s]));
-          let current = session;
-          let depth = 0;
-          while (current.parent_session_id && depth < 10) {
-            const parent = sessionMap.get(current.parent_session_id);
-            if (!parent) break;
-            // If any ancestor is archived, child belongs to the archived tab
-            if (parent.archived) {
-              categorySession = parent;
-              break;
-            }
-            current = parent;
-            depth++;
-          }
-          if (!categorySession.archived) {
-            categorySession = current; // root parent
-          }
-        }
-        if (categorySession.archived) {
-          targetTab = FILTER_TAB.ARCHIVED;
-        } else if (categorySession.periodic_enabled) {
-          targetTab = FILTER_TAB.PERIODIC;
-        }
-      }
-
-      // Switch tab if needed
-      if (filterTab !== targetTab) {
-        handleFilterTabChange(targetTab);
-        tabSwitched = true;
-      }
-    }
-
     // Scroll the active session into view after DOM updates.
-    // Use double-rAF when a tab switch occurred to ensure the new tab content
-    // has been rendered before attempting to find and scroll the element.
     const scrollToActive = () => {
       const el = document.querySelector(
         `[data-session-id="${activeSessionId}"]`,
@@ -258,56 +262,22 @@ export function SessionList({
       }
     };
 
-    if (tabSwitched) {
-      // Tab switch triggers a state update → re-render → DOM commit.
-      // First rAF waits for commit, second rAF ensures paint completed.
-      requestAnimationFrame(() => requestAnimationFrame(scrollToActive));
-    } else {
-      requestAnimationFrame(scrollToActive);
-    }
+    requestAnimationFrame(scrollToActive);
   }, [activeSessionId]); // Intentionally minimal deps - only trigger on session change
-
-  // Handle filter tab change - also update grouping mode to match the new tab's setting
-  const handleFilterTabChange = useCallback((tab) => {
-    setFilterTab(tab);
-    setFilterTabState(tab);
-    // Apply the grouping mode for the new tab
-    const tabGroupingMode = getFilterTabGrouping(tab);
-    setGroupingModeState(tabGroupingMode);
-  }, []);
-
-  // Handle grouping mode toggle - cycles the grouping for the current filter tab
-  const handleToggleGrouping = useCallback(() => {
-    const newMode = cycleFilterTabGrouping(filterTab);
-    setGroupingModeState(newMode);
-  }, [filterTab]);
 
   // Helper to check if a group is expanded using React state (not localStorage)
   // to avoid stale reads in WKWebView (macOS native app).
-  const isSidebarGroupExpanded = useCallback(
-    (groupKey) => {
-      // Tab-scope folder/server/workspace keys so each filter tab tracks its own
-      // expansion state. Special keys (parent:*, __archived__) pass through unchanged.
-      const key = tabScopedGroupKey(filterTab, groupKey);
-      if (key in sidebarExpandedGroups) return sidebarExpandedGroups[key];
-      if (key === "__archived__") return false;
-      return true;
-    },
-    [sidebarExpandedGroups, filterTab],
-  );
+  const isSidebarGroupExpanded = useCallback((groupKey) => {
+    if (groupKey in sidebarExpandedGroups) return sidebarExpandedGroups[groupKey];
+    if (groupKey === "__archived__") return false;
+    return true;
+  }, [sidebarExpandedGroups]);
 
   // Handle group expand/collapse toggle
   const handleToggleGroup = useCallback(
-    (rawGroupKey, rawAllGroupKeys = []) => {
-      // Tab-scope folder/server/workspace keys so each filter tab remembers its
-      // own expanded group independently. Special keys (parent:*, __archived__)
-      // are returned unchanged by tabScopedGroupKey.
-      const groupKey = tabScopedGroupKey(filterTab, rawGroupKey);
-      const allGroupKeys = rawAllGroupKeys.map((k) =>
-        tabScopedGroupKey(filterTab, k),
-      );
+    (groupKey, allGroupKeys = []) => {
       // Parent-child groups always behave as an accordion regardless of the setting.
-      const isParentGroup = rawGroupKey.startsWith("parent:");
+      const isParentGroup = groupKey.startsWith("parent:");
 
       // Update React state (source of truth for sidebar rendering)
       setSidebarExpandedGroups((prev) => {
@@ -338,39 +308,60 @@ export function SessionList({
         }
       }
       setGroupExpanded(groupKey, willExpand);
-      // Note: setSidebarExpandedGroups already triggers a re-render, no version bump needed
     },
-    [sidebarExpandedGroups, filterTab],
+    [sidebarExpandedGroups],
   );
 
-
-  // Get grouping icon based on current mode
-  const getGroupingIcon = () => {
-    switch (groupingMode) {
-      case "server":
-        return html`<${ServerIcon} className="w-4 h-4" />`;
-      case "folder":
-        return html`<${FolderIcon} className="w-4 h-4" />`;
-      case "workspace":
-        return html`<${LayersIcon} className="w-4 h-4" />`;
-      default:
-        return html`<${ListIcon} className="w-4 h-4" />`;
-    }
+  // --- Unified tree (mitto-1er.3) expansion helpers ---------------------------
+  // The unified sidebar tree uses a SINGLE, untabbed expansion keyspace (per the
+  // mitto-1er.1 spike): folder keys and the per-folder "archived:<key>" subgroup
+  // key are stored unscoped. Parent-child keys ("parent:<id>") keep using
+  // handleToggleGroup/isSidebarGroupExpanded (those already pass through unscoped).
+  const isUnifiedFolderExpanded = (folderKey) =>
+    folderKey in sidebarExpandedGroups ? sidebarExpandedGroups[folderKey] : true;
+  const isUnifiedArchivedExpanded = (folderKey) => {
+    const key = `archived:${folderKey}`;
+    return key in sidebarExpandedGroups ? sidebarExpandedGroups[key] : false;
   };
+  // Top-level folder-group sections ("group:<name>" / "group:__other__"). They
+  // default to expanded and persist like folder keys, but do NOT participate in
+  // folder accordion (single-expanded) mode — a group only wraps its folders.
+  const isUnifiedGroupExpanded = (groupKey) =>
+    groupKey in sidebarExpandedGroups ? sidebarExpandedGroups[groupKey] : true;
+  const handleGroupSectionToggle = useCallback((groupKey, willOpen) => {
+    setSidebarExpandedGroups((prev) => ({ ...prev, [groupKey]: willOpen }));
+    setGroupExpanded(groupKey, willOpen);
+  }, []);
 
-  // Get grouping tooltip based on current mode
-  const getGroupingTooltip = () => {
-    switch (groupingMode) {
-      case "server":
-        return "Grouped by ACP server (click to group by folder)";
-      case "folder":
-        return "Grouped by folder (click to group by workspace)";
-      case "workspace":
-        return "Grouped by workspace (click to disable grouping)";
-      default:
-        return "No grouping (click to group by server)";
-    }
-  };
+  // Controlled <details> toggle for unified-tree folders and the archived subgroup.
+  // willOpen is the <details> element's resulting open state. Folder-level toggles
+  // honor accordion (single-expanded) mode across allFolderKeys; the archived
+  // subgroup is exempt (it nests inside a folder).
+  const handleUnifiedToggle = useCallback(
+    (groupKey, willOpen, allFolderKeys = []) => {
+      const isFolderKey = !groupKey.startsWith("archived:");
+      const accordion = willOpen && isFolderKey && getSingleExpandedGroupMode();
+      setSidebarExpandedGroups((prev) => {
+        const next = { ...prev, [groupKey]: willOpen };
+        if (accordion) {
+          for (const k of allFolderKeys) {
+            if (k !== groupKey) next[k] = false;
+          }
+        }
+        return next;
+      });
+      if (accordion) {
+        for (const k of allFolderKeys) {
+          if (k !== groupKey && isGroupExpanded(k)) setGroupExpanded(k, false);
+        }
+      }
+      // The Archived subgroup is never persisted: its expansion always resets to
+      // collapsed when the parent group is reopened (handled in handleFolderOpened).
+      if (isFolderKey) setGroupExpanded(groupKey, willOpen);
+    },
+    [],
+  );
+
 
   // Helper to get session's working directory
   const getSessionWorkingDir = (session) => {
@@ -385,82 +376,8 @@ export function SessionList({
     );
   };
 
-  // Helper to get session's ACP server
-  const getSessionServer = (session) => {
-    const storedSession = storedSessions.find(
-      (s) => s.session_id === session.session_id,
-    );
-    return session.acp_server || storedSession?.acp_server || "Unknown";
-  };
-
-  // Separate sessions by category for tab counts
-  const { regularSessions, periodicSessions, archivedSessions } =
-    useMemo(() => {
-      const regular = [];
-      const periodic = [];
-      const archived = [];
-
-      // Build a map for O(1) parent lookups
-      const sessionMap = new Map(allSessions.map((s) => [s.session_id, s]));
-
-      // Walk up the parent chain to find the root ancestor's category.
-      // Depth limit guards against circular references.
-      // If a child session is itself archived, always categorize as "archived"
-      // regardless of the parent's status — this ensures deleted children
-      // don't appear in the active conversations list.
-      const getSessionCategory = (session, depth = 0) => {
-        // A session that is itself archived is always "archived",
-        // even if its parent is still active.
-        if (session.archived) return "archived";
-
-        if (depth > 10 || !session.parent_session_id) {
-          // Base case: categorize by own flags
-          if (session.periodic_enabled) return "periodic";
-          return "regular";
-        }
-        const parent = sessionMap.get(session.parent_session_id);
-        if (!parent) {
-          // Parent not found — fall back to own flags
-          if (session.periodic_enabled) return "periodic";
-          return "regular";
-        }
-        return getSessionCategory(parent, depth + 1);
-      };
-
-      allSessions.forEach((session) => {
-        const category = getSessionCategory(session);
-        if (category === "archived") {
-          archived.push(session);
-        } else if (category === "periodic") {
-          periodic.push(session);
-        } else {
-          regular.push(session);
-        }
-      });
-      return {
-        regularSessions: regular,
-        periodicSessions: periodic,
-        archivedSessions: archived,
-      };
-    }, [allSessions]);
-
-  // Get sessions to display based on active filter tab
-  const filteredSessions = useMemo(() => {
-    switch (filterTab) {
-      case FILTER_TAB.PERIODIC:
-        return periodicSessions;
-      case FILTER_TAB.ARCHIVED:
-        return archivedSessions;
-      case FILTER_TAB.CONVERSATIONS:
-      default:
-        return regularSessions;
-    }
-  }, [filterTab, regularSessions, periodicSessions, archivedSessions]);
-
   // Build a lookup map of session_id → true for sessions currently streaming.
-  // This provides fresh streaming state that can be used instead of stale values
-  // from cached groupedSessions (whose fingerprint intentionally excludes isStreaming
-  // to avoid expensive tree rebuilds during streaming).
+  // This provides fresh streaming state for the unified tree render.
   const streamingMap = useMemo(() => {
     const map = new Map();
     allSessions.forEach((s) => {
@@ -487,64 +404,105 @@ export function SessionList({
     return map;
   }, [allSessions]);
 
-  // Check which filter tabs have streaming sessions (for pulsing animation)
-  const streamingTabs = useMemo(() => {
-    return {
-      conversations: regularSessions.some((s) => s.isStreaming),
-      periodic: periodicSessions.some((s) => s.isStreaming),
-      archived: archivedSessions.some((s) => s.isStreaming),
-    };
-  }, [regularSessions, periodicSessions, archivedSessions]);
 
-  // Structural fingerprint tracking for groupedSessions optimization
-  // Prevents expensive buildSessionTree rebuilds when only non-structural properties change
-  // (e.g., isStreaming, message content during tool_update events)
-  const prevSessionFingerprint = useRef("");
-  const prevGroupedSessions = useRef(null);
+  // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
+  // sessions (regular + periodic + archived), independent of the filter tab.
+  const unifiedTree = useMemo(
+    () => computeUnifiedTree(allSessions, workspaces),
+    [allSessions, workspaces],
+  );
 
-  // Group sessions based on current mode (uses filtered sessions)
-  // Returns:
-  // - null for "none" mode (flat list)
-  // - Array of { key, label, sessions, workingDir, acpServer } for "server" and "workspace" modes
-  // - Array of { key, label, workingDir, subgroups: [{ key, label, acpServer, sessions }] } for "folder" mode (hierarchical)
-  const groupedSessions = useMemo(() => {
-    if (groupingMode === "none") return null;
-
-    const fingerprint = computeSessionFingerprint(filteredSessions, groupingMode);
-    if (fingerprint === prevSessionFingerprint.current && prevGroupedSessions.current) {
-      return prevGroupedSessions.current;
-    }
-    prevSessionFingerprint.current = fingerprint;
-    const result = computeGroupedSessions(filteredSessions, groupingMode, allSessions, workspaces);
-    prevGroupedSessions.current = result;
-    return result;
-  }, [filteredSessions, groupingMode, allSessions, workspaces]);
+  // Category visibility filter (mitto-1er.10): show/hide Regular/Periodic/
+  // Archived/Tasks. Browser-session scoped (sessionStorage); all visible by
+  // default. Applied as a pure predicate over the unified tree before render.
+  const [categoryFilter, setCategoryFilterState] = useState(() =>
+    getCategoryFilter(),
+  );
+  const handleCategoryToggle = useCallback((key) => {
+    setCategoryFilterState((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      setCategoryFilter(next);
+      window.dispatchEvent(
+        new CustomEvent("mitto-category-filter-changed", {
+          detail: { filter: next },
+        }),
+      );
+      return next;
+    });
+  }, []);
+  const anyCategoryHidden =
+    !categoryFilter.regular ||
+    !categoryFilter.periodic ||
+    !categoryFilter.archived ||
+    !categoryFilter.tasks;
+  const filteredTree = useMemo(
+    () => filterUnifiedTree(unifiedTree, categoryFilter),
+    [unifiedTree, categoryFilter],
+  );
 
   // Build a map from session ID → its family's parent group key ("parent:<id>").
   // Covers both the parent session itself and all its children.
   // Used by handleSelectWithCollapse to know which family a clicked session belongs to.
   const sessionFamilyMap = useMemo(() => {
     const map = new Map();
-    if (!groupedSessions) return map;
-    groupedSessions.forEach((folder) => {
-      folder.sessions.forEach((session) => {
+    unifiedTree.folders.forEach((folder) => {
+      [...folder.conversations, ...folder.archived].forEach((session) => {
         if (session.children && session.children.length > 0) {
           const parentKey = `parent:${session.session_id}`;
           map.set(session.session_id, parentKey);
-          session.children.forEach((child) => {
-            map.set(child.session_id, parentKey);
-          });
+          session.children.forEach((child) => map.set(child.session_id, parentKey));
         }
       });
     });
     return map;
-  }, [groupedSessions]);
+  }, [unifiedTree]);
+
+  // Build a map from session ID → its folder key, covering root conversations,
+  // their nested children, and archived sessions. Used to remember the
+  // last-focused conversation per group.
+  const sessionFolderMap = useMemo(() => {
+    const map = new Map();
+    const scan = (nodes, folderKey) => {
+      (nodes || []).forEach((node) => {
+        map.set(node.session_id, folderKey);
+        scan(node.children, folderKey);
+      });
+    };
+    unifiedTree.folders.forEach((folder) => {
+      scan(folder.conversations, folder.key);
+      scan(folder.archived, folder.key);
+    });
+    return map;
+  }, [unifiedTree]);
+
+  // Build a set of session IDs that live under an "Archived" subgroup (root
+  // archived conversations and their nested children). Selecting one of these
+  // must NOT collapse its folder's Archived subgroup.
+  const archivedSessionSet = useMemo(() => {
+    const set = new Set();
+    const scan = (nodes) =>
+      (nodes || []).forEach((node) => {
+        set.add(node.session_id);
+        scan(node.children);
+      });
+    unifiedTree.folders.forEach((folder) => scan(folder.archived));
+    return set;
+  }, [unifiedTree]);
+
+  // Remember the last-focused conversation for its group whenever the active
+  // session changes (clicks, keyboard/swipe nav, programmatic focus). Reopening
+  // that group later restores this conversation (see handleFolderOpened).
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const folderKey = sessionFolderMap.get(activeSessionId);
+    if (folderKey) setLastSessionForGroup(folderKey, activeSessionId);
+  }, [activeSessionId, sessionFolderMap]);
 
   // Wrap onSelect to auto-collapse parent-child groups when selecting outside the family.
   // If the selected session belongs to a family (parent + its children), only that family
   // stays expanded. All other expanded parent groups are collapsed.
   const handleSelectWithCollapse = useCallback(
-    (sessionId) => {
+    (sessionId, opts) => {
       // Find which family (if any) this session belongs to
       const familyKey = sessionFamilyMap.get(sessionId);
 
@@ -576,75 +534,72 @@ export function SessionList({
         }
       }
 
-      // Call the original onSelect
-      onSelect(sessionId);
+      // Auto-collapse the folder's Archived subgroup when selecting a
+      // non-archived item in that folder. Selecting an archived conversation
+      // keeps its Archived subgroup open. (Archived expansion is never
+      // persisted, so only React state is updated — see handleUnifiedToggle.)
+      if (!archivedSessionSet.has(sessionId)) {
+        const folderKey = sessionFolderMap.get(sessionId);
+        if (folderKey) {
+          const archivedKey = `archived:${folderKey}`;
+          setSidebarExpandedGroups((prev) =>
+            prev[archivedKey] === false
+              ? prev
+              : { ...prev, [archivedKey]: false },
+          );
+        }
+      }
+
+      // Call the original onSelect (opts threads through e.g. keepSidebarOpen
+      // so an auto-select triggered by expanding a folder does not close the
+      // mobile sidebar drawer — see handleFolderOpened).
+      onSelect(sessionId, opts);
     },
-    [onSelect, sessionFamilyMap, sidebarExpandedGroups],
+    [
+      onSelect,
+      sessionFamilyMap,
+      sessionFolderMap,
+      archivedSessionSet,
+      sidebarExpandedGroups,
+    ],
   );
 
-  // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
-  // If multiple groups are expanded and accordion mode is enabled, collapse all but
-  // one. The group kept expanded is the one containing the active conversation (so
-  // switching filter tabs never collapses the user's focused group); when the active
-  // conversation isn't in this tab, the first expanded group is kept.
-  useEffect(() => {
-    if (!groupedSessions || !getSingleExpandedGroupMode()) {
-      return;
-    }
-
-    // Raw keys of groups currently shown as expanded in this tab's view.
-    // isSidebarGroupExpanded tab-scopes internally for the read.
-    const expandedRawKeys = groupedSessions
-      .filter((g) => isSidebarGroupExpanded(g.key))
-      .map((g) => g.key);
-
-    if (expandedRawKeys.length > 1) {
-      // Prefer keeping the group that contains the active conversation.
-      let keepRawKey = null;
-      if (activeSessionId) {
-        const activeGroup = groupedSessions.find((g) =>
-          g.sessions.some(
-            (s) =>
-              s.session_id === activeSessionId ||
-              (s.children &&
-                s.children.some((c) => c.session_id === activeSessionId)),
-          ),
-        );
-        if (activeGroup && expandedRawKeys.includes(activeGroup.key)) {
-          keepRawKey = activeGroup.key;
-        }
-      }
-      if (!keepRawKey) keepRawKey = expandedRawKeys[0];
-
-      const toCollapseRaw = expandedRawKeys.filter((k) => k !== keepRawKey);
-      const toCollapseScoped = toCollapseRaw.map((k) =>
-        tabScopedGroupKey(filterTab, k),
+  // Whether a folder contains a given session (root conversation, nested child,
+  // or archived). Used to validate a remembered session before refocusing it.
+  const folderHasSession = (folder, sessionId) => {
+    const scan = (nodes) =>
+      (nodes || []).some(
+        (node) => node.session_id === sessionId || scan(node.children),
       );
-      console.debug(
-        "[Mitto] Accordion mode: collapsing groups on tab/mode change. Keeping:",
-        keepRawKey,
-        "Collapsing:",
-        toCollapseRaw,
-      );
-      // Update React state and localStorage for collapsed groups (tab-scoped keys)
+    return scan(folder.conversations) || scan(folder.archived);
+  };
+
+  // Default behaviors when a group is (re)opened:
+  //  1. The Archived subgroup always collapses — never memorized.
+  //  2. Focus the conversation last focused in this group; if none is
+  //     remembered (or it no longer exists), open the group's Tasks view.
+  // The auto-select/Tasks-open passes keepSidebarOpen so that, on mobile,
+  // expanding a folder leaves the sidebar drawer open (the conversation or
+  // Tasks view loads underneath). Direct conversation/Tasks clicks still close
+  // the drawer.
+  const handleFolderOpened = useCallback(
+    (folder) => {
+      const archivedKey = `archived:${folder.key}`;
       setSidebarExpandedGroups((prev) => {
-        const next = { ...prev };
-        for (const key of toCollapseScoped) {
-          next[key] = false;
-        }
-        return next;
+        if (prev[archivedKey] === false) return prev;
+        return { ...prev, [archivedKey]: false };
       });
-      for (const key of toCollapseScoped) {
-        setGroupExpanded(key, false);
+
+      const remembered = getLastSessionForGroup(folder.key);
+      if (remembered && folderHasSession(folder, remembered)) {
+        handleSelectWithCollapse(remembered, { keepSidebarOpen: true });
+      } else if (folder.workingDir) {
+        onBeadsOpen && onBeadsOpen(folder.workingDir, { keepSidebarOpen: true });
       }
-    }
-  }, [
-    groupedSessions,
-    filterTab,
-    groupingMode,
-    sidebarExpandedGroups,
-    activeSessionId,
-  ]);
+    },
+    [handleSelectWithCollapse, onBeadsOpen],
+  );
+
 
   // Render a single session item
   // hideBadge: if true, hides the entire badge
@@ -695,7 +650,8 @@ export function SessionList({
       <${SessionItem}
         key=${session.session_id}
         session=${finalSession}
-        isActive=${activeSessionId === session.session_id}
+        isActive=${activeSessionId === session.session_id &&
+        mainView === "conversation"}
         onSelect=${handleSelectWithCollapse}
         onRename=${onRename}
         onDelete=${onDelete}
@@ -711,10 +667,12 @@ export function SessionList({
         badgeHideAbbreviation=${badgeHideAbbreviation}
         badgeHideAcpServer=${badgeHideAcpServer}
         isLightTheme=${isLight}
-        filterTab=${filterTab}
+        filterTab=${session.category || getFilterTabForSession(session)}
         groupingMode=${groupingMode}
         onFetchConversationPrompts=${onFetchConversationPrompts}
         onSendPromptToConversation=${onSendPromptToConversation}
+        onMakePeriodic=${onMakePeriodic}
+        onMakeNonPeriodic=${onMakeNonPeriodic}
         isSpawned=${isSpawned}
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}
@@ -726,37 +684,6 @@ export function SessionList({
       />
     `;
   };
-
-  // Handle creating a new session in a specific workspace group
-  const handleNewSessionInGroup = useCallback(
-    (groupKey, e) => {
-      // Prevent the click from toggling the group
-      e.stopPropagation();
-
-      // Find the workspace that matches this group key
-      // For workspace and folder modes, groupKey is "working_dir|acp_server" (composite key)
-      // For server mode, groupKey is the acp_server
-      let workspace = null;
-      if (groupingMode === "workspace" || groupingMode === "folder") {
-        // Parse composite key: working_dir|acp_server
-        const [workingDir, acpServer] = groupKey.split("|");
-        workspace = workspaces.find(
-          (ws) => ws.working_dir === workingDir && ws.acp_server === acpServer,
-        );
-      } else if (groupingMode === "server") {
-        // For server mode, find first workspace with matching acp_server
-        workspace = workspaces.find((ws) => ws.acp_server === groupKey);
-      }
-
-      if (workspace) {
-        onNewSession(workspace, null, filterTab);
-      } else {
-        // Fallback to default new session behavior
-        onNewSession(null, null, filterTab);
-      }
-    },
-    [groupingMode, workspaces, onNewSession, filterTab],
-  );
 
   // Handle creating a new session in a specific folder group
   const handleNewSessionInFolder = useCallback(
@@ -770,507 +697,379 @@ export function SessionList({
 
       if (matchingWorkspaces.length === 1) {
         // Single workspace - create session directly
-        onNewSession(matchingWorkspaces[0], null, filterTab);
+        onNewSession(matchingWorkspaces[0], null);
       } else if (matchingWorkspaces.length > 1) {
         // Multiple workspaces - show dialog filtered to this folder
-        onNewSession(null, workingDir, filterTab);
+        onNewSession(null, workingDir);
       } else {
         // Fallback
-        onNewSession(null, null, filterTab);
+        onNewSession(null, null);
       }
     },
-    [workspaces, onNewSession, filterTab],
+    [workspaces, onNewSession],
   );
 
-  // Render grouped sessions with collapsible headers
-  // Handles both flat grouping (server, workspace) and hierarchical grouping (folder)
-  const renderGroupedSessions = () => {
-    if (!groupedSessions) return null;
+  // Get empty state message
+  const getEmptyMessage = () => "No conversations yet";
 
-    // For hierarchical mode (folder), render two-level tree
-    if (groupingMode === "folder") {
-      return renderHierarchicalGroups();
-    }
+  // Render the unified sidebar tree (mitto-1er.3): daisyUI `menu` with CONTROLLED
+  // <details> expansion. Consumes computeUnifiedTree (Dashboard + folders, each with
+  // conversations[]/archived[] and a Tasks node). Folders and the per-folder Archived
+  // subgroup are controlled <details>; parent-child nesting reuses the existing
+  // SessionItem expand/collapse mechanism. Static Dashboard/Tasks rows are placeholders
+  // here — their behavior is wired in mitto-1er.7; per-category icons in mitto-1er.5.
+  const renderUnifiedTree = () => {
+    const { dashboard, folders } = filteredTree;
+    const allFolderKeys = folders.map((f) => f.key);
 
-    // Get all group keys for accordion mode (flat grouping)
-    const allGroupKeys = groupedSessions.map((g) => g.key);
-
-    return html`
-      ${groupedSessions.map((group) => {
-        const expanded = isSidebarGroupExpanded(group.key);
-        // Count total sessions including children
-        const sessionCount = group.sessions.reduce(
-          (sum, s) => sum + 1 + (s.children ? s.children.length : 0),
-          0,
-        );
-        // Check if any session (or its children) in this group is actively streaming
-        // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
-        const hasStreamingSession = group.sessions.some(
-          (s) =>
-            streamingMap.has(s.session_id) ||
-            (s.children &&
-              s.children.some((c) => streamingMap.has(c.session_id))),
-        );
-        // Get workspace info for badge display (workspace mode only)
-        const workspace =
-          groupingMode === "workspace" && group.workingDir
-            ? workspaces.find(
-                (ws) =>
-                  ws.working_dir === group.workingDir &&
-                  (!group.acpServer || ws.acp_server === group.acpServer),
-              )
-            : null;
-
-        return html`
-          <div key=${group.key} class="group-section">
-            <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer select-none group/header"
-              onClick=${() => handleToggleGroup(group.key, allGroupKeys)}
-              onContextMenu=${(e) => {
-                if (group.workingDir) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setGroupContextMenu({ x: e.clientX, y: e.clientY, workingDir: group.workingDir, label: group.label });
-                }
-              }}
-              data-has-context-menu=${group.workingDir ? "true" : undefined}
-            >
-              <span
-                class="transition-transform ${expanded ? "" : "-rotate-90"}"
-              >
-                <${ChevronDownIcon} className="w-4 h-4" />
-              </span>
-              ${groupingMode === "server"
-                ? html`<${ServerIcon} className="w-4 h-4 flex-shrink-0" />`
-                : html`<${LayersIcon} className="w-4 h-4 flex-shrink-0" />`}
-              <span class="text-left truncate">${group.label}</span>
-              ${groupingMode === "workspace" &&
-              group.workingDir &&
-              html`
-                <${WorkspacePill}
-                  path=${group.workingDir}
-                  customColor=${workspace?.color}
-                  customCode=${workspace?.code}
-                  customName=${workspace?.name}
-                  acpServer=${group.acpServer}
-                  className="flex-shrink-0"
-                  hideAbbreviation=${true}
-                />
-              `}
-              <span class="flex-1"></span>
-              ${!expanded &&
-              hasStreamingSession &&
-              html`
-                <span
-                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
-                  title="Agent responding in this group"
-                ></span>
-              `}
-              ${groupingMode === "workspace" &&
-              group.workingDir &&
-              html`
-                <button
-                  onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(group.workingDir); }}
-                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                  title="Beads issues: ${group.workingDir}"
-                >
-                  <${BeadsIcon} className="w-3.5 h-3.5" />
-                </button>
-              `}
-              ${groupingMode === "workspace" &&
-              (filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
-              html`
-                <button
-                  onClick=${(e) => !isCreatingSession && handleNewSessionInGroup(group.key, e)}
-                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-gray-500" : "hover:bg-slate-600 text-gray-500 hover:text-white"}"
-                  title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${group.label}`}
-                  disabled=${isCreatingSession}
-                >
-                  ${isCreatingSession
-                    ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
-                    : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                </button>
-              `}
-              <span class="text-xs text-gray-500">${sessionCount}</span>
-            </div>
-            ${expanded &&
-            (() => {
-              // Collect all parent group keys for accordion mode
-              const parentGroupKeys = group.sessions
-                .filter((s) => s.children && s.children.length > 0)
-                .map((s) => `parent:${s.session_id}`);
-
-              return group.sessions.map((session) => {
-                const hasChildSessions =
-                  session.children && session.children.length > 0;
-                const parentKey = `parent:${session.session_id}`;
-                const childrenExpanded = hasChildSessions
-                  ? isSidebarGroupExpanded(parentKey)
-                  : false;
-                const hasChildStreaming =
-                  hasChildSessions &&
-                  session.children.some((c) =>
-                    streamingMap.has(c.session_id),
-                  );
-
-                return html`
-                  <div
-                    key=${session.session_id}
-                    class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
-                  >
-                    ${renderSessionItem(
-                      {
-                        ...session,
-                        isStreaming: streamingMap.has(session.session_id),
-                        isWaitingForChildren: waitingMap.has(session.session_id),
-                        isWaitingForUserInput: uiPromptMap.has(session.session_id),
-                      },
-                      {
-                        hideBadge: groupingMode === "workspace",
-                        badgeHideAcpServer: groupingMode === "server",
-                        childCount: hasChildSessions
-                          ? session.children.length
-                          : 0,
-                        hasChildStreaming:
-                          hasChildSessions &&
-                          !childrenExpanded &&
-                          hasChildStreaming,
-                        hasChildren: hasChildSessions,
-                        isExpanded: childrenExpanded,
-                        onToggleExpand: hasChildSessions
-                          ? () =>
-                              handleToggleGroup(parentKey, parentGroupKeys)
-                          : null,
-                      },
-                    )}
-                    ${hasChildSessions &&
-                    html`
-                      <div
-                        class="session-children ${childrenExpanded ? "session-children--expanded" : ""}"
-                      >
-                        ${session.children.map(
-                          (child) =>
-                            html`<div class="session-item--child">
-                              ${renderSessionItem(
-                                {
-                                  ...child,
-                                  isStreaming: streamingMap.has(
-                                    child.session_id,
-                                  ),
-                                  isWaitingForChildren: waitingMap.has(child.session_id),
-                                  isWaitingForUserInput: uiPromptMap.has(child.session_id),
-                                },
-                                {
-                                  hideBadge: groupingMode === "workspace",
-                                  badgeHideAcpServer:
-                                    groupingMode === "server",
-                                  isSpawned: true,
-                                  extraLeftPadding: "pl-8",
-                                },
-                              )}
-                            </div>`,
-                        )}
-                      </div>
-                    `}
-                  </div>
-                `;
-              });
-            })()}
-          </div>
-        `;
-      })}
-    `;
-  };
-
-  // Render hierarchical groups for "folder" mode (parent-child tree: folder -> sessions with children)
-  const renderHierarchicalGroups = () => {
-    if (!groupedSessions) return null;
-
-    // Collect group keys for accordion mode
-    // Folder keys and parent session keys are kept separate so that
-    // toggling a session's children doesn't collapse the folder.
-    const allGroupKeys = []; // folder-level keys only
-    const parentGroupKeys = []; // session-level parent keys only
-    groupedSessions.forEach((folder) => {
-      allGroupKeys.push(folder.key);
-      folder.sessions.forEach((session) => {
-        if (session.children && session.children.length > 0) {
-          parentGroupKeys.push(`parent:${session.session_id}`);
+    // All parent keys across the whole tree, so opening one parent collapses the
+    // others (parent groups always behave as an accordion).
+    const allParentKeys = [];
+    folders.forEach((f) => {
+      [...f.conversations, ...f.archived].forEach((s) => {
+        if (s.children && s.children.length > 0) {
+          allParentKeys.push(`parent:${s.session_id}`);
         }
       });
     });
 
-    // Helper to count total sessions including children
-    const countTotalSessions = (sessions) => {
-      return sessions.reduce((sum, s) => {
-        return sum + 1 + (s.children ? s.children.length : 0);
-      }, 0);
-    };
-
-    // Helper to check if any session (or its children) is streaming
-    // Uses streamingMap for fresh state (groupedSessions may cache stale isStreaming)
-    const hasStreaming = (sessions) => {
-      return sessions.some(
+    const countNodes = (nodes) =>
+      nodes.reduce(
+        (sum, s) => sum + 1 + (s.children ? s.children.length : 0),
+        0,
+      );
+    const hasStreaming = (nodes) =>
+      nodes.some(
         (s) =>
           streamingMap.has(s.session_id) ||
           (s.children &&
             s.children.some((c) => streamingMap.has(c.session_id))),
       );
-    };
 
-    return html`
-      ${groupedSessions.map((folder) => {
-        const folderExpanded = isSidebarGroupExpanded(folder.key);
-        const totalSessions = countTotalSessions(folder.sessions);
-        const hasFolderStreaming = hasStreaming(folder.sessions);
-
+    // Render a list of root session nodes (with nested children) — shared by the
+    // folder conversations[] list and the archived[] subgroup.
+    const renderSessionNodes = (nodes) =>
+      nodes.map((session) => {
+        const hasChildren =
+          session.children && session.children.length > 0;
+        const parentKey = `parent:${session.session_id}`;
+        // Children auto-expand when the parent (or one of its children) is the
+        // focused conversation — there is no manual expand/collapse toggle.
+        const childrenExpanded = hasChildren
+          ? activeSessionId === session.session_id ||
+            session.children.some((c) => c.session_id === activeSessionId)
+          : false;
+        const hasChildStreaming =
+          hasChildren &&
+          session.children.some((c) => streamingMap.has(c.session_id));
         return html`
-          <div key=${folder.key} class="folder-group">
-            <!-- Level 1: Folder header -->
-            <div
-              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer select-none"
-              onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
-              onContextMenu=${(e) => {
-                if (folder.workingDir) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setGroupContextMenu({ x: e.clientX, y: e.clientY, workingDir: folder.workingDir, label: folder.label });
-                }
-              }}
-              data-has-context-menu=${folder.workingDir ? "true" : undefined}
-            >
-              <span
-                class="transition-transform ${folderExpanded
-                  ? ""
-                  : "-rotate-90"}"
+          <div
+            key=${session.session_id}
+            class="parent-session-group ${hasChildren
+              ? "has-children"
+              : ""}"
+          >
+            ${renderSessionItem(
+              {
+                ...session,
+                isStreaming: streamingMap.has(session.session_id),
+                isWaitingForChildren: waitingMap.has(session.session_id),
+                isWaitingForUserInput: uiPromptMap.has(session.session_id),
+              },
+              {
+                // The folder tree already groups by workspace, so the only
+                // thing the pill would show here is the agent/ACP name — hide
+                // the badge entirely to keep conversation rows compact.
+                hideBadge: true,
+                badgeHideAbbreviation: true,
+                badgeHideAcpServer: false,
+                isSpawned: !hasChildren && !!session._parentId,
+                childCount: hasChildren ? session.children.length : 0,
+                hasChildStreaming:
+                  hasChildren && !childrenExpanded && hasChildStreaming,
+                hasChildren: hasChildren,
+                isExpanded: childrenExpanded,
+                onToggleExpand: hasChildren
+                  ? () => handleToggleGroup(parentKey, allParentKeys)
+                  : null,
+              },
+            )}
+            ${hasChildren &&
+            html`
+              <div
+                class="session-children ${childrenExpanded
+                  ? "session-children--expanded"
+                  : ""}"
               >
-                <${ChevronDownIcon} className="w-4 h-4" />
-              </span>
-              <${FolderIcon} className="w-4 h-4 flex-shrink-0" />
-              <span class="text-left truncate" title=${folder.workingDir}>
-                ${folder.label}
-              </span>
-              <span class="flex-1"></span>
-              ${!folderExpanded &&
-              hasFolderStreaming &&
-              html`
-                <span
-                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
-                  title="Agent responding in this folder"
-                ></span>
-              `}
-              ${folder.workingDir &&
-              html`
-                <button
-                  onClick=${(e) => { e.stopPropagation(); onBeadsOpen && onBeadsOpen(folder.workingDir); }}
-                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
-                  title="Beads issues: ${folder.workingDir}"
-                >
-                  <${BeadsIcon} className="w-3.5 h-3.5" />
-                </button>
-              `}
-              ${(filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
-              html`
-                <button
-                  onClick=${(e) => !isCreatingSession && handleNewSessionInFolder(folder.workingDir, e)}
-                  class="p-0.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60 text-gray-500" : "hover:bg-slate-600 text-gray-500 hover:text-white"}"
-                  title=${isCreatingSession ? "Creating conversation\u2026" : `New conversation in ${folder.label}`}
-                  disabled=${isCreatingSession}
-                >
-                  ${isCreatingSession
-                    ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
-                    : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                </button>
-              `}
-              <span class="text-xs text-gray-500">${totalSessions}</span>
-            </div>
-
-            <!-- Level 2: Sessions within folder (only when folder is expanded) -->
-            ${folderExpanded &&
-            folder.sessions.map((session) => {
-              const hasChildren =
-                session.children && session.children.length > 0;
-              const parentKey = `parent:${session.session_id}`;
-              const childrenExpanded = hasChildren
-                ? isSidebarGroupExpanded(parentKey)
-                : false;
-              // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
-              const hasChildStreaming =
-                hasChildren &&
-                session.children.some((c) => streamingMap.has(c.session_id));
-
-              return html`
-                <div
-                  key=${session.session_id}
-                  class="parent-session-group border-b border-slate-700 ${hasChildren
-                    ? "has-children"
-                    : ""}"
-                >
-                  <!-- Parent/regular session - render with expand/collapse integrated into SessionItem -->
-                  ${renderSessionItem(
-                    {
-                      ...session,
-                      isStreaming: streamingMap.has(session.session_id),
-                      isWaitingForChildren: waitingMap.has(session.session_id),
-                      isWaitingForUserInput: uiPromptMap.has(session.session_id),
-                    },
-                    {
-                      hideBadge: false, // Show badge to display ACP server
-                      badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
-                      badgeHideAcpServer: false, // Show ACP server badge
-                      isSpawned: !hasChildren && !!session._parentId, // Mark as spawned if it's an orphan (no children)
-                      childCount: hasChildren ? session.children.length : 0,
-                      hasChildStreaming:
-                        hasChildren && !childrenExpanded && hasChildStreaming,
-                      // Pass expand/collapse props for parent sessions with children
-                      hasChildren: hasChildren,
-                      isExpanded: childrenExpanded,
-                      onToggleExpand: hasChildren
-                        ? () => handleToggleGroup(parentKey, parentGroupKeys)
-                        : null,
-                    },
-                  )}
-
-                  <!-- Level 3: Child sessions (animated container) -->
-                  ${hasChildren &&
-                  html`
-                    <div
-                      class="session-children ${childrenExpanded
-                        ? "session-children--expanded"
-                        : ""}"
-                    >
-                      ${session.children.map(
-                        (child) =>
-                          html`<div class="session-item--child">
-                            ${renderSessionItem(
-                              {
-                                ...child,
-                                isStreaming: streamingMap.has(child.session_id),
-                                isWaitingForChildren: waitingMap.has(child.session_id),
-                                isWaitingForUserInput: uiPromptMap.has(child.session_id),
-                              },
-                              {
-                                hideBadge: false, // Show badge to display ACP server
-                                badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
-                                badgeHideAcpServer: false, // Show ACP server badge
-                                isSpawned: true, // Mark as spawned/child
-                                extraLeftPadding: "pl-8", // Indent child sessions
-                              },
-                            )}
-                          </div>`,
+                ${session.children.map(
+                  (child) =>
+                    html`<div class="session-item--child">
+                      ${renderSessionItem(
+                        {
+                          ...child,
+                          isStreaming: streamingMap.has(child.session_id),
+                          isWaitingForChildren: waitingMap.has(
+                            child.session_id,
+                          ),
+                          isWaitingForUserInput: uiPromptMap.has(
+                            child.session_id,
+                          ),
+                        },
+                        {
+                          // The folder tree already groups by workspace, so the
+                          // child pill would only show the agent/ACP name — hide
+                          // the badge entirely to match the parent rows.
+                          hideBadge: true,
+                          badgeHideAbbreviation: true,
+                          badgeHideAcpServer: false,
+                          isSpawned: true,
+                          extraLeftPadding: "pl-8",
+                        },
                       )}
-                    </div>
-                  `}
-                </div>
-              `;
-            })}
+                    </div>`,
+                )}
+              </div>
+            `}
           </div>
         `;
-      })}
+      });
+
+    return html`
+      <ul class="menu menu-sm w-full p-0 flex-nowrap">
+        <!-- Dashboard (static, top-level) — clears the active session to show
+             the no-session view. Not a conversation; excluded from nav. -->
+        <li>
+          <button
+            type="button"
+            onClick=${() => onShowDashboard && onShowDashboard()}
+            aria-current=${!activeSessionId ? "page" : undefined}
+            class="gap-2 text-sm ${!activeSessionId
+              ? "text-mitto-text-strong bg-mitto-surface-3"
+              : "text-mitto-text-muted"}"
+          >
+            <${HomeIcon} className="w-4 h-4 shrink-0" />
+            <span class="truncate">${dashboard.label}</span>
+          </button>
+        </li>
+        ${(() => {
+          // When any folder has a group assigned, render collapsible group
+          // sections (named groups + a trailing "Other" for ungrouped folders).
+          // Otherwise render folders as a flat list (unchanged behavior).
+          const { grouped, sections } = computeFolderGroupSections(folders);
+          return grouped
+            ? sections.map(renderGroupSectionLi)
+            : folders.map(renderFolderLi);
+        })()}
+      </ul>
     `;
-  };
 
-  // Render sessions in "none" grouping mode - tree-aware (parent-child nesting)
-  const renderUngroupedSessions = () => {
-    // Build parent-child tree
-    const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
-    const { rootSessions, childrenMap, orphans } = buildSessionTree(
-      filteredSessions,
-      allKnownSessionIds,
-    );
+    // Render a single folder <li> (shared by the flat and grouped layouts).
+    // Declared as a hoisted function so it can be referenced by the IIFE above
+    // and by renderGroupSectionLi regardless of source order.
+    function renderFolderLi(folder) {
+          const folderExpanded = isUnifiedFolderExpanded(folder.key);
+          const archivedExpanded = isUnifiedArchivedExpanded(folder.key);
+          // Count badge excludes archived conversations (active conversations only).
+          const totalSessions = countNodes(folder.conversations);
+          const hasFolderStreaming =
+            hasStreaming(folder.conversations) ||
+            hasStreaming(folder.archived);
+          // The Tasks (beads) entry carries the focus highlight while its
+          // folder's beads view is the active main-content view.
+          const tasksActive =
+            mainView === "beads" && beadsWorkingDir === folder.workingDir;
+          return html`
+            <li key=${folder.key} class="folder-group min-w-0">
+              <details
+                class="min-w-0 w-full"
+                open=${folderExpanded}
+                onToggle=${(e) => {
+                  const open = e.currentTarget.open;
+                  if (open !== folderExpanded) {
+                    handleUnifiedToggle(folder.key, open, allFolderKeys);
+                    if (open) handleFolderOpened(folder);
+                  }
+                }}
+              >
+                <summary
+                  class="flex items-center gap-2 text-sm font-medium text-mitto-text-muted after:hidden"
+                  onContextMenu=${(e) => {
+                    if (folder.workingDir) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setGroupContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        workingDir: folder.workingDir,
+                        label: folder.label,
+                      });
+                    }
+                  }}
+                  data-has-context-menu=${folder.workingDir
+                    ? "true"
+                    : undefined}
+                >
+                  ${hasFolderStreaming
+                    ? html`
+                        <span
+                          class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                          title="Agent responding in this folder"
+                        ></span>
+                      `
+                    : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
+                  <span class="truncate min-w-0" title=${folder.workingDir}>
+                    ${folder.label}
+                  </span>
+                  <span class="flex-1"></span>
+                  <span
+                    class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                    >${totalSessions}</span
+                  >
+                  <button
+                    type="button"
+                    onClick=${(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!isCreatingSession)
+                        handleNewSessionInFolder(folder.workingDir, e);
+                    }}
+                    class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
+                      ? "cursor-wait opacity-60"
+                      : ""}"
+                    title=${isCreatingSession
+                      ? "Creating conversation\u2026"
+                      : `New conversation in ${folder.label}`}
+                    disabled=${isCreatingSession}
+                  >
+                    ${isCreatingSession
+                      ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                      : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                  </button>
+                  ${folder.workingDir &&
+                  html`
+                    <button
+                      type="button"
+                      onClick=${(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setGroupContextMenu({
+                          x: rect.left,
+                          y: rect.bottom,
+                          workingDir: folder.workingDir,
+                          label: folder.label,
+                        });
+                      }}
+                      class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                      title="More actions"
+                      aria-label="More actions"
+                    >
+                      <${EllipsisIcon} className="w-3.5 h-3.5" />
+                    </button>
+                  `}
+                </summary>
+                <ul>
+                  ${folder.showTasks &&
+                  html`
+                    <!-- Tasks (static, per-folder) — always the first entry in a
+                         project. Opens the Beads view for this folder. Not a
+                         conversation; excluded from nav. -->
+                    <li>
+                      <button
+                        type="button"
+                        onClick=${(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          // Selecting Tasks collapses this folder's Archived
+                          // subgroup (matches conversation-selection behavior).
+                          const archivedKey = `archived:${folder.key}`;
+                          setSidebarExpandedGroups((prev) =>
+                            prev[archivedKey] === false
+                              ? prev
+                              : { ...prev, [archivedKey]: false },
+                          );
+                          onBeadsOpen && onBeadsOpen(folder.workingDir);
+                        }}
+                        aria-current=${tasksActive ? "page" : undefined}
+                        class="gap-2 text-sm border-0! ${tasksActive
+                          ? "bg-mitto-accent text-mitto-accent-fg"
+                          : "text-mitto-text-muted"}"
+                        title="Beads issues: ${folder.workingDir}"
+                      >
+                        <${BeadsIcon} className="w-4 h-4 shrink-0" />
+                        <span class="truncate">${folder.tasksNode.label}</span>
+                      </button>
+                    </li>
+                  `}
+                  ${renderSessionNodes(folder.conversations)}
+                  ${folder.archived.length > 0 &&
+                  html`
+                    <li class="archived-subgroup min-w-0">
+                      <details
+                        class="min-w-0 w-full"
+                        open=${archivedExpanded}
+                        onToggle=${(e) => {
+                          const open = e.currentTarget.open;
+                          if (open !== archivedExpanded) {
+                            handleUnifiedToggle(
+                              `archived:${folder.key}`,
+                              open,
+                              allFolderKeys,
+                            );
+                          }
+                        }}
+                      >
+                        <summary
+                          class="flex items-center gap-2 text-sm text-mitto-text-muted after:hidden"
+                        >
+                          <${ArchiveIcon} className="w-4 h-4 shrink-0" />
+                          <span class="truncate">Archived</span>
+                          <span class="flex-1"></span>
+                          <span
+                            class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                            >${folder.archived.length}</span
+                          >
+                        </summary>
+                        <ul>${renderSessionNodes(folder.archived)}</ul>
+                      </details>
+                    </li>
+                  `}
+                </ul>
+              </details>
+            </li>
+          `;
+    }
 
-    // Attach children to parents
-    const parents = rootSessions.map((parent) => ({
-      ...parent,
-      children: childrenMap.get(parent.session_id) || [],
-    }));
-
-    // Sort children within each parent (most recent first)
-    parents.forEach((parent) => {
-      parent.children.sort(
-        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
-      );
-    });
-
-    // Combine parents and orphans
-    const sessionsToRender = [...parents, ...orphans];
-
-    // Collect all parent group keys for accordion mode
-    const parentGroupKeys = sessionsToRender
-      .filter((s) => s.children && s.children.length > 0)
-      .map((s) => `parent:${s.session_id}`);
-
-    return sessionsToRender.map((session) => {
-      const hasChildSessions = session.children && session.children.length > 0;
-      const parentKey = `parent:${session.session_id}`;
-      const childrenExpanded = hasChildSessions
-        ? isSidebarGroupExpanded(parentKey)
-        : false;
-      const hasChildStreaming =
-        hasChildSessions &&
-        session.children.some((c) => streamingMap.has(c.session_id));
-
+    // Render a top-level group section (collapsible) that wraps its folders.
+    // Only used when at least one folder has a group assigned. The synthetic
+    // "Other" section (section.isOther) collects ungrouped folders and is
+    // styled distinctly (muted + italic) so it reads apart from named groups.
+    function renderGroupSectionLi(section) {
+      const expanded = isUnifiedGroupExpanded(section.key);
       return html`
-        <div
-          key=${session.session_id}
-          class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
-        >
-          ${renderSessionItem(
-            {
-              ...session,
-              isStreaming: streamingMap.has(session.session_id),
-              isWaitingForChildren: waitingMap.has(session.session_id),
-              isWaitingForUserInput: uiPromptMap.has(session.session_id),
-            },
-            {
-              childCount: hasChildSessions ? session.children.length : 0,
-              hasChildStreaming:
-                hasChildSessions && !childrenExpanded && hasChildStreaming,
-              hasChildren: hasChildSessions,
-              isExpanded: childrenExpanded,
-              onToggleExpand: hasChildSessions
-                ? () => handleToggleGroup(parentKey, parentGroupKeys)
-                : null,
-            },
-          )}
-          ${hasChildSessions &&
-          html`
-            <div
-              class="session-children ${childrenExpanded ? "session-children--expanded" : ""}"
+        <li key=${section.key} class="folder-group-section min-w-0 mt-4">
+          <details
+            class="min-w-0 w-full"
+            open=${expanded}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== expanded)
+                handleGroupSectionToggle(section.key, open);
+            }}
+          >
+            <summary
+              class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide after:hidden ${section.isOther
+                ? "text-mitto-text-muted/60 italic"
+                : "text-mitto-text-muted"}"
             >
-              ${session.children.map(
-                (child) =>
-                  html`<div class="session-item--child">
-                    ${renderSessionItem(
-                      {
-                        ...child,
-                        isStreaming: streamingMap.has(child.session_id),
-                        isWaitingForChildren: waitingMap.has(child.session_id),
-                        isWaitingForUserInput: uiPromptMap.has(child.session_id),
-                      },
-                      {
-                        isSpawned: true,
-                        extraLeftPadding: "pl-8",
-                      },
-                    )}
-                  </div>`,
-              )}
-            </div>
-          `}
-        </div>
+              <span class="truncate min-w-0">${section.name}</span>
+            </summary>
+            <ul>
+              ${section.folders.map(renderFolderLi)}
+            </ul>
+          </details>
+        </li>
       `;
-    });
-  };
-
-  // Get empty state message based on active filter tab
-  const getEmptyMessage = () => {
-    switch (filterTab) {
-      case FILTER_TAB.PERIODIC:
-        return "No periodic conversations";
-      case FILTER_TAB.ARCHIVED:
-        return "No archived conversations";
-      default:
-        return "No conversations yet";
     }
   };
 
@@ -1281,7 +1080,7 @@ export function SessionList({
           x=${groupContextMenu.x}
           y=${groupContextMenu.y}
           items=${[
-            ...((filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) && groupContextMenu.workingDir
+            ...(groupContextMenu.workingDir
               ? (() => {
                   // List workspaces/agents matching this folder, mirroring the "+" button.
                   const matching = workspaces.filter(
@@ -1294,13 +1093,13 @@ export function SessionList({
                     submenu: matching.map((ws) => ({
                       label: ws.acp_server || ws.name || getBasename(ws.working_dir),
                       icon: html`<${RobotIcon} className="w-4 h-4" />`,
-                      onClick: () => onNewSession && onNewSession(ws, null, filterTab),
+                      onClick: () => onNewSession && onNewSession(ws, null),
                     })),
                   }];
                 })()
               : []),
             ...(groupContextMenu.workingDir ? [{
-              label: "Beads",
+              label: "Tasks",
               icon: html`<${BeadsIcon} className="w-4 h-4" />`,
               onClick: () => onBeadsOpen && onBeadsOpen(groupContextMenu.workingDir),
             }] : []),
@@ -1314,6 +1113,47 @@ export function SessionList({
               icon: html`<${TerminalIcon} className="w-4 h-4" />`,
               onClick: () => onTerminalClick && onTerminalClick(groupContextMenu.workingDir),
             }] : []),
+            ...(onMoveFolderToGroup && groupContextMenu.workingDir
+              // Not gated by configReadonly: a folder's group is local
+              // organizational metadata in folders.json, not host config like
+              // adding servers. The backend permits it for authenticated
+              // external clients, so it stays available on external connections.
+              ? [(() => {
+                  const wd = groupContextMenu.workingDir;
+                  const lbl = groupContextMenu.label;
+                  const current = getFolderGroup(wd);
+                  const submenu = [];
+                  allGroups.forEach((g) => {
+                    const isCurrent =
+                      g.toLowerCase() === current.toLowerCase();
+                    submenu.push({
+                      label: g,
+                      icon: isCurrent
+                        ? html`<${CheckIcon} className="w-4 h-4" />`
+                        : html`<span class="inline-block w-4 h-4"></span>`,
+                      disabled: isCurrent,
+                      onClick: () => onMoveFolderToGroup(wd, g),
+                    });
+                  });
+                  if (current) {
+                    submenu.push({
+                      label: "No group",
+                      icon: html`<${CloseIcon} className="w-4 h-4" />`,
+                      onClick: () => onMoveFolderToGroup(wd, ""),
+                    });
+                  }
+                  submenu.push({
+                    label: "New group\u2026",
+                    icon: html`<${PlusIcon} className="w-4 h-4" />`,
+                    onClick: () => setNewGroupDialog({ workingDir: wd, label: lbl }),
+                  });
+                  return {
+                    label: "Move to group",
+                    icon: html`<${LayersIcon} className="w-4 h-4" />`,
+                    submenu,
+                  };
+                })()]
+              : []),
             ...(!configReadonly && groupContextMenu.workingDir ? [{
               label: "Configure Workspace",
               icon: html`<${SettingsIcon} className="w-4 h-4" />`,
@@ -1323,110 +1163,222 @@ export function SessionList({
           onClose=${closeGroupContextMenu}
         />
       `}
+      ${newGroupDialog &&
+      html`
+        <${Modal}
+          isOpen=${true}
+          onClose=${() => setNewGroupDialog(null)}
+          title="New group"
+          testid="new-group-dialog"
+          backdropTestid="new-group-dialog-backdrop"
+          closeTestid="new-group-dialog-close"
+          footer=${html`
+            <button
+              class="btn btn-sm btn-ghost"
+              onClick=${() => setNewGroupDialog(null)}
+              data-testid="new-group-cancel-btn"
+            >
+              Cancel
+            </button>
+            <button
+              class="btn btn-sm btn-primary"
+              disabled=${!newGroupName.trim()}
+              onClick=${submitNewGroup}
+              data-testid="new-group-create-btn"
+            >
+              Create
+            </button>
+          `}
+        >
+          <div class="space-y-2">
+            <label
+              class="block text-sm font-medium text-mitto-text-secondary"
+              for="new-group-name-input"
+            >
+              Group name
+            </label>
+            <input
+              id="new-group-name-input"
+              ref=${newGroupInputRef}
+              type="text"
+              value=${newGroupName}
+              onInput=${(e) => setNewGroupName(e.target.value)}
+              onKeyDown=${(e) => {
+                if (e.key === "Enter" && newGroupName.trim()) {
+                  e.preventDefault();
+                  submitNewGroup();
+                }
+              }}
+              placeholder="e.g., Personal, Development, Operations"
+              class="input input-sm w-full"
+              data-testid="new-group-name-input"
+            />
+            ${newGroupDialog.label &&
+            html`<p class="text-xs text-mitto-text-muted">
+              "${newGroupDialog.label}" will be moved to this group.
+            </p>`}
+          </div>
+        </${Modal}>
+      `}
       <div class="h-full flex flex-col">
       <div
-        class="p-4 border-b border-slate-700 flex items-center justify-between"
+        class="p-4 flex items-center justify-between"
       >
-        <h2 class="font-semibold text-lg">Conversations</h2>
-        <div class="flex items-center gap-0.5">
+        <h2 class="font-semibold text-lg flex items-center gap-2">
+          <${ChatBubbleIcon} className="w-5 h-5 shrink-0" />
+          <span>Mitto</span>
+        </h2>
+        ${onClose &&
+        html`
           <button
-            onClick=${handleToggleGrouping}
-            class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-            title=${getGroupingTooltip()}
+            onClick=${onClose}
+            class="btn btn-ghost btn-square btn-sm md:hidden"
+            title="Close"
           >
-            ${getGroupingIcon()}
+            <${CloseIcon} className="w-4 h-4" />
           </button>
+        `}
+      </div>
+      <!-- Side panel toolbar: panel-wide actions, sitting right above the
+           Dashboard entry. Holds the new-conversation and category-filter
+           buttons (moved from the header), a density control, and a couple of
+           placeholder buttons reserved for upcoming features. -->
+      <div
+        ref=${toolbarRef}
+        class="px-3 pb-8"
+        data-testid="sidebar-toolbar"
+      >
+        <!-- daisyUI join: welds the actions into one group spanning the full
+             panel width. Each direct child grows equally (flex-1); dropdown
+             triggers carry join-item on the <summary> (join styles apply even
+             when join-item is nested). -->
+        <div class="join w-full">
           <button
             data-testid="new-conversation-btn"
-            onClick=${() => !isCreatingSession && onNewSession(null, null, filterTab)}
-            class="p-1.5 rounded transition-colors ${isCreatingSession ? "cursor-wait opacity-60" : "hover:bg-slate-700"}"
+            onClick=${() => !isCreatingSession && onNewSession(null, null)}
+            aria-disabled=${isCreatingSession ? "true" : "false"}
+            class="btn btn-ghost btn-sm join-item flex-auto ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
             title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
-            disabled=${isCreatingSession}
           >
             ${isCreatingSession
               ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
               : html`<${PlusIcon} className="w-4 h-4" />`}
           </button>
-          ${onClose &&
-          html`
-            <button
-              onClick=${onClose}
-              class="p-1.5 hover:bg-slate-700 rounded transition-colors md:hidden"
-              title="Close"
+          <!-- The dropdown trigger is the nested <summary>, so the join's
+               weld margin (applied to direct join-item children) never reaches
+               it. -ms-px reproduces that weld so the trigger sits flush with
+               the adjacent buttons, exactly like the plain <button> items. -->
+          <details
+            class="dropdown flex-auto -ms-px"
+            open=${openToolbarMenu === "filter"}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== (openToolbarMenu === "filter"))
+                handleToolbarMenuToggle("filter", open);
+            }}
+          >
+            <summary
+              data-testid="category-filter-btn"
+              class="btn btn-ghost btn-sm join-item w-full list-none ${anyCategoryHidden
+                ? "text-mitto-accent-400"
+                : "text-mitto-text-muted"}"
+              title="Filter categories"
+              aria-label="Filter categories"
             >
-              <${CloseIcon} className="w-4 h-4" />
-            </button>
-          `}
+              <${FilterIcon} className="w-4 h-4" />
+            </summary>
+            <ul
+              class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
+            >
+              <li class="menu-title text-xs">Show categories</li>
+              ${[
+                { key: "regular", label: "Regular" },
+                { key: "periodic", label: "Periodic" },
+                { key: "archived", label: "Archived" },
+                { key: "tasks", label: "Tasks" },
+              ].map(
+                (opt) => html`
+                  <li key=${opt.key}>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        class="checkbox checkbox-sm"
+                        checked=${categoryFilter[opt.key]}
+                        onInput=${() => handleCategoryToggle(opt.key)}
+                        data-testid=${`category-filter-${opt.key}`}
+                      />
+                      <span class="text-sm">${opt.label}</span>
+                    </label>
+                  </li>
+                `,
+              )}
+            </ul>
+          </details>
+          <!-- Density control: opens a menu with "Comfortable" / "Condensed".
+               UI only for now — wiring is added in a follow-up. -->
+          <details
+            class="dropdown flex-auto -ms-px"
+            open=${openToolbarMenu === "density"}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== (openToolbarMenu === "density"))
+                handleToolbarMenuToggle("density", open);
+            }}
+          >
+            <summary
+              data-testid="density-btn"
+              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted"
+              title="Density"
+              aria-label="Density"
+            >
+              <${SlidersIcon} className="w-4 h-4" />
+            </summary>
+            <ul
+              class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
+            >
+              <li class="menu-title text-xs">Density</li>
+              <li>
+                <button type="button" data-testid="density-comfortable">
+                  <span class="text-sm">Comfortable</span>
+                </button>
+              </li>
+              <li>
+                <button type="button" data-testid="density-condensed">
+                  <span class="text-sm">Condensed</span>
+                </button>
+              </li>
+            </ul>
+          </details>
+          <!-- Placeholder buttons reserved for upcoming features. -->
+          <button
+            type="button"
+            data-testid="sidebar-toolbar-placeholder-1"
+            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
+            aria-label="Placeholder"
+          >
+            <${SearchIcon} className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="sidebar-toolbar-placeholder-2"
+            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
+            aria-label="Placeholder"
+          >
+            <${EllipsisIcon} className="w-4 h-4" />
+          </button>
         </div>
       </div>
-      <!-- Filter Tab Bar -->
-      <div
-        class="filter-tab-bar flex border-b border-slate-700"
-        role="tablist"
-        aria-label="Conversation filters"
-      >
-        <button
-          role="tab"
-          aria-selected=${filterTab === FILTER_TAB.CONVERSATIONS}
-          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
-          FILTER_TAB.CONVERSATIONS
-            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
-            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.conversations
-            ? "filter-tab-streaming"
-            : ""}"
-          onClick=${() => handleFilterTabChange(FILTER_TAB.CONVERSATIONS)}
-          title="Conversations"
-        >
-          <${ChatBubbleIcon} className="w-5 h-5" />
-          ${regularSessions.filter(s => !s.parent_session_id).length > 0 &&
-          html`<span class="ml-1.5 text-xs">${regularSessions.filter(s => !s.parent_session_id).length}</span>`}
-        </button>
-        <button
-          role="tab"
-          aria-selected=${filterTab === FILTER_TAB.PERIODIC}
-          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
-          FILTER_TAB.PERIODIC
-            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
-            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.periodic
-            ? "filter-tab-streaming"
-            : ""}"
-          onClick=${() => handleFilterTabChange(FILTER_TAB.PERIODIC)}
-          title="Periodic"
-        >
-          <${PeriodicIcon} className="w-5 h-5" />
-          ${periodicSessions.filter(s => !s.parent_session_id).length > 0 &&
-          html`<span class="ml-1.5 text-xs">${periodicSessions.filter(s => !s.parent_session_id).length}</span>`}
-        </button>
-        <button
-          role="tab"
-          aria-selected=${filterTab === FILTER_TAB.ARCHIVED}
-          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
-          FILTER_TAB.ARCHIVED
-            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
-            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.archived
-            ? "filter-tab-streaming"
-            : ""}"
-          onClick=${() => handleFilterTabChange(FILTER_TAB.ARCHIVED)}
-          title="Archived"
-        >
-          <${ArchiveIcon} className="w-5 h-5" />
-          ${archivedSessions.filter(s => !s.parent_session_id).length > 0 &&
-          html`<span class="ml-1.5 text-xs">${archivedSessions.filter(s => !s.parent_session_id).length}</span>`}
-        </button>
-      </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
-        ${filteredSessions.length === 0 &&
+        ${allSessions.length === 0 &&
         html`
-          <div class="p-4 text-gray-500 text-sm text-center">
+          <div class="p-4 text-mitto-text-muted text-sm text-center">
             ${getEmptyMessage()}
           </div>
         `}
-        ${groupingMode === "none"
-          ? renderUngroupedSessions()
-          : renderGroupedSessions()}
+        ${renderUnifiedTree()}
       </div>
       <!-- Footer with settings, theme and font size toggles -->
-      <div class="p-4 border-t border-slate-700">
+      <div class="p-4 border-t border-mitto-border-1">
         <div class="flex items-center justify-center gap-3">
           <!-- Settings | Workspaces segmented button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
           ${!configReadonly
@@ -1434,14 +1386,14 @@ export function SessionList({
                 <div class="flex items-center gap-0.5">
                   <button
                     onClick=${onShowSettings}
-                    class="p-1.5 hover:bg-slate-700 rounded transition-colors text-gray-400 hover:text-white"
+                    class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:text-mitto-text-strong"
                     title="Settings"
                   >
                     <${SettingsIcon} className="w-4 h-4" />
                   </button>
                   <button
                     onClick=${onShowWorkspaces}
-                    class="p-1.5 hover:bg-slate-700 rounded transition-colors text-gray-400 hover:text-white"
+                    class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:text-mitto-text-strong"
                     title="Workspaces"
                   >
                     <${FolderIcon} className="w-4 h-4" />
@@ -1451,64 +1403,69 @@ export function SessionList({
             : rcFilePath
               ? html`
                   <button
-                    disabled
-                    class="p-2 rounded-lg opacity-50 cursor-not-allowed"
+                    aria-disabled="true"
+                    class="btn btn-ghost btn-square btn-sm opacity-40 pointer-events-none"
                     title="Using ${rcFilePath}"
                   >
-                    <${SettingsIcon} className="w-5 h-5 text-gray-400" />
+                    <${SettingsIcon} className="w-5 h-5 text-mitto-text-muted" />
                   </button>
                 `
               : null}
-          <!-- Theme toggle -->
-          <div
-            class="theme-toggle-v2"
-            onClick=${onToggleTheme}
-            role="button"
-            tabindex="0"
-            title="${isLight
-              ? "Switch to dark theme"
-              : "Switch to light theme"}"
+          <!-- Theme toggle (daisyUI swap; checked = light = sun shown).
+               Controlled Preact checkbox — useTheme owns persistence / follow-system /
+               Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
+          <label
+            class="btn btn-ghost btn-square btn-sm swap swap-rotate text-mitto-text-muted hover:text-mitto-text-strong"
+            title="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
             aria-label="Toggle between light and dark theme"
+            data-testid="theme-toggle"
           >
-            <!-- Sun icon -->
-            <div class="theme-toggle-v2__option ${isLight ? "active" : ""}">
-              <${SunIcon} />
-            </div>
-            <!-- Moon icon -->
-            <div class="theme-toggle-v2__option ${!isLight ? "active" : ""}">
-              <${MoonIcon} />
-            </div>
-          </div>
-          <!-- Font size toggle -->
+            <input
+              type="checkbox"
+              checked=${isLight}
+              onChange=${onToggleTheme}
+              aria-label="Toggle between light and dark theme"
+            />
+            <${SunIcon} className="swap-on w-4 h-4" />
+            <${MoonIcon} className="swap-off w-4 h-4" />
+          </label>
+          <!-- Font size toggle (daisyUI join segmented control) -->
           <div
-            class="font-size-toggle"
-            onClick=${onToggleFontSize}
-            role="button"
-            tabindex="0"
-            title="${isLargeFont
-              ? "Switch to small font"
-              : "Switch to large font"}"
+            class="join"
+            role="group"
             aria-label="Toggle between small and large font size"
           >
-            <span
-              class="font-size-toggle__option ${!isLargeFont ? "active" : ""}"
-              >A</span
+            <button
+              type="button"
+              onClick=${() => isLargeFont && onToggleFontSize()}
+              class="btn btn-sm join-item ${!isLargeFont
+                ? "btn-active"
+                : "btn-ghost"}"
+              title="Switch to small font"
+              aria-pressed=${!isLargeFont}
             >
-            <span
-              class="font-size-toggle__option font-size-toggle__option--large ${isLargeFont
-                ? "active"
-                : ""}"
-              >A</span
+              <span class="text-xs font-semibold">A</span>
+            </button>
+            <button
+              type="button"
+              onClick=${() => !isLargeFont && onToggleFontSize()}
+              class="btn btn-sm join-item ${isLargeFont
+                ? "btn-active"
+                : "btn-ghost"}"
+              title="Switch to large font"
+              aria-pressed=${isLargeFont}
             >
+              <span class="text-base font-semibold">A</span>
+            </button>
           </div>
           <!-- Keyboard shortcuts button -->
           <button
             onClick=${onShowKeyboardShortcuts}
-            class="p-2 hover:bg-slate-700 rounded-lg transition-colors group"
+            class="btn btn-ghost btn-square btn-sm group"
             title="Keyboard Shortcuts"
           >
             <${KeyboardIcon}
-              className="w-4 h-4 text-gray-400 group-hover:text-white"
+              className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
             />
           </button>
         </div>

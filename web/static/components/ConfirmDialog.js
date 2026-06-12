@@ -3,7 +3,7 @@
 
 const { html } = window.preact;
 
-import { CloseIcon } from "./Icons.js";
+import { Modal } from "./Modal.js";
 
 /**
  * ConfirmDialog component - a simple confirmation modal dialog
@@ -31,109 +31,65 @@ export function ConfirmDialog({
   onCancel,
   children,
 }) {
-  if (!isOpen) return null;
-
-  const handleBackdropClick = (e) => {
-    // Only close if clicking the backdrop itself, not the dialog content
-    if (e.target === e.currentTarget && !isLoading) {
-      onCancel?.();
-    }
+  const handleCancel = () => {
+    if (!isLoading) onCancel?.();
   };
 
   const handleConfirm = () => {
-    if (!isLoading) {
-      onConfirm?.();
-    }
+    if (!isLoading) onConfirm?.();
   };
 
-  const handleCancel = () => {
-    if (!isLoading) {
-      onCancel?.();
-    }
-  };
+  // daisyUI button variant: danger → btn-error, default/primary → btn-primary
+  const confirmBtnClass =
+    confirmVariant === "danger" ? "btn btn-error btn-sm" : "btn btn-primary btn-sm";
 
-  // Button styles based on variant
-  const confirmButtonClass =
-    confirmVariant === "danger"
-      ? "bg-red-600 hover:bg-red-500 focus:ring-red-500"
-      : "bg-blue-600 hover:bg-blue-500 focus:ring-blue-500";
+  const footer = html`
+    <button
+      onClick=${handleCancel}
+      disabled=${isLoading}
+      class="btn btn-ghost btn-sm"
+      data-testid="confirm-dialog-cancel"
+    >
+      ${cancelLabel}
+    </button>
+    <button
+      onClick=${handleConfirm}
+      disabled=${isLoading}
+      class=${confirmBtnClass}
+      data-testid="confirm-dialog-confirm"
+    >
+      ${isLoading &&
+      html`
+        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle
+            class="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            stroke-width="4"
+          ></circle>
+          <path
+            class="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          ></path>
+        </svg>
+      `}
+      ${confirmLabel}
+    </button>
+  `;
 
   return html`
-    <div
-      class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50"
-      onClick=${handleBackdropClick}
-      data-testid="confirm-dialog-backdrop"
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${handleCancel}
+      title=${title}
+      footer=${footer}
+      testid="confirm-dialog"
     >
-      <div
-        class="bg-mitto-sidebar rounded-xl w-[400px] max-w-[90vw] overflow-hidden shadow-2xl flex flex-col"
-        onClick=${(e) => e.stopPropagation()}
-        data-testid="confirm-dialog"
-      >
-        <!-- Header -->
-        <div
-          class="flex items-center justify-between p-4 border-b border-slate-700"
-        >
-          <h3 class="text-lg font-semibold">${title}</h3>
-          <button
-            onClick=${handleCancel}
-            disabled=${isLoading}
-            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isLoading
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="confirm-dialog-close"
-          >
-            <${CloseIcon} className="w-5 h-5" />
-          </button>
-        </div>
-
-        <!-- Content -->
-        <div class="p-4">
-          <p class="text-gray-300">${message}</p>
-          ${children}
-        </div>
-
-        <!-- Footer with buttons -->
-        <div class="flex justify-end gap-3 p-4 border-t border-slate-700">
-          <button
-            onClick=${handleCancel}
-            disabled=${isLoading}
-            class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors ${isLoading
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            data-testid="confirm-dialog-cancel"
-          >
-            ${cancelLabel}
-          </button>
-          <button
-            onClick=${handleConfirm}
-            disabled=${isLoading}
-            class="px-4 py-2 text-sm ${confirmButtonClass} text-white rounded-lg transition-colors flex items-center gap-2 ${isLoading
-              ? "opacity-75"
-              : ""}"
-            data-testid="confirm-dialog-confirm"
-          >
-            ${isLoading &&
-            html`
-              <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-            `}
-            ${confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+      <p class="text-mitto-text-300">${message}</p>
+      ${children}
+    </${Modal}>
   `;
 }

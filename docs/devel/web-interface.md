@@ -220,8 +220,10 @@ All assets are embedded in the Go binary via `go:embed`, enabling single-binary 
 
 ```
 App
-├── SessionList (sidebar)
-│   └── SessionItem
+├── SessionList (sidebar — unified daisyUI `menu` tree)
+│   ├── Folder groups (by working_dir; nested children; per-folder Archived subgroup + Tasks node)
+│   ├── Static nodes (Dashboard, per-folder Tasks)
+│   └── SessionItem (per-row three-dot menu → ContextMenu)
 ├── Header (connection status, streaming indicator)
 ├── MessageList
 │   ├── Message (user - plain text, blue bubble)
@@ -235,6 +237,34 @@ App
 ├── WorkspaceConfigDialog (view/add/remove workspaces)
 └── SessionPropertiesDialog (rename session, view workspace info)
 ```
+
+## Sidebar: Unified Conversation Tree
+
+The sidebar renders all conversations as a single hierarchical daisyUI `menu`
+tree (`SessionList` → `SessionItem`), replacing the former three tabs
+(Conversations / Periodic / Archived) and the group-by toggle.
+
+- **Folders** group conversations by working directory (resolved to the root
+  parent for nested children). Child conversations nest under their parent.
+- Each folder has an **Archived** subgroup (collapsed by default) and a static
+  **Tasks** node (opens the beads view for that folder).
+- A static **Dashboard** node clears the active conversation.
+- **Category filter** (sidebar header dropdown): show/hide Regular, Periodic,
+  Archived, and Tasks. Persisted per-device in `sessionStorage`.
+- Each row exposes an always-visible **three-dot (ellipsis) menu** that opens the
+  shared `ContextMenu` (rename, pin, archive, delete, prompt groups…).
+- **Expansion state** is persisted in `localStorage`
+  (`mitto_conversation_expanded_groups`) and synced to the server via UI
+  preferences. Keys are unscoped: a folder's `working_dir`,
+  `archived:<folderKey>`, and `parent:<id>`.
+- **Keyboard (⌘-[ / ⌘-]) and swipe** navigation traverse the flattened tree in
+  visual order, skipping static nodes and respecting the category filter; the
+  target's folder/archived/parent auto-expands and scrolls into view.
+
+> Conversations are categorized by `getFilterTabForSession` (regular / periodic /
+> archived). Periodic prompts are configured per-conversation (ChatInput /
+> SessionPanel), not via a creation tab. Startup restores the single last-active
+> conversation regardless of category (falling back to the most recent overall).
 
 ## Responsive Design
 

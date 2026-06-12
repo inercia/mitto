@@ -1,5 +1,14 @@
 /* Mitto Web Interface Styles */
 
+/* =============================================================================
+   Design Tokens — light defaults on :root and dark overrides on .dark now live
+   in styles-v2.css. The legacy v1 token system was removed here (mitto-2yt.6).
+   ============================================================================= */
+.light body,
+.light #app {
+  color: var(--mitto-text);
+}
+
 /* Safari-safe viewport height utilities
    Uses dvh (dynamic viewport height) for Safari iOS/macOS with 100vh fallback.
    This fixes issues where 100vh doesn't account for Safari's dynamic toolbar. */
@@ -20,35 +29,6 @@
   .bg-mitto-input {
     padding-bottom: max(1rem, env(safe-area-inset-bottom));
   }
-}
-
-/* Theme toggle switch */
-.theme-toggle {
-  position: relative;
-  width: 48px;
-  height: 24px;
-  background: #334155;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: background 0.3s;
-}
-.theme-toggle.light {
-  background: #cbd5e1;
-}
-.theme-toggle::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 20px;
-  height: 20px;
-  background: #f1f5f9;
-  border-radius: 50%;
-  transition: transform 0.3s;
-}
-.theme-toggle.light::after {
-  transform: translateX(24px);
-  background: #1e293b;
 }
 
 /* Scrollbar styling */
@@ -832,86 +812,6 @@ a.mailto-link:hover {
   color: #1d4ed8;
 }
 
-/* =============================================================================
-   Font Size Toggle
-   ============================================================================= */
-
-.font-size-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 6px;
-  background: #334155;
-  border: 1px solid #475569;
-  border-radius: 9999px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  user-select: none;
-  /* Explicit height for consistency with theme toggle */
-  height: 32px;
-  box-sizing: border-box;
-}
-
-.font-size-toggle:hover {
-  background: #3f4f63;
-  border-color: #52617a;
-}
-
-.font-size-toggle__option {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  transition: all 0.2s ease;
-  color: #94a3b8;
-  font-weight: 600;
-  font-size: 11px;
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
-}
-
-.font-size-toggle__option--large {
-  font-size: 15px;
-}
-
-.font-size-toggle__option.active {
-  background: #475569;
-  color: #f1f5f9;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-.font-size-toggle__option:not(.active):hover {
-  color: #cbd5e1;
-}
-
-/* Light theme for font size toggle */
-.light .font-size-toggle {
-  background: #e2e8f0;
-  border-color: #cbd5e1;
-}
-
-.light .font-size-toggle:hover {
-  background: #d4dae5;
-  border-color: #b4c0d0;
-}
-
-.light .font-size-toggle__option {
-  color: #a1a1aa;
-}
-
-.light .font-size-toggle__option.active {
-  background: #ffffff;
-  color: #18181b;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.light .font-size-toggle__option:not(.active):hover {
-  color: #71717a;
-}
 
 /* =============================================================================
    Font Size Classes (applied to markdown-content)
@@ -1087,15 +987,12 @@ a.mailto-link:hover {
   background: #2563eb;
 }
 
+/* Positioning + pulse animation only; daisyUI .status provides the
+   circular shape, size, and theme-aware color (status-warning). */
 .new-messages-indicator {
   position: absolute;
   top: -2px;
   right: -2px;
-  width: 12px;
-  height: 12px;
-  background: #f97316;
-  border-radius: 50%;
-  border: 2px solid #1e293b;
   animation: pulse-indicator 1.5s ease-in-out infinite;
   will-change: opacity, transform;
 }
@@ -1150,10 +1047,6 @@ a.mailto-link:hover {
 
 .light .scroll-to-bottom-btn.has-new:hover {
   background: #2563eb;
-}
-
-.light .new-messages-indicator {
-  border-color: #ffffff;
 }
 
 /* Mobile adjustments */
@@ -1264,6 +1157,30 @@ a.mailto-link:hover {
 
 .properties-backdrop.closing {
   animation: propertiesBackdropFadeOut 0.15s ease-in forwards;
+}
+
+/* Scoped (non-viewport) daisyUI drawer variant.
+   daisyUI's .drawer-side is position:fixed/height:100dvh so it always fills the
+   whole window. .drawer-scoped confines the drawer to its nearest positioned
+   ancestor instead (e.g. the relative BeadsView root) so the panel — and its
+   fullscreen/expand mode — covers only that area and never the conversations
+   sidebar. The caller supplies its own full-window dimming backdrop, so this
+   variant's own drawer-overlay is transparent and just catches outside clicks;
+   the caller's backdrop dims through it on the panel's left.
+   These rules are unlayered, so they win over daisyUI's layered defaults. */
+.drawer-scoped {
+  position: absolute;
+  inset: 0;
+}
+
+.drawer-scoped .drawer-side {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+
+.drawer-scoped .drawer-side > .drawer-overlay {
+  background-color: transparent;
 }
 
 /* Queue dropdown list scrollbar */
@@ -1380,6 +1297,27 @@ a.mailto-link:hover {
   background: #94a3b8;
 }
 
+/* Beads issue list (daisyUI .list): render each issue as a self-contained
+   card — matching the ACP Servers / Runners lists — instead of daisyUI's
+   faint full-width row dividers. The per-card border is applied as Tailwind
+   utilities on the row (see borderTone in BeadsView.js) so the selected
+   (accent) and epic (purple left) state borders, which are also utilities,
+   keep equal specificity and override it correctly. Scope these overrides to
+   the Beads list so other daisyUI .list usages keep their defaults.
+     - smaller gap between cards
+     - tighter row padding (content sits closer to the row edges) */
+.beads-table-scroll .list {
+  gap: 0.25rem;
+}
+.beads-table-scroll .list-row {
+  padding: 0.5rem 0.75rem;
+}
+/* Drop daisyUI's between-row divider; each row now carries its own border. */
+.beads-table-scroll .list > :not(:last-child) .list-row::after,
+.beads-table-scroll .list > :not(:last-child).list-row::after {
+  content: none;
+}
+
 /* =============================================================================
    Agent Plan Panel - Light Theme
    ============================================================================= */
@@ -1419,7 +1357,7 @@ a.mailto-link:hover {
   color: #16a34a;
 }
 
-.light .agent-plan-item .text-blue-400 {
+.light .agent-plan-item .text-mitto-accent-400 {
   color: #2563eb;
 }
 
@@ -1454,7 +1392,7 @@ a.mailto-link:hover {
   color: #1e293b;
 }
 
-.light .agent-plan-indicator .text-blue-400 {
+.light .agent-plan-indicator .text-mitto-accent-400 {
   color: #2563eb;
 }
 
@@ -1560,35 +1498,8 @@ mitto-action {
     margin-bottom: 2px;
     gap: 12px;
   }
-
-  .chat-input-model-select {
-    max-width: none;
-    font-size: 13px;
-  }
 }
 
-.chat-input-model-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  border: none;
-  color: #64748b;
-  font-size: 12px;
-  padding: 2px 16px 2px 6px;
-  cursor: pointer;
-  outline: none;
-  max-width: 200px;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 2px center;
-}
-
-.chat-input-model-select:hover {
-  color: #94a3b8;
-}
 
 .chat-input-context-pct {
   font-size: 11px;
@@ -1596,15 +1507,6 @@ mitto-action {
   padding: 1px 4px;
 }
 
-.chat-input-model-select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.chat-input-model-select option {
-  background: #1e293b;
-  color: #e2e8f0;
-}
 
 /* Flat inline action button — matches p-1.5 rounded (28px, 4px radius) */
 .chat-input-action {
@@ -1754,18 +1656,6 @@ mitto-action {
   color: #cbd5e1;
 }
 
-.light .chat-input-model-select {
-  color: #64748b;
-}
-
-.light .chat-input-model-select:hover {
-  color: #334155;
-}
-
-.light .chat-input-model-select option {
-  background: #ffffff;
-  color: #1e293b;
-}
 
 /* Send/Stop buttons in light theme — same filled accent style */
 .light .chat-input-action.send-active,
@@ -1790,32 +1680,12 @@ mitto-action {
   background: rgba(241, 245, 249, 0.9);
 }
 
-.light .textarea-improving-overlay .text-blue-300 {
+.light .textarea-improving-overlay .text-mitto-accent-300 {
   color: #1e40af;
 }
 
-.light .textarea-improving-overlay .text-blue-400 {
+.light .textarea-improving-overlay .text-mitto-accent-400 {
   color: #2563eb;
-}
-
-
-
-/* Queue badge - small count indicator on queue button */
-.queue-badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
-  color: white;
-  background: #2563eb;
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 /* Workspace pill clickable hover effect - uses filter instead of opacity
@@ -1877,22 +1747,6 @@ mitto-action {
 /* Light theme adjustments for swipe delete */
 .light .session-item-container .bg-red-600 {
   background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
-}
-
-/* =============================================================================
-   Named Prompt Pill (periodic / by-name prompts)
-   ============================================================================= */
-
-.named-prompt-pill {
-  background: #dc2626;
-  border: 1px solid #ef4444;
-  color: #ffffff;
-}
-
-.light .named-prompt-pill {
-  background: #dc2626;
-  border: 1px solid #b91c1c;
-  color: #ffffff;
 }
 
 /* =============================================================================
@@ -2052,13 +1906,6 @@ mitto-action {
 
 
 
-/* Spawned indicator styling */
-.spawned-indicator {
-  color: #9ca3af;
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
 /* Session children container animation */
 .session-children {
   overflow: hidden;
@@ -2070,6 +1917,20 @@ mitto-action {
 .session-children--expanded {
   max-height: 500px;
   opacity: 1;
+}
+
+/* Beads epic group: hide the native <summary> disclosure triangle so the
+   full list-row card acts as the clickable header without a duplicate arrow. */
+.beads-epic-summary {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.beads-epic-summary::-webkit-details-marker {
+  display: none;
+}
+.beads-epic-summary::marker {
+  display: none;
 }
 
 /* Child count badge */

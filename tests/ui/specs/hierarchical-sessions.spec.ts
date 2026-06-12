@@ -340,7 +340,7 @@ test.describe("Hierarchical Session Grouping", () => {
     expect(afterParentSessionId).toBe(initialParentSessionId);
   });
 
-  test("should maintain session order when switching between parent and child", async ({
+  test("should keep all sessions present and sorted by updated_at when switching", async ({
     request,
     apiUrl,
     page,
@@ -382,9 +382,18 @@ test.describe("Hierarchical Session Grouping", () => {
 
     console.log(`[Test] After switching session order: ${afterOrder.join(", ")}`);
 
-    // Verify order is maintained (sessions should be sorted by created_at, not updated_at)
-    // The order should be the same as initial order
-    expect(afterOrder).toEqual(initialOrder);
+    // The backend sorts GET /api/sessions by updated_at descending ("most
+    // recently used first" — see internal/web/session_api.go). Switching to a
+    // session bumps its updated_at, so the list legitimately re-orders. The
+    // real invariants are therefore: (1) no session is lost or duplicated, and
+    // (2) the list stays sorted by updated_at descending.
+    expect(new Set(afterOrder)).toEqual(new Set(initialOrder));
+
+    const updatedAts = afterSessions.map((s: any) =>
+      new Date(s.updated_at).getTime()
+    );
+    const sortedDesc = [...updatedAts].sort((a, b) => b - a);
+    expect(updatedAts).toEqual(sortedDesc);
   });
 
   test("should check updated_at behavior when switching sessions", async ({
@@ -437,5 +446,56 @@ test.describe("Hierarchical Session Grouping", () => {
       console.log(`[Test] Initial: ${initialUpdatedAt}`);
       console.log(`[Test] After: ${afterUpdatedAt}`);
     }
+  });
+
+  test("should show category filter dropdown with all checkboxes and persist state", async ({
+    page,
+    helpers,
+  }) => {
+    // Ensure sidebar is visible (it may be hidden on narrow viewports)
+    const sidebar = page.locator(".sessions-sidebar, [data-testid='sessions-sidebar'], aside").first();
+    const sidebarVisible = await sidebar.isVisible().catch(() => false);
+    if (!sidebarVisible) {
+      // Try toggling sidebar via button
+      const sidebarToggle = page.locator("[data-testid='sidebar-toggle'], [title='Toggle sidebar']").first();
+      if (await sidebarToggle.isVisible().catch(() => false)) {
+        await sidebarToggle.click();
+        await page.waitForTimeout(300);
+      }
+    }
+
+    // The filter button must be present in the sidebar header
+    const filterBtn = page.locator("[data-testid='category-filter-btn']");
+    await expect(filterBtn).toBeVisible({ timeout: 5000 });
+
+    // Open the dropdown
+    await filterBtn.click();
+
+    // All four category checkboxes must be visible and checked by default
+    for (const key of ["regular", "periodic", "archived", "tasks"]) {
+      const cb = page.locator(`[data-testid="category-filter-${key}"]`);
+      await expect(cb).toBeVisible({ timeout: 3000 });
+      await expect(cb).toBeChecked();
+    }
+
+    // Uncheck "archived"
+    await page.locator('[data-testid="category-filter-archived"]').click();
+
+    // Filter button should gain the active indicator class
+    await expect(filterBtn).toHaveClass(/text-mitto-accent-400/);
+
+    // Reload in the same browser context — sessionStorage persists
+    await page.reload();
+    await helpers.waitForAppReady(page);
+
+    // Re-open the dropdown
+    const filterBtnAfterReload = page.locator("[data-testid='category-filter-btn']");
+    await expect(filterBtnAfterReload).toBeVisible({ timeout: 5000 });
+    await filterBtnAfterReload.click();
+
+    // "archived" checkbox must still be unchecked (sessionStorage persisted)
+    const archivedCb = page.locator('[data-testid="category-filter-archived"]');
+    await expect(archivedCb).toBeVisible({ timeout: 3000 });
+    await expect(archivedCb).not.toBeChecked();
   });
 });

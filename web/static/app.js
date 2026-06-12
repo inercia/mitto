@@ -64,11 +64,6 @@ import {
   setSingleExpandedGroupMode,
   initUIPreferences,
   onUIPreferencesLoaded,
-  FILTER_TAB,
-  getFilterTab,
-  setFilterTab,
-  getFilterTabGrouping,
-  cycleFilterTabGrouping,
   fetchConfig,
   invalidateConfigCache,
   getSidebarWidth,
@@ -107,6 +102,7 @@ import {
   AgentPlanIndicator,
 } from "./components/AgentPlanPanel.js";
 import { SessionPanel } from "./components/SessionPanel.js";
+import { Drawer } from "./components/Drawer.js";
 import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -150,6 +146,7 @@ import {
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
 import { BeadsView, BeadsDetailPanel } from "./components/BeadsView.js";
+import { DashboardView } from "./components/DashboardView.js";
 
 // Import constants
 import {
@@ -195,6 +192,7 @@ function App() {
     cancelPrompt,
     newSession,
     switchSession,
+    setActiveSessionId,
     loadMoreMessages,
     updateSessionName,
     renameSession,
@@ -344,7 +342,6 @@ function App() {
     session: null,
   });
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
-  const [pendingPeriodicTab, setPendingPeriodicTab] = useState(null); // Track if new session should be periodic
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
     forceOpen: false,
@@ -719,7 +716,6 @@ function App() {
   ]);
 
   // State for UI theme style (v2 = Clawdbot-inspired)
-  const [uiTheme, setUiTheme] = useState("default");
 
   // UI settings (macOS only)
   const [agentCompletedSoundEnabled, setAgentCompletedSoundEnabled] =
@@ -765,21 +761,6 @@ function App() {
           if (config?.rc_file_path) {
             setRcFilePath(config.rc_file_path);
           }
-        }
-        // Load v2 stylesheet if configured
-        if (config?.web?.theme === "v2") {
-          setUiTheme("v2");
-          // Dynamically load the v2 stylesheet
-          const existingLink = document.getElementById("mitto-theme-v2");
-          if (!existingLink) {
-            const link = document.createElement("link");
-            link.id = "mitto-theme-v2";
-            link.rel = "stylesheet";
-            link.href = "./styles-v2.css";
-            document.head.appendChild(link);
-          }
-          // Add v2-theme class to body for CSS overrides
-          document.body.classList.add("v2-theme");
         }
         // Load UI confirmation settings
         if (config?.ui?.confirmations?.delete_session === false) {
@@ -921,30 +902,11 @@ function App() {
   // Ref for the chat input component to allow focusing from native menu
   const chatInputRef = useRef(null);
 
-  // Helper to configure a newly created session as periodic
-  const applyPeriodicConfig = async (sessionId) => {
-    try {
-      await secureFetch(apiUrl(`/api/sessions/${sessionId}/periodic`), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: "(pending)",
-          frequency: { value: 1, unit: "hours" },
-          enabled: false,
-        }),
-      });
-    } catch (e) {
-      console.error("Failed to create periodic config:", e);
-    }
-  };
-
   // Expose global functions for native macOS menu integration
   useEffect(() => {
     // New Conversation - called from native Cmd+N menu
     window.mittoNewConversation = async () => {
       // Use handleNewSession logic to support workspace selection
-      const currentTab = getFilterTab();
-      const isPeriodic = currentTab === FILTER_TAB.PERIODIC;
       if (workspaces.length === 0) {
         // No workspaces configured - open settings dialog (unless config is read-only)
         if (!configReadonly) {
@@ -954,7 +916,6 @@ function App() {
         return;
       }
       if (workspaces.length > 1) {
-        setPendingPeriodicTab(currentTab);
         setWorkspaceDialog({ isOpen: true });
       } else {
         // Single workspace - create session directly with workspace info
@@ -963,9 +924,6 @@ function App() {
           workingDir: ws.working_dir,
           acpServer: ws.acp_server,
         });
-        if (result?.sessionId && isPeriodic) {
-          await applyPeriodicConfig(result.sessionId);
-        }
         // Handle creation result
         if (result?.errorCode === "session_creation_timeout") {
           // Agent is busy; auto-retry is in progress — toast already meaningful
@@ -1051,9 +1009,8 @@ function App() {
       // Toggle archive state
       await archiveSession(activeSessionId, !isArchived);
 
-      // When unarchiving, switch to conversations tab and select the session
+      // When unarchiving, select the session
       if (isArchived) {
-        setFilterTab(FILTER_TAB.CONVERSATIONS);
         switchSession(activeSessionId);
       }
     };
@@ -1135,9 +1092,7 @@ function App() {
     archiveSession,
   ]);
 
-  const handleNewSession = async (workspace = null, folderFilter = null, currentFilterTab = null) => {
-    const isPeriodic = currentFilterTab === FILTER_TAB.PERIODIC;
-
+  const handleNewSession = async (workspace = null, folderFilter = null) => {
     // If a specific workspace is provided, create session directly in that workspace
     if (workspace) {
       setShowSidebar(false);
@@ -1145,9 +1100,6 @@ function App() {
         workingDir: workspace.working_dir,
         acpServer: workspace.acp_server,
       });
-      if (result?.sessionId && isPeriodic) {
-        await applyPeriodicConfig(result.sessionId);
-      }
       // Handle creation result
       if (result?.errorCode === "session_creation_timeout") {
         showToast({
@@ -1185,9 +1137,6 @@ function App() {
           workingDir: filteredWs[0].working_dir,
           acpServer: filteredWs[0].acp_server,
         });
-        if (result?.sessionId && isPeriodic) {
-          await applyPeriodicConfig(result.sessionId);
-        }
         if (result?.errorCode === "session_creation_timeout") {
           showToast({
             style: "warning",
@@ -1206,7 +1155,6 @@ function App() {
           }, 100);
         }
       } else if (filteredWs.length > 1) {
-        setPendingPeriodicTab(currentFilterTab);
         setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
         setShowSidebar(false);
       }
@@ -1223,7 +1171,6 @@ function App() {
     }
     // If multiple workspaces, show workspace selector
     if (workspaces.length > 1) {
-      setPendingPeriodicTab(currentFilterTab);
       setWorkspaceDialog({ isOpen: true });
       setShowSidebar(false);
     } else {
@@ -1234,9 +1181,6 @@ function App() {
         workingDir: ws.working_dir,
         acpServer: ws.acp_server,
       });
-      if (result?.sessionId && isPeriodic) {
-        await applyPeriodicConfig(result.sessionId);
-      }
       // Handle creation result
       if (result?.errorCode === "session_creation_timeout") {
         showToast({
@@ -1263,15 +1207,10 @@ function App() {
 
   const handleWorkspaceSelect = async (workspace) => {
     setWorkspaceDialog({ isOpen: false });
-    const isPeriodic = pendingPeriodicTab === FILTER_TAB.PERIODIC;
-    setPendingPeriodicTab(null);
     const result = await newSession({
       workingDir: workspace.working_dir,
       acpServer: workspace.acp_server,
     });
-    if (result?.sessionId && isPeriodic) {
-      await applyPeriodicConfig(result.sessionId);
-    }
     // Handle creation result
     if (result?.errorCode === "session_creation_timeout") {
       showToast({
@@ -1382,11 +1321,27 @@ function App() {
     fetchWorkspacePrompts,
   ]);
 
-  const handleSelectSession = (sessionId) => {
+  const handleSelectSession = (sessionId, opts) => {
     switchSession(sessionId);
+    // keepSidebarOpen is set when the selection is an auto-focus triggered by
+    // expanding a folder (see SessionList.handleFolderOpened). In that case the
+    // mobile sidebar drawer must stay open — only direct conversation clicks
+    // close it.
+    if (!opts?.keepSidebarOpen) {
+      setShowSidebar(false);
+      setShowSidePanel(false);
+    }
+    setMainView("conversation");
+  };
+
+  // Show the dedicated Dashboard view. Clears the active session (the Dashboard
+  // is not a conversation) and switches the main content area to "dashboard".
+  // Does not delete or disconnect anything.
+  const handleShowDashboard = () => {
+    setActiveSessionId(null);
     setShowSidebar(false);
     setShowSidePanel(false);
-    setMainView("conversation");
+    setMainView("dashboard");
   };
 
   // Handle badge click action - calls API to execute configured command
@@ -1443,6 +1398,37 @@ function App() {
       }
     },
     [badgeClickEnabled, showToast],
+  );
+
+  // Move a folder to an organizational group (folders.json group label). An
+  // empty group clears the assignment. Persists via PUT /api/folder-group, then
+  // refreshes workspaces so the sidebar regroups immediately.
+  const handleMoveFolderToGroup = useCallback(
+    async (workingDir, group) => {
+      if (!workingDir) return;
+      try {
+        const res = await secureFetch(apiUrl("/api/folder-group"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ working_dir: workingDir, group: group || "" }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          showToast({ style: "error", title: text || "Failed to move folder to group" });
+          return;
+        }
+        invalidateConfigCache();
+        refreshWorkspaces();
+        const trimmed = (group || "").trim();
+        showToast({
+          style: "success",
+          title: trimmed ? `Moved to group "${trimmed}"` : "Removed from group",
+        });
+      } catch (err) {
+        showToast({ style: "error", title: "Failed to move folder to group: " + err.message });
+      }
+    },
+    [showToast, refreshWorkspaces],
   );
 
   // Handle terminal action - calls API to open terminal at workspace path
@@ -1527,28 +1513,93 @@ function App() {
     await archiveSession(session.session_id, archived);
 
     if (!archived) {
-      // When unarchiving, switch to conversations tab and select the session
-      setFilterTab(FILTER_TAB.CONVERSATIONS);
+      // When unarchiving, select the session
       switchSession(session.session_id);
     } else if (session.session_id === activeSessionId) {
-      // When archiving the active session, switch to another session in the same tab.
+      // When archiving the active session, switch to another non-archived session.
       // The session_archived WebSocket event handler also handles this, but we do it here
       // too (via switchSession for a full load) in case the event arrives late.
-      const currentTab = getFilterTab();
       const allSess = computeAllSessions(activeSessions, storedSessions);
-      const tabFiltered = allSess.filter((s) => {
-        if (s.session_id === session.session_id) return false; // exclude the one being archived
-        if (currentTab === FILTER_TAB.ARCHIVED) return s.archived;
-        if (currentTab === FILTER_TAB.PERIODIC) return !s.archived && s.periodic_enabled;
-        return !s.archived && !s.periodic_enabled; // conversations tab
-      });
-      if (tabFiltered.length > 0) {
-        switchSession(tabFiltered[0].session_id);
+      const remaining = allSess.filter((s) => s.session_id !== session.session_id && !s.archived);
+      if (remaining.length > 0) {
+        switchSession(remaining[0].session_id);
       }
-      // If no sessions left in this tab, the session_archived WebSocket event handler
+      // If no sessions left, the session_archived WebSocket event handler
       // will call setActiveSessionId(null) to clear the active session.
     }
   };
+
+  // Convert an existing regular conversation to a periodic one by creating a
+  // draft periodic config (enabled:false). The periodic_updated WebSocket event
+  // will flip session.periodic_enabled=true, moving it to the periodic category
+  // and revealing the inline periodic editor in ChatInput automatically.
+  const handleMakePeriodic = useCallback(
+    async (session) => {
+      const sessionId = session?.session_id;
+      if (!sessionId) return;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            // Draft body: "(pending)" satisfies PeriodicPrompt.Validate() while
+            // enabled:false keeps it as DRAFT so nothing is scheduled yet.
+            body: JSON.stringify({
+              prompt: "(pending)",
+              frequency: { value: 1, unit: "hours" },
+              enabled: false,
+            }),
+          },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        focusSession(sessionId);
+        showToast({
+          style: "success",
+          title: "Conversation is now periodic",
+          message: "Choose a prompt and enable scheduling.",
+          duration: 6000,
+        });
+      } catch (e) {
+        showToast({
+          style: "error",
+          title: "Failed to make conversation periodic",
+          duration: 5000,
+        });
+      }
+    },
+    [focusSession, showToast],
+  );
+
+  // Remove the periodic config from a conversation, reverting it to a regular one.
+  // DELETE /api/sessions/{id}/periodic broadcasts periodic_updated (nil), which
+  // flips session.periodic_enabled=false and hides the inline periodic editor.
+  const handleMakeNonPeriodic = useCallback(
+    async (session) => {
+      const sessionId = session?.session_id;
+      if (!sessionId) return;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          { method: "DELETE" },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast({
+          style: "success",
+          title: "Periodic scheduling removed",
+          message: "The conversation is now a regular conversation.",
+          duration: 6000,
+        });
+      } catch (e) {
+        showToast({
+          style: "error",
+          title: "Failed to remove periodic scheduling",
+          duration: 5000,
+        });
+      }
+    },
+    [showToast],
+  );
 
   // Send a context-menu prompt to a specific conversation by enqueueing its full
   // text. The queue delivers it to the agent when the conversation is idle, so
@@ -1595,7 +1646,19 @@ function App() {
 
 
   return html`
-    <div class="h-screen-safe flex">
+    <div class="drawer md:drawer-open h-screen-safe">
+      <!-- Drawer toggle: Preact-controlled via showSidebar (mobile) + md:drawer-open (desktop) -->
+      <input
+        type="checkbox"
+        id="sidebar-drawer"
+        class="drawer-toggle"
+        checked=${showSidebar}
+        onChange=${(e) => setShowSidebar(e.target.checked)}
+        tabIndex=${-1}
+        aria-hidden="true"
+      />
+      <!-- drawer-content: ALL page content (header, messages, input, dialogs) -->
+      <div class="drawer-content flex flex-col h-full">
       <!-- Delete Dialog -->
       <${DeleteDialog}
         isOpen=${deleteDialog.isOpen}
@@ -1732,98 +1795,12 @@ function App() {
       <!-- Unified toast container -->
       <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
-      <!-- Sidebar (hidden on mobile by default) -->
-      <div
-        class="hidden md:block bg-mitto-sidebar border-r border-slate-700 flex-shrink-0 relative"
-        style="width: ${sidebarWidth}px;"
-      >
-        <${SessionList}
-          activeSessions=${activeSessions}
-          storedSessions=${storedSessions}
-          activeSessionId=${activeSessionId}
-          onSelect=${handleSelectSession}
-          onNewSession=${handleNewSession}
-          onRename=${handleOpenSessionProperties}
-          onDelete=${handleDeleteSession}
-          onArchive=${handleArchiveSession}
-          workspaces=${workspaces}
-          theme=${theme}
-          onToggleTheme=${toggleTheme}
-          fontSize=${fontSize}
-          onToggleFontSize=${toggleFontSize}
-          onShowSettings=${handleShowSettings}
-          onShowWorkspaces=${handleShowWorkspaces}
-          onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
-          onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
-          configReadonly=${configReadonly}
-          rcFilePath=${rcFilePath}
-          badgeClickEnabled=${badgeClickEnabled}
-          onBadgeClick=${handleBadgeClick}
-          terminalActionEnabled=${terminalActionEnabled}
-          onFolderOpen=${handleFolderOpen}
-          onTerminalClick=${handleTerminalClick}
-          onBeadsOpen=${handleBeadsOpen}
-          queueLength=${queueLength}
-          onFetchConversationPrompts=${fetchConversationPromptsForSession}
-          onSendPromptToConversation=${handleSendPromptToConversation}
-          isCreatingSession=${isCreatingSession}
-        />
-        <!-- Resize handle on right edge -->
-        <div
-          class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-blue-500/40' : ''}"
-          style="margin-right: -2px;"
-          ...${sidebarHandleProps}
-          title="Drag to resize sidebar"
-        />
-      </div>
-
-      <!-- Mobile sidebar overlay -->
-      ${showSidebar &&
-      html`
-        <div class="md:hidden fixed inset-0 z-40 flex">
-          <div class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl">
-            <${SessionList}
-              activeSessions=${activeSessions}
-              storedSessions=${storedSessions}
-              activeSessionId=${activeSessionId}
-              onSelect=${handleSelectSession}
-              onNewSession=${handleNewSession}
-              onRename=${handleOpenSessionProperties}
-              onDelete=${handleDeleteSession}
-              onArchive=${handleArchiveSession}
-              onClose=${() => setShowSidebar(false)}
-              workspaces=${workspaces}
-              theme=${theme}
-              onToggleTheme=${toggleTheme}
-              fontSize=${fontSize}
-              onToggleFontSize=${toggleFontSize}
-              onShowSettings=${handleShowSettings}
-              onShowWorkspaces=${handleShowWorkspaces}
-              onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
-              onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
-              configReadonly=${configReadonly}
-              rcFilePath=${rcFilePath}
-              badgeClickEnabled=${badgeClickEnabled}
-              onBadgeClick=${handleBadgeClick}
-              terminalActionEnabled=${terminalActionEnabled}
-              onFolderOpen=${handleFolderOpen}
-              onTerminalClick=${handleTerminalClick}
-              onBeadsOpen=${handleBeadsOpen}
-              queueLength=${queueLength}
-              onFetchConversationPrompts=${fetchConversationPromptsForSession}
-              onSendPromptToConversation=${handleSendPromptToConversation}
-              isCreatingSession=${isCreatingSession}
-            />
-          </div>
-          <div
-            class="flex-1 bg-black/50"
-            onClick=${() => setShowSidebar(false)}
-          />
-        </div>
-      `}
-
-      <!-- Main content area: beads view or conversation -->
-      ${mainView === "beads" && beadsWorkingDir
+      <!-- Main content area: dashboard, beads view, or conversation -->
+      ${mainView === "dashboard"
+        ? html`
+          <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
+        `
+        : mainView === "beads" && beadsWorkingDir
         ? html`
           <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
             <${BeadsView}
@@ -1851,18 +1828,20 @@ function App() {
       >
         <!-- Header -->
         <div
-          class="relative p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 flex-shrink-0"
+          class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
         >
           <button
-            class="md:hidden p-2 hover:bg-slate-700 rounded-lg transition-colors"
+            class="md:hidden p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
             onClick=${() => setShowSidebar(true)}
+            title="Show conversations"
+            aria-label="Show conversations"
           >
             <${MenuIcon} className="w-6 h-6" />
           </button>
           <h1
             class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
-              ? "text-gray-500"
-              : "cursor-pointer hover:text-blue-400 transition-colors"}"
+              ? "text-mitto-text-muted"
+              : "cursor-pointer hover:text-mitto-accent-400 transition-colors"}"
             onClick=${activeSessionId ? handleToggleSidePanel : undefined}
             title=${activeSessionId ? "Click to view properties" : ""}
           >
@@ -1873,13 +1852,13 @@ function App() {
           <div class="ml-auto flex items-center gap-2">
             <!-- Status indicator dot (matches session list style) -->
             <span
-              class="w-2 h-2 rounded-full flex-shrink-0 ${isStreaming ? "bg-blue-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
+              class="w-2 h-2 rounded-full shrink-0 ${isStreaming ? "bg-mitto-accent-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
               title=${isStreaming ? "Streaming" : connected ? "Connected" : "Not connected"}
             ></span>
             <!-- Unified side panel toggle -->
             <button
               onClick=${handleToggleSidePanel}
-              class="p-1.5 rounded hover:bg-slate-700 transition-colors ${showSidePanel ? "bg-slate-700 text-blue-400" : "text-slate-400 hover:text-slate-200"}"
+              class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-mitto-text-secondary hover:text-mitto-text-200"}"
               title="Session details"
             >
               <${SidePanelIcon} className="w-4 h-4" />
@@ -1947,11 +1926,9 @@ function App() {
         messages.length > 0 &&
         html`
           <div
-            class="flex items-center justify-center gap-2 py-2 text-sm text-yellow-500"
+            class="flex items-center justify-center gap-2 py-2 text-sm text-mitto-warning"
           >
-            <span
-              class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
-            ></span>
+            <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
             Reconnecting to AI agent...
           </div>
         `}
@@ -1963,7 +1940,7 @@ function App() {
         html`
           <div class="flex justify-center mb-3">
             <div
-              class="text-xs text-gray-500 bg-slate-800/50 px-3 py-1 rounded-full"
+              class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
             >
               ${getArchiveReasonText(
                 sessionInfo.archive_reason,
@@ -1974,7 +1951,7 @@ function App() {
         `}
 
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
-        <div class="relative flex-shrink-0">
+        <div class="relative shrink-0">
           <!-- Queue Dropdown (floating overlay above input) -->
           <${QueueDropdown}
             isOpen=${showQueueDropdown}
@@ -2058,6 +2035,82 @@ function App() {
         onCreated=${() => {}}
         showToast=${showToast}
       />
+      </div>
+      <!-- END drawer-content -->
+
+      <!-- drawer-side: single unified SessionList (desktop always-open + mobile toggled) -->
+      <div class="drawer-side z-40">
+        <!-- Backdrop: shown on mobile; click to close.
+             We deliberately do NOT use for="sidebar-drawer" here. Pairing the
+             native label->checkbox toggle with the onClick handler produced a
+             double-toggle: onClick set showSidebar=false (re-rendering the
+             controlled checkbox to unchecked), then the label's native default
+             action synthesised a click on the now-unchecked checkbox, toggling
+             it back to checked and reopening the drawer. Driving the close
+             purely through onClick (the controlled-state path) avoids that.
+             cursor-pointer is required for iOS Safari: it does not dispatch a
+             click on the backdrop on tap unless the element carries
+             cursor:pointer, so without it outside-taps would never close the
+             sidebar drawer on iPhone (matches Drawer.js). -->
+        <label
+          aria-label="Close sidebar"
+          class="drawer-overlay cursor-pointer"
+          onClick=${() => setShowSidebar(false)}
+        ></label>
+        <!-- Panel: resizable on desktop (sidebarWidth), fixed w-80 class provides
+             fallback but inline style takes precedence when set via resize handle. -->
+        <div
+          class="bg-mitto-sidebar border-r border-mitto-border-1 h-full relative"
+          style="width: ${sidebarWidth}px;"
+        >
+          <${SessionList}
+            activeSessions=${activeSessions}
+            storedSessions=${storedSessions}
+            activeSessionId=${activeSessionId}
+            onSelect=${handleSelectSession}
+            onNewSession=${handleNewSession}
+            onRename=${handleOpenSessionProperties}
+            onDelete=${handleDeleteSession}
+            onArchive=${handleArchiveSession}
+            onClose=${() => setShowSidebar(false)}
+            workspaces=${workspaces}
+            theme=${theme}
+            onToggleTheme=${toggleTheme}
+            fontSize=${fontSize}
+            onToggleFontSize=${toggleFontSize}
+            onShowSettings=${handleShowSettings}
+            onShowWorkspaces=${handleShowWorkspaces}
+            onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
+            onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
+            configReadonly=${configReadonly}
+            rcFilePath=${rcFilePath}
+            badgeClickEnabled=${badgeClickEnabled}
+            onBadgeClick=${handleBadgeClick}
+            terminalActionEnabled=${terminalActionEnabled}
+            onFolderOpen=${handleFolderOpen}
+            onMoveFolderToGroup=${handleMoveFolderToGroup}
+            onTerminalClick=${handleTerminalClick}
+            onBeadsOpen=${handleBeadsOpen}
+            onShowDashboard=${handleShowDashboard}
+            mainView=${mainView}
+            beadsWorkingDir=${beadsWorkingDir}
+            queueLength=${queueLength}
+            onFetchConversationPrompts=${fetchConversationPromptsForSession}
+            onSendPromptToConversation=${handleSendPromptToConversation}
+            onMakePeriodic=${handleMakePeriodic}
+            onMakeNonPeriodic=${handleMakeNonPeriodic}
+            isCreatingSession=${isCreatingSession}
+          />
+          <!-- Resize handle on right edge (desktop: drag to resize sidebarWidth) -->
+          <div
+            class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-mitto-accent-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-mitto-accent-500/40' : ''}"
+            style="margin-right: -2px;"
+            ...${sidebarHandleProps}
+            title="Drag to resize sidebar"
+          />
+        </div>
+      </div>
+      <!-- END drawer-side -->
     </div>
   `;
 }

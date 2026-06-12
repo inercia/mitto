@@ -331,7 +331,7 @@ export function PeriodicFrequencyPanel({
   // Panel classes - part of normal document flow (not absolute positioned)
   // This ensures it pushes the conversation area up instead of overlaying it
   // Uses lighter background for better readability and contrast
-  const panelClasses = `periodic-frequency-panel w-full bg-slate-100 dark:bg-slate-700/95 backdrop-blur-sm border border-slate-300 dark:border-slate-600 rounded-lg overflow-hidden transition-all duration-300 ease-out ${
+  const panelClasses = `periodic-frequency-panel w-full bg-mitto-surface-hover dark:bg-mitto-surface-3/95 backdrop-blur-sm border border-mitto-border dark:border-mitto-border-2 rounded-lg overflow-hidden transition-all duration-300 ease-out ${
     isOpen
       ? "opacity-100 mb-3"
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
@@ -363,12 +363,12 @@ export function PeriodicFrequencyPanel({
       onConfirm=${handleConfirmImmediateDelivery}
       onCancel=${handleCancelConfirmDialog}
     >
-      <label class="flex items-center gap-2 mt-3 text-sm text-gray-300 cursor-pointer select-none">
+      <label class="flex items-center gap-2 mt-3 text-sm text-mitto-text-secondary cursor-pointer select-none">
         <input
           type="checkbox"
           checked=${resetTimer}
           onInput=${(e) => setResetTimer(e.target.checked)}
-          class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer"
           data-testid="reset-timer-checkbox"
         />
         Reset countdown for next scheduled run
@@ -400,48 +400,28 @@ export function PeriodicFrequencyPanel({
                 type="button"
                 onClick=${handleIconClick}
                 disabled=${isTriggering || isStreaming}
-                class="flex-shrink-0 p-1.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-colors ${isTriggering ||
+                class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${isTriggering ||
                 isStreaming
                   ? "opacity-50 cursor-not-allowed"
-                  : "cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700"}"
+                  : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
                 title=${isStreaming
                   ? "Wait for agent to finish responding"
                   : "Click to run this periodic prompt now"}
                 data-testid="periodic-run-now-button"
               >
                 ${isTriggering
-                  ? html`
-                      <svg
-                        class="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          class="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          stroke-width="4"
-                        ></circle>
-                        <path
-                          class="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
-                      </svg>
-                    `
+                  ? html`<span class="loading loading-spinner w-4 h-4 text-mitto-accent dark:text-mitto-accent-400"></span>`
                   : html`<${PlayFilledIcon}
-                      className="w-4 h-4 text-blue-600 dark:text-blue-400"
+                      className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400"
                     />`}
               </button>
             `
           : html`<${PeriodicFilledIcon}
-              className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0"
+              className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400 shrink-0"
             />`}
 
         <!-- Run every label -->
-        <span class="text-slate-600 dark:text-gray-300 flex-shrink-0"
+        <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
           >Run every</span
         >
 
@@ -454,9 +434,7 @@ export function PeriodicFrequencyPanel({
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
           disabled=${isSaving}
-          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
-            ? "opacity-50 cursor-not-allowed"
-            : ""}"
+          class="input input-xs w-16 text-center"
         />
 
         <!-- Unit dropdown -->
@@ -464,9 +442,7 @@ export function PeriodicFrequencyPanel({
           value=${localUnit}
           onChange=${handleUnitChange}
           disabled=${isSaving}
-          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
-            ? "opacity-50 cursor-not-allowed"
-            : "cursor-pointer"}"
+          class="select select-xs"
         >
           <option value="minutes">minutes</option>
           <option value="hours">hours</option>
@@ -476,7 +452,7 @@ export function PeriodicFrequencyPanel({
         <!-- Time picker (only shown for daily schedules) -->
         ${localUnit === "days" &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 flex-shrink-0"
+          <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
             >at</span
           >
           <input
@@ -485,7 +461,7 @@ export function PeriodicFrequencyPanel({
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
             disabled=${isSaving}
-            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving
+            class="h-8 px-2 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             placeholder="HH:MM"
@@ -498,51 +474,31 @@ export function PeriodicFrequencyPanel({
         <!-- Next run time -->
         ${nextTimeDisplay &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 text-xs flex-shrink-0">
+          <span class="text-mitto-text-muted dark:text-mitto-text-300 text-xs shrink-0">
             Next: ${nextTimeDisplay}
           </span>
         `}
 
         <!-- Saving indicator -->
         ${isSaving &&
-        html`
-          <svg
-            class="w-4 h-4 animate-spin text-blue-400"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            ></circle>
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            ></path>
-          </svg>
-        `}
+        html`<span class="loading loading-spinner w-4 h-4 text-mitto-accent"></span>`}
       </div>
 
       <!-- Fresh context option (only shown when not locked / editing is allowed) -->
       ${!disabled &&
       html`
-        <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-slate-200 dark:border-slate-600 pt-2">
+        <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-mitto-border dark:border-mitto-border-2 pt-2">
           <input
             type="checkbox"
             id="fresh-context-checkbox-${sessionId}"
             checked=${freshContext}
             onInput=${handleFreshContextChange}
-            class="w-4 h-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0"
+            class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
             data-testid="fresh-context-checkbox"
           />
           <label
             for="fresh-context-checkbox-${sessionId}"
-            class="text-slate-600 dark:text-gray-300 cursor-pointer select-none"
+            class="text-mitto-text-muted dark:text-mitto-text-300 cursor-pointer select-none"
           >
             Start each run with a fresh context
           </label>

@@ -21,8 +21,10 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   EditIcon,
-  ChevronDownIcon,
   getPromptIconOrDefault,
+  MittoIcon,
+  ClockIcon,
+  EllipsisIcon,
 } from "./Icons.js";
 
 /**
@@ -107,6 +109,8 @@ export function SessionItem({
   groupingMode = "none", // Current grouping mode (to hide spawned indicator in hierarchical mode)
   onFetchConversationPrompts, // Async (session, workingDir) => menus:conversation prompts evaluated for THIS conversation
   onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
+  onMakePeriodic, // Called with (session) to convert a regular session to periodic
+  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -118,7 +122,6 @@ export function SessionItem({
   isExpanded = false, // If true, chevron points down (expanded state)
   onToggleExpand = null, // Callback when expand/collapse is clicked
 }) {
-  const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
   // when the context menu opens (enabledWhen depends on this conversation's own
@@ -130,6 +133,21 @@ export function SessionItem({
 
   // Check if periodic is enabled for this session
   const isPeriodicEnabled = session.periodic_enabled || false;
+
+  // Leading category icon for the unified-tree row:
+  //   regular  -> mitto bubble (muted)
+  //   periodic -> clock (accent)
+  //   archived -> archive (muted)
+  // Spawned/child rows keep their ↳ marker + child-origin glyph instead.
+  let CategoryIcon = MittoIcon;
+  let categoryIconClass = "text-mitto-text-muted";
+  if (isArchived) {
+    CategoryIcon = ArchiveIcon;
+    categoryIconClass = "text-mitto-text-muted";
+  } else if (isPeriodicEnabled) {
+    CategoryIcon = ClockIcon;
+    categoryIconClass = "text-mitto-accent";
+  }
 
   // Calculate periodic progress background style
   const periodicProgressBg = useMemo(() => {
@@ -294,18 +312,33 @@ export function SessionItem({
     onArchive(session, !isArchived);
   };
 
-  const handleContextMenu = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-    // Evaluate menus:conversation prompts against THIS conversation's context so
-    // the submenu reflects the right-clicked conversation (e.g. "Report to
-    // parent" only for children), not the active session.
+  // Open the per-item context menu at a viewport position. Used by both
+  // right-click (handleContextMenu) and the explicit three-dot button
+  // (handleMenuButtonClick). Evaluates menus:conversation prompts against THIS
+  // conversation's context so the submenu reflects the clicked conversation
+  // (e.g. "Report to parent" only for children), not the active session.
+  const openContextMenuAt = (x, y) => {
+    setContextMenu({ x, y });
     if (onFetchConversationPrompts) {
       onFetchConversationPrompts(session, workingDir).then((prompts) => {
         setMenuPrompts(prompts || []);
       });
     }
+  };
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenuAt(e.clientX, e.clientY);
+  };
+
+  // Explicit three-dot button: anchor the menu at the button's bottom-left.
+  // ContextMenu is viewport-aware and will flip/shift to stay on-screen.
+  const handleMenuButtonClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    openContextMenuAt(rect.left, rect.bottom);
   };
 
   const closeContextMenu = () => {
@@ -328,6 +361,24 @@ export function SessionItem({
   const isActiveSession =
     !isArchived && (session.isActive || session.status === "active");
   const isStreaming = !isArchived && (session.isStreaming || false);
+  // Show a daisyUI loading ring in the leading-icon slot when this conversation's
+  // own agent is responding, OR when a (collapsed) child conversation is responding.
+  // It replaces the category icon on regular rows, and sits next to the ↳ marker on
+  // spawned (child) rows (which otherwise have no icon). The ring replaces the
+  // streaming status dot, so that dot is suppressed too.
+  const showLoadingRing = isStreaming || hasChildStreaming;
+  // The ring tooltip distinguishes self-streaming from a responding child.
+  const ringTitle = isStreaming
+    ? "Receiving response..."
+    : "Child conversation responding...";
+
+  // On the active (selected) row the background is the red accent, so the
+  // default muted text and the accent-colored streaming dot blend into it.
+  // Switch the trailing controls (badge, "..." menu, chevron) and the streaming
+  // dot to the accent foreground for contrast when the row is active.
+  const trailingControlClass = isActive
+    ? "text-mitto-accent-fg hover:text-mitto-accent-fg"
+    : "text-mitto-text-muted hover:text-mitto-text-strong";
 
   // Build group submenus from prompts flagged with menus:conversation.
   // Prompts are grouped by their `group` attribute; ungrouped prompts fall
@@ -372,6 +423,26 @@ export function SessionItem({
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
     },
+    // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
+    ...(!isPeriodicEnabled && !isSpawned && !isArchived
+      ? [
+          {
+            label: "Make periodic",
+            icon: html`<${ClockIcon} />`,
+            onClick: () => onMakePeriodic && onMakePeriodic(session),
+          },
+        ]
+      : []),
+    // "Make non-periodic" — inverse: only for periodic, non-spawned sessions
+    ...(isPeriodicEnabled && !isSpawned
+      ? [
+          {
+            label: "Make non-periodic",
+            icon: html`<${MittoIcon} />`,
+            onClick: () => onMakeNonPeriodic && onMakeNonPeriodic(session),
+          },
+        ]
+      : []),
     // Hide archive option for child (spawned) sessions
     ...(isSpawned
       ? []
@@ -446,11 +517,9 @@ export function SessionItem({
         <div
           onClick=${handleClick}
           onContextMenu=${handleContextMenu}
-          onMouseEnter=${() => setShowActions(true)}
-          onMouseLeave=${() => setShowActions(false)}
-          class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar overflow-hidden ${isActive
-            ? "bg-blue-900/30 border-l-2 border-l-blue-500"
-            : ""} ${isSwiping
+          class="px-2.5 py-1 rounded-lg cursor-pointer relative overflow-hidden ${isActive
+            ? "bg-mitto-accent text-mitto-accent-fg"
+            : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
             ? ""
             : "transition-transform duration-200"} ${extraLeftPadding} ${isNew
             ? "session-item-new"
@@ -471,77 +540,96 @@ export function SessionItem({
             <!-- Top row: status indicator, title, and workspace pill -->
             <div class="flex items-center gap-2">
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 min-w-0">
                   ${isSpawned
                     ? html`
                           <span
-                            class="spawned-indicator flex-shrink-0"
+                            class="text-sm leading-none shrink-0 ${isActive
+                              ? "text-mitto-accent-fg"
+                              : "text-mitto-text-muted"}"
                             title="Spawned from another conversation"
                             >↳</span
                           >
                         `
                       : null
                   }
-                  <span class="text-sm font-medium truncate"
+                  ${isSpawned && showLoadingRing
+                    ? html`
+                        <span class="shrink-0 ${isActive
+                          ? "text-mitto-accent-fg"
+                          : "text-mitto-accent"}">
+                          <span
+                            class="loading loading-ring loading-xs"
+                            title=${ringTitle}
+                          ></span>
+                        </span>
+                      `
+                    : null}
+                  ${!isSpawned
+                    ? html`
+                        <span class="shrink-0 ${isActive
+                          ? "text-mitto-accent-fg"
+                          : showLoadingRing
+                            ? "text-mitto-accent"
+                            : categoryIconClass}">
+                          ${showLoadingRing
+                            ? html`<span
+                                class="loading loading-ring loading-xs"
+                                title=${ringTitle}
+                              ></span>`
+                            : html`<${CategoryIcon} className="w-4 h-4" />`}
+                        </span>
+                      `
+                    : null}
+                  <span
+                    class="text-sm truncate ${isActive
+                      ? "text-mitto-accent-fg"
+                      : isArchived
+                        ? "text-mitto-text-300"
+                        : ""}"
                     >${displayName}</span
                   >
                   ${session.child_origin === "auto"
                     ? html`
-                        <span class="flex-shrink-0 text-amber-400" title="Auto-created child">
+                        <span class="shrink-0 text-amber-400" title="Auto-created child">
                           <${LightningIcon} className="w-4 h-4" />
                         </span>
                       `
                     : session.child_origin === "mcp"
                       ? html`
-                          <span class="flex-shrink-0 text-blue-400" title="Created by agent">
+                          <span class="shrink-0 text-mitto-accent" title="Created by agent">
                             <${RobotIcon} className="w-4 h-4" />
                           </span>
                         `
                       : session.child_origin === "human"
                         ? html`
-                            <span class="flex-shrink-0 text-green-400" title="Manually created child">
+                            <span class="shrink-0 text-mitto-success" title="Manually created child">
                               <${PersonIcon} className="w-4 h-4" />
                             </span>
                           `
                         : null}
                   ${session.isWaitingForChildren
                     ? html`
-                        <span class="flex-shrink-0 text-yellow-400 animate-pulse" title="Waiting for child conversations">
+                        <span class="shrink-0 text-mitto-warning animate-pulse" title="Waiting for child conversations">
                           <${HourglassIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}
                   ${session.isWaitingForUserInput
                     ? html`
-                        <span class="flex-shrink-0 text-purple-400 animate-pulse" title="Waiting for user input">
+                        <span class="shrink-0 text-purple-400 animate-pulse" title="Waiting for user input">
                           <${QuestionMarkIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}
                 </div>
               </div>
-              ${isStreaming || hasChildStreaming
-                ? html`
-                    <span
-                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
-                        ? "child-streaming-indicator"
-                        : "streaming-indicator"}"
-                      title=${hasChildStreaming
-                        ? "Child conversation responding..."
-                        : "Receiving response..."}
-                    ></span>
-                  `
-                : isActiveSession
-                  ? html`
-                      <span
-                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
-                        title="Active"
-                      ></span>
-                    `
-                  : !isArchived
+              ${showLoadingRing || isActiveSession
+                ? null
+                : !isArchived
                     ? html`
                         <span
-                          class="w-2 h-2 bg-amber-400 rounded-full flex-shrink-0"
+                          class="w-2 h-2 bg-amber-400 rounded-full shrink-0"
                           title="Not connected"
                         ></span>
                       `
@@ -559,80 +647,38 @@ export function SessionItem({
                   onBadgeClick=${onBadgeClick}
                   hideAbbreviation=${badgeHideAbbreviation}
                   hideAcpServer=${badgeHideAcpServer}
+                  className="shrink-0"
                 />
               `}
-            </div>
-            ${!isSpawned && html`
-            <!-- Bottom row: children count and action buttons -->
-            <div class="flex items-center justify-between mt-1">
-              <div class="flex items-center gap-2">
-                ${hasChildren && childCount > 0
-                  ? html`
-                      <button
-                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-slate-700'} text-gray-400 hover:text-white hover:bg-slate-600 transition-colors cursor-pointer"
-                        onClick=${(e) => {
-                          e.stopPropagation();
-                          if (onToggleExpand) onToggleExpand();
-                        }}
-                        title="${isExpanded ? 'Collapse children' : 'Expand children'}"
-                      >
-                        <span class="inline-block transition-transform ${isExpanded ? '' : '-rotate-90'}">
-                          <${ChevronDownIcon} className="w-3 h-3" />
-                        </span>
-                        <span>+${childCount}</span>
-                      </button>
-                    `
-                  : null}
-              </div>
-              <div
-                class="flex items-center gap-1 ${showActions
-                  ? "opacity-100"
-                  : "opacity-0"} transition-opacity flex-shrink-0"
+              ${!isSpawned &&
+              hasChildren &&
+              childCount > 0 &&
+              html`
+                <!-- Children count — a plain count-number badge. The "v"
+                     chevron toggle is rendered after the "..." menu so the
+                     trailing controls read <num> ... v, matching folder
+                     groups (<num> + ... v). -->
+                <span
+                  class="badge badge-sm badge-ghost shrink-0 tabular-nums ${isActive
+                    ? "bg-mitto-accent-fg text-mitto-accent"
+                    : ""}"
+                  title="${childCount} child conversation${childCount === 1
+                    ? ""
+                    : "s"}"
+                  >${childCount}</span
+                >
+              `}
+              <button
+                type="button"
+                onClick=${handleMenuButtonClick}
+                class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 ${trailingControlClass}"
+                title="More actions"
+                aria-label="More actions"
+                data-testid="session-item-menu"
               >
-                ${isSpawned
-                  ? html`<button
-                      onClick=${handleDelete}
-                      class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
-                      title="Delete"
-                    >
-                      <${TrashIcon} className="w-4 h-4" />
-                    </button>`
-                  : html`<button
-                      onClick=${canArchive ? handleArchive : undefined}
-                      disabled=${!canArchive}
-                      class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
-                        ? "opacity-50 cursor-not-allowed text-gray-500"
-                        : isArchived
-                          ? "hover:bg-slate-600 text-gray-500"
-                          : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
-                      title="${!canArchive
-                        ? archiveBlockedReason
-                        : isArchived
-                          ? `Unarchive${session.archive_reason ? " — " + getArchiveReasonText(session.archive_reason, session.archived_at) : ""}`
-                          : "Archive"}"
-                    >
-                      ${isArchived
-                        ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
-                        : html`<${ArchiveIcon} className="w-4 h-4" />`}
-                    </button>`
-                }
-                <button
-                  onClick=${handleRename}
-                  class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
-                  title="Properties"
-                >
-                  <${EditIcon} className="w-4 h-4" />
-                </button>
-                <button
-                  onClick=${handleDelete}
-                  class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
-                  title="Delete"
-                >
-                  <${TrashIcon} className="w-4 h-4" />
-                </button>
-              </div>
+                <${EllipsisIcon} className="w-3.5 h-3.5" />
+              </button>
             </div>
-            `}
           </div>
         </div>
       </div>

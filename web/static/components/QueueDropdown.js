@@ -126,7 +126,7 @@ export function QueueDropdown({
   // Compute classes for animation - positioned as floating overlay above the input
   // Shadow only on top (negative Y offset) to cast over conversation area, not over input
   // When open: use resizable height, when closed: collapse to 0
-  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-slate-600 rounded-t-lg overflow-hidden z-20 ${
+  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-mitto-surface-3/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 ${
     isDragging ? "" : "transition-all duration-300 ease-out"
   } ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none border-0"}`;
 
@@ -239,25 +239,26 @@ export function QueueDropdown({
       ref=${dropdownRef}
       class=${dropdownClasses}
       data-is-open=${String(isOpen)}
+      data-testid="queue-dropdown"
       style="transform-origin: bottom; ${dropdownStyle}"
       onMouseEnter=${handleMouseEnter}
       onMouseLeave=${handleMouseLeave}
     >
       <!-- Resize Handle at top edge -->
       <div
-        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging
-          ? "bg-slate-600/50"
+        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none ${isDragging
+          ? "bg-mitto-surface-4/50"
           : ""}"
         ...${handleProps}
         title="Drag to resize"
       >
-        <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+        <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
       </div>
 
       <div
-        class="queue-dropdown-header px-3 py-2 border-b border-slate-700 flex items-center justify-between"
+        class="queue-dropdown-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between"
       >
-        <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">
+        <span class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide">
           Queued Messages (${messages.length}/${maxSize})
         </span>
       </div>
@@ -271,15 +272,17 @@ export function QueueDropdown({
                 (msg, index) => html`
                   <div
                     key=${msg.id}
-                    class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0 group"
+                    class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-mitto-surface-3/50 transition-colors border-b border-mitto-border-1/50 last:border-b-0 group"
+                    data-testid="queue-item"
+                    data-queue-item-index=${index}
                   >
                     <span
-                      class="queue-item-number text-xs text-gray-500 font-mono w-4 flex-shrink-0"
+                      class="queue-item-number text-xs text-mitto-text-muted font-mono w-4 shrink-0"
                     >
                       ${index + 1}
                     </span>
                     <span
-                      class="queue-item-text flex-1 text-sm text-gray-200 truncate"
+                      class="queue-item-text flex-1 text-sm text-mitto-text truncate"
                       title=${msg.prompt_name || msg.message}
                     >
                       ${msg.prompt_name || msg.title || truncateText(msg.message)}
@@ -287,7 +290,7 @@ export function QueueDropdown({
                     ${msg.scheduled_time
                       ? html`
                           <span
-                            class="text-xs text-amber-400 flex-shrink-0 font-mono"
+                            class="text-xs text-amber-400 shrink-0 font-mono"
                             title=${new Date(
                               msg.scheduled_time,
                             ).toLocaleString()}
@@ -297,13 +300,18 @@ export function QueueDropdown({
                         `
                       : null}
                     <div
-                      class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                     >
                       <button
                         type="button"
                         onClick=${(e) => handleMoveUp(e, msg.id)}
-                        disabled=${isMoving || index === 0}
-                        class="queue-item-move-up p-1 rounded hover:bg-slate-600 text-gray-400 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                        aria-disabled=${isMoving || index === 0
+                          ? "true"
+                          : "false"}
+                        class="queue-item-move-up btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
+                        index === 0
+                          ? "opacity-40 pointer-events-none"
+                          : ""}"
                         title=${index === 0 ? "Already at top" : "Move up"}
                       >
                         <${ChevronUpIcon} className="w-3.5 h-3.5" />
@@ -311,8 +319,13 @@ export function QueueDropdown({
                       <button
                         type="button"
                         onClick=${(e) => handleMoveDown(e, msg.id)}
-                        disabled=${isMoving || index === messages.length - 1}
-                        class="queue-item-move-down p-1 rounded hover:bg-slate-600 text-gray-400 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                        aria-disabled=${isMoving || index === messages.length - 1
+                          ? "true"
+                          : "false"}
+                        class="queue-item-move-down btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
+                        index === messages.length - 1
+                          ? "opacity-40 pointer-events-none"
+                          : ""}"
                         title=${index === messages.length - 1
                           ? "Already at bottom"
                           : "Move down"}
@@ -322,8 +335,10 @@ export function QueueDropdown({
                       <button
                         type="button"
                         onClick=${(e) => handleDelete(e, msg.id)}
-                        disabled=${isDeleting}
-                        class="queue-item-delete p-1 rounded hover:bg-red-600/80 text-gray-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        aria-disabled=${isDeleting ? "true" : "false"}
+                        class="queue-item-delete btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:bg-red-600/80 hover:text-mitto-text-strong ${isDeleting
+                          ? "opacity-40 pointer-events-none"
+                          : ""}"
                         title="Remove from queue"
                       >
                         <${TrashIcon} className="w-3.5 h-3.5" />
@@ -336,7 +351,7 @@ export function QueueDropdown({
           `
         : html`
             <div
-              class="queue-dropdown-empty px-3 py-4 text-center text-sm text-gray-500"
+              class="queue-dropdown-empty px-3 py-4 text-center text-sm text-mitto-text-muted"
             >
               No messages in queue
             </div>

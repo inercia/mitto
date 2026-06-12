@@ -58,10 +58,11 @@ function NamedPromptPill({ message }) {
       ${timeStr &&
       html`<span class="message-timestamp">${timeStr}</span>`}
       <div
-        class="named-prompt-pill flex items-center gap-2 px-4 py-2 rounded-full"
+        class="badge badge-primary badge-lg gap-2"
+        data-testid="named-prompt-pill"
       >
         <svg
-          class="w-4 h-4 flex-shrink-0"
+          class="w-4 h-4 shrink-0"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -115,8 +116,8 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
   }, [isCollapsed, isCollapsible, linkedText, firstLine]);
 
   const bubbleClass = isModelError
-    ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-amber-900/20 text-gray-400 border border-amber-700/50 border-l-4 border-l-amber-500"
-    : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-gray-400";
+    ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted border border-amber-700/50 border-l-4 border-l-amber-500"
+    : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted";
 
   return html`
     <div class="message-enter flex justify-start mb-3">
@@ -126,7 +127,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
           onClick=${isCollapsible ? () => setIsCollapsed(!isCollapsed) : undefined}
         >
           <span
-            class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 flex-shrink-0"
+            class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 shrink-0"
             >${isModelError ? "⚠️" : "💭"}</span>
           <div class="min-w-0">
             <span
@@ -165,7 +166,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-center mb-3">
         <div
-          class="text-xs text-gray-500 bg-slate-800/50 px-3 py-1 rounded-full"
+          class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
           ${message.text}
         </div>
@@ -184,7 +185,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         // Green checkmark icon for completed
         return html`
           <svg
-            class="w-4 h-4 text-green-400"
+            class="w-4 h-4 text-mitto-success"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -202,7 +203,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         // Red X icon for failed
         return html`
           <svg
-            class="w-4 h-4 text-red-400"
+            class="w-4 h-4 text-mitto-danger"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -219,29 +220,11 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       if (isRunning) {
         // Spinning indicator for running
         return html`
-          <svg
-            class="w-4 h-4 text-yellow-400 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            ></circle>
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            ></path>
-          </svg>
+          <span class="loading loading-spinner w-4 h-4 text-mitto-warning"></span>
         `;
       }
       // Default: gray text for unknown status
-      return html`<span class="text-xs text-gray-400">${message.status}</span>`;
+      return html`<span class="text-xs text-mitto-text-muted">${message.status}</span>`;
     };
 
     // Parse the title for file paths
@@ -294,9 +277,9 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-center mb-1">
         <div
-          class="text-sm text-gray-400 flex items-center gap-2 bg-slate-800/50 dark:bg-slate-800/50 px-3 py-1.5 rounded-lg"
+          class="text-sm text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg"
         >
-          <span class="text-yellow-500">🔧</span>
+          <span class="text-mitto-warning">🔧</span>
           <span class="font-medium">${renderTitle()}</span>
           ${renderStatus()}
         </div>
@@ -330,7 +313,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           ${onRetry &&
           html`<button
             type="button"
-            class="flex-shrink-0 p-1.5 text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 rounded-full transition-colors"
+            class="btn btn-ghost btn-sm btn-circle shrink-0 text-mitto-text-muted"
             onClick=${onRetry}
             title="Retry — resend the last prompt"
           >
@@ -481,7 +464,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
-          class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-gray-100 rounded-bl-sm"
+          class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
         >
           <div
             ref=${agentMessageRef}

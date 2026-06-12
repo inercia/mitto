@@ -92,6 +92,55 @@ export async function waitForStreamingComplete(page: Page): Promise<void> {
 }
 
 /**
+ * Wait for streaming to complete AND for the last agent bubble's rendered
+ * content to settle. Use this instead of a blind `waitForTimeout(...)` after a
+ * response before asserting on streamed markdown.
+ *
+ * Rationale: once the stop button is hidden the backend has already flushed all
+ * content (StreamBuffer.Flush emits the final agent_message *before*
+ * is_prompting=false), but the trailing WebSocket message still has to land in
+ * the DOM and be markdown-rendered. Rather than guessing a fixed delay, we poll
+ * the last agent bubble's innerHTML length until it is unchanged across three
+ * consecutive samples (~300ms > the backend's 200ms soft-flush window), which
+ * deterministically guarantees the final chunk has rendered.
+ */
+export async function waitForStreamingSettled(page: Page): Promise<void> {
+  // An agent response must exist.
+  await expect(page.locator(selectors.agentMessage).first()).toBeVisible({
+    timeout: timeouts.agentResponse,
+  });
+
+  // Streaming is done when the stop button is hidden. It may never appear for
+  // very fast responses — that's fine.
+  await page
+    .locator(selectors.stopButton)
+    .waitFor({ state: "hidden", timeout: timeouts.agentResponse })
+    .catch(() => {});
+
+  // Wait for the last agent bubble's rendered HTML to stop changing.
+  const lastAgent = page.locator(selectors.agentMessage).last();
+  let prevLen = -1;
+  let stableSamples = 0;
+  await expect
+    .poll(
+      async () => {
+        const len = await lastAgent
+          .evaluate((el) => el.innerHTML.length)
+          .catch(() => 0);
+        if (len > 0 && len === prevLen) {
+          stableSamples += 1;
+        } else {
+          stableSamples = 0;
+          prevLen = len;
+        }
+        return stableSamples;
+      },
+      { timeout: timeouts.agentResponse, intervals: [100, 100, 100, 100] },
+    )
+    .toBeGreaterThanOrEqual(3);
+}
+
+/**
  * Wait for messages to be loaded/synced after navigation or reload.
  * Uses actual DOM state rather than fixed timeouts.
  *

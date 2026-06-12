@@ -79,33 +79,11 @@ Config: `session.auto_archive_inactive_after: "1w"` (in `checkAutoArchive()`). E
 
 ## ACP Process Crash Recovery
 
-Both `BackgroundSession` and `SharedACPProcess` attempt automatic restart with error classification and telemetry.
+`classifyACPError()` → **Permanent** (command not found, syntax error) = stop + guidance. **Transient** (network, crash) = retry with backoff.
 
-`classifyACPError(err, stderr)` → `ACPClassifiedError{Class, UserMessage, UserGuidance}`: **Permanent** (`command not found`, `MODULE_NOT_FOUND`, `EACCES`, `SyntaxError`) → stop, show guidance. **Transient** (network, port conflict, crash) → retry with backoff.
+Limits: 3 restarts/5min, 10 lifetime cap. Circuit breaker (`permanentlyFailed`) blocks forever on permanent error or lifetime cap.
 
-`isACPConnectionError(err)` detects: `broken pipe`, `file already closed`, `connection reset`, `peer disconnected`, `shared ACP process has exited/not running`.
-
-**Restart constants** (`acp_error_classification.go`): `MaxACPRestarts`=3 per window, `MaxACPTotalRestarts`=10 lifetime cap, `ACPRestartWindow`=5min, `ACPRestartBaseDelay`=3s→30s (exponential). Circuit breaker: `permanentlyFailed bool` (in `restartMu`) — set on lifetime cap or permanent error; `canRestartACP()` checks it first, never resets.
-
-### Auxiliary Session Invalidation
-
-- **On `SharedACPProcess.Restart()`**: `onRestart` → `invalidateAuxiliarySessions(wuuid)` (removes ALL aux sessions).
-- **On connection error in `PromptAuxiliary()`**: `invalidateAuxSession(wuuid, purpose)` (removes one, retries once).
-- Lock ordering: both called WITHOUT holding `m.mu`; they acquire `auxMu` internally.
-
-### Auxiliary Session GC (Tier 3)
-
-Tier 3 cleans up auxiliary sessions idle longer than `AuxIdleTimeout` (default: 10m) via `CleanupStaleAuxiliarySessions()`. Lazily re-created on next use.
-
-### ACP Process Death Detection (Three-Layer)
-
-| Layer | Mechanism | Detection Time | File |
-| ----- | --------- | -------------- | ---- |
-| **Fix A** | OS liveness polling (`kill(pid, 0)`) | ~2s | `shared_acp_process.go` |
-| **Fix B** | `conn.Done()` pipe EOF | ~seconds | SDK level |
-| **Fix C** | Stderr crash pattern matching | Immediate | `background_session.go`, `shared_acp_process.go` |
-
-All three layers signal via `processDone` channel (closed once via `sync.Once`).
+Death detection (three layers): OS polling (~2s), `conn.Done()` EOF (~seconds), stderr pattern match (immediate). All signal via `processDone` channel.
 
 ## MCP Server Lifecycle
 

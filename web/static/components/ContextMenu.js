@@ -2,9 +2,41 @@
 // Right-click menus with viewport-aware positioning and hover-flyout submenus.
 // Shared by the conversation/group menus (app.js) and the Beads issue list.
 
-const { html, useState, useEffect, useRef, useMemo } = window.preact;
+const { html, useState, useEffect, useLayoutEffect, useRef, useMemo, render } =
+  window.preact;
 
 import { ChevronRightIcon } from "./Icons.js";
+
+// Renders `children` into a fresh <div> appended to document.body so the menu
+// escapes any ancestor stacking context / containing block. The sidebar lives
+// inside daisyUI's .drawer-side panel, whose child carries `translate` and
+// `will-change: transform`; both establish a containing block for
+// position:fixed descendants AND a stacking context, which traps the menu's
+// `fixed z-50` inside the sidebar's width and paints it BEHIND the chat panel.
+// Rendering at the document.body level sidesteps this entirely.
+function Portal({ children }) {
+  const containerRef = useRef(null);
+  if (containerRef.current === null) {
+    containerRef.current = document.createElement("div");
+  }
+
+  // Attach the container on mount; unmount the subtree and detach on cleanup.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    document.body.appendChild(el);
+    return () => {
+      render(null, el);
+      el.remove();
+    };
+  }, []);
+
+  // Reconcile the menu subtree into the body-level container on every render.
+  useLayoutEffect(() => {
+    render(children, containerRef.current);
+  });
+
+  return null;
+}
 
 // Renders a single context menu entry. Entries with a non-empty `submenu`
 // array expand a flyout submenu on hover (positioned to the right, flipping
@@ -49,7 +81,7 @@ function ContextMenuItem({ item, onClose }) {
 
   if (hasSubmenu) {
     return html`
-      <div
+      <li
         ref=${itemRef}
         class="relative"
         onMouseEnter=${openSubmenu}
@@ -60,68 +92,62 @@ function ContextMenuItem({ item, onClose }) {
             e.stopPropagation();
             openSubmenu();
           }}
-          class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 text-gray-200 hover:bg-slate-700"
         >
           ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
           <span class="flex-1">${item.label}</span>
-          <${ChevronRightIcon} className="w-4 h-4 text-gray-400" />
+          <${ChevronRightIcon} className="w-4 h-4 opacity-50" />
         </button>
         ${submenuOpen &&
         html`
-          <div
-            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px] max-h-[60vh] overflow-y-auto"
+          <ul
+            class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px] max-h-[60vh] overflow-y-auto"
             style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
             onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
             onMouseLeave=${scheduleClose}
           >
             ${item.submenu.map(
               (sub) => html`
-                <button
-                  key=${sub.label}
-                  onClick=${(e) => {
-                    e.stopPropagation();
-                    if (!sub.disabled) {
-                      sub.onClick();
-                      onClose();
-                    }
-                  }}
-                  disabled=${sub.disabled}
-                  class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${sub.disabled
-                    ? "text-gray-500 cursor-not-allowed"
-                    : sub.danger
-                      ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-                      : "text-gray-200 hover:bg-slate-700"}"
-                >
-                  ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
-                  ${sub.label}
-                </button>
+                <li key=${sub.label} class="${sub.disabled ? "menu-disabled" : ""}">
+                  <button
+                    onClick=${(e) => {
+                      e.stopPropagation();
+                      if (!sub.disabled) {
+                        sub.onClick();
+                        onClose();
+                      }
+                    }}
+                    disabled=${sub.disabled}
+                    class="${sub.danger ? "text-error" : ""}"
+                  >
+                    ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
+                    ${sub.label}
+                  </button>
+                </li>
               `,
             )}
-          </div>
+          </ul>
         `}
-      </div>
+      </li>
     `;
   }
 
   return html`
-    <button
-      onClick=${(e) => {
-        e.stopPropagation();
-        if (!item.disabled) {
-          item.onClick();
-          onClose();
-        }
-      }}
-      disabled=${item.disabled}
-      class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
-        ? "text-gray-500 cursor-not-allowed"
-        : item.danger
-          ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
-          : "text-gray-200 hover:bg-slate-700"}"
-    >
-      ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
-      ${item.label}
-    </button>
+    <li class="${item.disabled ? "menu-disabled" : ""}">
+      <button
+        onClick=${(e) => {
+          e.stopPropagation();
+          if (!item.disabled) {
+            item.onClick();
+            onClose();
+          }
+        }}
+        disabled=${item.disabled}
+        class="${item.danger ? "text-error" : ""}"
+      >
+        ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
+        ${item.label}
+      </button>
+    </li>
   `;
 }
 
@@ -176,20 +202,22 @@ export function ContextMenu({ x, y, items, onClose }) {
   }, [x, y, menuRef.current]);
 
   return html`
-    <div
-      ref=${menuRef}
-      class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
-      style="left: ${position.x}px; top: ${position.y}px;"
-    >
-      ${items.map(
-        (item) => html`
-          <${ContextMenuItem}
-            key=${item.label}
-            item=${item}
-            onClose=${onClose}
-          />
-        `,
-      )}
-    </div>
+    <${Portal}>
+      <ul
+        ref=${menuRef}
+        class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px]"
+        style="left: ${position.x}px; top: ${position.y}px;"
+      >
+        ${items.map(
+          (item) => html`
+            <${ContextMenuItem}
+              key=${item.label}
+              item=${item}
+              onClose=${onClose}
+            />
+          `,
+        )}
+      </ul>
+    <//>
   `;
 }

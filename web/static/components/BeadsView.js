@@ -3,11 +3,12 @@
 
 const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
 
-import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters } from "../utils/index.js";
+import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, SpinnerIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { Drawer } from "./Drawer.js";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -49,45 +50,47 @@ const DEP_TYPES = [
 
 const PRIORITY_LABELS = { 0: "Critical", 1: "High", 2: "Medium", 3: "Low" };
 const PRIORITY_COLORS = {
-  0: "bg-red-600 text-white",
-  1: "bg-orange-500 text-white",
-  2: "bg-yellow-500 text-black",
-  3: "bg-slate-600 text-white",
+  0: "badge-error",
+  1: "badge-warning",
+  2: "badge-info",
+  3: "badge-ghost",
 };
 
 const STATUS_COLORS = {
   open: "bg-green-700 text-green-100",
   in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
-  closed: "bg-slate-600 text-white",
+  closed: "bg-mitto-surface-4 text-mitto-text-strong",
   blocked: "bg-red-700 text-red-100",
   deferred: "bg-cyan-800 text-cyan-100",
 };
 
 // Status filter toggle buttons shown in the Beads toolbar. Each button toggles
 // the visibility of issues with the matching status. `key` is the bd status
-// value; `label` is the user-facing text.
+// value; `label` is the user-facing text (used for the tooltip/aria-label of
+// the icon-only button); `Icon` is the glyph rendered inside the button.
 const BEADS_STATUS_TOGGLES = [
-  { key: "open", label: "open" },
-  { key: "in_progress", label: "in-progress" },
-  { key: "closed", label: "closed" },
+  { key: "open", label: "open", Icon: CircleIcon },
+  { key: "in_progress", label: "in-progress", Icon: HourglassIcon },
+  { key: "closed", label: "closed", Icon: CheckIcon },
 ];
 
 // In-memory (not persisted) status toggle state for the Beads view. Kept at
 // module scope so the user's selection survives navigating away from and back
-// to the Beads view within the same app session. It intentionally resets to
-// "all enabled" on a full reload / app restart, so all issues are shown again.
-let beadsStatusToggles = { open: true, in_progress: true, closed: true };
+// to the Beads view within the same app session. It intentionally resets on a
+// full reload / app restart to its default: open and in-progress shown, closed
+// hidden.
+let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 
 const TYPE_COLORS = {
   epic: "bg-purple-700 text-purple-100",
   feature: "bg-blue-700 text-blue-100 beads-type-feature",
   bug: "bg-red-700 text-red-100",
-  task: "bg-slate-600 text-white",
-  chore: "bg-slate-600 text-white",
+  task: "bg-mitto-surface-4 text-mitto-text-strong",
+  chore: "bg-mitto-surface-4 text-mitto-text-strong",
 };
 
 function badge(text, colorClass) {
-  return html`<span class="px-1.5 py-0.5 rounded text-xs font-medium ${colorClass}">${text}</span>`;
+  return html`<span class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}">${text}</span>`;
 }
 
 function priorityBadge(p) {
@@ -97,7 +100,7 @@ function priorityBadge(p) {
 
 function statusBadge(s) {
   const label = (s || "open").replace(/_/g, " ");
-  return badge(label, STATUS_COLORS[s] ?? "bg-slate-600 text-white");
+  return badge(label, STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong");
 }
 
 function typeBadge(t) {
@@ -116,7 +119,7 @@ function renderMarkdown(text) {
 function commentBody(text) {
   const m = renderMarkdown(text);
   if (m) return html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: m }} />`;
-  return html`<pre class="whitespace-pre-wrap break-words text-sm text-mitto-text">${text || ""}</pre>`;
+  return html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${text || ""}</pre>`;
 }
 
 // ---- Detail side panel ------------------------------------------------------
@@ -128,7 +131,7 @@ function labelValue(label, value) {
   return html`
     <div>
       <div class="text-xs text-mitto-text-secondary mb-0.5">${label}</div>
-      <div class="text-sm text-mitto-text break-words">${value}</div>
+      <div class="text-sm text-mitto-text wrap-break-word">${value}</div>
     </div>
   `;
 }
@@ -818,8 +821,17 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  const inputClass = "w-full px-3 py-2 bg-mitto-input-box border border-mitto-border rounded text-sm text-mitto-text focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-mitto-text-secondary";
-  const labelClass = "block text-xs font-medium text-mitto-text-secondary mb-1";
+  // daisyUI's .input/.select/.textarea set their corner radius via the logical
+  // longhand border-start-start-radius:var(--radius-field), which a Tailwind
+  // `rounded-*` shorthand utility does NOT override. Some themes set
+  // --radius-field as high as 2rem, turning these edit fields into pills. Pin
+  // --radius-field so edit-mode fields keep the same subtle 0.25rem corners as
+  // the panel's description/notes boxes, regardless of theme.
+  const inputClass = "input input-sm w-full [--radius-field:0.25rem]";
+  const selectClass = "select select-sm w-full [--radius-field:0.25rem]";
+  const textareaClass = "textarea textarea-sm w-full [--radius-field:0.25rem]";
+  // Block label with a small gap so it doesn't sit flush against its field.
+  const labelClass = "label block mb-1";
 
   return html`
     <${Fragment}>
@@ -833,21 +845,27 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           onClick=${handleClose}
         />
       `}
-      <!-- Panel layer scoped to the beads view area (absolute inset-0 within the
-           relative BeadsView root). It is transparent and pointer-events-none so
-           the backdrop's dim shows through on the panel's left and clicks on the
-           empty area fall through to the backdrop; only the panel is interactive
-           (pointer-events-auto). z-[60] keeps the panel above the z-50 backdrop.
-           Scoping the panel here means expand fills only the beads view area and
-           the panel never covers the sidebar.
+      <!-- Scoped daisyUI drawer confined to the beads view area (drawer-scoped =
+           absolute inset-0 within the relative BeadsView root; see styles.css).
+           Its drawer-overlay is transparent so the full-window backdrop above
+           dims through on the panel's left and outside clicks close the panel;
+           z-60 keeps the panel above the z-50 backdrop. Scoping means expand
+           fills only the beads view area and the panel never covers the sidebar.
              Phone: panel is always full-width.
              Desktop normal: a doubled fixed width (40rem), capped at 85% of the
                beads view so the dim always shows on the panel's left and the
                panel never exceeds the beads view width.
              Desktop expanded: panel fills the whole beads view area. -->
-      <div class="absolute inset-0 z-[60] flex justify-end pointer-events-none">
-        <div class="${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"} bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full flex flex-col border-l border-slate-700 properties-panel pointer-events-auto ${isClosing ? "closing" : ""}">
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
+      <${Drawer}
+        scoped
+        side="end"
+        isClosing=${isClosing}
+        onClose=${handleClose}
+        zClass="z-60"
+        widthClass=${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"}
+        panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
+      >
+      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
             ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>`
@@ -868,7 +886,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 `
                 : html`
                   <h2
-                    class="font-semibold text-base text-mitto-text break-words cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
+                    class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
                     onClick=${startEditTitle}
                     title="Click to edit"
                   >${data.title}</h2>
@@ -877,7 +895,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </div>
         <button
           onClick=${() => setFullscreen(f => !f)}
-          class="${isMobile ? "hidden" : "block"} p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="btn btn-ghost btn-square btn-sm shrink-0 ${isMobile ? "hidden" : ""}"
           title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
         >
           ${fullscreen
@@ -886,7 +904,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </button>
         <button
           onClick=${handleClose}
-          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="btn btn-ghost btn-square btn-sm shrink-0"
           title="Close"
         >
           <${CloseIcon} className="w-5 h-5" />
@@ -896,57 +914,65 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
         ${creating
           ? html`
-            <div>
-              <label class=${labelClass}>Title <span class="text-red-400">*</span></label>
-              <input
-                type="text"
-                class=${inputClass}
-                placeholder="Issue title"
-                value=${title}
-                onInput=${e => setTitle(e.target.value)}
-                disabled=${submitting}
-                autoFocus
-              />
-            </div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Issue</legend>
 
-            <div class="flex gap-3">
-              <div class="flex-1">
-                <label class=${labelClass}>Type</label>
-                <select
+              <div>
+                <label class=${labelClass} for="new-issue-title">Title <span class="text-red-400">*</span></label>
+                <input
+                  id="new-issue-title"
+                  type="text"
                   class=${inputClass}
-                  value=${type}
-                  onInput=${e => setType(e.target.value)}
+                  placeholder="Issue title"
+                  value=${title}
+                  onInput=${e => setTitle(e.target.value)}
                   disabled=${submitting}
-                >
-                  ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                </select>
+                  autoFocus
+                />
               </div>
-              <div class="flex-1">
-                <label class=${labelClass}>Priority</label>
-                <select
-                  class=${inputClass}
-                  value=${priority}
-                  onInput=${e => setPriority(Number(e.target.value))}
-                  disabled=${submitting}
-                >
-                  ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
-                    html`<option value=${n}>${label}</option>`
-                  )}
-                </select>
-              </div>
-            </div>
 
-            <div>
-              <label class=${labelClass}>Description</label>
-              <textarea
-                class="${inputClass} resize-none"
-                rows="6"
-                placeholder="Optional description…"
-                value=${description}
-                onInput=${e => setDescription(e.target.value)}
-                disabled=${submitting}
-              ></textarea>
-            </div>
+              <div class="flex gap-3 mt-3">
+                <div class="flex-1">
+                  <label class=${labelClass} for="new-issue-type">Type</label>
+                  <select
+                    id="new-issue-type"
+                    class=${selectClass}
+                    value=${type}
+                    onInput=${e => setType(e.target.value)}
+                    disabled=${submitting}
+                  >
+                    ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                  </select>
+                </div>
+                <div class="flex-1">
+                  <label class=${labelClass} for="new-issue-priority">Priority</label>
+                  <select
+                    id="new-issue-priority"
+                    class=${selectClass}
+                    value=${priority}
+                    onInput=${e => setPriority(Number(e.target.value))}
+                    disabled=${submitting}
+                  >
+                    ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
+                      html`<option value=${n}>${label}</option>`
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              <div class="mt-3">
+                <label class=${labelClass} for="new-issue-desc">Description</label>
+                <textarea
+                  id="new-issue-desc"
+                  class="${textareaClass} resize-none"
+                  rows="6"
+                  placeholder="Optional description…"
+                  value=${description}
+                  onInput=${e => setDescription(e.target.value)}
+                  disabled=${submitting}
+                ></textarea>
+              </div>
+            </fieldset>
           `
           : html`
             <div class="flex flex-wrap gap-2 items-center">
@@ -957,38 +983,38 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   type="button"
                   onClick=${() => !savingPriority && setEditingPriority(o => !o)}
                   disabled=${savingPriority}
-                  class="cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-default"
+                  class="btn btn-ghost btn-xs"
                   title="Click to change priority"
                 >
                   ${priorityBadge(data.priority)}
                 </button>
-                ${savingPriority && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin inline-block ml-1 text-mitto-text-secondary align-middle" />`}
+                ${savingPriority && html`<span class="loading loading-spinner w-3.5 h-3.5 inline-block ml-1 text-mitto-text-secondary align-middle"></span>`}
                 ${editingPriority && html`
-                  <div class="absolute left-0 top-full mt-1 z-10 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]">
+                  <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
                     ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
                       const num = Number(n);
                       const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
                       return html`
-                        <button
-                          key=${n}
-                          type="button"
-                          onClick=${() => handleSetPriority(num)}
-                          class="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-gray-200 hover:bg-slate-700 transition-colors"
-                        >
-                          ${priorityBadge(num)}
-                          <span class="flex-1">${label}</span>
-                          ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 text-gray-400" />`}
-                        </button>
+                        <li key=${n}>
+                          <button
+                            type="button"
+                            onClick=${() => handleSetPriority(num)}
+                          >
+                            ${priorityBadge(num)}
+                            <span class="flex-1">${label}</span>
+                            ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                          </button>
+                        </li>
                       `;
                     })}
-                  </div>
+                  </ul>
                 `}
               </div>
             </div>
 
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <div class="text-xs text-mitto-text-secondary mb-0.5">Assignee</div>
+                <label class=${labelClass}>Assignee</label>
                 ${editingAssignee
                   ? html`
                     <input
@@ -1005,11 +1031,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   `
                   : html`
                     <div
-                      class="text-sm text-mitto-text break-words cursor-text hover:text-mitto-text-secondary transition-colors flex items-center gap-2"
+                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2"
                       onClick=${startEditAssignee}
                       title="Click to edit"
                     >
-                      ${savingAssignee && html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin text-mitto-text-secondary flex-shrink-0" />`}
+                      ${savingAssignee && html`<span class="loading loading-spinner w-3.5 h-3.5 text-mitto-text-secondary shrink-0"></span>`}
                       ${data.assignee
                         ? html`<span>${data.assignee}</span>`
                         : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
@@ -1023,12 +1049,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </div>
 
             <div>
-              <div class="text-xs text-mitto-text-secondary mb-1">Description</div>
+              <label class=${labelClass}>Description</label>
               ${editingDesc
                 ? html`
                   <textarea
                     ref=${descRef}
-                    class="${inputClass} resize-y"
+                    class="w-full resize-y border border-mitto-border rounded p-3 bg-mitto-input-box text-sm text-mitto-text transition-colors focus:outline-none focus:border-mitto-text-secondary"
                     rows="6"
                     style=${descMinHeight ? `min-height:${descMinHeight}px` : null}
                     placeholder="Add a description…"
@@ -1045,11 +1071,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     onClick=${startEditDesc}
                     title="Click to edit"
                   >
-                    ${savingDesc && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
+                    ${savingDesc && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
                     ${data.description
                       ? (md
                           ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                          : html`<pre class="whitespace-pre-wrap break-words text-sm text-mitto-text">${data.description}</pre>`)
+                          : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${data.description}</pre>`)
                       : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
                     }
                   </div>
@@ -1057,15 +1083,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </div>
 
             ${subtasks.length > 0 && html`
-              <div>
-                <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Subtasks (${subtasks.length})</div>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Subtasks (${subtasks.length})</legend>
                 <ul class="space-y-1">
                   ${subtasks.map(c => html`
                     <li key=${c.id}>
                       <button
                         type="button"
                         onClick=${() => onSelectIssue && onSelectIssue(c)}
-                        class="w-full flex items-center gap-2 text-sm text-mitto-text text-left rounded px-1 py-0.5 hover:bg-mitto-input-box transition-colors"
+                        class="btn btn-ghost btn-xs w-full justify-start"
                         title="Open ${c.id}"
                       >
                         ${statusBadge(c.status)}
@@ -1075,11 +1101,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     </li>
                   `)}
                 </ul>
-              </div>
+              </fieldset>
             `}
 
-            <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Dependencies</div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Dependencies</legend>
 
               <datalist id="beads-dep-options">
                 ${(allIssues || [])
@@ -1090,7 +1116,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
                   </div>
                 `
                 : html`
@@ -1101,7 +1127,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     ${deps.map(d => html`
                       <div key=${d.id} class="flex items-center gap-1.5">
                         <select
-                          class="bg-mitto-input-box border border-mitto-border rounded px-1.5 py-1 text-xs text-mitto-text"
+                          class="select select-xs"
                           value=${d.dependency_type || "blocks"}
                           disabled=${depsBusy}
                           onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
@@ -1111,24 +1137,24 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         <button
                           type="button"
                           onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                          class="font-mono text-xs text-blue-400 hover:text-blue-300 hover:underline flex-1 min-w-0 truncate text-left"
+                          class="font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline flex-1 min-w-0 truncate text-left"
                           title=${"Open " + d.id}
                         >${d.id}</button>
                         <button
                           type="button"
-                          onClick=${() => mutateDep("remove", d.id)}
-                          disabled=${depsBusy}
-                          class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                          onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
+                          aria-disabled=${depsBusy ? "true" : "false"}
+                          class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
                           title="Remove dependency"
                         >
-                          <${CloseIcon} className="w-3.5 h-3.5" />
+                          <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
                         </button>
                       </div>
                     `)}
 
                     <div class="flex items-center gap-1.5 pt-1">
                       <select
-                        class="bg-mitto-input-box border border-mitto-border rounded px-1.5 py-1 text-xs text-mitto-text"
+                        class="select select-xs"
                         value=${newDepType}
                         disabled=${depsBusy}
                         onInput=${e => setNewDepType(e.target.value)}
@@ -1143,30 +1169,30 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                         disabled=${depsBusy}
                         onInput=${e => setNewDepId(e.target.value)}
                         onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
-                        class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text flex-1 min-w-0 placeholder-mitto-text-secondary"
+                        class="input input-xs flex-1 min-w-0"
                       />
                       <button
                         type="button"
-                        onClick=${handleAddDep}
-                        disabled=${depsBusy || !newDepId.trim()}
-                        class="p-1 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                        onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
+                        aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
+                        class="btn btn-ghost btn-square btn-xs shrink-0 ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
                         title="Add dependency"
                       >
                         ${depsBusy
-                          ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                          ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
                           : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                       </button>
                     </div>
                   </div>
                 `}
-            </div>
+            </fieldset>
 
-            <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Comments${comments.length ? ` (${comments.length})` : ""}</div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Comments${comments.length ? ` (${comments.length})` : ""}</legend>
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
                   </div>
                 `
                 : html`
@@ -1176,7 +1202,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       : html`
                         <ul class="space-y-2">
                           ${[...comments].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(cm => html`
-                            <li key=${cm.id} class="border-l-2 border-l-blue-500/70 bg-blue-500/10 rounded-r p-2 pl-3">
+                            <li key=${cm.id} class="border-l-2 border-l-mitto-accent-500/70 bg-mitto-accent-500/10 rounded-r p-2 pl-3">
                               <div class="flex items-center justify-between gap-2 mb-1">
                                 <span class="text-xs font-medium text-mitto-text">${cm.author || "Unknown"}</span>
                                 <span class="text-xs text-mitto-text-secondary" title=${cm.created_at}>${cm.created_at ? new Date(cm.created_at).toLocaleString() : ""}</span>
@@ -1190,7 +1216,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       ? html`
                         <textarea
                           ref=${commentRef}
-                          class="${inputClass} resize-y mt-2"
+                          class="${textareaClass} resize-y mt-2"
                           rows="3"
                           placeholder="Add a comment…"
                           value=${commentDraft}
@@ -1204,11 +1230,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                           type="button"
                           onClick=${startAddComment}
                           disabled=${savingComment}
-                          class="mt-2 flex items-center gap-1 text-xs text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          class="btn btn-ghost btn-xs mt-2"
                           title="Add comment"
                         >
                           ${savingComment
-                            ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                            ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
                             : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                           <span>Add comment</span>
                         </button>
@@ -1216,21 +1242,21 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   </${Fragment}>
                 `
               }
-            </div>
+            </fieldset>
 
-            <div>
-              <div class="text-xs font-semibold text-mitto-text-secondary uppercase tracking-wide mb-1">Notes</div>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Notes</legend>
               ${depsLoading
                 ? html`
                   <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-3 h-3 animate-spin" /> Loading…
+                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
                   </div>
                 `
                 : editingNotes
                   ? html`
                     <textarea
                       ref=${notesRef}
-                      class="${inputClass} resize-y"
+                      class="${textareaClass} resize-y"
                       rows="4"
                       style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
                       placeholder="Add notes…"
@@ -1247,23 +1273,23 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       onClick=${startEditNotes}
                       title="Click to edit"
                     >
-                      ${savingNotes && html`<${SpinnerIcon} className="w-4 h-4 animate-spin absolute top-2 right-2 text-mitto-text-secondary" />`}
+                      ${savingNotes && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
                       ${notes && notes.trim()
                         ? commentBody(notes)
                         : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
                     </div>
                   `}
-            </div>
+            </fieldset>
           `}
       </div>
 
       ${creating && html`
-        <div class="flex justify-end gap-3 p-3 border-t border-mitto-border flex-shrink-0">
+        <div class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0">
           <button
             type="button"
             onClick=${handleClose}
             disabled=${submitting}
-            class="px-4 py-2 text-sm hover:bg-mitto-input-box rounded-lg transition-colors text-mitto-text-secondary disabled:opacity-50"
+            class="btn btn-ghost btn-sm"
           >
             Close
           </button>
@@ -1271,60 +1297,60 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             type="button"
             onClick=${handleSave}
             disabled=${!title.trim() || submitting}
-            class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            class="btn btn-primary btn-sm"
           >
-            ${submitting && html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`}
+            ${submitting && html`<span class="loading loading-spinner w-4 h-4"></span>`}
             Save
           </button>
         </div>
       `}
 
       ${!creating && data && html`
-        <div class="flex items-center gap-1 p-4 border-t border-mitto-border flex-shrink-0 relative">
+        <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0 relative">
           <div class="relative" ref=${promptsRef}>
             <button
               type="button"
               onClick=${togglePrompts}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+              class="btn btn-ghost btn-square btn-sm"
               title="Run a prompt for this issue in a new conversation"
             >
               <${ChevronUpIcon} className="w-4 h-4" />
             </button>
             ${showPrompts && html`
-              <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
+              <ul class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10">
                 ${promptsLoading && html`
-                  <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
-                    <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…
-                  </div>
+                  <li class="px-3 py-2 flex items-center gap-2">
+                    <span class="loading loading-spinner w-4 h-4"></span> Loading…
+                  </li>
                 `}
                 ${!promptsLoading && prompts.length === 0 && html`
-                  <div class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</div>
+                  <li class="px-3 py-2 opacity-60">No task prompts</li>
                 `}
                 ${!promptsLoading && prompts.map(p => {
                   const PromptIcon = getPromptIconOrDefault(p.icon);
                   return html`
-                  <button
-                    key=${p.name}
-                    type="button"
-                    onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
-                    title=${p.description || p.name}
-                    class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
-                  >
-                    <${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-70" />
-                    <span class="truncate flex-1">${p.name}</span>
-                  </button>
+                  <li key=${p.name}>
+                    <button
+                      type="button"
+                      onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
+                      title=${p.description || p.name}
+                    >
+                      <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
+                      <span class="truncate flex-1">${p.name}</span>
+                    </button>
+                  </li>
                 `;
                 })}
-              </div>
+              </ul>
             `}
           </div>
 
           <div class="flex items-center gap-1 ml-auto">
             <button
               type="button"
-              onClick=${() => onToggleStatus && onToggleStatus(data)}
-              disabled=${statusBusy}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (statusBusy) return; onToggleStatus && onToggleStatus(data); }}
+              aria-disabled=${statusBusy ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
               title=${data.status === "closed" ? "Reopen issue" : "Close issue"}
             >
               ${data.status === "closed"
@@ -1333,9 +1359,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </button>
             <button
               type="button"
-              onClick=${() => onToggleDefer && onToggleDefer(data)}
-              disabled=${statusBusy}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (statusBusy) return; onToggleDefer && onToggleDefer(data); }}
+              aria-disabled=${statusBusy ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
               title=${data.status === "deferred" ? "Undefer issue" : "Defer issue"}
             >
               ${data.status === "deferred"
@@ -1345,16 +1371,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             <button
               type="button"
               onClick=${() => onDelete && onDelete(data)}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400"
+              class="btn btn-ghost btn-square btn-sm group"
               title="Delete issue"
             >
-              <${TrashIcon} className="w-4 h-4" />
+              <${TrashIcon} className="w-4 h-4 group-hover:text-red-400" />
             </button>
           </div>
         </div>
       `}
-        </div>
-      </div>
+      <//>
     </${Fragment}>
   `;
 }
@@ -1410,6 +1435,17 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   useEffect(() => {
     setBeadsFilters({ type: typeFilter, search });
   }, [typeFilter, search]);
+
+  // Grouping toggle (persisted) and per-epic expand/collapse state (persisted).
+  // Status toggles are deliberately in-memory only; these are separate.
+  const [grouping, setGrouping] = useState(() => getBeadsGrouping().enabled);
+  // Epics are expanded by default; we persist only the IDs the user collapses.
+  const [collapsedEpics, setCollapsedEpics] = useState(() => new Set(getBeadsGrouping().collapsedEpics));
+
+  // Write-through: persist grouping state whenever it changes.
+  useEffect(() => {
+    setBeadsGrouping({ enabled: grouping, collapsedEpics: [...collapsedEpics] });
+  }, [grouping, collapsedEpics]);
 
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
@@ -1620,6 +1656,91 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }
     return counts;
   }, [issues]);
+
+  // Grouped render model — only computed when the grouping toggle is on.
+  // Produces a sorted top-level array of { type: "epic"|"orphan", ... } items.
+  // Epics that survived the filter are shown with their filtered children;
+  // epics that were filtered out but have surviving children are kept as ghost
+  // header rows (context row). Two indent levels only: all grandchild+ issues
+  // are attributed to their nearest TOP-LEVEL epic ancestor.
+  const groupedItems = useMemo(() => {
+    if (!grouping) return null;
+
+    const issueById = new Map(issues.map(i => [i.id, i]));
+
+    // Epics from the full list: typed as "epic" or has at least one child.
+    const epicSet = new Set();
+    for (const i of issues) {
+      if (i.issue_type === "epic" || (childCountById[i.id] || 0) > 0) epicSet.add(i.id);
+    }
+
+    // Walk up the parent chain and return the ID of the topmost epic ancestor,
+    // or null if the issue itself is a top-level epic or has no epic ancestor.
+    // Guards against cycles with a seen set (mirrors deleteTargetDescendants).
+    function topLevelEpicOf(issue) {
+      const seen = new Set([issue.id]);
+      let cur = issue;
+      let result = null;
+      while (cur.parent) {
+        if (seen.has(cur.parent)) break;
+        seen.add(cur.parent);
+        const parent = issueById.get(cur.parent);
+        if (!parent) break;
+        cur = parent;
+        if (epicSet.has(cur.id)) result = cur.id;
+      }
+      return result;
+    }
+
+    // Assign each filtered issue to a top-level epic group or orphan.
+    // epicGroups: epicId -> { epic: issue|null, children: issue[] }
+    const epicGroups = new Map();
+    const epicOrderIds = [];
+    const orphans = [];
+
+    for (const issue of filtered) {
+      const ancestorId = topLevelEpicOf(issue);
+      if (epicSet.has(issue.id) && ancestorId === null) {
+        // Top-level epic
+        if (!epicGroups.has(issue.id)) {
+          epicGroups.set(issue.id, { epic: issue, children: [] });
+          epicOrderIds.push(issue.id);
+        } else {
+          epicGroups.get(issue.id).epic = issue;
+        }
+      } else if (ancestorId !== null) {
+        // Belongs to a top-level epic (direct child, sub-epic, grandchild, …)
+        if (!epicGroups.has(ancestorId)) {
+          // Ghost header: epic filtered out but a child survived
+          epicGroups.set(ancestorId, { epic: issueById.get(ancestorId) || null, children: [] });
+          epicOrderIds.push(ancestorId);
+        }
+        epicGroups.get(ancestorId).children.push(issue);
+      } else {
+        orphans.push(issue);
+      }
+    }
+
+    function cmpIssue(a, b) {
+      const pa = typeof a.priority === "number" ? a.priority : 3;
+      const pb = typeof b.priority === "number" ? b.priority : 3;
+      if (pa !== pb) return pa - pb;
+      return (a.id || "").localeCompare(b.id || "");
+    }
+
+    for (const [, group] of epicGroups) group.children.sort(cmpIssue);
+
+    // Top-level: epics and orphans sorted together by priority then id.
+    const topLevel = [];
+    for (const id of epicOrderIds) topLevel.push({ type: "epic", group: epicGroups.get(id) });
+    for (const issue of orphans) topLevel.push({ type: "orphan", issue });
+    topLevel.sort((a, b) => {
+      const ia = a.type === "epic" ? (a.group.epic || { priority: 3, id: "" }) : a.issue;
+      const ib = b.type === "epic" ? (b.group.epic || { priority: 3, id: "" }) : b.issue;
+      return cmpIssue(ia, ib);
+    });
+    return topLevel;
+  }, [filtered, issues, childCountById, grouping]);
 
   // Every descendant (children, grandchildren, ...) of the issue queued for
   // deletion, each tagged with its depth below the target. Used to offer the
@@ -1956,13 +2077,76 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     },
   ];
 
+  // Shared row renderer for both flat and grouped render paths.
+  // Treat an issue as an epic when it is typed as one or has at least one
+  // child issue, giving it a purple left accent. Selected card always wins
+  // on background/border. The hovered (non-selected) row gets Mitto's solid
+  // brand red — the same red used for the active session item and delete
+  // buttons; priority/status/type badge pills are opaque so they stay
+  // readable on the red background.
+  function renderIssueRow(issue) {
+    const linkedSessionId = issueSessionMap[issue.id];
+    const isSelected = selectedIssue && selectedIssue.id === issue.id;
+    const childCount = childCountById[issue.id] || 0;
+    const isEpic = issue.issue_type === "epic" || childCount > 0;
+    const bgTone = isSelected
+      ? "bg-mitto-surface-3/30"
+      : "bg-mitto-surface-3/20 hover:bg-red-600";
+    // Each issue renders as a self-contained card with a delicate border,
+    // matching the ACP Servers / Runners lists. The base border is applied
+    // here as Tailwind utilities (not in CSS) so the two distinctive Mitto
+    // state treatments — a full accent border when selected, and the purple
+    // left-accent for epics — share equal specificity and override correctly.
+    const borderTone = isSelected
+      ? "border border-mitto-accent-500/60"
+      : isEpic
+        ? "border border-mitto-border border-l-4 border-l-purple-500"
+        : "border border-mitto-border";
+    return html`
+      <div
+        key=${issue.id}
+        data-has-context-menu
+        class="list-row cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
+        onClick=${() => selectIssue(issue)}
+        onContextMenu=${(e) => handleRowContextMenu(e, issue)}
+      >
+        <div class="list-col-grow flex flex-col gap-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
+              ${linkedSessionId && onOpenConversation
+                ? html`<a
+                    href="#"
+                    class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
+                    onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
+                  >${issue.id}</a>`
+                : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
+            </span>
+            ${typeBadge(issue.issue_type)}
+            ${statusBadge(issue.status)}
+            ${priorityBadge(issue.priority)}
+            ${childCount > 0 ? html`
+              <span
+                class="inline-flex items-center gap-1 text-xs text-purple-300"
+                title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+              >
+                <${LayersIcon} className="w-3.5 h-3.5" />
+                ${childCount}
+              </span>
+            ` : null}
+          </div>
+          <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
+        </div>
+      </div>
+    `;
+  }
+
   return html`
     <div class="relative flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border flex-shrink-0">
+      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
-          class="md:hidden p-2 -ml-2 rounded-lg hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text flex-shrink-0"
+          class="btn btn-ghost btn-square btn-sm md:hidden shrink-0"
           title="Show conversations"
         >
           <${MenuIcon} className="w-6 h-6" />
@@ -1970,22 +2154,34 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <span class="font-semibold text-lg flex-1">Tasks — ${workspaceLabel}</span>
       </div>
 
-      <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border flex-shrink-0">
-        <div class="inline-flex rounded border border-mitto-border overflow-hidden flex-shrink-0" role="group" aria-label="Filter by status">
-          ${BEADS_STATUS_TOGGLES.map((t, i) => html`
+      <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
+        <div class="join shrink-0" role="group" aria-label="Filter by status">
+          ${BEADS_STATUS_TOGGLES.map(t => html`
             <button
               type="button"
               onClick=${() => toggleStatus(t.key)}
               aria-pressed=${statusToggles[t.key] ? "true" : "false"}
+              aria-label=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
               title=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              class="px-2 py-1 text-xs transition-colors ${i > 0 ? "border-l border-mitto-border " : ""}${statusToggles[t.key] ? `${STATUS_COLORS[t.key]} font-semibold` : "bg-transparent text-mitto-text-secondary opacity-50 hover:opacity-80 hover:text-mitto-text"}"
+              class="btn btn-xs btn-square join-item ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
             >
-              ${t.label}
+              <${t.Icon} className="w-3.5 h-3.5" />
             </button>
           `)}
         </div>
+        <div class="join shrink-0" role="group" aria-label="View mode">
+          <button
+            type="button"
+            onClick=${() => setGrouping(g => !g)}
+            aria-pressed=${grouping ? "true" : "false"}
+            title=${grouping ? "Switch to flat list" : "Group issues by epic"}
+            class="btn btn-xs join-item ${grouping ? "btn-active" : "btn-ghost"}"
+          >
+            <${LayersIcon} className="w-3.5 h-3.5" />
+          </button>
+        </div>
         <select
-          class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text"
+          class="select select-xs shrink-0 w-28"
           value=${typeFilter}
           onInput=${e => setTypeFilter(e.target.value)}
         >
@@ -1997,94 +2193,75 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           placeholder="Search…"
           value=${search}
           onInput=${e => setSearch(e.target.value)}
-          class="bg-mitto-input-box border border-mitto-border rounded px-2 py-1 text-xs text-mitto-text flex-1 min-w-0 placeholder-mitto-text-secondary"
+          class="input input-xs flex-1 min-w-0"
         />
       </div>
 
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll">
         ${loading && html`
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary gap-2">
-            <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading issues…
+            <span class="loading loading-spinner w-4 h-4"></span> Loading issues…
           </div>
         `}
         ${!loading && error && html`
           <div class="flex items-center justify-center h-24 text-red-400 text-sm px-4">${error}</div>
         `}
         ${!loading && !error && filtered.length === 0 && html`
-          <div class="flex items-center justify-center h-24 text-mitto-text-secondary text-sm">No issues found</div>
+          <div class="flex flex-col items-center justify-center gap-1 h-32 text-center px-4">
+            <div class="text-mitto-text-secondary text-sm">No issues found</div>
+            <div class="text-mitto-text-muted text-xs">Create a new issue by pressing the "+" button below.</div>
+          </div>
         `}
         ${!loading && !error && filtered.length > 0 && html`
-          <div class="space-y-2 p-2">
-            ${filtered.map(issue => {
-              // If a conversation is linked to this issue, render the ID as a
-              // link that opens that conversation. stopPropagation keeps the
-              // card's own click (which opens the detail panel) from firing.
-              const linkedSessionId = issueSessionMap[issue.id];
-              const isSelected = selectedIssue && selectedIssue.id === issue.id;
-              // Treat an issue as an epic when it is typed as one or has at
-              // least one child issue, and give it a purple left accent so it
-              // reads as a distinct container row. Epics share the same grey
-              // background as regular issues — only the left border differs. A
-              // selected card always wins on background/border.
-              //
-              // The hovered (non-selected) row gets Mitto's solid brand red
-              // (bg-red-600 / #dc2626 — the same red used for the active session
-              // item, delete buttons, and swipe-to-delete). The priority/status/
-              // type badges (Critical, High, blocked, bug) are solid opaque pills,
-              // so they keep strong contrast on top of the red and never blend in.
-              const childCount = childCountById[issue.id] || 0;
-              const isEpic = issue.issue_type === "epic" || childCount > 0;
-              const bgTone = isSelected
-                ? "bg-slate-700/30"
-                : "bg-slate-700/20 hover:bg-red-600";
-              const borderTone = isSelected
-                ? "border-blue-500/60"
-                : isEpic
-                  ? "border-slate-600/50 border-l-4 border-l-purple-500"
-                  : "border-slate-600/50";
-              return html`
-              <div
-                key=${issue.id}
-                data-has-context-menu
-                class="p-3 rounded-lg border cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
-                onClick=${() => selectIssue(issue)}
-                onContextMenu=${(e) => handleRowContextMenu(e, issue)}
-              >
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-mono text-xs max-w-[10rem] truncate" title=${issue.id}>
-                    ${linkedSessionId && onOpenConversation
-                      ? html`<a
-                          href="#"
-                          class="text-blue-400 hover:text-blue-300 hover:underline"
-                          onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
-                        >${issue.id}</a>`
-                      : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
-                  </span>
-                  ${typeBadge(issue.issue_type)}
-                  ${statusBadge(issue.status)}
-                  ${priorityBadge(issue.priority)}
-                  ${childCount > 0 ? html`
-                    <span
-                      class="inline-flex items-center gap-1 text-xs text-purple-300"
-                      title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+          <div class="list p-2">
+            ${grouping && groupedItems
+              ? groupedItems.map(item => {
+                  if (item.type === "orphan") return renderIssueRow(item.issue);
+                  // Epic group: render a <details> with the epic as the
+                  // clickable <summary> header and its children indented below.
+                  const { group } = item;
+                  const epicIssue = group.epic;
+                  const epicId = epicIssue ? epicIssue.id : null;
+                  const isOpen = epicId ? !collapsedEpics.has(epicId) : true;
+                  return html`
+                    <details
+                      key=${epicId || ("ghost-" + (group.children[0] && group.children[0].id))}
+                      class="beads-epic-group"
+                      open=${isOpen}
+                      onToggle=${(e) => {
+                        if (!epicId) return;
+                        const open = e.currentTarget.open;
+                        setCollapsedEpics(prev => {
+                          const next = new Set(prev);
+                          if (open) next.delete(epicId);
+                          else next.add(epicId);
+                          return next;
+                        });
+                      }}
                     >
-                      <${LayersIcon} className="w-3.5 h-3.5" />
-                      ${childCount}
-                    </span>
-                  ` : null}
-                </div>
-                <div class="text-sm text-mitto-text mt-1 break-words">${issue.title}</div>
-              </div>
-            `;
-            })}
+                      <summary class="beads-epic-summary">
+                        ${epicIssue
+                          ? renderIssueRow(epicIssue)
+                          : html`<div class="list-row opacity-60 border border-dashed border-mitto-border">
+                              <div class="list-col-grow text-xs text-mitto-text-muted italic">Epic (not in current filter)</div>
+                            </div>`}
+                      </summary>
+                      <div class="pl-8">
+                        ${group.children.map(child => renderIssueRow(child))}
+                      </div>
+                    </details>
+                  `;
+                })
+              : filtered.map(issue => renderIssueRow(issue))
+            }
           </div>
         `}
       </div>
 
-      <div class="flex items-center gap-1 p-4 border-t border-mitto-border flex-shrink-0">
+      <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
         <button
           onClick=${openCreate}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+          class="btn btn-ghost btn-square btn-sm"
           title="New issue"
         >
           <${PlusIcon} className="w-4 h-4" />
@@ -2093,85 +2270,85 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <button
             type="button"
             onClick=${toggleListPrompts}
-            class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+            class="btn btn-ghost btn-square btn-sm"
             title="Run a prompt over the issue list in a new conversation"
           >
             <${ChevronUpIcon} className="w-4 h-4" />
           </button>
           ${showListPrompts && html`
-            <div class="absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto bg-mitto-sidebar border border-mitto-border rounded-lg shadow-lg z-10 py-1">
+            <ul class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10">
               ${listPromptsLoading && html`
-                <div class="flex items-center gap-2 px-3 py-2 text-sm text-mitto-text-secondary">
-                  <${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading…
-                </div>
+                <li class="px-3 py-2 flex items-center gap-2">
+                  <span class="loading loading-spinner w-4 h-4"></span> Loading…
+                </li>
               `}
               ${!listPromptsLoading && listPrompts.length === 0 && html`
-                <div class="px-3 py-2 text-sm text-mitto-text-secondary">No task prompts</div>
+                <li class="px-3 py-2 opacity-60">No task prompts</li>
               `}
               ${!listPromptsLoading && listPrompts.map(p => {
                 const PromptIcon = getPromptIconOrDefault(p.icon);
                 return html`
-                <button
-                  key=${p.name}
-                  type="button"
-                  onClick=${() => handleRunListPrompt(p)}
-                  title=${p.description || p.name}
-                  class="w-full text-left px-3 py-2 text-sm text-mitto-text hover:bg-mitto-input-box transition-colors flex items-center gap-2"
-                >
-                  <${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-70" />
-                  <span class="truncate flex-1">${p.name}</span>
-                </button>
+                <li key=${p.name}>
+                  <button
+                    type="button"
+                    onClick=${() => handleRunListPrompt(p)}
+                    title=${p.description || p.name}
+                  >
+                    <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
+                    <span class="truncate flex-1">${p.name}</span>
+                  </button>
+                </li>
               `;
               })}
-            </div>
+            </ul>
           `}
         </div>
         <button
           onClick=${fetchList}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text"
+          class="btn btn-ghost btn-square btn-sm"
           title="Refresh"
         >
           <${RefreshIcon} className="w-4 h-4" />
         </button>
         <button
-          onClick=${() => setShowCleanupConfirm(true)}
-          disabled=${closedCount === 0 || cleaningUp}
-          class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-mitto-text-secondary disabled:hover:bg-transparent"
+          onClick=${() => { if (closedCount === 0 || cleaningUp) return; setShowCleanupConfirm(true); }}
+          aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
+          class="btn btn-ghost btn-square btn-sm group ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
           title=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
         >
-          <${BroomIcon} className="w-4 h-4" />
+          <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />
         </button>
 
         ${upstream && upstream !== "none" && html`
           <div class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border">
             <button
-              onClick=${() => handleSync("pull")}
-              disabled=${!!syncAction}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (syncAction) return; handleSync("pull"); }}
+              aria-disabled=${syncAction ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
               title=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "pull"
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
                 : html`<${ArrowDownIcon} className="w-4 h-4" />`}
             </button>
             <button
-              onClick=${() => handleSync("push")}
-              disabled=${!!syncAction}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (syncAction) return; handleSync("push"); }}
+              aria-disabled=${syncAction ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
               title=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "push"
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
                 : html`<${ArrowUpIcon} className="w-4 h-4" />`}
             </button>
             <button
-              onClick=${() => handleSync("sync")}
-              disabled=${!!syncAction}
-              class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick=${() => { if (syncAction) return; handleSync("sync"); }}
+              aria-disabled=${syncAction ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
               title=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
             >
               ${syncAction === "sync"
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
                 : html`<${SyncIcon} className="w-4 h-4" />`}
             </button>
           </div>
@@ -2182,7 +2359,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         ${onOpenConfig && html`
           <button
             onClick=${() => onOpenConfig()}
-            class="p-1.5 rounded hover:bg-mitto-input-box transition-colors text-mitto-text-secondary hover:text-mitto-text ml-2"
+            class="btn btn-ghost btn-square btn-sm ml-2"
             title="Tasks configuration"
           >
             <${SettingsIcon} className="w-4 h-4" />
@@ -2244,7 +2421,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     >
       ${deleteTargetDescendants.length > 0 && html`
         <div class="mt-3 space-y-2">
-          <p class="text-sm text-gray-300">
+          <p class="text-sm text-mitto-text-secondary">
             This epic has ${deleteTargetDescendants.length} descendant issue${deleteTargetDescendants.length === 1 ? "" : "s"}. What should happen to ${deleteTargetDescendants.length === 1 ? "it" : "them"}?
           </p>
           <label class="flex items-start gap-3 cursor-pointer select-none">
@@ -2255,9 +2432,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "none"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("none")}
-              class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              class="radio radio-sm mt-0.5"
             />
-            <span class="text-sm text-gray-300">Leave child issues unchanged</span>
+            <span class="text-sm text-mitto-text-secondary">Leave child issues unchanged</span>
           </label>
           ${deleteTargetOpenDescendants.length > 0 && html`
             <label class="flex items-start gap-3 cursor-pointer select-none">
@@ -2268,9 +2445,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                 checked=${childAction === "close"}
                 disabled=${deletingIssue}
                 onChange=${() => setChildAction("close")}
-                class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                class="radio radio-sm mt-0.5"
               />
-              <span class="text-sm text-gray-300">
+              <span class="text-sm text-mitto-text-secondary">
                 Close the ${deleteTargetOpenDescendants.length} open child issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}
               </span>
             </label>
@@ -2283,9 +2460,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               checked=${childAction === "delete"}
               disabled=${deletingIssue}
               onChange=${() => setChildAction("delete")}
-              class="mt-0.5 w-4 h-4 bg-slate-700 border-slate-600 text-red-500 focus:ring-red-500 focus:ring-offset-0"
+              class="radio radio-sm radio-error mt-0.5"
             />
-            <span class="text-sm text-gray-300">
+            <span class="text-sm text-mitto-text-secondary">
               Delete all ${deleteTargetDescendants.length} child issue${deleteTargetDescendants.length === 1 ? "" : "s"} (permanent)
             </span>
           </label>

@@ -23,9 +23,11 @@ const WORKSPACE_ALPHA = path.join(
 // label shown for the agent entry inside the "New" submenu.
 const AGENT_NAME = "mock-acp";
 
-// Context menus render as fixed-position panels; this matches both the main menu
-// and any open submenu while avoiding dialogs (which use different classes).
-const MENU = ".fixed.z-50.bg-slate-800.shadow-xl";
+// Context menus render as fixed-position daisyUI menus; this matches both the
+// main menu and any open submenu while avoiding dialogs (which use different
+// classes). The menu chrome is the daisyUI `menu` component on a fixed-position
+// <ul> (bg-base-200 rounded-box shadow-xl fixed z-50).
+const MENU = ".menu.fixed.z-50.shadow-xl";
 
 testWithCleanup.describe("Group Context Menu - New submenu", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
@@ -49,10 +51,10 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
 
   // Opens the project-alpha group context menu and returns its locator.
   async function openGroupMenu(page, timeouts) {
-    // Sticky group/folder headers carry data-has-context-menu; session items do
-    // not use the sticky class, so this targets the folder header specifically.
+    // Folder headers are daisyUI <summary> rows carrying data-has-context-menu;
+    // session items do not carry it, so this targets the folder header specifically.
     const folderHeader = page
-      .locator('div.sticky.top-0[data-has-context-menu="true"]')
+      .locator('summary[data-has-context-menu="true"]')
       .filter({ hasText: "project-alpha" })
       .first();
     await expect(folderHeader).toBeVisible({ timeout: timeouts.appReady });
@@ -128,6 +130,94 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
 
       // The new conversation in project-alpha should be selectable/usable.
       await expect(page.locator(MENU)).toHaveCount(0);
+    },
+  );
+
+  testWithCleanup(
+    "moves a folder to a new group via the 'Move to group' submenu",
+    async ({ page, request, apiUrl, timeouts }) => {
+      await openGroupMenu(page, timeouts);
+
+      const menuButtons = page.locator(`${MENU} button`);
+      const moveItem = menuButtons.filter({ hasText: "Move to group" });
+      await expect(moveItem).toBeVisible({ timeout: timeouts.shortAction });
+
+      // The submenu (existing groups + "New group…") is not rendered until hover.
+      await moveItem.hover();
+      const newGroupItem = menuButtons.filter({ hasText: "New group" });
+      await expect(newGroupItem).toBeVisible({ timeout: timeouts.shortAction });
+      await newGroupItem.click();
+
+      // The new-group dialog opens and the context menu closes.
+      const dialog = page.locator('[data-testid="new-group-dialog"]');
+      await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(page.locator(MENU)).toHaveCount(0);
+
+      await page
+        .locator('[data-testid="new-group-name-input"]')
+        .fill("Operations");
+      await page.locator('[data-testid="new-group-create-btn"]').click();
+
+      // The folder's group is persisted (reflected by the config API).
+      await expect
+        .poll(
+          async () => {
+            const resp = await request.get(apiUrl("/api/config"));
+            const cfg = await resp.json();
+            const wss = Array.isArray(cfg.workspaces) ? cfg.workspaces : [];
+            const ws = wss.find((w) => w.working_dir === WORKSPACE_ALPHA);
+            return (ws && ws.group) || "";
+          },
+          { timeout: timeouts.appReady },
+        )
+        .toBe("Operations");
+
+      // The sidebar regroups: an "Operations" group section header appears.
+      await expect(
+        page
+          .locator(".folder-group-section")
+          .filter({ hasText: "Operations" }),
+      ).toBeVisible({ timeout: timeouts.appReady });
+    },
+  );
+
+  testWithCleanup(
+    "keeps 'Move to group' available on external connections while gating Configure Workspace",
+    async ({ page, helpers, timeouts }) => {
+      // Simulate an external (e.g. iPhone over the network) connection. The
+      // server injects window.mittoIsExternal = true for the external listener,
+      // which makes the frontend treat the config as read-only. The inline HTML
+      // script assigns the value during parsing, so define it as a locked getter
+      // (registered before any page script) that swallows that assignment.
+      await page.addInitScript(() => {
+        Object.defineProperty(window, "mittoIsExternal", {
+          configurable: true,
+          get: () => true,
+          set: () => {},
+        });
+      });
+
+      // External connections normally load some vendor libs from jsdelivr; block
+      // the CDN so the loader falls back to the bundled local files immediately
+      // (keeps the test fast and offline-safe).
+      await page.route("**://cdn.jsdelivr.net/**", (route) => route.abort());
+
+      await helpers.navigateAndWait(page);
+
+      const menu = await openGroupMenu(page, timeouts);
+      const menuButtons = menu.locator("button");
+
+      // The fix: folder grouping is local organizational metadata, so it stays
+      // available even when configReadonly is true (external connection).
+      await expect(
+        menuButtons.filter({ hasText: "Move to group" }),
+      ).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Guard: genuinely host-sensitive items remain gated, confirming
+      // configReadonly is actually active in this scenario.
+      await expect(
+        menuButtons.filter({ hasText: "Configure Workspace" }),
+      ).toHaveCount(0);
     },
   );
 });

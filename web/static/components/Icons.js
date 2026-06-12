@@ -8,22 +8,11 @@ const { html } = window.preact;
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function SpinnerIcon({ className = "w-4 h-4" }) {
+  // daisyUI `loading loading-spinner` animates itself; strip any legacy
+  // `animate-spin` passed by callers to avoid a double animation.
+  const cls = className.replace(/\banimate-spin\b/g, "").replace(/\s+/g, " ").trim();
   return html`
-    <svg class="${className} animate-spin" fill="none" viewBox="0 0 24 24">
-      <circle
-        class="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        stroke-width="4"
-      ></circle>
-      <path
-        class="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-      ></path>
-    </svg>
+    <span class="loading loading-spinner ${cls}"></span>
   `;
 }
 
@@ -277,6 +266,23 @@ export function CheckIcon({ className = "w-4 h-4" }) {
         stroke-width="2"
         d="M5 13l4 4L19 7"
       />
+    </svg>
+  `;
+}
+
+/**
+ * Hollow circle icon (used for the "open" status filter)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function CircleIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="8" stroke-width="2" />
     </svg>
   `;
 }
@@ -647,7 +653,15 @@ export function KeyboardIcon({ className = "w-4 h-4" }) {
  */
 export function SunIcon({ className = "" }) {
   return html`
-    <svg class="${className}" viewBox="0 0 24 24">
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <circle cx="12" cy="12" r="4"></circle>
       <path d="M12 2v2"></path>
       <path d="M12 20v2"></path>
@@ -667,7 +681,15 @@ export function SunIcon({ className = "" }) {
  */
 export function MoonIcon({ className = "" }) {
   return html`
-    <svg class="${className}" viewBox="0 0 24 24">
+    <svg
+      class="${className}"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
     </svg>
   `;
@@ -773,6 +795,25 @@ export function ArchiveIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
+      />
+    </svg>
+  `;
+}
+
+export function FilterIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class="${className}"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M3.792 2.938A49.069 49.069 0 0 1 12 2.25c2.797 0 5.54.236 8.209.688a1.857 1.857 0 0 1 1.541 1.836v1.044a3 3 0 0 1-.879 2.121l-6.182 6.182a1.5 1.5 0 0 0-.439 1.061v2.927a3 3 0 0 1-1.658 2.684l-1.757.878A.75.75 0 0 1 9.75 21v-5.818a1.5 1.5 0 0 0-.44-1.06L3.13 7.938a3 3 0 0 1-.879-2.121V4.774c0-.897.64-1.683 1.542-1.836Z"
       />
     </svg>
   `;
@@ -1264,6 +1305,138 @@ export function BeadsIcon({ className = "w-5 h-5" }) {
       class=${className}
     >
       <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+    </svg>
+  `;
+}
+
+/**
+ * Balloon icon for regular (one-off) conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function BalloonIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M12 3c-3.31 0-6 2.69-6 6 0 4 4.5 7.5 6 8.5 1.5-1 6-4.5 6-8.5 0-3.31-2.69-6-6-6z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M12 17.5v1.5m0 0l-1.5 2m1.5-2l1.5 2"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Mitto icon for regular (one-off) conversations — a rounded speech bubble
+ * with three dots, mirroring the Mitto app logo.
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function MittoIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 4v-4H5a1 1 0 0 1-1-1z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M8 10h.01M12 10h.01M16 10h.01"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Clock icon for periodic (recurring) conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ClockIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 2" />
+    </svg>
+  `;
+}
+
+/**
+ * Ellipsis (three-dot) icon for per-item overflow menus
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function EllipsisIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <circle cx="19" cy="12" r="2" />
+    </svg>
+  `;
+}
+
+/**
+ * Dashboard icon (2x2 grid) for the top-level Dashboard node
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function DashboardIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M4 4h7v7H4V4zM13 4h7v7h-7V4zM13 13h7v7h-7v-7zM4 13h7v7H4v-7z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Home icon for the top-level Dashboard node
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function HomeIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h4v-6a1 1 0 011-1h2a1 1 0 011 1v6h4a1 1 0 001-1V10"
+      />
     </svg>
   `;
 }

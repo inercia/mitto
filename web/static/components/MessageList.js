@@ -86,14 +86,14 @@ export function MessageList({
           !hasMoreMessages &&
           html`
             <div class="flex items-center justify-center h-full">
-              <div class="text-center text-gray-400">
+              <div class="text-center text-mitto-text-muted">
                 <img src="./favicon.png" alt="Mitto" class="w-24 h-24 mb-6 opacity-30 mx-auto" />
-                <p class="text-2xl font-medium text-gray-300 mb-4">
+                <p class="text-2xl font-medium text-mitto-text-secondary mb-4">
                   Welcome to Mitto
                 </p>
                 ${workspaces.length === 0
                   ? html`
-                      <p class="text-base text-gray-500 max-w-md">
+                      <p class="text-base text-mitto-text-muted max-w-md">
                         Get started by creating a workspace in Settings
                         (<span class="inline-block align-middle">
                           <${SettingsIcon} className="w-5 h-5 inline" />
@@ -103,23 +103,23 @@ export function MessageList({
                     `
                   : activeSessionId
                     ? html`
-                        <p class="text-base text-gray-500">
+                        <p class="text-base text-mitto-text-muted">
                           Type a message to start chatting with the AI agent
                         </p>
                       `
                     : html`
-                        <div class="text-base text-gray-500 max-w-md">
+                        <div class="text-base text-mitto-text-muted max-w-md">
                           <p>
                             Create a new conversation using the
                             <span
-                              class="inline-flex items-center justify-center w-6 h-6 rounded text-white text-sm font-bold mx-1"
+                              class="inline-flex items-center justify-center w-6 h-6 rounded bg-primary text-primary-content text-sm font-bold mx-1"
                               >+</span
                             >
                             button in the sidebar
                           </p>
                           ${workspaces.length > 1
                             ? html`
-                                <p class="text-sm text-gray-600 mt-3">
+                                <p class="text-sm text-mitto-text-muted mt-3">
                                   You'll be able to choose which workspace
                                   to use
                                 </p>
@@ -129,7 +129,7 @@ export function MessageList({
                       `}
                 ${!connected &&
                 html`
-                  <p class="text-sm mt-6 text-yellow-500">
+                  <p class="text-sm mt-6 text-mitto-warning">
                     Connecting to server...
                   </p>
                 `}
@@ -140,11 +140,9 @@ export function MessageList({
                 !sessionInfo.archived &&
                 html`
                   <p
-                    class="text-sm mt-6 text-yellow-500 flex items-center gap-2"
+                    class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
                   >
-                    <span
-                      class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
-                    ></span>
+                    <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
                     Connecting to AI agent...
                   </p>
                 `}
@@ -218,7 +216,7 @@ export function MessageList({
               ${isLoadingMore
                 ? html`
                     <div
-                      class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
+                      class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
                     >
                       <${SpinnerIcon} className="w-4 h-4" />
                       <span>Loading earlier messages...</span>
@@ -227,7 +225,7 @@ export function MessageList({
                 : hasReachedLimit
                   ? html`
                       <div
-                        class="px-4 py-2 text-sm text-gray-500 flex items-center gap-2"
+                        class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
                         data-testid="limit-reached-indicator"
                       >
                         <span>📚</span>
@@ -240,7 +238,7 @@ export function MessageList({
                   : html`
                       <button
                         onClick=${onLoadMore}
-                        class="load-more-btn px-4 py-2 text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 rounded-lg transition-colors flex items-center gap-2"
+                        class="btn btn-ghost btn-sm text-mitto-text-muted"
                         data-testid="load-more-button"
                       >
                         <span>↑</span>
@@ -268,7 +266,9 @@ export function MessageList({
           >
             <${ArrowDownIcon} className="w-5 h-5" />
             ${hasNewMessages &&
-            html` <span class="new-messages-indicator"></span> `}
+            html` <span
+              class="new-messages-indicator status status-warning"
+            ></span> `}
           </button>
         </div>
       `}

@@ -41,9 +41,11 @@ const PROMPT_NAME = "Context Menu Test";
 // Conditional prompt: enabledWhen "permissions.canPromptUser" (default true).
 const CONDITIONAL_PROMPT_NAME = "Conditional Test";
 
-// Context menus render as fixed-position panels; this matches both the main menu
-// and any open submenu while avoiding dialogs (which use different classes).
-const MENU = ".fixed.z-50.bg-slate-800.shadow-xl";
+// Context menus render as fixed-position daisyUI menus; this matches both the
+// main menu and any open submenu while avoiding dialogs (which use different
+// classes). The menu chrome is the daisyUI `menu` component on a fixed-position
+// <ul> (bg-base-200 rounded-box shadow-xl fixed z-50).
+const MENU = ".menu.fixed.z-50.shadow-xl";
 
 testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
   let sessionId: string;
@@ -212,6 +214,32 @@ testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
       await expect(
         menuButtons.filter({ hasText: CONDITIONAL_PROMPT_NAME }),
       ).toHaveCount(0);
+    },
+  );
+
+  testWithCleanup(
+    "opens the conversation menu via the three-dot (ellipsis) button",
+    async ({ page, timeouts }) => {
+      const sessionItem = page
+        .locator(`[data-session-id="${sessionId}"]`)
+        .first();
+      await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
+
+      const ellipsisBtn = sessionItem.locator(
+        '[data-testid="session-item-menu"]',
+      );
+      await expect(ellipsisBtn).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Left-click the explicit ellipsis button (not right-click)
+      await ellipsisBtn.click();
+
+      const menu = page.locator(MENU).first();
+      await expect(menu).toBeVisible({ timeout: timeouts.appReady });
+
+      // Standard actions must be present
+      const menuButtons = page.locator(`${MENU} button`);
+      await expect(menuButtons.filter({ hasText: "Properties" })).toBeVisible();
+      await expect(menuButtons.filter({ hasText: "Delete" })).toBeVisible();
     },
   );
 });

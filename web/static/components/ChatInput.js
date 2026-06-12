@@ -26,7 +26,9 @@ import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, getPromptIcon } from "./Icons.js";
+import { GripIcon } from "./Icons.js";
+import { PromptsMenu } from "./PromptsMenu.js";
+import { flattenPrompts } from "../utils/prompts.js";
 
 /**
  * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
@@ -52,7 +54,7 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
 
   return html`
     <select
-      class="chat-input-model-select"
+      class="select select-ghost select-xs max-w-[200px]"
       value=${localValue || ""}
       onInput=${handleInput}
       disabled=${isStreaming}
@@ -76,7 +78,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
     <button
       type="button"
       onClick=${onToggle}
-      class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
+      class="btn btn-ghost btn-square btn-sm"
       title=${collapsed ? "Show prompt area" : "Hide prompt area"}
     >
       <svg
@@ -94,110 +96,6 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
       </svg>
     </button>
   `;
-}
-
-/**
- * Calculate contrasting text color (black or white) for a given background color.
- * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
- * @returns {string} - Either "#000000" or "#FFFFFF" for best contrast
- */
-function getContrastColor(hexColor) {
-  if (!hexColor || !hexColor.startsWith("#")) return "#E5E7EB"; // Default gray-200
-
-  // Remove # and parse hex
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substr(0, 2), 16);
-  const g = parseInt(hex.substr(2, 2), 16);
-  const b = parseInt(hex.substr(4, 2), 16);
-
-  // Calculate relative luminance (WCAG formula)
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-
-  // Return black for light backgrounds, white for dark backgrounds
-  return luminance > 0.5 ? "#000000" : "#FFFFFF";
-}
-
-/**
- * Convert hex color to HSL values for sorting.
- * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
- * @returns {Object} - { h: 0-360, s: 0-100, l: 0-100 } or null if invalid
- */
-function hexToHSL(hexColor) {
-  if (!hexColor || !hexColor.startsWith("#")) return null;
-
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substr(0, 2), 16) / 255;
-  const g = parseInt(hex.substr(2, 2), 16) / 255;
-  const b = parseInt(hex.substr(4, 2), 16) / 255;
-
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-
-  if (max === min) {
-    // Achromatic (gray)
-    return { h: 0, s: 0, l: l * 100 };
-  }
-
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-
-  let h;
-  switch (max) {
-    case r:
-      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-      break;
-    case g:
-      h = ((b - r) / d + 2) / 6;
-      break;
-    case b:
-      h = ((r - g) / d + 4) / 6;
-      break;
-  }
-
-  return { h: h * 360, s: s * 100, l: l * 100 };
-}
-
-/**
- * Calculate a single numeric color score for consistent sorting.
- * Groups similar colors together using quantized hue buckets.
- * @param {Object} hsl - HSL values { h, s, l }
- * @returns {number} - Color score (lower = sorted first)
- */
-function getColorScore(hsl) {
-  if (!hsl) return Infinity; // No color = sort to end
-
-  // Quantize hue into 12 buckets (30 degrees each) for stable grouping
-  // This groups similar colors together (e.g., all greens, all purples)
-  const hueBucket = Math.floor(hsl.h / 30);
-
-  // Within each hue bucket, sort by saturation (more saturated first)
-  // then by lightness (lighter first)
-  // Score: hueBucket * 10000 + (100 - saturation) * 100 + lightness
-  return hueBucket * 10000 + (100 - hsl.s) * 100 + hsl.l;
-}
-
-/**
- * Sort prompts by color (hue), then by name.
- * Prompts without colors are sorted to the end.
- * @param {Array} prompts - Array of prompt objects
- * @returns {Array} - Sorted array of prompts
- */
-function sortPromptsByColor(prompts) {
-  return [...prompts].sort((a, b) => {
-    const hslA = hexToHSL(a.backgroundColor);
-    const hslB = hexToHSL(b.backgroundColor);
-    const scoreA = getColorScore(hslA);
-    const scoreB = getColorScore(hslB);
-
-    // Sort by color score first
-    if (scoreA !== scoreB) {
-      return scoreA - scoreB;
-    }
-
-    // If same color score (or both have no color), sort by name
-    return a.name.localeCompare(b.name);
-  });
 }
 
 /**
@@ -322,45 +220,10 @@ export function ChatInput({
 
   // Compute flat ordered prompt list for keyboard navigation
   const flatFilteredPrompts = useMemo(() => {
-    const lowerFilter = promptFilterText.toLowerCase().trim();
-    const filtered = lowerFilter
-      ? predefinedPrompts.filter((p) => {
-          const matchName = (p.name || "").toLowerCase().includes(lowerFilter);
-          const matchDesc = (p.description || "")
-            .toLowerCase()
-            .includes(lowerFilter);
-          return matchName || matchDesc;
-        })
-      : predefinedPrompts;
-
-    // Group and sort (same logic as render)
-    const grouped = {};
-    const ungrouped = [];
-    filtered.forEach((prompt) => {
-      if (prompt.group) {
-        if (!grouped[prompt.group]) grouped[prompt.group] = [];
-        grouped[prompt.group].push(prompt);
-      } else {
-        ungrouped.push(prompt);
-      }
-    });
-    Object.keys(grouped).forEach((group) => {
-      if (promptSortMode === "color") {
-        grouped[group] = sortPromptsByColor(grouped[group]);
-      } else {
-        grouped[group].sort((a, b) => a.name.localeCompare(b.name));
-      }
-    });
-    const sortedUngrouped =
-      promptSortMode === "color"
-        ? sortPromptsByColor(ungrouped)
-        : [...ungrouped].sort((a, b) => a.name.localeCompare(b.name));
-    const sortedGroupNames = Object.keys(grouped).sort();
-
-    const flat = [];
-    sortedGroupNames.forEach((g) => grouped[g].forEach((p) => flat.push(p)));
-    sortedUngrouped.forEach((p) => flat.push(p));
-    return flat;
+    return flattenPrompts(predefinedPrompts, {
+      filterText: promptFilterText,
+      sortMode: promptSortMode,
+    }).flat;
   }, [predefinedPrompts, promptFilterText, promptSortMode]);
 
   // Handler for toggling the prompts dropdown
@@ -1853,17 +1716,17 @@ export function ChatInput({
       onDrop=${handleDrop}
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
-      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
-        ? "ring-2 ring-blue-500 ring-inset"
+      class="px-4 pt-0 pb-3 bg-mitto-input border-t border-mitto-border-1 shrink-0 relative ${isDragOver
+        ? "ring-2 ring-mitto-accent-500 ring-inset"
         : ""}"
     >
       <!-- Resize handle for ChatInput height -->
       <div
-        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-slate-600/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-slate-600/30' : ''}"
+        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-mitto-surface-4/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-mitto-surface-4/30' : ''}"
         ...${textareaHandleProps}
         title="Drag to resize input area"
       >
-        <div class="w-8 h-0.5 rounded-full bg-slate-600 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
+        <div class="w-8 h-0.5 rounded-full bg-mitto-surface-4 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
       </div>
       <!-- Hidden file input for images -->
       <input
@@ -1903,7 +1766,7 @@ export function ChatInput({
                         >
                       </div>
                       <p
-                        class="text-sm font-mono bg-slate-800/50 p-2 rounded mb-3 break-all"
+                        class="text-sm font-mono bg-mitto-surface-2/50 p-2 rounded mb-3 break-all"
                       >
                         ${activeUIPrompt.title}
                       </p>
@@ -1917,17 +1780,14 @@ export function ChatInput({
                           kind === "allow_always" ||
                           opt.style === "success"
                         ) {
-                          colorClass =
-                            "bg-emerald-600 hover:bg-emerald-700 border-emerald-500";
+                          colorClass = "btn-success";
                         } else if (
                           kind === "reject_once" ||
                           opt.style === "danger"
                         ) {
-                          colorClass =
-                            "bg-rose-600 hover:bg-rose-700 border-rose-500";
+                          colorClass = "btn-error";
                         } else {
-                          colorClass =
-                            "bg-slate-600 hover:bg-slate-700 border-slate-500";
+                          colorClass = "btn-ghost";
                         }
                         return html`
                           <button
@@ -1935,7 +1795,7 @@ export function ChatInput({
                             type="button"
                             onClick=${() =>
                               handleUIPromptAnswer(opt.id, opt.label)}
-                            class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
+                            class="btn btn-sm ${colorClass}"
                           >
                             ${opt.label}
                           </button>
@@ -1948,22 +1808,22 @@ export function ChatInput({
                 ? html`
                     <!-- Textbox editor for mitto_ui_textbox -->
                     <div
-                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                      class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                       style="max-height: ${uiPromptHeight}px;"
                     >
                       <!-- Resize handle at top edge -->
                       <div
-                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
-                          ? "bg-slate-600/50"
+                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
+                          ? "bg-mitto-surface-4/50"
                           : ""}"
                         ...${promptHandleProps}
                         title="Drag to resize"
                       >
-                        <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                        <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
                       </div>
 
                       <!-- Title -->
-                      <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                      <div class="px-4 pt-2 pb-2 shrink-0">
                         <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                           ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
                         </p>
@@ -1974,7 +1834,7 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea block w-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border"
+                          class="ui-textbox-textarea textarea textarea-sm font-mono w-full resize-none"
                           style="min-height: 120px;"
                           maxlength=${16384}
                           onInput=${(e) => {
@@ -1989,12 +1849,12 @@ ${activeUIPrompt.text || ""}</textarea
 
                       <!-- Counter + Buttons on same row -->
                       <div
-                        class="flex items-center justify-between px-4 pt-2 pb-3 flex-shrink-0"
+                        class="flex items-center justify-between px-4 pt-2 pb-3 shrink-0"
                       >
                         <span
                           class="text-xs ${textboxValue.length > 15000
                             ? "text-amber-400"
-                            : "text-gray-500"}"
+                            : "text-mitto-text-muted"}"
                         >
                           ${textboxValue.length > 15000
                             ? "⚠ "
@@ -2010,7 +1870,7 @@ ${activeUIPrompt.text || ""}</textarea
                             type="button"
                             onClick=${() =>
                               handleUIPromptAnswer("abort", "Abort")}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-600 hover:bg-slate-500 text-white transition-colors"
+                            class="btn btn-ghost btn-sm"
                           >
                             Abort
                           </button>
@@ -2022,7 +1882,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 "Submit",
                                 textboxValue,
                               )}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                            class="btn btn-primary btn-sm"
                           >
                             Submit
                           </button>
@@ -2034,22 +1894,22 @@ ${activeUIPrompt.text || ""}</textarea
                   ? html`
                       <!-- HTML Form for mitto_ui_form -->
                       <div
-                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                        class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                         style="max-height: ${uiPromptHeight}px;"
                       >
                         <!-- Resize handle at top edge -->
                         <div
-                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
-                            ? "bg-slate-600/50"
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
+                            ? "bg-mitto-surface-4/50"
                             : ""}"
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
                         </div>
 
                         <!-- Title -->
-                        <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                        <div class="px-4 pt-2 pb-2 shrink-0">
                           <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                             ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
                           </p>
@@ -2072,7 +1932,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Submit / Cancel / Toggle buttons -->
                         <div
-                          class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 flex-shrink-0"
+                          class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 shrink-0"
                         >
                           <div class="flex gap-2 items-center">
                             <${PromptCollapseToggle}
@@ -2083,7 +1943,7 @@ ${activeUIPrompt.text || ""}</textarea
                               type="button"
                               onClick=${() =>
                                 handleUIPromptAnswer("cancel", "Cancel", "")}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-700 hover:bg-slate-600 text-gray-300 transition-colors"
+                              class="btn btn-ghost btn-sm"
                             >
                               Cancel
                             </button>
@@ -2119,7 +1979,7 @@ ${activeUIPrompt.text || ""}</textarea
                                   JSON.stringify(values),
                                 );
                               }}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                              class="btn btn-primary btn-sm"
                             >
                               Submit
                             </button>
@@ -2130,22 +1990,22 @@ ${activeUIPrompt.text || ""}</textarea
                   : html`
                       <!-- Unified Claude Code-style menu for yes_no, options_buttons, select -->
                       <div
-                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                        class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                         style="max-height: ${uiPromptHeight}px;"
                       >
                         <!-- Resize handle at top edge -->
                         <div
-                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
-                            ? "bg-slate-600/50"
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-mitto-surface-4/50 transition-colors select-none touch-none shrink-0 ${isPromptDragging
+                            ? "bg-mitto-surface-4/50"
                             : ""}"
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
                         </div>
 
                         <!-- Question -->
-                        <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                        <div class="px-4 pt-2 pb-2 shrink-0">
                           <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
                             ${activeUIPrompt.question?.replace(/\\n/g, '\n')}
                           </p>
@@ -2162,23 +2022,23 @@ ${activeUIPrompt.text || ""}</textarea
                                 type="button"
                                 onClick=${() =>
                                   handleUIPromptAnswer(opt.id, opt.label)}
-                                class="w-full text-left px-4 py-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3 group"
+                                class="w-full text-left px-4 py-3 hover:bg-mitto-surface-3/50 transition-colors flex items-start gap-3 group"
                               >
                                 <span
-                                  class="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
+                                  class="shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
                                   0
-                                    ? "bg-blue-600 text-white"
-                                    : "bg-slate-600/80 text-gray-300 group-hover:bg-slate-500"} transition-colors"
+                                    ? "bg-mitto-accent text-mitto-accent-fg"
+                                    : "bg-mitto-surface-4/80 text-mitto-text-secondary group-hover:bg-slate-500"} transition-colors"
                                 >
                                   ${idx + 1}
                                 </span>
                                 <div class="min-w-0 flex-1">
-                                  <span class="text-sm font-medium text-white"
+                                  <span class="text-sm font-medium text-mitto-text-strong"
                                     >${opt.label}</span
                                   >
                                   ${opt.description &&
                                   html`<span
-                                    class="block text-xs text-gray-400 mt-0.5"
+                                    class="block text-xs text-mitto-text-muted mt-0.5"
                                     >${opt.description}</span
                                   >`}
                                 </div>
@@ -2210,7 +2070,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
                                 "Type a custom response..."}
-                                class="w-full bg-transparent text-sm text-gray-300 placeholder-gray-500 outline-none"
+                                class="w-full bg-transparent text-sm text-mitto-text-secondary outline-none"
                               />
                             </div>
                           `}
@@ -2218,7 +2078,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Toggle button to show/hide chat input -->
                         <div
-                          class="flex items-center justify-end px-4 pt-2 pb-3 flex-shrink-0"
+                          class="flex items-center justify-end px-4 pt-2 pb-3 shrink-0"
                         >
                           <${PromptCollapseToggle}
                             collapsed=${isPromptCollapsed}
@@ -2231,61 +2091,46 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       `}
 
-      <!-- Periodic Frequency Panel (shown when periodic is enabled) -->
-      <!-- Part of normal document flow - pushes conversation area up -->
-      <!-- Editable when unlocked, read-only when locked -->
-      <div class="max-w-4xl mx-auto">
-        <${PeriodicFrequencyPanel}
-          isOpen=${periodicEnabled}
-          disabled=${isPeriodicLocked}
-          sessionId=${sessionId}
-          frequency=${periodicFrequency}
-          onFrequencyChange=${handlePeriodicFrequencyChange}
-          nextScheduledAt=${periodicNextScheduledAt}
-          isStreaming=${isStreaming}
-          freshContext=${periodicFreshContext}
-          onFreshContextChange=${setPeriodicFreshContext}
-        />
-      </div>
+      <!-- Periodic settings (shown when periodic is enabled) -->
+      <!-- Part of normal document flow - pushes conversation area up. -->
+      <!-- Prompt selector + frequency sit on one line at lg+, stacked on small/tablet screens. -->
+      <div class="max-w-4xl mx-auto flex flex-col lg:flex-row lg:gap-3 lg:items-start">
+        <!-- Periodic Prompt Selector -->
+        <div class="lg:flex-1 lg:min-w-0">
+          <${PeriodicPromptSelector}
+            isOpen=${periodicEnabled}
+            prompts=${predefinedPrompts}
+            selectedPromptName=${periodicPromptName}
+            disabled=${false}
+            onSelect=${handlePeriodicPromptSelect}
+            isPromptAreaVisible=${!isPromptCollapsed}
+            onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
+          />
+        </div>
 
-      <!-- Periodic Prompt Selector (Row 2, shown when periodic is enabled) -->
-      <div class="max-w-4xl mx-auto">
-        <${PeriodicPromptSelector}
-          isOpen=${periodicEnabled}
-          prompts=${predefinedPrompts}
-          selectedPromptName=${periodicPromptName}
-          disabled=${false}
-          onSelect=${handlePeriodicPromptSelect}
-          isPromptAreaVisible=${!isPromptCollapsed}
-          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
-        />
+        <!-- Periodic Frequency Panel (editable when unlocked, read-only when locked) -->
+        <div class="lg:flex-1 lg:min-w-0">
+          <${PeriodicFrequencyPanel}
+            isOpen=${periodicEnabled}
+            disabled=${isPeriodicLocked}
+            sessionId=${sessionId}
+            frequency=${periodicFrequency}
+            onFrequencyChange=${handlePeriodicFrequencyChange}
+            nextScheduledAt=${periodicNextScheduledAt}
+            isStreaming=${isStreaming}
+            freshContext=${periodicFreshContext}
+            onFreshContextChange=${setPeriodicFreshContext}
+          />
+        </div>
       </div>
 
       ${isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-2">
           <div
-            class="bg-amber-900/40 border border-amber-700/50 text-amber-200 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2"
+            class="alert alert-warning text-sm"
           >
-            <svg
-              class="w-4 h-4 animate-spin flex-shrink-0"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                class="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                stroke-width="4"
-              ></circle>
-              <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              ></path>
-            </svg>
+            <span class="loading loading-spinner w-4 h-4 shrink-0"></span>
             <span>Resuming session…</span>
           </div>
         </div>
@@ -2305,11 +2150,11 @@ ${activeUIPrompt.text || ""}</textarea
                   key=${idx}
                   type="button"
                   onClick=${() => handleActionButtonClick(btn.response)}
-                  class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 border border-blue-500"
+                  class="btn btn-primary btn-sm gap-1.5"
                   title=${btn.response}
                 >
                   <svg
-                    class="w-3.5 h-3.5 flex-shrink-0"
+                    class="w-3.5 h-3.5 shrink-0"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -2335,7 +2180,7 @@ ${activeUIPrompt.text || ""}</textarea
             class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
             <svg
-              class="w-4 h-4 flex-shrink-0"
+              class="w-4 h-4 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2351,7 +2196,7 @@ ${activeUIPrompt.text || ""}</textarea
             <button
               type="button"
               onClick=${() => setUploadError(null)}
-              class="ml-auto text-red-300 hover:text-red-100"
+              class="btn btn-ghost btn-square btn-xs ml-auto"
             >
               <svg
                 class="w-4 h-4"
@@ -2377,7 +2222,7 @@ ${activeUIPrompt.text || ""}</textarea
             class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
             <svg
-              class="w-4 h-4 flex-shrink-0"
+              class="w-4 h-4 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2393,7 +2238,7 @@ ${activeUIPrompt.text || ""}</textarea
             <button
               type="button"
               onClick=${() => setImproveError(null)}
-              class="ml-auto text-red-300 hover:text-red-100"
+              class="btn btn-ghost btn-square btn-xs ml-auto"
             >
               <svg
                 class="w-4 h-4"
@@ -2416,10 +2261,10 @@ ${activeUIPrompt.text || ""}</textarea
       html`
         <div class="max-w-4xl mx-auto mb-2">
           <div
-            class="bg-orange-900/50 border border-orange-700 text-orange-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+            class="alert alert-warning text-sm"
           >
             <svg
-              class="w-4 h-4 flex-shrink-0"
+              class="w-4 h-4 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2432,13 +2277,13 @@ ${activeUIPrompt.text || ""}</textarea
               />
             </svg>
             <span>${sendError}</span>
-            <span class="text-orange-300 text-xs ml-1"
+            <span class="text-xs ml-1 opacity-80"
               >(Your message is preserved - click Send to retry)</span
             >
             <button
               type="button"
               onClick=${() => setSendError(null)}
-              class="ml-auto text-orange-300 hover:text-orange-100"
+              class="btn btn-ghost btn-xs btn-circle ml-auto"
             >
               <svg
                 class="w-4 h-4"
@@ -2505,26 +2350,8 @@ ${activeUIPrompt.text || ""}</textarea
               ${isImproving &&
               html`
                 <div class="textarea-improving-overlay">
-                  <svg
-                    class="w-6 h-6 animate-spin text-blue-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      class="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      stroke-width="4"
-                    ></circle>
-                    <path
-                      class="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                  <span class="text-sm text-blue-300 mt-2">Improving prompt...</span>
+                  <span class="loading loading-spinner w-6 h-6 text-mitto-accent"></span>
+                  <span class="text-sm text-mitto-accent-300 mt-2">Improving prompt...</span>
                 </div>
               `}
             </div>
@@ -2541,32 +2368,29 @@ ${activeUIPrompt.text || ""}</textarea
                           ? html`<img
                               src=${img.url}
                               alt=${img.name || "Pending image"}
-                              class="w-16 h-16 rounded-lg object-cover border border-slate-600 ${img.uploading ? "opacity-50" : ""}"
+                              class="w-16 h-16 rounded-lg object-cover border border-mitto-border-2 ${img.uploading ? "opacity-50" : ""}"
                             />`
                           : html`<div
-                              class="w-16 h-16 rounded-lg bg-slate-700 border border-slate-600 flex items-center justify-center"
+                              class="w-16 h-16 rounded-lg bg-mitto-surface-3 border border-mitto-border-2 flex items-center justify-center"
                             >
-                              <svg class="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <svg class="w-6 h-6 text-mitto-text-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                               </svg>
                             </div>`}
                         ${img.uploading
                           ? html`
                               <div class="absolute inset-0 flex items-center justify-center">
-                                <svg class="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
-                                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
+                                <span class="loading loading-spinner w-5 h-5 text-mitto-text-strong"></span>
                               </div>
                             `
                           : html`
                               <button
                                 type="button"
                                 onClick=${() => removeImage(img.id)}
-                                class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                class="absolute -top-1 -right-1 w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Remove image"
                               >
-                                <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                               </button>
@@ -2585,31 +2409,28 @@ ${activeUIPrompt.text || ""}</textarea
                 <div class="flex flex-wrap gap-2">
                   ${pendingFiles.map(
                     (file) => html`
-                      <div key=${file.id} class="relative group flex items-center gap-2 bg-slate-700 rounded-lg px-3 py-2 border border-slate-600">
-                        <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <div key=${file.id} class="relative group flex items-center gap-2 bg-mitto-surface-3 rounded-lg px-3 py-2 border border-mitto-border-2">
+                        <svg class="w-5 h-5 text-mitto-text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
-                        <span class="text-sm text-gray-300 max-w-[150px] truncate" title=${file.name}>${file.name}</span>
+                        <span class="text-sm text-mitto-text-secondary max-w-[150px] truncate" title=${file.name}>${file.name}</span>
                         ${file.category && html`
-                          <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-blue-900 text-blue-300"}">${file.category}</span>
+                          <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-mitto-accent-900 text-mitto-accent-300"}">${file.category}</span>
                         `}
                         ${file.uploading
                           ? html`
                               <div class="flex items-center justify-center">
-                                <svg class="w-4 h-4 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
-                                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
+                                <span class="loading loading-spinner w-4 h-4 text-mitto-accent"></span>
                               </div>
                             `
                           : html`
                               <button
                                 type="button"
                                 onClick=${() => removeFile(file.id)}
-                                class="w-5 h-5 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                class="w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Remove file"
                               >
-                                <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                               </button>
@@ -2636,10 +2457,7 @@ ${activeUIPrompt.text || ""}</textarea
                 >
                   ${isImproving
                     ? html`
-                        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
+                        <span class="loading loading-spinner w-4 h-4"></span>
                       `
                     : html`
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2756,7 +2574,10 @@ ${activeUIPrompt.text || ""}</textarea
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
                   </svg>
-                  ${!periodicEnabled && html`<span class="queue-badge">${queueLength}</span>`}
+                  ${!periodicEnabled && html`<span
+                    class="absolute -top-1 -right-1 pointer-events-none"
+                    style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
+                  >${queueLength}</span>`}
                 </button>
                 `}
 
@@ -2768,220 +2589,73 @@ ${activeUIPrompt.text || ""}</textarea
                     ${showDropup &&
                     html`
                       <div
-                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 flex flex-col"
+                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
                         style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
-                        <!-- Filter input -->
-                        <div class="px-2 pt-2 pb-1 flex-shrink-0">
-                          <input
-                            ref=${promptFilterInputRef}
-                            type="text"
-                            value=${promptFilterText}
-                            onInput=${(e) => {
-                              setPromptFilterText(e.target.value);
-                              setPromptSelectedIndex(-1);
-                            }}
-                            onKeyDown=${(e) => {
-                              // Prevent the event from bubbling to the textarea
-                              e.stopPropagation();
-                              if (e.key === "Escape") {
-                                setShowDropup(false);
-                                return;
-                              }
-                              if (e.key === "ArrowDown") {
-                                e.preventDefault();
-                                setPromptSelectedIndex((prev) =>
-                                  Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                        <${PromptsMenu}
+                          prompts=${predefinedPrompts}
+                          filterText=${promptFilterText}
+                          onFilterChange=${(value) => {
+                            setPromptFilterText(value);
+                            setPromptSelectedIndex(-1);
+                          }}
+                          onFilterKeyDown=${(e) => {
+                            // Prevent the event from bubbling to the textarea
+                            e.stopPropagation();
+                            if (e.key === "Escape") {
+                              setShowDropup(false);
+                              return;
+                            }
+                            if (e.key === "ArrowDown") {
+                              e.preventDefault();
+                              setPromptSelectedIndex((prev) =>
+                                Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                              );
+                              return;
+                            }
+                            if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              setPromptSelectedIndex((prev) => Math.max(-1, prev - 1));
+                              return;
+                            }
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (
+                                promptSelectedIndex >= 0 &&
+                                flatFilteredPrompts.length > 0
+                              ) {
+                                const clampedIndex = Math.min(
+                                  Math.max(promptSelectedIndex, 0),
+                                  flatFilteredPrompts.length - 1,
                                 );
-                                return;
-                              }
-                              if (e.key === "ArrowUp") {
-                                e.preventDefault();
-                                setPromptSelectedIndex((prev) =>
-                                  Math.max(-1, prev - 1),
+                                handlePredefinedPrompt(
+                                  flatFilteredPrompts[clampedIndex],
+                                  e,
                                 );
-                                return;
                               }
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                if (
-                                  promptSelectedIndex >= 0 &&
-                                  flatFilteredPrompts.length > 0
-                                ) {
-                                  const clampedIndex = Math.min(
-                                    Math.max(promptSelectedIndex, 0),
-                                    flatFilteredPrompts.length - 1,
-                                  );
-                                  handlePredefinedPrompt(
-                                    flatFilteredPrompts[clampedIndex],
-                                    e,
-                                  );
-                                }
-                                return;
-                              }
-                            }}
-                            placeholder="Filter prompts..."
-                            autocomplete="off"
-                            autocorrect="off"
-                            autocapitalize="off"
-                            spellcheck=${false}
-                            class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
-                          />
-                        </div>
-                        <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
-                          ${(() => {
-                            // Re-group the precomputed flat list for rendering with group headers
-                            const groupedPrompts = {};
-                            const ungroupedPrompts = [];
-                            flatFilteredPrompts.forEach((prompt) => {
-                              if (prompt.group) {
-                                if (!groupedPrompts[prompt.group])
-                                  groupedPrompts[prompt.group] = [];
-                                groupedPrompts[prompt.group].push(prompt);
-                              } else {
-                                ungroupedPrompts.push(prompt);
-                              }
-                            });
-                            const sortedGroupNames = Object.keys(groupedPrompts).sort();
-                            const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
-
-                            // Build a lookup: prompt -> flat index for selection highlighting
-                            const promptToFlatIdx = new Map();
-                            flatFilteredPrompts.forEach((p, i) =>
-                              promptToFlatIdx.set(p, i),
-                            );
-
-                            const clampedIndex =
-                              flatFilteredPrompts.length === 0
-                                ? -1
-                                : Math.min(
-                                    promptSelectedIndex,
-                                    flatFilteredPrompts.length - 1,
-                                  );
-
-                            // Helper to get badge info based on source
-                            const getBadgeInfo = (source) => {
-                              if (source === "workspace") {
-                                return {
-                                  label: "W",
-                                  title: "Workspace prompt",
-                                  bgColor: "bg-green-600/80",
-                                };
-                              } else if (source === "file") {
-                                return {
-                                  label: "F",
-                                  title: "File-based prompt",
-                                  bgColor: "bg-purple-600/80",
-                                };
-                              } else {
-                                return {
-                                  label: "S",
-                                  title: "Settings prompt",
-                                  bgColor: "bg-blue-600/80",
-                                };
-                              }
-                            };
-
-                            // Render function for a single prompt using flat index lookup
-                            const renderPrompt = (prompt) => {
-                              const fi = promptToFlatIdx.get(prompt);
-                              const isSelected = fi === clampedIndex;
-                              const baseStyle = prompt.backgroundColor
-                                ? {
-                                    backgroundColor: prompt.backgroundColor,
-                                    color: getContrastColor(prompt.backgroundColor),
-                                  }
-                                : {};
-                              const selectedStyle = isSelected
-                                ? {
-                                    ...baseStyle,
-                                    backgroundColor:
-                                      baseStyle.backgroundColor ||
-                                      "rgba(220, 38, 38, 0.15)",
-                                    boxShadow: "inset 3px 0 0 0 var(--accent)",
-                                  }
-                                : baseStyle;
-                              return html`
-                                <button
-                                  key=${"prompt-" + fi}
-                                  type="button"
-                                  onClick=${(e) => handlePredefinedPrompt(prompt, e)}
-                                  title=${prompt.description || prompt.name}
-                                  class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                                  style=${selectedStyle}
-                                  ref=${isSelected ? selectedPromptItemRef : null}
-                                >
-                                  ${(() => {
-                                    if (shiftHeld) {
-                                      return html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                      </svg>`;
-                                    }
-                                    const PromptIcon = getPromptIcon(prompt.icon);
-                                    if (PromptIcon) {
-                                      return html`<${PromptIcon} className="w-4 h-4 flex-shrink-0 opacity-60" />`;
-                                    }
-                                    return html`<svg class="w-4 h-4 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                      </svg>`;
-                                  })()}
-                                  <span class="truncate flex-1">${prompt.name}</span>
-                                  <span
-                                    class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
-                                      prompt.source,
-                                    ).bgColor} text-white/90 flex-shrink-0"
-                                    title=${getBadgeInfo(prompt.source).title}
-                                  >
-                                    ${getBadgeInfo(prompt.source).label}
-                                  </span>
-                                </button>
-                              `;
-                            };
-
-                            return html`
-                              ${sortedGroupNames.map(
-                                (groupName) => html`
-                                  <div key=${"group-" + groupName}>
-                                    <div
-                                      class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
-                                    >
-                                      ${groupName}
-                                    </div>
-                                    ${groupedPrompts[groupName].map((prompt) =>
-                                      renderPrompt(prompt),
-                                    )}
-                                  </div>
-                                `,
-                              )}
-                              ${sortedUngrouped.length > 0
-                                ? html`
-                                    <div key="group-other">
-                                      <div
-                                        class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
-                                      >
-                                        Other
-                                      </div>
-                                      ${sortedUngrouped.map((prompt) =>
-                                        renderPrompt(prompt),
-                                      )}
-                                    </div>
-                                  `
-                                : ""}
-                              ${flatFilteredPrompts.length === 0
-                                ? html`<div
-                                    class="px-4 py-3 text-xs text-gray-500 text-center"
-                                  >
-                                    No matching prompts
-                                  </div>`
-                                : ""}
-                            `;
-                          })()}
-                        </div>
-                        <div class="px-3 py-1.5 border-t border-slate-700 flex-shrink-0">
-                          <span class="text-[10px] ${shiftHeld ? 'text-blue-400' : 'text-gray-500'}">
-                            ${shiftHeld ? '✏️ Will insert into editor' : '⇧ Hold Shift to edit before sending'}
-                          </span>
-                        </div>
+                              return;
+                            }
+                          }}
+                          filterInputRef=${promptFilterInputRef}
+                          sortMode=${promptSortMode}
+                          selectedIndex=${promptSelectedIndex}
+                          selectedItemRef=${selectedPromptItemRef}
+                          onSelect=${(prompt, e) =>
+                            handlePredefinedPrompt(prompt, e)}
+                          showSourceBadge=${true}
+                          shiftHeld=${shiftHeld}
+                          placeholder="Filter prompts..."
+                          emptyText="No matching prompts"
+                          keyPrefix="chat-prompts"
+                          footer=${html`<span
+                            class="text-[10px] ${shiftHeld
+                              ? "text-mitto-accent"
+                              : "text-mitto-text-muted"}"
+                            >${shiftHeld
+                              ? "✏️ Will insert into editor"
+                              : "⇧ Hold Shift to edit before sending"}</span
+                          >`}
+                        />
                       </div>
                     `}
                     <button
@@ -3043,10 +2717,7 @@ ${activeUIPrompt.text || ""}</textarea
                       ? html`
                           <!-- Sending spinner -->
                           <button type="button" disabled class="chat-input-action">
-                            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
+                            <span class="loading loading-spinner w-4 h-4"></span>
                           </button>
                         `
                       : html`
