@@ -948,7 +948,7 @@ export function SessionList({
                Controlled Preact checkbox — useTheme owns persistence / follow-system /
                Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
           <label
-            class="swap swap-rotate p-2 rounded-lg hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted"
+            class="btn btn-ghost btn-square btn-sm swap swap-rotate text-mitto-text-muted hover:text-mitto-text-strong"
             title="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
             aria-label="Toggle between light and dark theme"
             data-testid="theme-toggle"
