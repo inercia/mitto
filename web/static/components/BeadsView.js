@@ -2181,7 +2181,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           </button>
         </div>
         <select
-          class="select select-xs shrink-0"
+          class="select select-xs shrink-0 w-28"
           value=${typeFilter}
           onInput=${e => setTypeFilter(e.target.value)}
         >
