@@ -22,7 +22,7 @@ import {
   ArchiveFilledIcon,
   EditIcon,
   getPromptIconOrDefault,
-  BalloonIcon,
+  MittoIcon,
   ClockIcon,
   EllipsisIcon,
 } from "./Icons.js";
@@ -135,11 +135,11 @@ export function SessionItem({
   const isPeriodicEnabled = session.periodic_enabled || false;
 
   // Leading category icon for the unified-tree row:
-  //   regular  -> balloon (muted)
+  //   regular  -> mitto bubble (muted)
   //   periodic -> clock (accent)
   //   archived -> archive (muted)
   // Spawned/child rows keep their ↳ marker + child-origin glyph instead.
-  let CategoryIcon = BalloonIcon;
+  let CategoryIcon = MittoIcon;
   let categoryIconClass = "text-mitto-text-muted";
   if (isArchived) {
     CategoryIcon = ArchiveIcon;
@@ -361,6 +361,16 @@ export function SessionItem({
   const isActiveSession =
     !isArchived && (session.isActive || session.status === "active");
   const isStreaming = !isArchived && (session.isStreaming || false);
+  // Show a daisyUI loading ring in the leading-icon slot when this conversation's
+  // own agent is responding, OR when a (collapsed) child conversation is responding.
+  // It replaces the category icon on regular rows, and sits next to the ↳ marker on
+  // spawned (child) rows (which otherwise have no icon). The ring replaces the
+  // streaming status dot, so that dot is suppressed too.
+  const showLoadingRing = isStreaming || hasChildStreaming;
+  // The ring tooltip distinguishes self-streaming from a responding child.
+  const ringTitle = isStreaming
+    ? "Receiving response..."
+    : "Child conversation responding...";
 
   // On the active (selected) row the background is the red accent, so the
   // default muted text and the accent-colored streaming dot blend into it.
@@ -428,7 +438,7 @@ export function SessionItem({
       ? [
           {
             label: "Make non-periodic",
-            icon: html`<${BalloonIcon} />`,
+            icon: html`<${MittoIcon} />`,
             onClick: () => onMakeNonPeriodic && onMakeNonPeriodic(session),
           },
         ]
@@ -543,12 +553,31 @@ export function SessionItem({
                         `
                       : null
                   }
+                  ${isSpawned && showLoadingRing
+                    ? html`
+                        <span class="shrink-0 ${isActive
+                          ? "text-mitto-accent-fg"
+                          : "text-mitto-accent"}">
+                          <span
+                            class="loading loading-ring loading-xs"
+                            title=${ringTitle}
+                          ></span>
+                        </span>
+                      `
+                    : null}
                   ${!isSpawned
                     ? html`
                         <span class="shrink-0 ${isActive
                           ? "text-mitto-accent-fg"
-                          : categoryIconClass}">
-                          <${CategoryIcon} className="w-4 h-4" />
+                          : showLoadingRing
+                            ? "text-mitto-accent"
+                            : categoryIconClass}">
+                          ${showLoadingRing
+                            ? html`<span
+                                class="loading loading-ring loading-xs"
+                                title=${ringTitle}
+                              ></span>`
+                            : html`<${CategoryIcon} className="w-4 h-4" />`}
                         </span>
                       `
                     : null}
@@ -595,27 +624,9 @@ export function SessionItem({
                     : null}
                 </div>
               </div>
-              ${isStreaming || hasChildStreaming
-                ? html`
-                    <span
-                      class="w-2 h-2 rounded-full shrink-0 ${isActive
-                        ? "bg-mitto-accent-fg"
-                        : "bg-mitto-accent-400"} ${hasChildStreaming
-                        ? "child-streaming-indicator"
-                        : "streaming-indicator"}"
-                      title=${hasChildStreaming
-                        ? "Child conversation responding..."
-                        : "Receiving response..."}
-                    ></span>
-                  `
-                : isActiveSession
-                  ? html`
-                      <span
-                        class="w-2 h-2 bg-green-400 rounded-full shrink-0"
-                        title="Active"
-                      ></span>
-                    `
-                  : !isArchived
+              ${showLoadingRing || isActiveSession
+                ? null
+                : !isArchived
                     ? html`
                         <span
                           class="w-2 h-2 bg-amber-400 rounded-full shrink-0"

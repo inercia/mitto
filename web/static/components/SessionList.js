@@ -42,6 +42,8 @@ import {
   ChatBubbleIcon,
   LayersIcon,
   CheckIcon,
+  SlidersIcon,
+  SearchIcon,
 } from "./Icons.js";
 
 // The Archived subgroup expansion is intentionally NOT memorized: it always
@@ -120,6 +122,26 @@ export function SessionList({
   const [newGroupDialog, setNewGroupDialog] = useState(null);
   const [newGroupName, setNewGroupName] = useState("");
   const newGroupInputRef = useRef(null);
+
+  // Which side-panel toolbar dropdown is open ("filter" | "density" | null).
+  // Controlled so the menus are mutually exclusive — opening one closes the other.
+  const [openToolbarMenu, setOpenToolbarMenu] = useState(null);
+  const toolbarRef = useRef(null);
+  const handleToolbarMenuToggle = useCallback((key, willOpen) => {
+    setOpenToolbarMenu((prev) => (willOpen ? key : prev === key ? null : prev));
+  }, []);
+
+  // Close the open toolbar dropdown when clicking outside the toolbar.
+  useEffect(() => {
+    if (!openToolbarMenu) return;
+    const handleClickOutside = (e) => {
+      if (toolbarRef.current && !toolbarRef.current.contains(e.target)) {
+        setOpenToolbarMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [openToolbarMenu]);
 
   // All organizational groups currently in use across folders (folders.json
   // group label, shared by all workspaces in a folder). Sorted case-insensitively.
@@ -847,8 +869,8 @@ export function SessionList({
     function renderFolderLi(folder) {
           const folderExpanded = isUnifiedFolderExpanded(folder.key);
           const archivedExpanded = isUnifiedArchivedExpanded(folder.key);
-          const totalSessions =
-            countNodes(folder.conversations) + countNodes(folder.archived);
+          // Count badge excludes archived conversations (active conversations only).
+          const totalSessions = countNodes(folder.conversations);
           const hasFolderStreaming =
             hasStreaming(folder.conversations) ||
             hasStreaming(folder.archived);
@@ -887,19 +909,18 @@ export function SessionList({
                     ? "true"
                     : undefined}
                 >
-                  <${FolderIcon} className="w-4 h-4 shrink-0" />
+                  ${hasFolderStreaming
+                    ? html`
+                        <span
+                          class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                          title="Agent responding in this folder"
+                        ></span>
+                      `
+                    : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
                   <span class="truncate min-w-0" title=${folder.workingDir}>
                     ${folder.label}
                   </span>
                   <span class="flex-1"></span>
-                  ${!folderExpanded &&
-                  hasFolderStreaming &&
-                  html`
-                    <span
-                      class="w-2 h-2 bg-mitto-accent-400 rounded-full shrink-0 streaming-indicator"
-                      title="Agent responding in this folder"
-                    ></span>
-                  `}
                   <span
                     class="badge badge-sm badge-ghost shrink-0 tabular-nums"
                     >${totalSessions}</span
@@ -1092,7 +1113,11 @@ export function SessionList({
               icon: html`<${TerminalIcon} className="w-4 h-4" />`,
               onClick: () => onTerminalClick && onTerminalClick(groupContextMenu.workingDir),
             }] : []),
-            ...(!configReadonly && onMoveFolderToGroup && groupContextMenu.workingDir
+            ...(onMoveFolderToGroup && groupContextMenu.workingDir
+              // Not gated by configReadonly: a folder's group is local
+              // organizational metadata in folders.json, not host config like
+              // adding servers. The backend permits it for authenticated
+              // external clients, so it stays available on external connections.
               ? [(() => {
                   const wd = groupContextMenu.workingDir;
                   const lbl = groupContextMenu.label;
@@ -1203,22 +1228,58 @@ export function SessionList({
           <${ChatBubbleIcon} className="w-5 h-5 shrink-0" />
           <span>Mitto</span>
         </h2>
-        <div class="flex items-center gap-0.5">
+        ${onClose &&
+        html`
+          <button
+            onClick=${onClose}
+            class="btn btn-ghost btn-square btn-sm md:hidden"
+            title="Close"
+          >
+            <${CloseIcon} className="w-4 h-4" />
+          </button>
+        `}
+      </div>
+      <!-- Side panel toolbar: panel-wide actions, sitting right above the
+           Dashboard entry. Holds the new-conversation and category-filter
+           buttons (moved from the header), a density control, and a couple of
+           placeholder buttons reserved for upcoming features. -->
+      <div
+        ref=${toolbarRef}
+        class="px-3 pb-8"
+        data-testid="sidebar-toolbar"
+      >
+        <!-- daisyUI join: welds the actions into one group spanning the full
+             panel width. Each direct child grows equally (flex-1); dropdown
+             triggers carry join-item on the <summary> (join styles apply even
+             when join-item is nested). -->
+        <div class="join w-full">
           <button
             data-testid="new-conversation-btn"
             onClick=${() => !isCreatingSession && onNewSession(null, null)}
             aria-disabled=${isCreatingSession ? "true" : "false"}
-            class="btn btn-ghost btn-square btn-sm ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
+            class="btn btn-ghost btn-sm join-item flex-auto ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
             title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
           >
             ${isCreatingSession
               ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
               : html`<${PlusIcon} className="w-4 h-4" />`}
           </button>
-          <details class="dropdown dropdown-end">
+          <!-- The dropdown trigger is the nested <summary>, so the join's
+               weld margin (applied to direct join-item children) never reaches
+               it. -ms-px reproduces that weld so the trigger sits flush with
+               the adjacent buttons, exactly like the plain <button> items. -->
+          <details
+            class="dropdown flex-auto -ms-px"
+            open=${openToolbarMenu === "filter"}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== (openToolbarMenu === "filter"))
+                handleToolbarMenuToggle("filter", open);
+            }}
+          >
             <summary
               data-testid="category-filter-btn"
-              class="btn btn-ghost btn-square btn-sm list-none ${anyCategoryHidden
+              class="btn btn-ghost btn-sm join-item w-full list-none ${anyCategoryHidden
                 ? "text-mitto-accent-400"
                 : "text-mitto-text-muted"}"
               title="Filter categories"
@@ -1253,16 +1314,58 @@ export function SessionList({
               )}
             </ul>
           </details>
-          ${onClose &&
-          html`
-            <button
-              onClick=${onClose}
-              class="btn btn-ghost btn-square btn-sm md:hidden"
-              title="Close"
+          <!-- Density control: opens a menu with "Comfortable" / "Condensed".
+               UI only for now — wiring is added in a follow-up. -->
+          <details
+            class="dropdown flex-auto -ms-px"
+            open=${openToolbarMenu === "density"}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== (openToolbarMenu === "density"))
+                handleToolbarMenuToggle("density", open);
+            }}
+          >
+            <summary
+              data-testid="density-btn"
+              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted"
+              title="Density"
+              aria-label="Density"
             >
-              <${CloseIcon} className="w-4 h-4" />
-            </button>
-          `}
+              <${SlidersIcon} className="w-4 h-4" />
+            </summary>
+            <ul
+              class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
+            >
+              <li class="menu-title text-xs">Density</li>
+              <li>
+                <button type="button" data-testid="density-comfortable">
+                  <span class="text-sm">Comfortable</span>
+                </button>
+              </li>
+              <li>
+                <button type="button" data-testid="density-condensed">
+                  <span class="text-sm">Condensed</span>
+                </button>
+              </li>
+            </ul>
+          </details>
+          <!-- Placeholder buttons reserved for upcoming features. -->
+          <button
+            type="button"
+            data-testid="sidebar-toolbar-placeholder-1"
+            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
+            aria-label="Placeholder"
+          >
+            <${SearchIcon} className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="sidebar-toolbar-placeholder-2"
+            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
+            aria-label="Placeholder"
+          >
+            <${EllipsisIcon} className="w-4 h-4" />
+          </button>
         </div>
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">

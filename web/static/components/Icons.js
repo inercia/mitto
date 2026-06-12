@@ -1320,6 +1320,34 @@ export function BalloonIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Mitto icon for regular (one-off) conversations — a rounded speech bubble
+ * with three dots, mirroring the Mitto app logo.
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function MittoIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 4v-4H5a1 1 0 0 1-1-1z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M8 10h.01M12 10h.01M16 10h.01"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Clock icon for periodic (recurring) conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
