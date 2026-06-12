@@ -235,7 +235,7 @@ export function AutoChildrenEditor({
   return html`
     <fieldset class="fieldset pt-2">
       <legend class="fieldset-legend">Auto-Create Children</legend>
-      <p class="label">
+      <p class="text-xs text-mitto-text-muted">
         These conversations are auto-created when a new top-level conversation
         starts. They are deleted when the parent is deleted.
       </p>
@@ -650,8 +650,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
   };
 
   return html`
-    <fieldset class="fieldset pt-2 space-y-3">
-      <legend class="fieldset-legend">Server Configuration</legend>
+    <fieldset class="fieldset space-y-3">
       <div>
         <label class="label" for="acp-server-name">Server Name</label>
         <input
@@ -2356,7 +2355,7 @@ export function SettingsDialog({
                             </div>
                           `
                         : html`
-                            <div class="space-y-2">
+                            <div class="space-y-1">
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
@@ -2368,7 +2367,7 @@ export function SettingsDialog({
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
-                                      class="collapse-title flex items-center gap-3 py-3 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
+                                      class="collapse-title flex items-center gap-3 py-2 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
                                       onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
                                     >
                                       ${!isRCFile && html`
@@ -2449,8 +2448,10 @@ export function SettingsDialog({
                                         </button>
                                       `}
                                     </div>
-                                    <!-- Expanded edit form -->
-                                    <div class="collapse-content px-3 pb-3">
+                                    <!-- Expanded edit form. pb only when expanded: a hardcoded
+                                         padding-bottom would size the closed collapse-content grid
+                                         track (~12px) and show an empty sliver under each row. -->
+                                    <div class="collapse-content px-3 ${isExpanded ? "pb-3" : ""}">
                                       ${isExpanded && html`
                                         <${ServerEditForm}
                                           server=${srv}

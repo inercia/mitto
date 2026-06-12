@@ -819,9 +819,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  const inputClass = "input input-sm w-full rounded-md";
-  const selectClass = "select select-sm w-full rounded-md";
-  const textareaClass = "textarea textarea-sm w-full rounded-md";
+  // daisyUI's .input/.select/.textarea set their corner radius via the logical
+  // longhand border-start-start-radius:var(--radius-field), which a Tailwind
+  // `rounded-*` shorthand utility does NOT override. Some themes set
+  // --radius-field as high as 2rem, turning these edit fields into pills. Pin
+  // --radius-field so edit-mode fields keep the same subtle 0.25rem corners as
+  // the panel's description/notes boxes, regardless of theme.
+  const inputClass = "input input-sm w-full [--radius-field:0.25rem]";
+  const selectClass = "select select-sm w-full [--radius-field:0.25rem]";
+  const textareaClass = "textarea textarea-sm w-full [--radius-field:0.25rem]";
   // Block label with a small gap so it doesn't sit flush against its field.
   const labelClass = "label block mb-1";
 
@@ -2028,7 +2034,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <div class="flex items-center justify-center h-24 text-red-400 text-sm px-4">${error}</div>
         `}
         ${!loading && !error && filtered.length === 0 && html`
-          <div class="flex items-center justify-center h-24 text-mitto-text-secondary text-sm">No issues found</div>
+          <div class="flex flex-col items-center justify-center gap-1 h-32 text-center px-4">
+            <div class="text-mitto-text-secondary text-sm">No issues found</div>
+            <div class="text-mitto-text-muted text-xs">Create a new issue by pressing the "+" button below.</div>
+          </div>
         `}
         ${!loading && !error && filtered.length > 0 && html`
           <div class="list p-2">
@@ -2054,15 +2063,17 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               const bgTone = isSelected
                 ? "bg-mitto-surface-3/30"
                 : "bg-mitto-surface-3/20 hover:bg-red-600";
-              // The daisyUI list provides row dividers + list-row radius, so
-              // default rows carry no own border. The two distinctive Mitto
-              // state treatments still get an explicit border: a full accent
-              // border when selected, and the purple left-accent for epics.
+              // Each issue renders as a self-contained card with a delicate
+              // border, matching the ACP Servers / Runners lists. The base
+              // border is applied here as Tailwind utilities (not in CSS) so
+              // the two distinctive Mitto state treatments — a full accent
+              // border when selected, and the purple left-accent for epics —
+              // share equal specificity and override the base correctly.
               const borderTone = isSelected
                 ? "border border-mitto-accent-500/60"
                 : isEpic
-                  ? "border-l-4 border-l-purple-500"
-                  : "";
+                  ? "border border-mitto-border border-l-4 border-l-purple-500"
+                  : "border border-mitto-border";
               return html`
               <div
                 key=${issue.id}

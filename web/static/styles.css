@@ -1297,23 +1297,25 @@ a.mailto-link:hover {
   background: #94a3b8;
 }
 
-/* Beads issue list (daisyUI .list): tighten and add contrast.
-   daisyUI defaults make the list feel sparse and undifferentiated here:
-   row padding is 1rem and the row divider is base-content at 5% opacity
-   (nearly invisible). Scope these overrides to the Beads list so other
-   daisyUI .list usages keep their defaults.
-     - smaller gap between rows for clear separation
-     - tighter row padding (content sits closer to the row edges)
-     - a clearly visible divider using the standard --mitto-border color */
+/* Beads issue list (daisyUI .list): render each issue as a self-contained
+   card — matching the ACP Servers / Runners lists — instead of daisyUI's
+   faint full-width row dividers. The per-card border is applied as Tailwind
+   utilities on the row (see borderTone in BeadsView.js) so the selected
+   (accent) and epic (purple left) state borders, which are also utilities,
+   keep equal specificity and override it correctly. Scope these overrides to
+   the Beads list so other daisyUI .list usages keep their defaults.
+     - smaller gap between cards
+     - tighter row padding (content sits closer to the row edges) */
 .beads-table-scroll .list {
   gap: 0.25rem;
 }
 .beads-table-scroll .list-row {
   padding: 0.5rem 0.75rem;
 }
+/* Drop daisyUI's between-row divider; each row now carries its own border. */
 .beads-table-scroll .list > :not(:last-child) .list-row::after,
 .beads-table-scroll .list > :not(:last-child).list-row::after {
-  border-color: var(--mitto-border);
+  content: none;
 }
 
 /* =============================================================================

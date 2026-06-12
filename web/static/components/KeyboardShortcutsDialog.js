@@ -28,7 +28,13 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
   });
 
   return html`
-    <${Modal} isOpen=${isOpen} onClose=${onClose} title="Keyboard Shortcuts">
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${onClose}
+      title="Keyboard Shortcuts"
+      boxClass="max-h-[70vh]"
+      bodyClass="p-4 overflow-y-auto min-h-0"
+    >
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         ${Object.entries(sections)
           .sort((a, b) => b[1].length - a[1].length)

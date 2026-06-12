@@ -645,7 +645,7 @@ export function SessionItem({
                      groups (<num> + ... v). -->
                 <span
                   class="badge badge-sm badge-ghost shrink-0 tabular-nums ${isActive
-                    ? "text-mitto-accent-fg"
+                    ? "bg-mitto-accent-fg text-mitto-accent"
                     : ""}"
                   title="${childCount} child conversation${childCount === 1
                     ? ""

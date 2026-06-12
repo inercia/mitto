@@ -391,6 +391,20 @@ export function SessionList({
     return map;
   }, [unifiedTree]);
 
+  // Build a set of session IDs that live under an "Archived" subgroup (root
+  // archived conversations and their nested children). Selecting one of these
+  // must NOT collapse its folder's Archived subgroup.
+  const archivedSessionSet = useMemo(() => {
+    const set = new Set();
+    const scan = (nodes) =>
+      (nodes || []).forEach((node) => {
+        set.add(node.session_id);
+        scan(node.children);
+      });
+    unifiedTree.folders.forEach((folder) => scan(folder.archived));
+    return set;
+  }, [unifiedTree]);
+
   // Remember the last-focused conversation for its group whenever the active
   // session changes (clicks, keyboard/swipe nav, programmatic focus). Reopening
   // that group later restores this conversation (see handleFolderOpened).
@@ -436,10 +450,32 @@ export function SessionList({
         }
       }
 
+      // Auto-collapse the folder's Archived subgroup when selecting a
+      // non-archived item in that folder. Selecting an archived conversation
+      // keeps its Archived subgroup open. (Archived expansion is never
+      // persisted, so only React state is updated — see handleUnifiedToggle.)
+      if (!archivedSessionSet.has(sessionId)) {
+        const folderKey = sessionFolderMap.get(sessionId);
+        if (folderKey) {
+          const archivedKey = `archived:${folderKey}`;
+          setSidebarExpandedGroups((prev) =>
+            prev[archivedKey] === false
+              ? prev
+              : { ...prev, [archivedKey]: false },
+          );
+        }
+      }
+
       // Call the original onSelect
       onSelect(sessionId);
     },
-    [onSelect, sessionFamilyMap, sidebarExpandedGroups],
+    [
+      onSelect,
+      sessionFamilyMap,
+      sessionFolderMap,
+      archivedSessionSet,
+      sidebarExpandedGroups,
+    ],
   );
 
   // Whether a folder contains a given session (root conversation, nested child,
@@ -840,6 +876,14 @@ export function SessionList({
                         onClick=${(e) => {
                           e.preventDefault();
                           e.stopPropagation();
+                          // Selecting Tasks collapses this folder's Archived
+                          // subgroup (matches conversation-selection behavior).
+                          const archivedKey = `archived:${folder.key}`;
+                          setSidebarExpandedGroups((prev) =>
+                            prev[archivedKey] === false
+                              ? prev
+                              : { ...prev, [archivedKey]: false },
+                          );
                           onBeadsOpen && onBeadsOpen(folder.workingDir);
                         }}
                         aria-current=${tasksActive ? "page" : undefined}

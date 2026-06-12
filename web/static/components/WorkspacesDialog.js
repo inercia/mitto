@@ -1835,7 +1835,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         <li key=${prompt.name}
                                             class="list-row p-0">
                                           <div
-                                             class="collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${isEnabled ? 'border-mitto-border-2/50' : 'border-mitto-border-2/30 opacity-60'} w-full">
+                                             class="list-col-grow collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${isEnabled ? 'border-mitto-border-2/50' : 'border-mitto-border-2/30 opacity-60'} w-full">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12">
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => togglePromptEnabled(prompt)}
