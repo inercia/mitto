@@ -523,7 +523,7 @@ export function SessionItem({
             <!-- Top row: status indicator, title, and workspace pill -->
             <div class="flex items-center gap-2">
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 min-w-0">
                   ${isSpawned
                     ? html`
                           <span
@@ -621,6 +621,7 @@ export function SessionItem({
                   onBadgeClick=${onBadgeClick}
                   hideAbbreviation=${badgeHideAbbreviation}
                   hideAcpServer=${badgeHideAcpServer}
+                  className="shrink-0"
                 />
               `}
               <button

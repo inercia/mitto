@@ -646,8 +646,9 @@ export function SessionList({
             hasStreaming(folder.conversations) ||
             hasStreaming(folder.archived);
           return html`
-            <li key=${folder.key} class="folder-group">
+            <li key=${folder.key} class="folder-group min-w-0">
               <details
+                class="min-w-0 w-full"
                 open=${folderExpanded}
                 onToggle=${(e) => {
                   const open = e.currentTarget.open;
@@ -678,6 +679,10 @@ export function SessionList({
                   <span class="truncate" title=${folder.workingDir}>
                     ${folder.label}
                   </span>
+                  <span
+                    class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                    >${totalSessions}</span
+                  >
                   <span class="flex-1"></span>
                   ${!folderExpanded &&
                   hasFolderStreaming &&
@@ -687,21 +692,6 @@ export function SessionList({
                       title="Agent responding in this folder"
                     ></span>
                   `}
-                  ${folder.workingDir &&
-                  html`
-                    <button
-                      type="button"
-                      onClick=${(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onBeadsOpen && onBeadsOpen(folder.workingDir);
-                      }}
-                      class="p-0.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-muted hover:text-mitto-text-strong"
-                      title="Beads issues: ${folder.workingDir}"
-                    >
-                      <${BeadsIcon} className="w-3.5 h-3.5" />
-                    </button>
-                  `}
                   <button
                     type="button"
                     onClick=${(e) => {
@@ -710,28 +700,25 @@ export function SessionList({
                       if (!isCreatingSession)
                         handleNewSessionInFolder(folder.workingDir, e);
                     }}
-                    class="p-0.5 rounded transition-colors ${isCreatingSession
-                      ? "cursor-wait opacity-60 text-mitto-text-muted"
-                      : "hover:bg-mitto-surface-hover text-mitto-text-muted hover:text-mitto-text-strong"}"
+                    class="btn btn-ghost btn-square btn-xs shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
+                      ? "cursor-wait opacity-60"
+                      : ""}"
                     title=${isCreatingSession
                       ? "Creating conversation\u2026"
                       : `New conversation in ${folder.label}`}
                     disabled=${isCreatingSession}
                   >
                     ${isCreatingSession
-                      ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
-                      : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                      ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                      : html`<${PlusIcon} className="w-4 h-4" />`}
                   </button>
-                  <span class="text-xs text-mitto-text-muted"
-                    >${totalSessions}</span
-                  >
                 </summary>
                 <ul>
-                  ${renderSessionNodes(folder.conversations)}
                   ${folder.showTasks &&
                   html`
-                    <!-- Tasks (static, per-folder) — opens the Beads view for
-                         this folder. Not a conversation; excluded from nav. -->
+                    <!-- Tasks (static, per-folder) — always the first entry in a
+                         project. Opens the Beads view for this folder. Not a
+                         conversation; excluded from nav. -->
                     <li>
                       <button
                         type="button"
@@ -748,10 +735,12 @@ export function SessionList({
                       </button>
                     </li>
                   `}
+                  ${renderSessionNodes(folder.conversations)}
                   ${folder.archived.length > 0 &&
                   html`
-                    <li class="archived-subgroup">
+                    <li class="archived-subgroup min-w-0">
                       <details
+                        class="min-w-0 w-full"
                         open=${archivedExpanded}
                         onToggle=${(e) => {
                           const open = e.currentTarget.open;
