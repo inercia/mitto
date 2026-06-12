@@ -21,6 +21,8 @@ export {
 export {
   getLastActiveSessionId,
   setLastActiveSessionId,
+  getLastSessionForGroup,
+  setLastSessionForGroup,
   getQueueDropdownHeight,
   setQueueDropdownHeight,
   getQueueHeightConstraints,

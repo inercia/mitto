@@ -686,20 +686,43 @@ a:hover {
   border-color: #475569;
 }
 
-/* Session list items - light theme */
-.light .cursor-pointer {
-  border-bottom: 1px solid #e4e4e7 !important;
+/* daisyUI menu items are <button>/<a> elements. They must NOT inherit the
+   generic per-button border above, which would draw a box around each menu
+   entry (context menus, dropdowns, sidebar menus, etc.). */
+.menu button,
+.menu a {
+  border: none !important;
 }
 
+/* Sidebar action buttons ("+" / "..." on project group headers, and the
+   per-conversation "..." button) opt back in to a subtle circular outline
+   (paired with .btn-circle) so they read as discrete round buttons. The
+   --size override shrinks them below daisyUI's btn-xs (1.5rem) to a compact,
+   uniform 1.25rem circle. */
+.menu button.sidebar-group-action {
+  border: 1px solid var(--mitto-border-2) !important;
+  --size: 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  min-height: 1.25rem;
+}
+
+/* "Select Workspace" dialog: cap the height so it never fills the whole
+   viewport. The static tailwind build lacks a max-h-[70vh] utility, so the
+   cap lives here; the dialog body (flex-1 min-h-0 overflow-y-auto) scrolls
+   internally when the workspace list is long. */
+.modal-box.workspace-select-box {
+  max-height: 70vh;
+}
+
+/* Session list items - light theme.
+   No bottom border: conversation rows in the daisyUI sidebar must be flush
+   with no separators between entries. */
 .light .cursor-pointer:not(.bg-mitto-accent):hover {
   background: #f5f5f5 !important;
 }
 
-/* Session list items - dark theme */
-.dark .cursor-pointer {
-  border-bottom: 1px solid #334155 !important;
-}
-
+/* Session list items - dark theme (see light note above). */
 .dark .cursor-pointer:not(.bg-mitto-accent):hover {
   background: #1e293b !important;
 }
@@ -783,19 +806,10 @@ a:hover {
  * Swipe-to-Delete V2 Theme Styles
  * ============================================================================= */
 
-/* Session item container - no individual borders when inside a group (border is on parent-session-group) */
-.light .parent-session-group .session-item-container,
-.dark .parent-session-group .session-item-container {
-  border-bottom: none !important;
-}
-
-/* Standalone session items (ungrouped mode) keep their own border */
-.light .session-item-container {
-  border-bottom: 1px solid #e4e4e7;
-}
-
+/* Conversation rows never show a divider between items (grouped or standalone). */
+.light .session-item-container,
 .dark .session-item-container {
-  border-bottom: 1px solid #334155;
+  border-bottom: none !important;
 }
 
 /* Animated expand/collapse for child sessions */

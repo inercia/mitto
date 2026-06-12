@@ -220,6 +220,55 @@ export function setLastActiveSessionId(sessionId) {
   }
 }
 
+// Per-group (folder) last-focused conversation. Lets the sidebar restore the
+// conversation that was last focused in a group when that group is reopened,
+// keyed by the unified-tree folder key. Stored as a single JSON object.
+const LAST_SESSION_BY_GROUP_KEY = "mitto_last_session_by_group";
+
+/**
+ * Get the last-focused session ID for a sidebar group (folder).
+ * @param {string} groupKey - The unified-tree folder key
+ * @returns {string|null} The remembered session ID, or null if none
+ */
+export function getLastSessionForGroup(groupKey) {
+  try {
+    const raw = localStorage.getItem(LAST_SESSION_BY_GROUP_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw);
+    return (map && map[groupKey]) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Save the last-focused session ID for a sidebar group (folder).
+ * @param {string} groupKey - The unified-tree folder key
+ * @param {string|null} sessionId - The session ID to remember, or null to clear
+ */
+export function setLastSessionForGroup(groupKey, sessionId) {
+  if (!groupKey) return;
+  try {
+    const raw = localStorage.getItem(LAST_SESSION_BY_GROUP_KEY);
+    let map = {};
+    if (raw) {
+      try {
+        map = JSON.parse(raw) || {};
+      } catch (e) {
+        map = {};
+      }
+    }
+    if (sessionId) {
+      map[groupKey] = sessionId;
+    } else {
+      delete map[groupKey];
+    }
+    localStorage.setItem(LAST_SESSION_BY_GROUP_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.warn("Failed to save last session for group to localStorage:", e);
+  }
+}
+
 // =============================================================================
 // Legacy Tab Storage Migration (mitto-1er.8.4-C)
 // =============================================================================

@@ -146,6 +146,7 @@ import {
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
 import { BeadsView, BeadsDetailPanel } from "./components/BeadsView.js";
+import { DashboardView } from "./components/DashboardView.js";
 
 // Import constants
 import {
@@ -1327,14 +1328,14 @@ function App() {
     setMainView("conversation");
   };
 
-  // Show the Dashboard (no-session) view by clearing the active session. This
-  // reuses the existing "no sessions left" empty state (setActiveSessionId(null))
-  // and does not delete or disconnect anything.
+  // Show the dedicated Dashboard view. Clears the active session (the Dashboard
+  // is not a conversation) and switches the main content area to "dashboard".
+  // Does not delete or disconnect anything.
   const handleShowDashboard = () => {
     setActiveSessionId(null);
     setShowSidebar(false);
     setShowSidePanel(false);
-    setMainView("conversation");
+    setMainView("dashboard");
   };
 
   // Handle badge click action - calls API to execute configured command
@@ -1757,8 +1758,12 @@ function App() {
       <!-- Unified toast container -->
       <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
-      <!-- Main content area: beads view or conversation -->
-      ${mainView === "beads" && beadsWorkingDir
+      <!-- Main content area: dashboard, beads view, or conversation -->
+      ${mainView === "dashboard"
+        ? html`
+          <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
+        `
+        : mainView === "beads" && beadsWorkingDir
         ? html`
           <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
             <${BeadsView}
@@ -2037,6 +2042,8 @@ function App() {
             onTerminalClick=${handleTerminalClick}
             onBeadsOpen=${handleBeadsOpen}
             onShowDashboard=${handleShowDashboard}
+            mainView=${mainView}
+            beadsWorkingDir=${beadsWorkingDir}
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}

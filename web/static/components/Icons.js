@@ -1374,6 +1374,28 @@ export function DashboardIcon({ className = "w-4 h-4" }) {
   `;
 }
 
+/**
+ * Home icon for the top-level Dashboard node
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function HomeIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h4v-6a1 1 0 011-1h2a1 1 0 011 1v6h4a1 1 0 001-1V10"
+      />
+    </svg>
+  `;
+}
+
 // PROMPT_ICONS maps the optional "icon" front-matter value of a prompt to an
 // icon component. Names are matched case-insensitively. Keep names stable and
 // kebab-case so they can be referenced from prompt markdown files.

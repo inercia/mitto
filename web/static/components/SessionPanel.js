@@ -621,39 +621,57 @@ export function SessionPanel({
             </button>
           </div>
 
-          <!-- Tab switcher — daisyUI tabs tabs-box (controlled via tab-active; no radio inputs).
-               Follows shared mitto tabs convention from mitto-i1r.15. -->
-          <div role="tablist" class="tabs tabs-box shrink-0 mx-2 my-1.5">
-            <button
-              role="tab"
-              class="tab flex-1 ${currentTab === "properties" ? "tab-active" : ""}"
-              onClick=${() => handleTabChange("properties")}
-              title="Properties"
-            >
+          <!-- Tab switcher — daisyUI radio tabs-lift with icons. Each tab is a
+               <label class="tab"> wrapping a (visually hidden) radio whose
+               checked state is controlled by currentTab; daisyUI renders the
+               lifted folder look and active styling off the :checked radio.
+               Content is rendered in a separate, state-driven panel below (same
+               convention as WorkspacesDialog's radio tabs) so it keeps a single
+               full-height scroll area and lazy per-tab rendering. -->
+          <div
+            role="tablist"
+            class="tabs tabs-lift shrink-0 pt-2"
+            style="--tab-border-color: var(--mitto-border-1);"
+          >
+            <label class="tab flex-1" title="Properties">
+              <input
+                type="radio"
+                name="session-panel-tabs"
+                checked=${currentTab === "properties"}
+                onChange=${() => handleTabChange("properties")}
+              />
               <${SettingsIcon} className="w-4 h-4" />
-            </button>
-            <button
-              role="tab"
-              class="tab flex-1 ${currentTab === "changes" ? "tab-active" : ""}"
-              onClick=${() => handleTabChange("changes")}
-              title="Changes"
-            >
+            </label>
+            <label class="tab flex-1" title="Changes">
+              <input
+                type="radio"
+                name="session-panel-tabs"
+                checked=${currentTab === "changes"}
+                onChange=${() => handleTabChange("changes")}
+              />
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
               </svg>
-            </button>
-            <button
-              role="tab"
-              class="tab flex-1 ${currentTab === "advanced" ? "tab-active" : ""}"
-              onClick=${() => handleTabChange("advanced")}
-              title="Advanced"
-            >
+            </label>
+            <label class="tab flex-1" title="Advanced">
+              <input
+                type="radio"
+                name="session-panel-tabs"
+                checked=${currentTab === "advanced"}
+                onChange=${() => handleTabChange("advanced")}
+              />
               <${SlidersIcon} className="w-4 h-4" />
-            </button>
+            </label>
           </div>
 
-          <!-- Tab content (key forces Preact to fully remount on tab switch) -->
-          <div class="flex-1 overflow-y-auto" key=${currentTab}>
+          <!-- Tab content (key forces Preact to fully remount on tab switch).
+               The top border + matching surface connect the panel to the lifted
+               active tab above. -->
+          <div
+            class="flex-1 overflow-y-auto border-t border-mitto-border-1"
+            style="margin-top:-1px;"
+            key=${currentTab}
+          >
             ${currentTab === "properties" ? renderPropertiesContent() : currentTab === "changes" ? renderChangesContent() : renderAdvancedTabContent()}
           </div>
       <//>

@@ -11,6 +11,8 @@ import {
   setGroupExpanded,
   getSingleExpandedGroupMode,
   onUIPreferencesLoaded,
+  getLastSessionForGroup,
+  setLastSessionForGroup,
 } from "../utils/index.js";
 import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
@@ -28,10 +30,23 @@ import {
   SettingsIcon,
   RobotIcon,
   BeadsIcon,
-  DashboardIcon,
+  HomeIcon,
   FilterIcon,
   TerminalIcon,
+  EllipsisIcon,
 } from "./Icons.js";
+
+// The Archived subgroup expansion is intentionally NOT memorized: it always
+// resets to collapsed when a group is (re)opened. Strip any persisted
+// "archived:<folderKey>" entries when hydrating React state so stale values
+// never leak an expanded Archived subgroup across loads.
+function withoutArchivedKeys(groups) {
+  const out = {};
+  for (const key in groups) {
+    if (!key.startsWith("archived:")) out[key] = groups[key];
+  }
+  return out;
+}
 
 export function SessionList({
   activeSessions,
@@ -61,6 +76,8 @@ export function SessionList({
   onTerminalClick,
   onBeadsOpen,
   onShowDashboard,
+  mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
+  beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
@@ -83,7 +100,7 @@ export function SessionList({
   // Track expanded groups in React state to avoid stale localStorage reads in WKWebView.
   // This mirrors the fix applied for navigableSessions (see expandedGroupsForNav in app.js).
   const [sidebarExpandedGroups, setSidebarExpandedGroups] = useState(() =>
-    getExpandedGroups(),
+    withoutArchivedKeys(getExpandedGroups()),
   );
 
   // Group header context menu state: { x, y, workingDir, label }
@@ -122,7 +139,7 @@ export function SessionList({
   // Subscribe to UI preferences loaded from server (for macOS app where localStorage doesn't persist)
   useEffect(() => {
     const unsubscribe = onUIPreferencesLoaded(() => {
-      setSidebarExpandedGroups(getExpandedGroups());
+      setSidebarExpandedGroups(withoutArchivedKeys(getExpandedGroups()));
       console.debug("[Mitto] SessionList: UI preferences synced from server");
     });
     return unsubscribe;
@@ -140,7 +157,7 @@ export function SessionList({
         setSidebarExpandedGroups((prev) => ({ ...prev, [groupKey]: expanded }));
       } else {
         // Fallback: re-read from localStorage if no detail provided
-        setSidebarExpandedGroups(getExpandedGroups());
+        setSidebarExpandedGroups(withoutArchivedKeys(getExpandedGroups()));
       }
     };
     window.addEventListener(
@@ -254,7 +271,9 @@ export function SessionList({
           if (k !== groupKey && isGroupExpanded(k)) setGroupExpanded(k, false);
         }
       }
-      setGroupExpanded(groupKey, willOpen);
+      // The Archived subgroup is never persisted: its expansion always resets to
+      // collapsed when the parent group is reopened (handled in handleFolderOpened).
+      if (isFolderKey) setGroupExpanded(groupKey, willOpen);
     },
     [],
   );
@@ -354,6 +373,33 @@ export function SessionList({
     return map;
   }, [unifiedTree]);
 
+  // Build a map from session ID → its folder key, covering root conversations,
+  // their nested children, and archived sessions. Used to remember the
+  // last-focused conversation per group.
+  const sessionFolderMap = useMemo(() => {
+    const map = new Map();
+    const scan = (nodes, folderKey) => {
+      (nodes || []).forEach((node) => {
+        map.set(node.session_id, folderKey);
+        scan(node.children, folderKey);
+      });
+    };
+    unifiedTree.folders.forEach((folder) => {
+      scan(folder.conversations, folder.key);
+      scan(folder.archived, folder.key);
+    });
+    return map;
+  }, [unifiedTree]);
+
+  // Remember the last-focused conversation for its group whenever the active
+  // session changes (clicks, keyboard/swipe nav, programmatic focus). Reopening
+  // that group later restores this conversation (see handleFolderOpened).
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const folderKey = sessionFolderMap.get(activeSessionId);
+    if (folderKey) setLastSessionForGroup(folderKey, activeSessionId);
+  }, [activeSessionId, sessionFolderMap]);
+
   // Wrap onSelect to auto-collapse parent-child groups when selecting outside the family.
   // If the selected session belongs to a family (parent + its children), only that family
   // stays expanded. All other expanded parent groups are collapsed.
@@ -394,6 +440,38 @@ export function SessionList({
       onSelect(sessionId);
     },
     [onSelect, sessionFamilyMap, sidebarExpandedGroups],
+  );
+
+  // Whether a folder contains a given session (root conversation, nested child,
+  // or archived). Used to validate a remembered session before refocusing it.
+  const folderHasSession = (folder, sessionId) => {
+    const scan = (nodes) =>
+      (nodes || []).some(
+        (node) => node.session_id === sessionId || scan(node.children),
+      );
+    return scan(folder.conversations) || scan(folder.archived);
+  };
+
+  // Default behaviors when a group is (re)opened:
+  //  1. The Archived subgroup always collapses — never memorized.
+  //  2. Focus the conversation last focused in this group; if none is
+  //     remembered (or it no longer exists), open the group's Tasks view.
+  const handleFolderOpened = useCallback(
+    (folder) => {
+      const archivedKey = `archived:${folder.key}`;
+      setSidebarExpandedGroups((prev) => {
+        if (prev[archivedKey] === false) return prev;
+        return { ...prev, [archivedKey]: false };
+      });
+
+      const remembered = getLastSessionForGroup(folder.key);
+      if (remembered && folderHasSession(folder, remembered)) {
+        handleSelectWithCollapse(remembered);
+      } else if (folder.workingDir) {
+        onBeadsOpen && onBeadsOpen(folder.workingDir);
+      }
+    },
+    [handleSelectWithCollapse, onBeadsOpen],
   );
 
 
@@ -446,7 +524,8 @@ export function SessionList({
       <${SessionItem}
         key=${session.session_id}
         session=${finalSession}
-        isActive=${activeSessionId === session.session_id}
+        isActive=${activeSessionId === session.session_id &&
+        mainView === "conversation"}
         onSelect=${handleSelectWithCollapse}
         onRename=${onRename}
         onDelete=${onDelete}
@@ -548,8 +627,11 @@ export function SessionList({
         const hasChildren =
           session.children && session.children.length > 0;
         const parentKey = `parent:${session.session_id}`;
+        // Children auto-expand when the parent (or one of its children) is the
+        // focused conversation — there is no manual expand/collapse toggle.
         const childrenExpanded = hasChildren
-          ? isSidebarGroupExpanded(parentKey)
+          ? activeSessionId === session.session_id ||
+            session.children.some((c) => c.session_id === activeSessionId)
           : false;
         const hasChildStreaming =
           hasChildren &&
@@ -569,7 +651,10 @@ export function SessionList({
                 isWaitingForUserInput: uiPromptMap.has(session.session_id),
               },
               {
-                hideBadge: false,
+                // The folder tree already groups by workspace, so the only
+                // thing the pill would show here is the agent/ACP name — hide
+                // the badge entirely to keep conversation rows compact.
+                hideBadge: true,
                 badgeHideAbbreviation: true,
                 badgeHideAcpServer: false,
                 isSpawned: !hasChildren && !!session._parentId,
@@ -633,7 +718,7 @@ export function SessionList({
               ? "text-mitto-text-strong bg-mitto-surface-3"
               : "text-mitto-text-muted"}"
           >
-            <${DashboardIcon} className="w-4 h-4 shrink-0" />
+            <${HomeIcon} className="w-4 h-4 shrink-0" />
             <span class="truncate">${dashboard.label}</span>
           </button>
         </li>
@@ -645,6 +730,10 @@ export function SessionList({
           const hasFolderStreaming =
             hasStreaming(folder.conversations) ||
             hasStreaming(folder.archived);
+          // The Tasks (beads) entry carries the focus highlight while its
+          // folder's beads view is the active main-content view.
+          const tasksActive =
+            mainView === "beads" && beadsWorkingDir === folder.workingDir;
           return html`
             <li key=${folder.key} class="folder-group min-w-0">
               <details
@@ -654,6 +743,7 @@ export function SessionList({
                   const open = e.currentTarget.open;
                   if (open !== folderExpanded) {
                     handleUnifiedToggle(folder.key, open, allFolderKeys);
+                    if (open) handleFolderOpened(folder);
                   }
                 }}
               >
@@ -679,10 +769,6 @@ export function SessionList({
                   <span class="truncate min-w-0" title=${folder.workingDir}>
                     ${folder.label}
                   </span>
-                  <span
-                    class="badge badge-sm badge-ghost shrink-0 tabular-nums"
-                    >${totalSessions}</span
-                  >
                   <span class="flex-1"></span>
                   ${!folderExpanded &&
                   hasFolderStreaming &&
@@ -692,6 +778,10 @@ export function SessionList({
                       title="Agent responding in this folder"
                     ></span>
                   `}
+                  <span
+                    class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                    >${totalSessions}</span
+                  >
                   <button
                     type="button"
                     onClick=${(e) => {
@@ -700,7 +790,7 @@ export function SessionList({
                       if (!isCreatingSession)
                         handleNewSessionInFolder(folder.workingDir, e);
                     }}
-                    class="btn btn-ghost btn-square btn-xs shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
+                    class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
                       ? "cursor-wait opacity-60"
                       : ""}"
                     title=${isCreatingSession
@@ -709,9 +799,31 @@ export function SessionList({
                     disabled=${isCreatingSession}
                   >
                     ${isCreatingSession
-                      ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-                      : html`<${PlusIcon} className="w-4 h-4" />`}
+                      ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                      : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                   </button>
+                  ${folder.workingDir &&
+                  html`
+                    <button
+                      type="button"
+                      onClick=${(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setGroupContextMenu({
+                          x: rect.left,
+                          y: rect.bottom,
+                          workingDir: folder.workingDir,
+                          label: folder.label,
+                        });
+                      }}
+                      class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                      title="More actions"
+                      aria-label="More actions"
+                    >
+                      <${EllipsisIcon} className="w-3.5 h-3.5" />
+                    </button>
+                  `}
                 </summary>
                 <ul>
                   ${folder.showTasks &&
@@ -727,7 +839,10 @@ export function SessionList({
                           e.stopPropagation();
                           onBeadsOpen && onBeadsOpen(folder.workingDir);
                         }}
-                        class="gap-2 text-sm text-mitto-text-muted border-0!"
+                        aria-current=${tasksActive ? "page" : undefined}
+                        class="gap-2 text-sm border-0! ${tasksActive
+                          ? "bg-mitto-accent text-mitto-accent-fg"
+                          : "text-mitto-text-muted"}"
                         title="Beads issues: ${folder.workingDir}"
                       >
                         <${BeadsIcon} className="w-4 h-4 shrink-0" />
@@ -754,11 +869,14 @@ export function SessionList({
                         }}
                       >
                         <summary
-                          class="gap-2 text-sm text-mitto-text-muted"
+                          class="flex items-center gap-2 text-sm text-mitto-text-muted after:hidden"
                         >
                           <${ArchiveIcon} className="w-4 h-4 shrink-0" />
-                          <span class="truncate"
-                            >Archived (${folder.archived.length})</span
+                          <span class="truncate">Archived</span>
+                          <span class="flex-1"></span>
+                          <span
+                            class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                            >${folder.archived.length}</span
                           >
                         </summary>
                         <ul>${renderSessionNodes(folder.archived)}</ul>
@@ -800,7 +918,7 @@ export function SessionList({
                 })()
               : []),
             ...(groupContextMenu.workingDir ? [{
-              label: "Beads",
+              label: "Tasks",
               icon: html`<${BeadsIcon} className="w-4 h-4" />`,
               onClick: () => onBeadsOpen && onBeadsOpen(groupContextMenu.workingDir),
             }] : []),

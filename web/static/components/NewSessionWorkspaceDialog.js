@@ -196,12 +196,14 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
       onClose=${onCancel}
       title="Select Workspace"
       footer=${footer}
+      boxClass="workspace-select-box"
+      bodyClass="p-4 overflow-y-auto flex-1 min-h-0"
     >
-      <p class="text-mitto-text-muted text-sm mb-4">${helpText}</p>
+      <p class="text-mitto-text-muted text-xs mb-2">${helpText}</p>
 
       ${showFilter &&
       html`
-        <div class="mb-4">
+        <div class="mb-2">
           <input
             ref=${filterInputRef}
             type="text"
@@ -233,10 +235,10 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
         </div>
       `}
 
-      <div class="space-y-2">
+      <div class="space-y-1">
         ${filteredGroups.length === 0
           ? html`
-              <div class="text-center py-4 text-mitto-text-muted">
+              <div class="text-center py-3 text-sm text-mitto-text-muted">
                 No workspaces match your filter.
               </div>
             `
@@ -249,7 +251,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                 const showGroupHeader = filteredGroups.length > 1;
 
                 return html`
-                  <div key=${workingDir} class="space-y-1">
+                  <div key=${workingDir} class="space-y-0.5">
                     ${showGroupHeader &&
                     html`
                       <button
@@ -272,14 +274,14 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                         <button
                           key=${ws.working_dir + "|" + ws.acp_server}
                           onClick=${() => onSelect(ws)}
-                          class="w-full p-3 text-left rounded-md bg-mitto-surface-3/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-3 ${showGroupHeader
+                          class="w-full px-2 py-1.5 text-left rounded-md bg-mitto-surface-3/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-2 ${showGroupHeader
                             ? "ml-4"
                             : ""}"
                         >
                           <div
-                            class="w-8 h-8 shrink-0 ${currentIndex <
+                            class="w-5 h-5 shrink-0 ${currentIndex <
                             WORKSPACE_FILTER_THRESHOLD
-                              ? "flex items-center justify-center rounded-lg bg-mitto-surface-4 text-mitto-text-secondary font-mono text-sm"
+                              ? "flex items-center justify-center rounded bg-mitto-surface-4 text-mitto-text-secondary font-mono text-xs"
                               : ""}"
                           >
                             ${currentIndex < WORKSPACE_FILTER_THRESHOLD
@@ -290,7 +292,7 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                             path=${ws.working_dir}
                             customColor=${ws.color}
                             customCode=${ws.code}
-                            size="lg"
+                            size="sm"
                           />
                           <div class="flex-1 min-w-0">
                             ${(!showGroupHeader ||

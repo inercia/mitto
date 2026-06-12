@@ -2,9 +2,41 @@
 // Right-click menus with viewport-aware positioning and hover-flyout submenus.
 // Shared by the conversation/group menus (app.js) and the Beads issue list.
 
-const { html, useState, useEffect, useRef, useMemo } = window.preact;
+const { html, useState, useEffect, useLayoutEffect, useRef, useMemo, render } =
+  window.preact;
 
 import { ChevronRightIcon } from "./Icons.js";
+
+// Renders `children` into a fresh <div> appended to document.body so the menu
+// escapes any ancestor stacking context / containing block. The sidebar lives
+// inside daisyUI's .drawer-side panel, whose child carries `translate` and
+// `will-change: transform`; both establish a containing block for
+// position:fixed descendants AND a stacking context, which traps the menu's
+// `fixed z-50` inside the sidebar's width and paints it BEHIND the chat panel.
+// Rendering at the document.body level sidesteps this entirely.
+function Portal({ children }) {
+  const containerRef = useRef(null);
+  if (containerRef.current === null) {
+    containerRef.current = document.createElement("div");
+  }
+
+  // Attach the container on mount; unmount the subtree and detach on cleanup.
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    document.body.appendChild(el);
+    return () => {
+      render(null, el);
+      el.remove();
+    };
+  }, []);
+
+  // Reconcile the menu subtree into the body-level container on every render.
+  useLayoutEffect(() => {
+    render(children, containerRef.current);
+  });
+
+  return null;
+}
 
 // Renders a single context menu entry. Entries with a non-empty `submenu`
 // array expand a flyout submenu on hover (positioned to the right, flipping
@@ -170,20 +202,22 @@ export function ContextMenu({ x, y, items, onClose }) {
   }, [x, y, menuRef.current]);
 
   return html`
-    <ul
-      ref=${menuRef}
-      class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px]"
-      style="left: ${position.x}px; top: ${position.y}px;"
-    >
-      ${items.map(
-        (item) => html`
-          <${ContextMenuItem}
-            key=${item.label}
-            item=${item}
-            onClose=${onClose}
-          />
-        `,
-      )}
-    </ul>
+    <${Portal}>
+      <ul
+        ref=${menuRef}
+        class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px]"
+        style="left: ${position.x}px; top: ${position.y}px;"
+      >
+        ${items.map(
+          (item) => html`
+            <${ContextMenuItem}
+              key=${item.label}
+              item=${item}
+              onClose=${onClose}
+            />
+          `,
+        )}
+      </ul>
+    <//>
   `;
 }

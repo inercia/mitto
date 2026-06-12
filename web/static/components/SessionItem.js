@@ -21,7 +21,6 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   EditIcon,
-  ChevronDownIcon,
   getPromptIconOrDefault,
   BalloonIcon,
   ClockIcon,
@@ -363,6 +362,14 @@ export function SessionItem({
     !isArchived && (session.isActive || session.status === "active");
   const isStreaming = !isArchived && (session.isStreaming || false);
 
+  // On the active (selected) row the background is the red accent, so the
+  // default muted text and the accent-colored streaming dot blend into it.
+  // Switch the trailing controls (badge, "..." menu, chevron) and the streaming
+  // dot to the accent foreground for contrast when the row is active.
+  const trailingControlClass = isActive
+    ? "text-mitto-accent-fg hover:text-mitto-accent-fg"
+    : "text-mitto-text-muted hover:text-mitto-text-strong";
+
   // Build group submenus from prompts flagged with menus:conversation.
   // Prompts are grouped by their `group` attribute; ungrouped prompts fall
   // under "Other". Each group becomes a submenu listing its prompts.
@@ -545,7 +552,7 @@ export function SessionItem({
                     : null}
                   <span
                     class="text-sm truncate ${isArchived
-                      ? "text-mitto-text-muted"
+                      ? "text-mitto-text-300"
                       : ""}"
                     >${displayName}</span
                   >
@@ -587,7 +594,9 @@ export function SessionItem({
               ${isStreaming || hasChildStreaming
                 ? html`
                     <span
-                      class="w-2 h-2 bg-mitto-accent-400 rounded-full shrink-0 ${hasChildStreaming
+                      class="w-2 h-2 rounded-full shrink-0 ${isActive
+                        ? "bg-mitto-accent-fg"
+                        : "bg-mitto-accent-400"} ${hasChildStreaming
                         ? "child-streaming-indicator"
                         : "streaming-indicator"}"
                       title=${hasChildStreaming
@@ -626,35 +635,35 @@ export function SessionItem({
                   className="shrink-0"
                 />
               `}
+              ${!isSpawned &&
+              hasChildren &&
+              childCount > 0 &&
+              html`
+                <!-- Children count — a plain count-number badge. The "v"
+                     chevron toggle is rendered after the "..." menu so the
+                     trailing controls read <num> ... v, matching folder
+                     groups (<num> + ... v). -->
+                <span
+                  class="badge badge-sm badge-ghost shrink-0 tabular-nums ${isActive
+                    ? "text-mitto-accent-fg"
+                    : ""}"
+                  title="${childCount} child conversation${childCount === 1
+                    ? ""
+                    : "s"}"
+                  >${childCount}</span
+                >
+              `}
               <button
                 type="button"
                 onClick=${handleMenuButtonClick}
-                class="btn btn-ghost btn-square btn-xs shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 ${trailingControlClass}"
                 title="More actions"
                 aria-label="More actions"
                 data-testid="session-item-menu"
               >
-                <${EllipsisIcon} className="w-4 h-4" />
+                <${EllipsisIcon} className="w-3.5 h-3.5" />
               </button>
             </div>
-            ${!isSpawned && hasChildren && childCount > 0 && html`
-            <!-- Bottom row: children count expand button -->
-            <div class="flex items-center mt-1">
-              <button
-                class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-mitto-surface-3'} text-mitto-text-muted hover:text-mitto-text-strong hover:bg-mitto-surface-hover transition-colors cursor-pointer"
-                onClick=${(e) => {
-                  e.stopPropagation();
-                  if (onToggleExpand) onToggleExpand();
-                }}
-                title="${isExpanded ? 'Collapse children' : 'Expand children'}"
-              >
-                <span class="inline-block transition-transform ${isExpanded ? '' : '-rotate-90'}">
-                  <${ChevronDownIcon} className="w-3 h-3" />
-                </span>
-                <span>+${childCount}</span>
-              </button>
-            </div>
-            `}
           </div>
         </div>
       </div>

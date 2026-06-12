@@ -88,7 +88,7 @@ const TYPE_COLORS = {
 };
 
 function badge(text, colorClass) {
-  return html`<span class="badge badge-sm font-medium ${colorClass}">${text}</span>`;
+  return html`<span class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}">${text}</span>`;
 }
 
 function priorityBadge(p) {
@@ -819,9 +819,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  const inputClass = "input input-sm w-full";
-  const selectClass = "select select-sm w-full";
-  const textareaClass = "textarea textarea-sm w-full";
+  const inputClass = "input input-sm w-full rounded-md";
+  const selectClass = "select select-sm w-full rounded-md";
+  const textareaClass = "textarea textarea-sm w-full rounded-md";
+  // Block label with a small gap so it doesn't sit flush against its field.
+  const labelClass = "label block mb-1";
 
   return html`
     <${Fragment}>
@@ -908,7 +910,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <legend class="fieldset-legend">Issue</legend>
 
               <div>
-                <label class="label" for="new-issue-title">Title <span class="text-red-400">*</span></label>
+                <label class=${labelClass} for="new-issue-title">Title <span class="text-red-400">*</span></label>
                 <input
                   id="new-issue-title"
                   type="text"
@@ -923,7 +925,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
               <div class="flex gap-3 mt-3">
                 <div class="flex-1">
-                  <label class="label" for="new-issue-type">Type</label>
+                  <label class=${labelClass} for="new-issue-type">Type</label>
                   <select
                     id="new-issue-type"
                     class=${selectClass}
@@ -935,7 +937,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   </select>
                 </div>
                 <div class="flex-1">
-                  <label class="label" for="new-issue-priority">Priority</label>
+                  <label class=${labelClass} for="new-issue-priority">Priority</label>
                   <select
                     id="new-issue-priority"
                     class=${selectClass}
@@ -951,7 +953,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               </div>
 
               <div class="mt-3">
-                <label class="label" for="new-issue-desc">Description</label>
+                <label class=${labelClass} for="new-issue-desc">Description</label>
                 <textarea
                   id="new-issue-desc"
                   class="${textareaClass} resize-none"
@@ -980,7 +982,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 </button>
                 ${savingPriority && html`<span class="loading loading-spinner w-3.5 h-3.5 inline-block ml-1 text-mitto-text-secondary align-middle"></span>`}
                 ${editingPriority && html`
-                  <ul class="menu menu-sm absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
+                  <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
                     ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
                       const num = Number(n);
                       const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
@@ -1004,7 +1006,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="label">Assignee</label>
+                <label class=${labelClass}>Assignee</label>
                 ${editingAssignee
                   ? html`
                     <input
@@ -1039,7 +1041,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             </div>
 
             <div>
-              <label class="label">Description</label>
+              <label class=${labelClass}>Description</label>
               ${editingDesc
                 ? html`
                   <textarea
@@ -1307,14 +1309,14 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <${ChevronUpIcon} className="w-4 h-4" />
             </button>
             ${showPrompts && html`
-              <ul class="menu menu-sm absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-lg z-10">
+              <ul class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10">
                 ${promptsLoading && html`
-                  <li class="px-3 py-2 text-sm flex items-center gap-2">
+                  <li class="px-3 py-2 flex items-center gap-2">
                     <span class="loading loading-spinner w-4 h-4"></span> Loading…
                   </li>
                 `}
                 ${!promptsLoading && prompts.length === 0 && html`
-                  <li class="px-3 py-2 text-sm opacity-60">No task prompts</li>
+                  <li class="px-3 py-2 opacity-60">No task prompts</li>
                 `}
                 ${!promptsLoading && prompts.map(p => {
                   const PromptIcon = getPromptIconOrDefault(p.icon);
@@ -1325,7 +1327,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                       onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
                       title=${p.description || p.name}
                     >
-                      <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
+                      <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
                       <span class="truncate flex-1">${p.name}</span>
                     </button>
                   </li>
@@ -2120,14 +2122,14 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <${ChevronUpIcon} className="w-4 h-4" />
           </button>
           ${showListPrompts && html`
-            <ul class="menu menu-sm absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-lg z-10">
+            <ul class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10">
               ${listPromptsLoading && html`
-                <li class="px-3 py-2 text-sm flex items-center gap-2">
+                <li class="px-3 py-2 flex items-center gap-2">
                   <span class="loading loading-spinner w-4 h-4"></span> Loading…
                 </li>
               `}
               ${!listPromptsLoading && listPrompts.length === 0 && html`
-                <li class="px-3 py-2 text-sm opacity-60">No task prompts</li>
+                <li class="px-3 py-2 opacity-60">No task prompts</li>
               `}
               ${!listPromptsLoading && listPrompts.map(p => {
                 const PromptIcon = getPromptIconOrDefault(p.icon);
@@ -2138,7 +2140,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                     onClick=${() => handleRunListPrompt(p)}
                     title=${p.description || p.name}
                   >
-                    <${PromptIcon} className="w-4 h-4 shrink-0 opacity-70" />
+                    <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
                     <span class="truncate flex-1">${p.name}</span>
                   </button>
                 </li>
