@@ -180,4 +180,44 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
       ).toBeVisible({ timeout: timeouts.appReady });
     },
   );
+
+  testWithCleanup(
+    "keeps 'Move to group' available on external connections while gating Configure Workspace",
+    async ({ page, helpers, timeouts }) => {
+      // Simulate an external (e.g. iPhone over the network) connection. The
+      // server injects window.mittoIsExternal = true for the external listener,
+      // which makes the frontend treat the config as read-only. The inline HTML
+      // script assigns the value during parsing, so define it as a locked getter
+      // (registered before any page script) that swallows that assignment.
+      await page.addInitScript(() => {
+        Object.defineProperty(window, "mittoIsExternal", {
+          configurable: true,
+          get: () => true,
+          set: () => {},
+        });
+      });
+
+      // External connections normally load some vendor libs from jsdelivr; block
+      // the CDN so the loader falls back to the bundled local files immediately
+      // (keeps the test fast and offline-safe).
+      await page.route("**://cdn.jsdelivr.net/**", (route) => route.abort());
+
+      await helpers.navigateAndWait(page);
+
+      const menu = await openGroupMenu(page, timeouts);
+      const menuButtons = menu.locator("button");
+
+      // The fix: folder grouping is local organizational metadata, so it stays
+      // available even when configReadonly is true (external connection).
+      await expect(
+        menuButtons.filter({ hasText: "Move to group" }),
+      ).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Guard: genuinely host-sensitive items remain gated, confirming
+      // configReadonly is actually active in this scenario.
+      await expect(
+        menuButtons.filter({ hasText: "Configure Workspace" }),
+      ).toHaveCount(0);
+    },
+  );
 });
