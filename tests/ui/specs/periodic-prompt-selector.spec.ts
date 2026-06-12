@@ -119,7 +119,7 @@ test.describe("PeriodicPromptSelector internals", () => {
     await expect(greetingItem).toBeVisible({ timeout: t.shortAction });
 
     // The selected item (Hello Greeting) has the active class
-    await expect(greetingItem).toHaveClass(/bg-mitto-accent-600/);
+    await expect(greetingItem).toHaveClass(/menu-active/);
   });
 
   test("should filter prompts via search and allow selection", async ({

@@ -132,7 +132,7 @@ export function PeriodicPromptSelector({
           type="button"
           onClick=${() => handleSelect(prompt)}
           title=${prompt.description || prompt.name}
-          class=${isSelected ? "bg-mitto-accent-600/20 text-mitto-text-strong" : ""}
+          class=${isSelected ? "menu-active" : ""}
         >
           <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
@@ -221,7 +221,7 @@ export function PeriodicPromptSelector({
               value=${filterText}
               onInput=${(e) => setFilterText(e.target.value)}
               placeholder="Search prompts..."
-              class="w-full h-8 px-3 bg-mitto-surface-1 border border-mitto-border-2 rounded text-sm text-mitto-text-strong focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+              class="input input-sm w-full"
               data-testid="periodic-prompt-selector-search"
             />
           </div>

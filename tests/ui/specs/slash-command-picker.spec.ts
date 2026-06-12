@@ -99,30 +99,30 @@ test.describe("SlashCommandPicker internals", () => {
 
     // First item is highlighted (selectedIndex=0)
     const firstItem = items.first();
-    await expect(firstItem).toHaveClass(/bg-mitto-accent-600/);
+    await expect(firstItem).toHaveClass(/menu-active/);
 
     // ArrowDown → second item should become active, first loses highlight
     await page.keyboard.press("ArrowDown");
     const secondItem = items.nth(1);
-    await expect(secondItem).toHaveClass(/bg-mitto-accent-600/, {
+    await expect(secondItem).toHaveClass(/menu-active/, {
       timeout: timeouts.shortAction,
     });
-    await expect(firstItem).not.toHaveClass(/bg-mitto-accent-600/);
+    await expect(firstItem).not.toHaveClass(/menu-active/);
 
     // ArrowDown again → third item active
     await page.keyboard.press("ArrowDown");
     const thirdItem = items.nth(2);
-    await expect(thirdItem).toHaveClass(/bg-mitto-accent-600/, {
+    await expect(thirdItem).toHaveClass(/menu-active/, {
       timeout: timeouts.shortAction,
     });
 
     // ArrowDown at last item → stays at third (no wrap-around)
     await page.keyboard.press("ArrowDown");
-    await expect(thirdItem).toHaveClass(/bg-mitto-accent-600/);
+    await expect(thirdItem).toHaveClass(/menu-active/);
 
     // ArrowUp → back to second
     await page.keyboard.press("ArrowUp");
-    await expect(secondItem).toHaveClass(/bg-mitto-accent-600/, {
+    await expect(secondItem).toHaveClass(/menu-active/, {
       timeout: timeouts.shortAction,
     });
 

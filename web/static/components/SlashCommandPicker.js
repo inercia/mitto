@@ -134,7 +134,7 @@ export function SlashCommandPicker({
                 type="button"
                 class="slash-picker-item flex items-center gap-3 px-3 py-2.5 rounded-none transition-colors ${index ===
                 selectedIndex
-                  ? "bg-mitto-accent-600/40"
+                  ? "menu-active"
                   : "hover:bg-mitto-surface-4/50"}"
                 onClick=${() => handleSelect(cmd)}
                 onMouseEnter=${() => handleMouseEnter(index)}
