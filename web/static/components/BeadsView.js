@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
@@ -66,18 +66,20 @@ const STATUS_COLORS = {
 
 // Status filter toggle buttons shown in the Beads toolbar. Each button toggles
 // the visibility of issues with the matching status. `key` is the bd status
-// value; `label` is the user-facing text.
+// value; `label` is the user-facing text (used for the tooltip/aria-label of
+// the icon-only button); `Icon` is the glyph rendered inside the button.
 const BEADS_STATUS_TOGGLES = [
-  { key: "open", label: "open" },
-  { key: "in_progress", label: "in-progress" },
-  { key: "closed", label: "closed" },
+  { key: "open", label: "open", Icon: CircleIcon },
+  { key: "in_progress", label: "in-progress", Icon: HourglassIcon },
+  { key: "closed", label: "closed", Icon: CheckIcon },
 ];
 
 // In-memory (not persisted) status toggle state for the Beads view. Kept at
 // module scope so the user's selection survives navigating away from and back
-// to the Beads view within the same app session. It intentionally resets to
-// "all enabled" on a full reload / app restart, so all issues are shown again.
-let beadsStatusToggles = { open: true, in_progress: true, closed: true };
+// to the Beads view within the same app session. It intentionally resets on a
+// full reload / app restart to its default: open and in-progress shown, closed
+// hidden.
+let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 
 const TYPE_COLORS = {
   epic: "bg-purple-700 text-purple-100",
@@ -1437,12 +1439,13 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // Grouping toggle (persisted) and per-epic expand/collapse state (persisted).
   // Status toggles are deliberately in-memory only; these are separate.
   const [grouping, setGrouping] = useState(() => getBeadsGrouping().enabled);
-  const [expandedEpics, setExpandedEpics] = useState(() => new Set(getBeadsGrouping().expandedEpics));
+  // Epics are expanded by default; we persist only the IDs the user collapses.
+  const [collapsedEpics, setCollapsedEpics] = useState(() => new Set(getBeadsGrouping().collapsedEpics));
 
   // Write-through: persist grouping state whenever it changes.
   useEffect(() => {
-    setBeadsGrouping({ enabled: grouping, expandedEpics: [...expandedEpics] });
-  }, [grouping, expandedEpics]);
+    setBeadsGrouping({ enabled: grouping, collapsedEpics: [...collapsedEpics] });
+  }, [grouping, collapsedEpics]);
 
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
@@ -2158,12 +2161,24 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               type="button"
               onClick=${() => toggleStatus(t.key)}
               aria-pressed=${statusToggles[t.key] ? "true" : "false"}
+              aria-label=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
               title=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              class="btn btn-xs join-item ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
+              class="btn btn-xs btn-square join-item ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
             >
-              ${t.label}
+              <${t.Icon} className="w-3.5 h-3.5" />
             </button>
           `)}
+        </div>
+        <div class="join shrink-0" role="group" aria-label="View mode">
+          <button
+            type="button"
+            onClick=${() => setGrouping(g => !g)}
+            aria-pressed=${grouping ? "true" : "false"}
+            title=${grouping ? "Switch to flat list" : "Group issues by epic"}
+            class="btn btn-xs join-item ${grouping ? "btn-active" : "btn-ghost"}"
+          >
+            <${LayersIcon} className="w-3.5 h-3.5" />
+          </button>
         </div>
         <select
           class="select select-xs shrink-0"
@@ -2180,17 +2195,6 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           onInput=${e => setSearch(e.target.value)}
           class="input input-xs flex-1 min-w-0"
         />
-        <div class="join shrink-0" role="group" aria-label="View mode">
-          <button
-            type="button"
-            onClick=${() => setGrouping(g => !g)}
-            aria-pressed=${grouping ? "true" : "false"}
-            title=${grouping ? "Switch to flat list" : "Group issues by epic"}
-            class="btn btn-xs join-item ${grouping ? "btn-active" : "btn-ghost opacity-50"}"
-          >
-            <${LayersIcon} className="w-3.5 h-3.5" />
-          </button>
-        </div>
       </div>
 
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll">
@@ -2218,7 +2222,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                   const { group } = item;
                   const epicIssue = group.epic;
                   const epicId = epicIssue ? epicIssue.id : null;
-                  const isOpen = epicId ? expandedEpics.has(epicId) : true;
+                  const isOpen = epicId ? !collapsedEpics.has(epicId) : true;
                   return html`
                     <details
                       key=${epicId || ("ghost-" + (group.children[0] && group.children[0].id))}
@@ -2227,10 +2231,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                       onToggle=${(e) => {
                         if (!epicId) return;
                         const open = e.currentTarget.open;
-                        setExpandedEpics(prev => {
+                        setCollapsedEpics(prev => {
                           const next = new Set(prev);
-                          if (open) next.add(epicId);
-                          else next.delete(epicId);
+                          if (open) next.delete(epicId);
+                          else next.add(epicId);
                           return next;
                         });
                       }}

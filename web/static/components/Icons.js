@@ -271,6 +271,23 @@ export function CheckIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Hollow circle icon (used for the "open" status filter)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function CircleIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="8" stroke-width="2" />
+    </svg>
+  `;
+}
+
+/**
  * Arrow down icon (for scroll to bottom)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */

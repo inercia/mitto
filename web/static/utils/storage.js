@@ -976,15 +976,16 @@ export function setBeadsFilters(filters) {
 // ---------------------------------------------------------------------------
 // The status filter is deliberately in-memory only (beadsStatusToggles) so it
 // is NOT included here. This key stores the grouping toggle and the set of
-// expanded epic IDs, both of which survive a full reload.
+// collapsed epic IDs, both of which survive a full reload. Epics are EXPANDED
+// by default; only the epics the user explicitly collapses are persisted.
 
 const BEADS_GROUPING_KEY = "mitto_beads_grouping";
 
-const DEFAULT_BEADS_GROUPING = { enabled: false, expandedEpics: [] };
+const DEFAULT_BEADS_GROUPING = { enabled: true, collapsedEpics: [] };
 
 /**
  * Get the persisted Beads grouping state from localStorage.
- * @returns {{enabled: boolean, expandedEpics: string[]}} Grouping state,
+ * @returns {{enabled: boolean, collapsedEpics: string[]}} Grouping state,
  *          falling back to defaults for any missing or malformed fields.
  */
 export function getBeadsGrouping() {
@@ -994,24 +995,24 @@ export function getBeadsGrouping() {
       const parsed = JSON.parse(value);
       return {
         enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_BEADS_GROUPING.enabled,
-        expandedEpics: Array.isArray(parsed.expandedEpics) ? parsed.expandedEpics.filter(x => typeof x === "string") : DEFAULT_BEADS_GROUPING.expandedEpics,
+        collapsedEpics: Array.isArray(parsed.collapsedEpics) ? parsed.collapsedEpics.filter(x => typeof x === "string") : DEFAULT_BEADS_GROUPING.collapsedEpics,
       };
     }
   } catch (e) {
     console.warn("Failed to read Beads grouping from localStorage:", e);
   }
-  return { ...DEFAULT_BEADS_GROUPING, expandedEpics: [] };
+  return { ...DEFAULT_BEADS_GROUPING, collapsedEpics: [] };
 }
 
 /**
  * Persist the Beads grouping state to localStorage.
- * @param {{enabled?: boolean, expandedEpics?: string[]}} state - Grouping state to save.
+ * @param {{enabled?: boolean, collapsedEpics?: string[]}} state - Grouping state to save.
  */
 export function setBeadsGrouping(state) {
   try {
     const toStore = {
       enabled: typeof state?.enabled === "boolean" ? state.enabled : DEFAULT_BEADS_GROUPING.enabled,
-      expandedEpics: Array.isArray(state?.expandedEpics) ? state.expandedEpics : DEFAULT_BEADS_GROUPING.expandedEpics,
+      collapsedEpics: Array.isArray(state?.collapsedEpics) ? state.collapsedEpics : DEFAULT_BEADS_GROUPING.collapsedEpics,
     };
     localStorage.setItem(BEADS_GROUPING_KEY, JSON.stringify(toStore));
   } catch (e) {
