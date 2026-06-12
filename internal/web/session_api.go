@@ -1775,6 +1775,59 @@ func (s *Server) handleWorkspaceMetadataPut(w http.ResponseWriter, r *http.Reque
 	writeJSONOK(w, map[string]string{"status": "ok"})
 }
 
+// handleFolderGroup handles PUT /api/folder-group.
+// Sets (or clears) the folder-level organizational group label shared by all
+// workspaces in the given working directory. An empty group clears the
+// assignment ("ungrouped"). The group is folder-level: SetWorkspaces hoists it
+// into the authoritative folders.json (and merges it back on load), so updating
+// the in-memory workspaces and re-saving is sufficient.
+func (s *Server) handleFolderGroup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w)
+		return
+	}
+
+	var req struct {
+		WorkingDir string `json:"working_dir"`
+		Group      string `json:"group"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	workingDir := strings.TrimSpace(req.WorkingDir)
+	group := strings.TrimSpace(req.Group)
+	if workingDir == "" {
+		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate that this is a known workspace directory.
+	if s.sessionManager.GetWorkspace(workingDir) == nil {
+		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		return
+	}
+
+	// Update the group on every workspace sharing this folder, then persist.
+	// SetWorkspaces hoists the folder-level group into folders.json (shared by
+	// all workspaces in the folder) and triggers the save callback.
+	workspaces := s.sessionManager.GetWorkspaces()
+	for i := range workspaces {
+		if workspaces[i].WorkingDir == workingDir {
+			workspaces[i].Group = group
+		}
+	}
+	s.sessionManager.SetWorkspaces(workspaces)
+	s.config.Workspaces = s.sessionManager.GetWorkspaces()
+
+	if s.logger != nil {
+		s.logger.Info("Folder group updated", "working_dir", workingDir, "group", group)
+	}
+
+	writeJSONOK(w, map[string]string{"group": group})
+}
+
 // WebProcessor represents a processor as returned by the workspace processors API.
 type WebProcessor struct {
 	Name        string                     `json:"name"`

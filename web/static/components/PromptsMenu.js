@@ -1,0 +1,157 @@
+// Mitto Web Interface - Shared Prompts Menu
+// A single searchable, grouped, color-aware prompt picker reused by the
+// ChatInput prompts dropup and the periodic-conversation prompt selector.
+
+const { html, Fragment } = window.preact;
+
+import { getPromptIcon } from "./Icons.js";
+import { getContrastColor, flattenPrompts } from "../utils/prompts.js";
+
+// Source badge (W/F/S) shown on the right of each item when enabled.
+function getBadgeInfo(source) {
+  if (source === "workspace") {
+    return { label: "W", title: "Workspace prompt", bgColor: "bg-green-600/80" };
+  } else if (source === "file") {
+    return { label: "F", title: "File-based prompt", bgColor: "bg-purple-600/80" };
+  }
+  return { label: "S", title: "Settings prompt", bgColor: "bg-mitto-accent-600/80" };
+}
+
+/**
+ * PromptsMenu - shared inner body (filter input + grouped list + optional
+ * footer) for prompt pickers. Renders as a flex column; the caller supplies
+ * the positioned popover box (with a max-height) around it.
+ *
+ * @param {Object} props
+ * @param {Array} props.prompts - Raw prompt objects
+ * @param {string} props.filterText - Current filter value (controlled)
+ * @param {Function} props.onFilterChange - (value) => void
+ * @param {Function} [props.onFilterKeyDown] - keydown handler for the filter input
+ * @param {Object} [props.filterInputRef] - ref for the filter input
+ * @param {string} [props.sortMode] - "name" (default) or "color"
+ * @param {number} [props.selectedIndex] - flat index highlighted via keyboard (-1 = none)
+ * @param {Object} [props.selectedItemRef] - ref attached to the keyboard-highlighted item
+ * @param {Function} props.onSelect - (prompt, event) => void
+ * @param {string} [props.selectedName] - name of the currently-chosen prompt (shows a check)
+ * @param {boolean} [props.showSourceBadge] - show the W/F/S source badge
+ * @param {boolean} [props.shiftHeld] - swap the leading icon for an edit pencil
+ * @param {*} [props.footer] - optional footer content (rendered below the list)
+ * @param {string} [props.placeholder] - filter input placeholder
+ * @param {string} [props.emptyText] - empty-state text
+ * @param {string} [props.keyPrefix] - key namespace to keep instances distinct
+ * @param {string} [props.filterTestId] - data-testid for the filter input
+ * @param {string} [props.listTestId] - data-testid for the scrollable list container
+ */
+export function PromptsMenu({
+  prompts = [],
+  filterText = "",
+  onFilterChange,
+  onFilterKeyDown,
+  filterInputRef,
+  sortMode = "name",
+  selectedIndex = -1,
+  selectedItemRef,
+  onSelect,
+  selectedName = "",
+  showSourceBadge = false,
+  shiftHeld = false,
+  footer = null,
+  placeholder = "Search prompts...",
+  emptyText = "No matching prompts",
+  keyPrefix = "pm",
+  filterTestId,
+  listTestId,
+}) {
+  const { groups, flat } = flattenPrompts(prompts, { filterText, sortMode });
+  const clampedIndex =
+    flat.length === 0 ? -1 : Math.min(selectedIndex, flat.length - 1);
+
+  const renderItem = (prompt) => {
+    const fi = flat.indexOf(prompt);
+    const isKbSelected = fi >= 0 && fi === clampedIndex;
+    const isChosen = selectedName && prompt.name === selectedName;
+    const baseStyle = prompt.backgroundColor
+      ? {
+          backgroundColor: prompt.backgroundColor,
+          color: getContrastColor(prompt.backgroundColor),
+        }
+      : {};
+    const style = isKbSelected
+      ? {
+          ...baseStyle,
+          backgroundColor:
+            baseStyle.backgroundColor || "rgba(220, 38, 38, 0.15)",
+          boxShadow: "inset 3px 0 0 0 var(--accent)",
+        }
+      : baseStyle;
+    const PromptIcon = getPromptIcon(prompt.icon);
+    return html`
+      <button
+        key=${keyPrefix + "-item-" + prompt.name}
+        type="button"
+        onClick=${(e) => onSelect && onSelect(prompt, e)}
+        title=${prompt.description || prompt.name}
+        class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2"
+        style=${style}
+        aria-selected=${isChosen ? "true" : "false"}
+        ref=${isKbSelected ? selectedItemRef : null}
+      >
+        ${shiftHeld
+          ? html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>`
+          : PromptIcon
+            ? html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`
+            : html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>`}
+        <span class="truncate flex-1">${prompt.name}</span>
+        ${showSourceBadge &&
+        html`<span
+          class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(prompt.source).bgColor} text-white/90 shrink-0"
+          title=${getBadgeInfo(prompt.source).title}
+          >${getBadgeInfo(prompt.source).label}</span
+        >`}
+        ${isChosen &&
+        html`<svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>`}
+      </button>
+    `;
+  };
+
+  return html`
+    <${Fragment}>
+      <div class="px-2 pt-2 pb-1 shrink-0">
+        <input
+          ref=${filterInputRef}
+          type="text"
+          value=${filterText}
+          onInput=${(e) => onFilterChange && onFilterChange(e.target.value)}
+          onKeyDown=${onFilterKeyDown}
+          placeholder=${placeholder}
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck=${false}
+          data-testid=${filterTestId}
+          class="w-full pl-4 pr-2.5 py-1.5 bg-mitto-surface-3/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent"
+        />
+      </div>
+      <div
+        class="py-1 overflow-y-auto flex-1 min-h-0"
+        style="scrollbar-gutter: stable;"
+        data-testid=${listTestId}
+      >
+        ${groups.map(
+          (g) => html`
+            <div key=${keyPrefix + "-group-" + g.name}>
+              <div class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
+                ${g.name}
+              </div>
+              ${g.prompts.map(renderItem)}
+            </div>
+          `,
+        )}
+        ${flat.length === 0 &&
+        html`<div class="px-4 py-3 text-xs text-mitto-text-muted text-center">${emptyText}</div>`}
+      </div>
+      ${footer &&
+      html`<div class="px-3 py-1.5 border-t border-mitto-border-1 shrink-0">${footer}</div>`}
+    </${Fragment}>
+  `;
+}

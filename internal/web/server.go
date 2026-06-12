@@ -725,6 +725,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.handleWorkspaceMCPInstall)
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.handleWorkspaceMCPRemove)
 	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
+	mux.HandleFunc(apiPrefix+"/api/folder-group", s.handleFolderGroup)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
 	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)

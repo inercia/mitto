@@ -111,15 +111,19 @@ test.describe("PeriodicPromptSelector internals", () => {
     await expect(searchInput).toBeFocused();
 
     // At least the "Hello Greeting" prompt from the project-alpha workspace should appear
-    const promptList = dropdown.locator("ul.menu");
+    const promptList = page.locator(
+      '[data-testid="periodic-prompt-selector-list"]',
+    );
     await expect(promptList).toBeVisible();
 
     // Prompt item containing "Hello Greeting" should be present
-    const greetingItem = promptList.locator("button", { hasText: "Hello Greeting" });
+    const greetingItem = promptList.locator("button.prompt-item", {
+      hasText: "Hello Greeting",
+    });
     await expect(greetingItem).toBeVisible({ timeout: t.shortAction });
 
-    // The selected item (Hello Greeting) has the active class
-    await expect(greetingItem).toHaveClass(/menu-active/);
+    // The selected item (Hello Greeting) is marked as selected
+    await expect(greetingItem).toHaveAttribute("aria-selected", "true");
   });
 
   test("should filter prompts via search and allow selection", async ({
@@ -145,8 +149,12 @@ test.describe("PeriodicPromptSelector internals", () => {
 
     // Type a filter that matches "Hello Greeting"
     await searchInput.fill("hello");
-    const promptList = dropdown.locator("ul.menu");
-    const greetingItem = promptList.locator("button", { hasText: "Hello Greeting" });
+    const promptList = page.locator(
+      '[data-testid="periodic-prompt-selector-list"]',
+    );
+    const greetingItem = promptList.locator("button.prompt-item", {
+      hasText: "Hello Greeting",
+    });
     await expect(greetingItem).toBeVisible({ timeout: t.shortAction });
 
     // Type a filter that matches nothing — "No matching prompts" message should appear

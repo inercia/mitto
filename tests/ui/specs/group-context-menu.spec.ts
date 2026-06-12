@@ -132,4 +132,52 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
       await expect(page.locator(MENU)).toHaveCount(0);
     },
   );
+
+  testWithCleanup(
+    "moves a folder to a new group via the 'Move to group' submenu",
+    async ({ page, request, apiUrl, timeouts }) => {
+      await openGroupMenu(page, timeouts);
+
+      const menuButtons = page.locator(`${MENU} button`);
+      const moveItem = menuButtons.filter({ hasText: "Move to group" });
+      await expect(moveItem).toBeVisible({ timeout: timeouts.shortAction });
+
+      // The submenu (existing groups + "New group…") is not rendered until hover.
+      await moveItem.hover();
+      const newGroupItem = menuButtons.filter({ hasText: "New group" });
+      await expect(newGroupItem).toBeVisible({ timeout: timeouts.shortAction });
+      await newGroupItem.click();
+
+      // The new-group dialog opens and the context menu closes.
+      const dialog = page.locator('[data-testid="new-group-dialog"]');
+      await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(page.locator(MENU)).toHaveCount(0);
+
+      await page
+        .locator('[data-testid="new-group-name-input"]')
+        .fill("Operations");
+      await page.locator('[data-testid="new-group-create-btn"]').click();
+
+      // The folder's group is persisted (reflected by the config API).
+      await expect
+        .poll(
+          async () => {
+            const resp = await request.get(apiUrl("/api/config"));
+            const cfg = await resp.json();
+            const wss = Array.isArray(cfg.workspaces) ? cfg.workspaces : [];
+            const ws = wss.find((w) => w.working_dir === WORKSPACE_ALPHA);
+            return (ws && ws.group) || "";
+          },
+          { timeout: timeouts.appReady },
+        )
+        .toBe("Operations");
+
+      // The sidebar regroups: an "Operations" group section header appears.
+      await expect(
+        page
+          .locator(".folder-group-section")
+          .filter({ hasText: "Operations" }),
+      ).toBeVisible({ timeout: timeouts.appReady });
+    },
+  );
 });

@@ -1321,10 +1321,16 @@ function App() {
     fetchWorkspacePrompts,
   ]);
 
-  const handleSelectSession = (sessionId) => {
+  const handleSelectSession = (sessionId, opts) => {
     switchSession(sessionId);
-    setShowSidebar(false);
-    setShowSidePanel(false);
+    // keepSidebarOpen is set when the selection is an auto-focus triggered by
+    // expanding a folder (see SessionList.handleFolderOpened). In that case the
+    // mobile sidebar drawer must stay open — only direct conversation clicks
+    // close it.
+    if (!opts?.keepSidebarOpen) {
+      setShowSidebar(false);
+      setShowSidePanel(false);
+    }
     setMainView("conversation");
   };
 
@@ -1392,6 +1398,37 @@ function App() {
       }
     },
     [badgeClickEnabled, showToast],
+  );
+
+  // Move a folder to an organizational group (folders.json group label). An
+  // empty group clears the assignment. Persists via PUT /api/folder-group, then
+  // refreshes workspaces so the sidebar regroups immediately.
+  const handleMoveFolderToGroup = useCallback(
+    async (workingDir, group) => {
+      if (!workingDir) return;
+      try {
+        const res = await secureFetch(apiUrl("/api/folder-group"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ working_dir: workingDir, group: group || "" }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          showToast({ style: "error", title: text || "Failed to move folder to group" });
+          return;
+        }
+        invalidateConfigCache();
+        refreshWorkspaces();
+        const trimmed = (group || "").trim();
+        showToast({
+          style: "success",
+          title: trimmed ? `Moved to group "${trimmed}"` : "Removed from group",
+        });
+      } catch (err) {
+        showToast({ style: "error", title: "Failed to move folder to group: " + err.message });
+      }
+    },
+    [showToast, refreshWorkspaces],
   );
 
   // Handle terminal action - calls API to open terminal at workspace path
@@ -1796,6 +1833,8 @@ function App() {
           <button
             class="md:hidden p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
             onClick=${() => setShowSidebar(true)}
+            title="Show conversations"
+            aria-label="Show conversations"
           >
             <${MenuIcon} className="w-6 h-6" />
           </button>
@@ -2001,11 +2040,21 @@ function App() {
 
       <!-- drawer-side: single unified SessionList (desktop always-open + mobile toggled) -->
       <div class="drawer-side z-40">
-        <!-- Backdrop: shown on mobile; click to close -->
+        <!-- Backdrop: shown on mobile; click to close.
+             We deliberately do NOT use for="sidebar-drawer" here. Pairing the
+             native label->checkbox toggle with the onClick handler produced a
+             double-toggle: onClick set showSidebar=false (re-rendering the
+             controlled checkbox to unchecked), then the label's native default
+             action synthesised a click on the now-unchecked checkbox, toggling
+             it back to checked and reopening the drawer. Driving the close
+             purely through onClick (the controlled-state path) avoids that.
+             cursor-pointer is required for iOS Safari: it does not dispatch a
+             click on the backdrop on tap unless the element carries
+             cursor:pointer, so without it outside-taps would never close the
+             sidebar drawer on iPhone (matches Drawer.js). -->
         <label
-          for="sidebar-drawer"
           aria-label="Close sidebar"
-          class="drawer-overlay"
+          class="drawer-overlay cursor-pointer"
           onClick=${() => setShowSidebar(false)}
         ></label>
         <!-- Panel: resizable on desktop (sidebarWidth), fixed w-80 class provides
@@ -2039,6 +2088,7 @@ function App() {
             onBadgeClick=${handleBadgeClick}
             terminalActionEnabled=${terminalActionEnabled}
             onFolderOpen=${handleFolderOpen}
+            onMoveFolderToGroup=${handleMoveFolderToGroup}
             onTerminalClick=${handleTerminalClick}
             onBeadsOpen=${handleBeadsOpen}
             onShowDashboard=${handleShowDashboard}

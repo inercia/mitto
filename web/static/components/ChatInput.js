@@ -26,7 +26,9 @@ import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, getPromptIcon } from "./Icons.js";
+import { GripIcon } from "./Icons.js";
+import { PromptsMenu } from "./PromptsMenu.js";
+import { flattenPrompts } from "../utils/prompts.js";
 
 /**
  * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
@@ -94,110 +96,6 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
       </svg>
     </button>
   `;
-}
-
-/**
- * Calculate contrasting text color (black or white) for a given background color.
- * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
- * @returns {string} - Either "#000000" or "#FFFFFF" for best contrast
- */
-function getContrastColor(hexColor) {
-  if (!hexColor || !hexColor.startsWith("#")) return "#E5E7EB"; // Default gray-200
-
-  // Remove # and parse hex
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substr(0, 2), 16);
-  const g = parseInt(hex.substr(2, 2), 16);
-  const b = parseInt(hex.substr(4, 2), 16);
-
-  // Calculate relative luminance (WCAG formula)
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-
-  // Return black for light backgrounds, white for dark backgrounds
-  return luminance > 0.5 ? "#000000" : "#FFFFFF";
-}
-
-/**
- * Convert hex color to HSL values for sorting.
- * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
- * @returns {Object} - { h: 0-360, s: 0-100, l: 0-100 } or null if invalid
- */
-function hexToHSL(hexColor) {
-  if (!hexColor || !hexColor.startsWith("#")) return null;
-
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substr(0, 2), 16) / 255;
-  const g = parseInt(hex.substr(2, 2), 16) / 255;
-  const b = parseInt(hex.substr(4, 2), 16) / 255;
-
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-
-  if (max === min) {
-    // Achromatic (gray)
-    return { h: 0, s: 0, l: l * 100 };
-  }
-
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-
-  let h;
-  switch (max) {
-    case r:
-      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-      break;
-    case g:
-      h = ((b - r) / d + 2) / 6;
-      break;
-    case b:
-      h = ((r - g) / d + 4) / 6;
-      break;
-  }
-
-  return { h: h * 360, s: s * 100, l: l * 100 };
-}
-
-/**
- * Calculate a single numeric color score for consistent sorting.
- * Groups similar colors together using quantized hue buckets.
- * @param {Object} hsl - HSL values { h, s, l }
- * @returns {number} - Color score (lower = sorted first)
- */
-function getColorScore(hsl) {
-  if (!hsl) return Infinity; // No color = sort to end
-
-  // Quantize hue into 12 buckets (30 degrees each) for stable grouping
-  // This groups similar colors together (e.g., all greens, all purples)
-  const hueBucket = Math.floor(hsl.h / 30);
-
-  // Within each hue bucket, sort by saturation (more saturated first)
-  // then by lightness (lighter first)
-  // Score: hueBucket * 10000 + (100 - saturation) * 100 + lightness
-  return hueBucket * 10000 + (100 - hsl.s) * 100 + hsl.l;
-}
-
-/**
- * Sort prompts by color (hue), then by name.
- * Prompts without colors are sorted to the end.
- * @param {Array} prompts - Array of prompt objects
- * @returns {Array} - Sorted array of prompts
- */
-function sortPromptsByColor(prompts) {
-  return [...prompts].sort((a, b) => {
-    const hslA = hexToHSL(a.backgroundColor);
-    const hslB = hexToHSL(b.backgroundColor);
-    const scoreA = getColorScore(hslA);
-    const scoreB = getColorScore(hslB);
-
-    // Sort by color score first
-    if (scoreA !== scoreB) {
-      return scoreA - scoreB;
-    }
-
-    // If same color score (or both have no color), sort by name
-    return a.name.localeCompare(b.name);
-  });
 }
 
 /**
@@ -322,45 +220,10 @@ export function ChatInput({
 
   // Compute flat ordered prompt list for keyboard navigation
   const flatFilteredPrompts = useMemo(() => {
-    const lowerFilter = promptFilterText.toLowerCase().trim();
-    const filtered = lowerFilter
-      ? predefinedPrompts.filter((p) => {
-          const matchName = (p.name || "").toLowerCase().includes(lowerFilter);
-          const matchDesc = (p.description || "")
-            .toLowerCase()
-            .includes(lowerFilter);
-          return matchName || matchDesc;
-        })
-      : predefinedPrompts;
-
-    // Group and sort (same logic as render)
-    const grouped = {};
-    const ungrouped = [];
-    filtered.forEach((prompt) => {
-      if (prompt.group) {
-        if (!grouped[prompt.group]) grouped[prompt.group] = [];
-        grouped[prompt.group].push(prompt);
-      } else {
-        ungrouped.push(prompt);
-      }
-    });
-    Object.keys(grouped).forEach((group) => {
-      if (promptSortMode === "color") {
-        grouped[group] = sortPromptsByColor(grouped[group]);
-      } else {
-        grouped[group].sort((a, b) => a.name.localeCompare(b.name));
-      }
-    });
-    const sortedUngrouped =
-      promptSortMode === "color"
-        ? sortPromptsByColor(ungrouped)
-        : [...ungrouped].sort((a, b) => a.name.localeCompare(b.name));
-    const sortedGroupNames = Object.keys(grouped).sort();
-
-    const flat = [];
-    sortedGroupNames.forEach((g) => grouped[g].forEach((p) => flat.push(p)));
-    sortedUngrouped.forEach((p) => flat.push(p));
-    return flat;
+    return flattenPrompts(predefinedPrompts, {
+      filterText: promptFilterText,
+      sortMode: promptSortMode,
+    }).flat;
   }, [predefinedPrompts, promptFilterText, promptSortMode]);
 
   // Handler for toggling the prompts dropdown
@@ -2228,34 +2091,37 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       `}
 
-      <!-- Periodic Frequency Panel (shown when periodic is enabled) -->
-      <!-- Part of normal document flow - pushes conversation area up -->
-      <!-- Editable when unlocked, read-only when locked -->
-      <div class="max-w-4xl mx-auto">
-        <${PeriodicFrequencyPanel}
-          isOpen=${periodicEnabled}
-          disabled=${isPeriodicLocked}
-          sessionId=${sessionId}
-          frequency=${periodicFrequency}
-          onFrequencyChange=${handlePeriodicFrequencyChange}
-          nextScheduledAt=${periodicNextScheduledAt}
-          isStreaming=${isStreaming}
-          freshContext=${periodicFreshContext}
-          onFreshContextChange=${setPeriodicFreshContext}
-        />
-      </div>
+      <!-- Periodic settings (shown when periodic is enabled) -->
+      <!-- Part of normal document flow - pushes conversation area up. -->
+      <!-- Prompt selector + frequency sit on one line at md+, stacked on small screens. -->
+      <div class="max-w-4xl mx-auto flex flex-col md:flex-row md:gap-3 md:items-start">
+        <!-- Periodic Prompt Selector -->
+        <div class="md:flex-1 md:min-w-0">
+          <${PeriodicPromptSelector}
+            isOpen=${periodicEnabled}
+            prompts=${predefinedPrompts}
+            selectedPromptName=${periodicPromptName}
+            disabled=${false}
+            onSelect=${handlePeriodicPromptSelect}
+            isPromptAreaVisible=${!isPromptCollapsed}
+            onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
+          />
+        </div>
 
-      <!-- Periodic Prompt Selector (Row 2, shown when periodic is enabled) -->
-      <div class="max-w-4xl mx-auto">
-        <${PeriodicPromptSelector}
-          isOpen=${periodicEnabled}
-          prompts=${predefinedPrompts}
-          selectedPromptName=${periodicPromptName}
-          disabled=${false}
-          onSelect=${handlePeriodicPromptSelect}
-          isPromptAreaVisible=${!isPromptCollapsed}
-          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
-        />
+        <!-- Periodic Frequency Panel (editable when unlocked, read-only when locked) -->
+        <div class="md:flex-1 md:min-w-0">
+          <${PeriodicFrequencyPanel}
+            isOpen=${periodicEnabled}
+            disabled=${isPeriodicLocked}
+            sessionId=${sessionId}
+            frequency=${periodicFrequency}
+            onFrequencyChange=${handlePeriodicFrequencyChange}
+            nextScheduledAt=${periodicNextScheduledAt}
+            isStreaming=${isStreaming}
+            freshContext=${periodicFreshContext}
+            onFreshContextChange=${setPeriodicFreshContext}
+          />
+        </div>
       </div>
 
       ${isResuming &&
@@ -2726,217 +2592,70 @@ ${activeUIPrompt.text || ""}</textarea
                         class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
                         style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
-                        <!-- Filter input -->
-                        <div class="px-2 pt-2 pb-1 shrink-0">
-                          <input
-                            ref=${promptFilterInputRef}
-                            type="text"
-                            value=${promptFilterText}
-                            onInput=${(e) => {
-                              setPromptFilterText(e.target.value);
-                              setPromptSelectedIndex(-1);
-                            }}
-                            onKeyDown=${(e) => {
-                              // Prevent the event from bubbling to the textarea
-                              e.stopPropagation();
-                              if (e.key === "Escape") {
-                                setShowDropup(false);
-                                return;
-                              }
-                              if (e.key === "ArrowDown") {
-                                e.preventDefault();
-                                setPromptSelectedIndex((prev) =>
-                                  Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                        <${PromptsMenu}
+                          prompts=${predefinedPrompts}
+                          filterText=${promptFilterText}
+                          onFilterChange=${(value) => {
+                            setPromptFilterText(value);
+                            setPromptSelectedIndex(-1);
+                          }}
+                          onFilterKeyDown=${(e) => {
+                            // Prevent the event from bubbling to the textarea
+                            e.stopPropagation();
+                            if (e.key === "Escape") {
+                              setShowDropup(false);
+                              return;
+                            }
+                            if (e.key === "ArrowDown") {
+                              e.preventDefault();
+                              setPromptSelectedIndex((prev) =>
+                                Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                              );
+                              return;
+                            }
+                            if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              setPromptSelectedIndex((prev) => Math.max(-1, prev - 1));
+                              return;
+                            }
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (
+                                promptSelectedIndex >= 0 &&
+                                flatFilteredPrompts.length > 0
+                              ) {
+                                const clampedIndex = Math.min(
+                                  Math.max(promptSelectedIndex, 0),
+                                  flatFilteredPrompts.length - 1,
                                 );
-                                return;
-                              }
-                              if (e.key === "ArrowUp") {
-                                e.preventDefault();
-                                setPromptSelectedIndex((prev) =>
-                                  Math.max(-1, prev - 1),
+                                handlePredefinedPrompt(
+                                  flatFilteredPrompts[clampedIndex],
+                                  e,
                                 );
-                                return;
                               }
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                if (
-                                  promptSelectedIndex >= 0 &&
-                                  flatFilteredPrompts.length > 0
-                                ) {
-                                  const clampedIndex = Math.min(
-                                    Math.max(promptSelectedIndex, 0),
-                                    flatFilteredPrompts.length - 1,
-                                  );
-                                  handlePredefinedPrompt(
-                                    flatFilteredPrompts[clampedIndex],
-                                    e,
-                                  );
-                                }
-                                return;
-                              }
-                            }}
-                            placeholder="Filter prompts..."
-                            autocomplete="off"
-                            autocorrect="off"
-                            autocapitalize="off"
-                            spellcheck=${false}
-                            class="w-full pl-4 pr-2.5 py-1.5 bg-mitto-surface-3/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent"
-                          />
-                        </div>
-                        <div class="py-1 overflow-y-auto" style="scrollbar-gutter: stable;">
-                          ${(() => {
-                            // Re-group the precomputed flat list for rendering with group headers
-                            const groupedPrompts = {};
-                            const ungroupedPrompts = [];
-                            flatFilteredPrompts.forEach((prompt) => {
-                              if (prompt.group) {
-                                if (!groupedPrompts[prompt.group])
-                                  groupedPrompts[prompt.group] = [];
-                                groupedPrompts[prompt.group].push(prompt);
-                              } else {
-                                ungroupedPrompts.push(prompt);
-                              }
-                            });
-                            const sortedGroupNames = Object.keys(groupedPrompts).sort();
-                            const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
-
-                            // Build a lookup: prompt -> flat index for selection highlighting
-                            const promptToFlatIdx = new Map();
-                            flatFilteredPrompts.forEach((p, i) =>
-                              promptToFlatIdx.set(p, i),
-                            );
-
-                            const clampedIndex =
-                              flatFilteredPrompts.length === 0
-                                ? -1
-                                : Math.min(
-                                    promptSelectedIndex,
-                                    flatFilteredPrompts.length - 1,
-                                  );
-
-                            // Helper to get badge info based on source
-                            const getBadgeInfo = (source) => {
-                              if (source === "workspace") {
-                                return {
-                                  label: "W",
-                                  title: "Workspace prompt",
-                                  bgColor: "bg-green-600/80",
-                                };
-                              } else if (source === "file") {
-                                return {
-                                  label: "F",
-                                  title: "File-based prompt",
-                                  bgColor: "bg-purple-600/80",
-                                };
-                              } else {
-                                return {
-                                  label: "S",
-                                  title: "Settings prompt",
-                                  bgColor: "bg-mitto-accent-600/80",
-                                };
-                              }
-                            };
-
-                            // Render function for a single prompt using flat index lookup
-                            const renderPrompt = (prompt) => {
-                              const fi = promptToFlatIdx.get(prompt);
-                              const isSelected = fi === clampedIndex;
-                              const baseStyle = prompt.backgroundColor
-                                ? {
-                                    backgroundColor: prompt.backgroundColor,
-                                    color: getContrastColor(prompt.backgroundColor),
-                                  }
-                                : {};
-                              const selectedStyle = isSelected
-                                ? {
-                                    ...baseStyle,
-                                    backgroundColor:
-                                      baseStyle.backgroundColor ||
-                                      "rgba(220, 38, 38, 0.15)",
-                                    boxShadow: "inset 3px 0 0 0 var(--accent)",
-                                  }
-                                : baseStyle;
-                              return html`
-                                <button
-                                  key=${"prompt-" + fi}
-                                  type="button"
-                                  onClick=${(e) => handlePredefinedPrompt(prompt, e)}
-                                  title=${prompt.description || prompt.name}
-                                  class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2"
-                                  style=${selectedStyle}
-                                  ref=${isSelected ? selectedPromptItemRef : null}
-                                >
-                                  ${(() => {
-                                    if (shiftHeld) {
-                                      return html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                      </svg>`;
-                                    }
-                                    const PromptIcon = getPromptIcon(prompt.icon);
-                                    if (PromptIcon) {
-                                      return html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`;
-                                    }
-                                    return html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                      </svg>`;
-                                  })()}
-                                  <span class="truncate flex-1">${prompt.name}</span>
-                                  <span
-                                    class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
-                                      prompt.source,
-                                    ).bgColor} text-white/90 shrink-0"
-                                    title=${getBadgeInfo(prompt.source).title}
-                                  >
-                                    ${getBadgeInfo(prompt.source).label}
-                                  </span>
-                                </button>
-                              `;
-                            };
-
-                            return html`
-                              ${sortedGroupNames.map(
-                                (groupName) => html`
-                                  <div key=${"group-" + groupName}>
-                                    <div
-                                      class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30"
-                                    >
-                                      ${groupName}
-                                    </div>
-                                    ${groupedPrompts[groupName].map((prompt) =>
-                                      renderPrompt(prompt),
-                                    )}
-                                  </div>
-                                `,
-                              )}
-                              ${sortedUngrouped.length > 0
-                                ? html`
-                                    <div key="group-other">
-                                      <div
-                                        class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30"
-                                      >
-                                        Other
-                                      </div>
-                                      ${sortedUngrouped.map((prompt) =>
-                                        renderPrompt(prompt),
-                                      )}
-                                    </div>
-                                  `
-                                : ""}
-                              ${flatFilteredPrompts.length === 0
-                                ? html`<div
-                                    class="px-4 py-3 text-xs text-mitto-text-muted text-center"
-                                  >
-                                    No matching prompts
-                                  </div>`
-                                : ""}
-                            `;
-                          })()}
-                        </div>
-                        <div class="px-3 py-1.5 border-t border-mitto-border-1 shrink-0">
-                          <span class="text-[10px] ${shiftHeld ? 'text-mitto-accent' : 'text-mitto-text-muted'}">
-                            ${shiftHeld ? '✏️ Will insert into editor' : '⇧ Hold Shift to edit before sending'}
-                          </span>
-                        </div>
+                              return;
+                            }
+                          }}
+                          filterInputRef=${promptFilterInputRef}
+                          sortMode=${promptSortMode}
+                          selectedIndex=${promptSelectedIndex}
+                          selectedItemRef=${selectedPromptItemRef}
+                          onSelect=${(prompt, e) =>
+                            handlePredefinedPrompt(prompt, e)}
+                          showSourceBadge=${true}
+                          shiftHeld=${shiftHeld}
+                          placeholder="Filter prompts..."
+                          emptyText="No matching prompts"
+                          keyPrefix="chat-prompts"
+                          footer=${html`<span
+                            class="text-[10px] ${shiftHeld
+                              ? "text-mitto-accent"
+                              : "text-mitto-text-muted"}"
+                            >${shiftHeld
+                              ? "✏️ Will insert into editor"
+                              : "⇧ Hold Shift to edit before sending"}</span
+                          >`}
+                        />
                       </div>
                     `}
                     <button

@@ -175,6 +175,7 @@ server-level and belong to the **folder**, not to any individual workspace:
 - `name` — friendly display name for the folder
 - `color` — custom badge color
 - `code` — three-letter badge code
+- `group` — Mitto-local organizational label (e.g. "development", "personal", "operations"); distinct from the `.mittorc` metadata `group` below
 - `auto_children` — child conversations to auto-create
 - `beads` — folder-native beads integration settings (e.g. upstream task system)
 
@@ -203,6 +204,8 @@ workspaces) are pruned on save, and a folders map with no settings deletes
 > **Note:** Workspace **metadata** (`description`, `url`, `group`,
 > `user_data_schema`) is intentionally NOT stored here — it stays in each
 > project's committable `.mittorc` so it remains shareable via version control.
+> The `.mittorc` metadata `group` is a separate, version-controlled concept from
+> the Mitto-local folder `group` stored in `folders.json` above.
 
 `mitto web --folders FILE` (JSON or YAML) overlays folder-level settings onto
 whatever workspaces were loaded, regardless of source — mirroring how
@@ -219,6 +222,7 @@ via `ApplyFolderDefaults` after the three-way workspace loading step.
       "name": "My Project",
       "code": "MYP",
       "color": "#ff5500",
+      "group": "development",
       "beads": { "upstream": "github" }
     }
   }

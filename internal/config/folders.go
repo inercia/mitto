@@ -21,9 +21,12 @@ import (
 // LoadWorkspaces); thereafter all common folder-level information always lives
 // here.
 //
-// Only badge/display fields and auto-children are stored here. Workspace
-// metadata (description/url/group/user_data_schema), prompts, and processors
-// remain in each project's committable .mittorc file and are NOT stored here.
+// Only badge/display fields, the group label, and auto-children are stored
+// here. The project-level .mittorc metadata block (description/url/group/
+// user_data_schema) is a SEPARATE, version-controllable concept and is NOT
+// stored here. In particular, the folder Group below (a Mitto-local
+// organizational label kept in folders.json) is distinct from the .mittorc
+// metadata group.
 type FolderSettings struct {
 	// Name is the friendly display name for the folder.
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
@@ -31,6 +34,10 @@ type FolderSettings struct {
 	Color string `json:"color,omitempty" yaml:"color,omitempty"`
 	// Code is the three-letter badge code for the folder.
 	Code string `json:"code,omitempty" yaml:"code,omitempty"`
+	// Group is an optional organizational label for the folder (e.g.
+	// "development", "personal", "operations"). It is Mitto-local (kept in
+	// folders.json, not committed) and lets the UI group folders together.
+	Group string `json:"group,omitempty" yaml:"group,omitempty"`
 	// AutoChildren defines child conversations to auto-create for the folder.
 	AutoChildren []AutoChild `json:"auto_children,omitempty" yaml:"auto_children,omitempty"`
 	// Beads holds folder-native beads integration settings. These are
@@ -146,6 +153,9 @@ func ApplyFolderDefaults(workspaces []WorkspaceSettings, folders map[string]Fold
 		if fs.Code != "" {
 			workspaces[i].Code = fs.Code
 		}
+		if fs.Group != "" {
+			workspaces[i].Group = fs.Group
+		}
 		if len(fs.AutoChildren) > 0 {
 			workspaces[i].AutoChildren = append([]AutoChild(nil), fs.AutoChildren...)
 		}
@@ -153,7 +163,7 @@ func ApplyFolderDefaults(workspaces []WorkspaceSettings, folders map[string]Fold
 }
 
 // extractFolderSettings takes a fully-populated workspace list and splits the
-// folder-level fields (name, color, code, auto_children) out into an
+// folder-level fields (name, color, code, group, auto_children) out into an
 // authoritative folders map keyed by working_dir, returning a cleaned copy of
 // the workspaces with those fields removed.
 //
@@ -199,6 +209,10 @@ func extractFolderSettings(workspaces []WorkspaceSettings) ([]WorkspaceSettings,
 			fs.Code = v
 			any = true
 		}
+		if v := firstNonEmptyString(cleaned, idxs, func(w *WorkspaceSettings) string { return w.Group }); v != "" {
+			fs.Group = v
+			any = true
+		}
 		if v := firstNonEmptyAutoChildren(cleaned, idxs); len(v) > 0 {
 			fs.AutoChildren = v
 			any = true
@@ -210,6 +224,7 @@ func extractFolderSettings(workspaces []WorkspaceSettings) ([]WorkspaceSettings,
 			cleaned[i].Name = ""
 			cleaned[i].Color = ""
 			cleaned[i].Code = ""
+			cleaned[i].Group = ""
 			cleaned[i].AutoChildren = nil
 		}
 
@@ -267,7 +282,7 @@ func foldersEqual(a, b map[string]FolderSettings) bool {
 		if !ok {
 			return false
 		}
-		if av.Name != bv.Name || av.Color != bv.Color || av.Code != bv.Code {
+		if av.Name != bv.Name || av.Color != bv.Color || av.Code != bv.Code || av.Group != bv.Group {
 			return false
 		}
 		if !autoChildrenEqual(av.AutoChildren, bv.AutoChildren) {
@@ -295,7 +310,7 @@ func beadsEqual(a, b *BeadsFolderSettings) bool {
 // folderSettingsEmpty reports whether a FolderSettings carries no information
 // and can therefore be dropped from folders.json.
 func folderSettingsEmpty(fs FolderSettings) bool {
-	return fs.Name == "" && fs.Color == "" && fs.Code == "" &&
+	return fs.Name == "" && fs.Color == "" && fs.Code == "" && fs.Group == "" &&
 		len(fs.AutoChildren) == 0 && (fs.Beads == nil || fs.Beads.Upstream == "")
 }
 

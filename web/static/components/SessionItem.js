@@ -507,7 +507,7 @@ export function SessionItem({
         <div
           onClick=${handleClick}
           onContextMenu=${handleContextMenu}
-          class="px-2.5 py-1 cursor-pointer relative overflow-hidden ${isActive
+          class="px-2.5 py-1 rounded-lg cursor-pointer relative overflow-hidden ${isActive
             ? "bg-mitto-accent text-mitto-accent-fg"
             : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
             ? ""
@@ -534,7 +534,9 @@ export function SessionItem({
                   ${isSpawned
                     ? html`
                           <span
-                            class="text-mitto-text-muted text-sm leading-none shrink-0"
+                            class="text-sm leading-none shrink-0 ${isActive
+                              ? "text-mitto-accent-fg"
+                              : "text-mitto-text-muted"}"
                             title="Spawned from another conversation"
                             >↳</span
                           >
@@ -551,9 +553,11 @@ export function SessionItem({
                       `
                     : null}
                   <span
-                    class="text-sm truncate ${isArchived
-                      ? "text-mitto-text-300"
-                      : ""}"
+                    class="text-sm truncate ${isActive
+                      ? "text-mitto-accent-fg"
+                      : isArchived
+                        ? "text-mitto-text-300"
+                        : ""}"
                     >${displayName}</span
                   >
                   ${session.child_origin === "auto"

@@ -74,9 +74,13 @@ export function Drawer({
              adds the fade in/out timing (end panels only). Click to close.
              Scoped drawers are transparent and rely on the caller's own
              full-window backdrop, so they skip properties-backdrop to avoid a
-             duplicate dimming layer. -->
+             duplicate dimming layer.
+             cursor-pointer is required for iOS Safari: it does not dispatch a
+             click on a plain non-interactive <div> on tap unless the element
+             carries cursor:pointer, so without it outside-taps would never
+             close the drawer on iPhone. -->
         <div
-          class="drawer-overlay ${animate && !scoped ? "properties-backdrop" : ""} ${closing}"
+          class="drawer-overlay cursor-pointer ${animate && !scoped ? "properties-backdrop" : ""} ${closing}"
           onClick=${onClose}
           data-testid=${overlayTestid}
         ></div>

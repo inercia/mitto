@@ -1,7 +1,11 @@
 // Mitto Web Interface - Session List Component
 const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = window.preact;
 
-import { computeUnifiedTree, filterUnifiedTree } from "../utils/sessionGrouping.js";
+import {
+  computeUnifiedTree,
+  filterUnifiedTree,
+  computeFolderGroupSections,
+} from "../utils/sessionGrouping.js";
 import {
   getFilterTabForSession,
   getCategoryFilter,
@@ -17,6 +21,7 @@ import {
 import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
 import { ContextMenu } from "./ContextMenu.js";
+import { Modal } from "./Modal.js";
 import {
   FolderIcon,
   FolderOpenIcon,
@@ -34,6 +39,9 @@ import {
   FilterIcon,
   TerminalIcon,
   EllipsisIcon,
+  ChatBubbleIcon,
+  LayersIcon,
+  CheckIcon,
 } from "./Icons.js";
 
 // The Archived subgroup expansion is intentionally NOT memorized: it always
@@ -73,6 +81,7 @@ export function SessionList({
   onBadgeClick,
   terminalActionEnabled = false,
   onFolderOpen,
+  onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
   onTerminalClick,
   onBeadsOpen,
   onShowDashboard,
@@ -106,6 +115,50 @@ export function SessionList({
   // Group header context menu state: { x, y, workingDir, label }
   const [groupContextMenu, setGroupContextMenu] = useState(null);
   const closeGroupContextMenu = () => setGroupContextMenu(null);
+
+  // "New group…" dialog state: { workingDir, label } when open, else null.
+  const [newGroupDialog, setNewGroupDialog] = useState(null);
+  const [newGroupName, setNewGroupName] = useState("");
+  const newGroupInputRef = useRef(null);
+
+  // All organizational groups currently in use across folders (folders.json
+  // group label, shared by all workspaces in a folder). Sorted case-insensitively.
+  const allGroups = useMemo(() => {
+    const set = new Set();
+    (workspaces || []).forEach((ws) => {
+      const g = (ws.group || "").trim();
+      if (g) set.add(g);
+    });
+    return Array.from(set).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+  }, [workspaces]);
+
+  // Current group for a given folder working dir (empty string when unassigned).
+  const getFolderGroup = useCallback(
+    (workingDir) => {
+      const ws = (workspaces || []).find((w) => w.working_dir === workingDir);
+      return (ws && ws.group ? ws.group.trim() : "") || "";
+    },
+    [workspaces],
+  );
+
+  // Focus the input when the new-group dialog opens.
+  useEffect(() => {
+    if (newGroupDialog) {
+      setNewGroupName("");
+      const t = setTimeout(() => newGroupInputRef.current?.focus(), 50);
+      return () => clearTimeout(t);
+    }
+  }, [newGroupDialog]);
+
+  const submitNewGroup = useCallback(() => {
+    const name = newGroupName.trim();
+    if (!name || !newGroupDialog) return;
+    if (onMoveFolderToGroup) onMoveFolderToGroup(newGroupDialog.workingDir, name);
+    setNewGroupDialog(null);
+    setNewGroupName("");
+  }, [newGroupName, newGroupDialog, onMoveFolderToGroup]);
 
   // Track new sessions for blink animation
   const [newSessionIds, setNewSessionIds] = useState(new Set());
@@ -248,6 +301,15 @@ export function SessionList({
     const key = `archived:${folderKey}`;
     return key in sidebarExpandedGroups ? sidebarExpandedGroups[key] : false;
   };
+  // Top-level folder-group sections ("group:<name>" / "group:__other__"). They
+  // default to expanded and persist like folder keys, but do NOT participate in
+  // folder accordion (single-expanded) mode — a group only wraps its folders.
+  const isUnifiedGroupExpanded = (groupKey) =>
+    groupKey in sidebarExpandedGroups ? sidebarExpandedGroups[groupKey] : true;
+  const handleGroupSectionToggle = useCallback((groupKey, willOpen) => {
+    setSidebarExpandedGroups((prev) => ({ ...prev, [groupKey]: willOpen }));
+    setGroupExpanded(groupKey, willOpen);
+  }, []);
 
   // Controlled <details> toggle for unified-tree folders and the archived subgroup.
   // willOpen is the <details> element's resulting open state. Folder-level toggles
@@ -418,7 +480,7 @@ export function SessionList({
   // If the selected session belongs to a family (parent + its children), only that family
   // stays expanded. All other expanded parent groups are collapsed.
   const handleSelectWithCollapse = useCallback(
-    (sessionId) => {
+    (sessionId, opts) => {
       // Find which family (if any) this session belongs to
       const familyKey = sessionFamilyMap.get(sessionId);
 
@@ -466,8 +528,10 @@ export function SessionList({
         }
       }
 
-      // Call the original onSelect
-      onSelect(sessionId);
+      // Call the original onSelect (opts threads through e.g. keepSidebarOpen
+      // so an auto-select triggered by expanding a folder does not close the
+      // mobile sidebar drawer — see handleFolderOpened).
+      onSelect(sessionId, opts);
     },
     [
       onSelect,
@@ -492,6 +556,10 @@ export function SessionList({
   //  1. The Archived subgroup always collapses — never memorized.
   //  2. Focus the conversation last focused in this group; if none is
   //     remembered (or it no longer exists), open the group's Tasks view.
+  // The auto-select/Tasks-open passes keepSidebarOpen so that, on mobile,
+  // expanding a folder leaves the sidebar drawer open (the conversation or
+  // Tasks view loads underneath). Direct conversation/Tasks clicks still close
+  // the drawer.
   const handleFolderOpened = useCallback(
     (folder) => {
       const archivedKey = `archived:${folder.key}`;
@@ -502,9 +570,9 @@ export function SessionList({
 
       const remembered = getLastSessionForGroup(folder.key);
       if (remembered && folderHasSession(folder, remembered)) {
-        handleSelectWithCollapse(remembered);
+        handleSelectWithCollapse(remembered, { keepSidebarOpen: true });
       } else if (folder.workingDir) {
-        onBeadsOpen && onBeadsOpen(folder.workingDir);
+        onBeadsOpen && onBeadsOpen(folder.workingDir, { keepSidebarOpen: true });
       }
     },
     [handleSelectWithCollapse, onBeadsOpen],
@@ -761,7 +829,22 @@ export function SessionList({
             <span class="truncate">${dashboard.label}</span>
           </button>
         </li>
-        ${folders.map((folder) => {
+        ${(() => {
+          // When any folder has a group assigned, render collapsible group
+          // sections (named groups + a trailing "Other" for ungrouped folders).
+          // Otherwise render folders as a flat list (unchanged behavior).
+          const { grouped, sections } = computeFolderGroupSections(folders);
+          return grouped
+            ? sections.map(renderGroupSectionLi)
+            : folders.map(renderFolderLi);
+        })()}
+      </ul>
+    `;
+
+    // Render a single folder <li> (shared by the flat and grouped layouts).
+    // Declared as a hoisted function so it can be referenced by the IIFE above
+    // and by renderGroupSectionLi regardless of source order.
+    function renderFolderLi(folder) {
           const folderExpanded = isUnifiedFolderExpanded(folder.key);
           const archivedExpanded = isUnifiedArchivedExpanded(folder.key);
           const totalSessions =
@@ -934,9 +1017,39 @@ export function SessionList({
               </details>
             </li>
           `;
-        })}
-      </ul>
-    `;
+    }
+
+    // Render a top-level group section (collapsible) that wraps its folders.
+    // Only used when at least one folder has a group assigned. The synthetic
+    // "Other" section (section.isOther) collects ungrouped folders and is
+    // styled distinctly (muted + italic) so it reads apart from named groups.
+    function renderGroupSectionLi(section) {
+      const expanded = isUnifiedGroupExpanded(section.key);
+      return html`
+        <li key=${section.key} class="folder-group-section min-w-0 mt-4">
+          <details
+            class="min-w-0 w-full"
+            open=${expanded}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== expanded)
+                handleGroupSectionToggle(section.key, open);
+            }}
+          >
+            <summary
+              class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide after:hidden ${section.isOther
+                ? "text-mitto-text-muted/60 italic"
+                : "text-mitto-text-muted"}"
+            >
+              <span class="truncate min-w-0">${section.name}</span>
+            </summary>
+            <ul>
+              ${section.folders.map(renderFolderLi)}
+            </ul>
+          </details>
+        </li>
+      `;
+    }
   };
 
   return html`
@@ -979,6 +1092,43 @@ export function SessionList({
               icon: html`<${TerminalIcon} className="w-4 h-4" />`,
               onClick: () => onTerminalClick && onTerminalClick(groupContextMenu.workingDir),
             }] : []),
+            ...(!configReadonly && onMoveFolderToGroup && groupContextMenu.workingDir
+              ? [(() => {
+                  const wd = groupContextMenu.workingDir;
+                  const lbl = groupContextMenu.label;
+                  const current = getFolderGroup(wd);
+                  const submenu = [];
+                  allGroups.forEach((g) => {
+                    const isCurrent =
+                      g.toLowerCase() === current.toLowerCase();
+                    submenu.push({
+                      label: g,
+                      icon: isCurrent
+                        ? html`<${CheckIcon} className="w-4 h-4" />`
+                        : html`<span class="inline-block w-4 h-4"></span>`,
+                      disabled: isCurrent,
+                      onClick: () => onMoveFolderToGroup(wd, g),
+                    });
+                  });
+                  if (current) {
+                    submenu.push({
+                      label: "No group",
+                      icon: html`<${CloseIcon} className="w-4 h-4" />`,
+                      onClick: () => onMoveFolderToGroup(wd, ""),
+                    });
+                  }
+                  submenu.push({
+                    label: "New group\u2026",
+                    icon: html`<${PlusIcon} className="w-4 h-4" />`,
+                    onClick: () => setNewGroupDialog({ workingDir: wd, label: lbl }),
+                  });
+                  return {
+                    label: "Move to group",
+                    icon: html`<${LayersIcon} className="w-4 h-4" />`,
+                    submenu,
+                  };
+                })()]
+              : []),
             ...(!configReadonly && groupContextMenu.workingDir ? [{
               label: "Configure Workspace",
               icon: html`<${SettingsIcon} className="w-4 h-4" />`,
@@ -988,11 +1138,71 @@ export function SessionList({
           onClose=${closeGroupContextMenu}
         />
       `}
+      ${newGroupDialog &&
+      html`
+        <${Modal}
+          isOpen=${true}
+          onClose=${() => setNewGroupDialog(null)}
+          title="New group"
+          testid="new-group-dialog"
+          backdropTestid="new-group-dialog-backdrop"
+          closeTestid="new-group-dialog-close"
+          footer=${html`
+            <button
+              class="btn btn-sm btn-ghost"
+              onClick=${() => setNewGroupDialog(null)}
+              data-testid="new-group-cancel-btn"
+            >
+              Cancel
+            </button>
+            <button
+              class="btn btn-sm btn-primary"
+              disabled=${!newGroupName.trim()}
+              onClick=${submitNewGroup}
+              data-testid="new-group-create-btn"
+            >
+              Create
+            </button>
+          `}
+        >
+          <div class="space-y-2">
+            <label
+              class="block text-sm font-medium text-mitto-text-secondary"
+              for="new-group-name-input"
+            >
+              Group name
+            </label>
+            <input
+              id="new-group-name-input"
+              ref=${newGroupInputRef}
+              type="text"
+              value=${newGroupName}
+              onInput=${(e) => setNewGroupName(e.target.value)}
+              onKeyDown=${(e) => {
+                if (e.key === "Enter" && newGroupName.trim()) {
+                  e.preventDefault();
+                  submitNewGroup();
+                }
+              }}
+              placeholder="e.g., Personal, Development, Operations"
+              class="input input-sm w-full"
+              data-testid="new-group-name-input"
+            />
+            ${newGroupDialog.label &&
+            html`<p class="text-xs text-mitto-text-muted">
+              "${newGroupDialog.label}" will be moved to this group.
+            </p>`}
+          </div>
+        </${Modal}>
+      `}
       <div class="h-full flex flex-col">
       <div
-        class="p-4 border-b border-mitto-border-1 flex items-center justify-between"
+        class="p-4 flex items-center justify-between"
       >
-        <h2 class="font-semibold text-lg">Conversations</h2>
+        <h2 class="font-semibold text-lg flex items-center gap-2">
+          <${ChatBubbleIcon} className="w-5 h-5 shrink-0" />
+          <span>Mitto</span>
+        </h2>
         <div class="flex items-center gap-0.5">
           <button
             data-testid="new-conversation-btn"

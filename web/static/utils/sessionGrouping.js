@@ -86,6 +86,22 @@ function buildParentChildTree(sessions, allKnownSessionIds) {
 // Folder mode (hierarchical)
 // ---------------------------------------------------------------------------
 
+// Order folders so that, when groups are in use, folders belonging to the same
+// group are contiguous (named groups alphabetical, ungrouped folders last) and,
+// within a group, alphabetical by label. When no folder has a group, every
+// group string is empty and this collapses to a plain alphabetical-by-label
+// sort — identical to the previous flat behavior.
+function compareFoldersByGroupThenLabel(a, b) {
+  const ga = (a.group || "").trim();
+  const gb = (b.group || "").trim();
+  if (ga !== gb) {
+    if (ga === "") return 1; // ungrouped folders sort last
+    if (gb === "") return -1;
+    return ga.localeCompare(gb);
+  }
+  return a.label.localeCompare(b.label);
+}
+
 function computeFolderGroups(filteredSessions, allSessions, workspaces) {
   const sessionById = new Map(filteredSessions.map((s) => [s.session_id, s]));
   const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
@@ -98,13 +114,15 @@ function computeFolderGroups(filteredSessions, allSessions, workspaces) {
     const folderKey = workingDir || "Unknown";
 
     if (!folderGroups.has(folderKey)) {
+      const ws = workingDir
+        ? workspaces.find((w) => w.working_dir === workingDir)
+        : null;
       folderGroups.set(folderKey, {
-        label: (() => {
-          if (!workingDir) return "Unknown";
-          const ws = workspaces.find((w) => w.working_dir === workingDir);
-          return ws?.name || getBasename(workingDir);
-        })(),
+        label: workingDir ? ws?.name || getBasename(workingDir) : "Unknown",
         workingDir,
+        // Folder-level organizational group (folders.json); shared by all
+        // workspaces in the folder. Empty string when unassigned.
+        group: (ws && ws.group) || "",
         allSessions: [],
       });
     }
@@ -117,11 +135,12 @@ function computeFolderGroups(filteredSessions, allSessions, workspaces) {
       key,
       label: folder.label,
       workingDir: folder.workingDir,
+      group: folder.group || "",
       isHierarchical: true,
       isParentChild: true,
       sessions: buildParentChildTree(folder.allSessions, allKnownSessionIds),
     }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort(compareFoldersByGroupThenLabel);
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +269,7 @@ export function computeUnifiedTree(allSessions, workspaces = []) {
       key,
       label: folder.label,
       workingDir: folder.workingDir,
+      group: folder.group || "",
       tasksNode: {
         type: "tasks",
         id: `tasks:${key}`,
@@ -263,6 +283,79 @@ export function computeUnifiedTree(allSessions, workspaces = []) {
   });
 
   return { dashboard, folders };
+}
+
+// ---------------------------------------------------------------------------
+// Folder grouping sections (sidebar group → folder hierarchy)
+// ---------------------------------------------------------------------------
+
+// Display label for the synthetic section that collects folders without a
+// group assigned. Only shown when at least one folder HAS a group (otherwise
+// the sidebar stays flat) and at least one folder does NOT.
+export const UNGROUPED_FOLDER_SECTION_LABEL = "Other";
+
+// Stable expansion key for the ungrouped ("Other") section. Uses a sentinel so
+// it never collides with a real group that happens to be named "Other".
+export const UNGROUPED_FOLDER_SECTION_KEY = "group:__other__";
+
+/**
+ * Partition an ordered list of folders (from computeUnifiedTree) into group
+ * sections for hierarchical sidebar rendering.
+ *
+ * Behavior:
+ *  - If NO folder has a group assigned → { grouped: false, sections: [] };
+ *    callers render the folders as a flat list (unchanged behavior).
+ *  - If ANY folder has a group → { grouped: true, sections: [...] } with one
+ *    section per distinct group name (alphabetical), and a trailing synthetic
+ *    "Other" section holding ungrouped folders. The "Other" section is omitted
+ *    when every folder has a group.
+ *
+ * Folder order within each section is preserved from the input (which
+ * computeFolderGroups already sorts alphabetically by label).
+ *
+ * @param {Array} folders - folder objects with an optional `group` string
+ * @returns {{ grouped: boolean, sections: Array<{key: string, name: string, isOther: boolean, folders: Array}> }}
+ */
+export function computeFolderGroupSections(folders) {
+  const list = folders || [];
+  const hasAnyGroup = list.some(
+    (f) => typeof f.group === "string" && f.group.trim() !== "",
+  );
+  if (!hasAnyGroup) {
+    return { grouped: false, sections: [] };
+  }
+
+  const named = new Map();
+  const other = [];
+  list.forEach((folder) => {
+    const g = typeof folder.group === "string" ? folder.group.trim() : "";
+    if (g) {
+      if (!named.has(g)) named.set(g, []);
+      named.get(g).push(folder);
+    } else {
+      other.push(folder);
+    }
+  });
+
+  const sections = Array.from(named.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, fs]) => ({
+      key: `group:${name}`,
+      name,
+      isOther: false,
+      folders: fs,
+    }));
+
+  if (other.length > 0) {
+    sections.push({
+      key: UNGROUPED_FOLDER_SECTION_KEY,
+      name: UNGROUPED_FOLDER_SECTION_LABEL,
+      isOther: true,
+      folders: other,
+    });
+  }
+
+  return { grouped: true, sections };
 }
 
 /**

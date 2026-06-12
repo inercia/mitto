@@ -113,6 +113,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const [editName, setEditName] = useState("");
   const [editCode, setEditCode] = useState("");
   const [editColor, setEditColor] = useState("");
+  const [editGroup, setEditGroup] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
   const [editAuxModelMode, setEditAuxModelMode] = useState("");
   const [editAuxModelPattern, setEditAuxModelPattern] = useState("");
@@ -261,6 +262,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     [workspaces, selectedWorkspaceKey],
   );
 
+  // Unique folder groups across all workspaces, used to suggest existing groups
+  // (so users can unify on the same label). Includes the value currently being
+  // edited so a freshly-typed group also appears in the list.
+  const folderGroupSuggestions = useMemo(() => {
+    const set = new Set();
+    workspaces.forEach((ws) => {
+      if (ws.group && ws.group.trim()) set.add(ws.group.trim());
+    });
+    if (editGroup && editGroup.trim()) set.add(editGroup.trim());
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [workspaces, editGroup]);
+
   useEffect(() => {
     if (isOpen) {
       setError("");
@@ -331,6 +344,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!firstWs) return;
     setEditName(firstWs.name || "");
     setEditCode(firstWs.code || "");
+    setEditGroup(firstWs.group || "");
     setEditColor(
       firstWs.color ||
         getWorkspaceVisualInfo(firstWs.working_dir).color.backgroundHex ||
@@ -457,6 +471,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       name: editName || undefined,
       code: (editCode || "").toUpperCase().slice(0, 3) || undefined,
       color: editColor || undefined,
+      group: editGroup.trim() || undefined,
       auto_children: editAutoChildren.length > 0 ? editAutoChildren : undefined,
     };
   };
@@ -949,6 +964,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       ...(firstWs.name && { name: firstWs.name }),
       ...(firstWs.code && { code: firstWs.code }),
       ...(firstWs.color && { color: firstWs.color }),
+      ...(firstWs.group && { group: firstWs.group }),
     };
     setWorkspaces([...workspaces, newWs]);
     setSelectedWorkspaceKey(getWorkspaceKey(newWs));
@@ -1449,6 +1465,24 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               placeholder=${getBasename(firstWs.working_dir)}
                               class="input input-sm w-full"
                             />
+                            <label class="label" for="ws-folder-group">Group</label>
+                            <input
+                              id="ws-folder-group"
+                              type="text"
+                              list="ws-folder-group-options"
+                              value=${editGroup}
+                              onInput=${(e) => setEditGroup(e.target.value)}
+                              placeholder="e.g., development, personal, operations..."
+                              class="input input-sm w-full"
+                            />
+                            <datalist id="ws-folder-group-options">
+                              ${folderGroupSuggestions.map(
+                                (g) => html`<option value=${g}></option>`,
+                              )}
+                            </datalist>
+                            <p class="text-xs text-mitto-text-muted">
+                              Organize folders into groups. Existing groups are suggested as you type.
+                            </p>
                           </fieldset>
                           <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Appearance</legend>

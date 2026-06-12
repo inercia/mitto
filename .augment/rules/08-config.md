@@ -133,14 +133,14 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 
 ### Folder-Level Settings (folders.json)
 
-`folders.json` (`$MITTO_DIR`, keyed by `working_dir`) is the **authoritative store** for folder-level settings — NOT just a deduplication cache. It holds `name`, `color`, `code`, `auto_children`, and the folder-native `beads` block. It is created the **first time via a one-time migration** that lifts inline folder fields out of `workspaces.json`; thereafter all common folder-level info always lives here. This is **transparent**: `LoadWorkspaces()` returns fully-populated `[]WorkspaceSettings`, so no other code (SessionManager, REST, frontend) is affected.
+`folders.json` (`$MITTO_DIR`, keyed by `working_dir`) is the **authoritative store** for folder-level settings — NOT just a deduplication cache. It holds `name`, `color`, `code`, the organizational `group` label, `auto_children`, and the folder-native `beads` block. It is created the **first time via a one-time migration** that lifts inline folder fields out of `workspaces.json`; thereafter all common folder-level info always lives here. This is **transparent**: `LoadWorkspaces()` returns fully-populated `[]WorkspaceSettings`, so no other code (SessionManager, REST, frontend) is affected.
 
 - **Load** (`LoadWorkspaces`): merges the authoritative `folders.json` via `ApplyFolderDefaults` — the folder value **wins** over any value still on a workspace (divergent legacy values collapse). Auto-migrates legacy inline files; idempotent thereafter.
 - **Save** (`SaveWorkspaces`): `extractFolderSettings` hoists each folder-level field (first non-empty value across the group; divergence collapses, field stripped from every workspace), then `preserveFolderNativeFields` merges folder-native fields (`beads`) back from the existing `folders.json`. Writes `folders.json` **first**, then cleaned `workspaces.json` (crash-safe ordering). Orphan folders pruned; empty map deletes the file.
 - **Folder-native fields** (`beads`): set directly via `SetFolderBeadsUpstream`/`FolderBeadsUpstream`, never via a workspace; `foldersEqual` compares them so no spurious rewrites occur.
 - **`--folders FILE` flag**: loads folder settings via `LoadFoldersFromFile` (JSON/YAML, not persisted), applied via `ApplyFolderDefaults` after workspace loading. Overlays onto workspaces from any source (CLI, file, or `workspaces.json`).
 - Code lives in `internal/config/folders.go`; path via `appdir.FoldersPath()` / `appdir.FoldersFileName`.
-- **Metadata stays in `.mittorc`**: `description`/`url`/`group`/`user_data_schema` are version-controllable and are NOT moved to `folders.json`.
+- **Metadata stays in `.mittorc`**: `description`/`url`/`group`/`user_data_schema` are version-controllable and are NOT moved to `folders.json`. NOTE: the `.mittorc` metadata `group` is a SEPARATE concept from the Mitto-local folder `group` (an organizational label hoisted into `folders.json` alongside name/color/code).
 
 ## Global Settings REST API
 

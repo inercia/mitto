@@ -37,6 +37,7 @@ func TestSaveFolders_LoadFolders_RoundTrip(t *testing.T) {
 			Name:         "Project",
 			Color:        "#ff5500",
 			Code:         "PRJ",
+			Group:        "development",
 			AutoChildren: []AutoChild{{Title: "Reviewer"}},
 		},
 	}
@@ -51,8 +52,8 @@ func TestSaveFolders_LoadFolders_RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("folder /proj missing after round-trip")
 	}
-	if fs.Name != "Project" || fs.Color != "#ff5500" || fs.Code != "PRJ" {
-		t.Errorf("folder fields = %+v, want Name=Project Color=#ff5500 Code=PRJ", fs)
+	if fs.Name != "Project" || fs.Color != "#ff5500" || fs.Code != "PRJ" || fs.Group != "development" {
+		t.Errorf("folder fields = %+v, want Name=Project Color=#ff5500 Code=PRJ Group=development", fs)
 	}
 	if len(fs.AutoChildren) != 1 || fs.AutoChildren[0].Title != "Reviewer" {
 		t.Errorf("AutoChildren = %+v, want one Reviewer", fs.AutoChildren)
@@ -81,22 +82,22 @@ func TestSaveFolders_EmptyRemovesFile(t *testing.T) {
 
 func TestExtractFolderSettings_AllSameHoisted(t *testing.T) {
 	ws := []WorkspaceSettings{
-		{ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc", AutoChildren: []AutoChild{{Title: "Reviewer"}}},
-		{ACPServer: "claude", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc", AutoChildren: []AutoChild{{Title: "Reviewer"}}},
+		{ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc", Group: "development", AutoChildren: []AutoChild{{Title: "Reviewer"}}},
+		{ACPServer: "claude", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc", Group: "development", AutoChildren: []AutoChild{{Title: "Reviewer"}}},
 	}
 	cleaned, folders := extractFolderSettings(ws)
 	fs, ok := folders["/proj"]
 	if !ok {
 		t.Fatalf("folders missing /proj")
 	}
-	if fs.Name != "P" || fs.Code != "PRJ" || fs.Color != "#abc" {
+	if fs.Name != "P" || fs.Code != "PRJ" || fs.Color != "#abc" || fs.Group != "development" {
 		t.Errorf("hoisted folder = %+v", fs)
 	}
 	if len(fs.AutoChildren) != 1 || fs.AutoChildren[0].Title != "Reviewer" {
 		t.Errorf("hoisted AutoChildren = %+v", fs.AutoChildren)
 	}
 	for i := range cleaned {
-		if cleaned[i].Name != "" || cleaned[i].Code != "" || cleaned[i].Color != "" || cleaned[i].AutoChildren != nil {
+		if cleaned[i].Name != "" || cleaned[i].Code != "" || cleaned[i].Color != "" || cleaned[i].Group != "" || cleaned[i].AutoChildren != nil {
 			t.Errorf("cleaned[%d] not cleared: %+v", i, cleaned[i])
 		}
 	}

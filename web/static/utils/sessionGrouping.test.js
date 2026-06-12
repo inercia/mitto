@@ -9,6 +9,9 @@ import {
   computeUnifiedTree,
   filterUnifiedTree,
   flattenUnifiedTreeForNav,
+  computeFolderGroupSections,
+  UNGROUPED_FOLDER_SECTION_LABEL,
+  UNGROUPED_FOLDER_SECTION_KEY,
 } from "./sessionGrouping.js";
 
 // ---------------------------------------------------------------------------
@@ -591,5 +594,116 @@ describe("flattenUnifiedTreeForNav", () => {
     expect(flattenUnifiedTreeForNav(undefined)).toEqual([]);
     expect(flattenUnifiedTreeForNav({})).toEqual([]);
     expect(flattenUnifiedTreeForNav({ folders: [] })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Folder `group` attribute (computeUnifiedTree)
+// ---------------------------------------------------------------------------
+
+describe("computeUnifiedTree – folder group attribute", () => {
+  test("attaches workspace group to the folder; empty string when unassigned", () => {
+    const s1 = makeSession({ session_id: "s1", working_dir: "/home/user/grouped" });
+    const s2 = makeSession({ session_id: "s2", working_dir: "/home/user/plain" });
+    const wsGrouped = { working_dir: "/home/user/grouped", group: "development" };
+    const wsPlain = { working_dir: "/home/user/plain" };
+    const result = computeUnifiedTree([s1, s2], [wsGrouped, wsPlain]);
+    const grouped = result.folders.find((f) => f.workingDir === "/home/user/grouped");
+    const plain = result.folders.find((f) => f.workingDir === "/home/user/plain");
+    expect(grouped.group).toBe("development");
+    expect(plain.group).toBe("");
+  });
+
+  test("group-aware ordering: grouped folders precede ungrouped; alphabetical within", () => {
+    const sZebra = makeSession({ session_id: "z", working_dir: "/dirs/zebra" });
+    const sAlpha = makeSession({ session_id: "a", working_dir: "/dirs/alpha" });
+    const sPlain = makeSession({ session_id: "p", working_dir: "/dirs/plain" });
+    const workspaces = [
+      { working_dir: "/dirs/zebra", group: "development" },
+      { working_dir: "/dirs/alpha", group: "development" },
+      { working_dir: "/dirs/plain" }, // no group → sorts last
+    ];
+    const result = computeUnifiedTree([sZebra, sAlpha, sPlain], workspaces);
+    const labels = result.folders.map((f) => f.label);
+    // Both grouped folders (alpha, zebra) come first alphabetically, ungrouped last.
+    expect(labels).toEqual(["alpha", "zebra", "plain"]);
+  });
+
+  test("no groups → alphabetical-by-label order is unchanged", () => {
+    const sZebra = makeSession({ session_id: "z", working_dir: "/dirs/zebra" });
+    const sAlpha = makeSession({ session_id: "a", working_dir: "/dirs/alpha" });
+    const result = computeUnifiedTree([sZebra, sAlpha], []);
+    expect(result.folders.map((f) => f.label)).toEqual(["alpha", "zebra"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeFolderGroupSections
+// ---------------------------------------------------------------------------
+
+describe("computeFolderGroupSections", () => {
+  const f = (label, group) => ({ key: label, label, workingDir: `/d/${label}`, group });
+
+  test("no folder has a group → grouped:false, empty sections (flat list)", () => {
+    const result = computeFolderGroupSections([f("a", ""), f("b", "")]);
+    expect(result.grouped).toBe(false);
+    expect(result.sections).toEqual([]);
+  });
+
+  test("missing/whitespace group treated as ungrouped", () => {
+    const result = computeFolderGroupSections([
+      { key: "a", label: "a", group: undefined },
+      { key: "b", label: "b", group: "   " },
+    ]);
+    expect(result.grouped).toBe(false);
+  });
+
+  test("mixed → named sections (alphabetical) plus trailing Other", () => {
+    const result = computeFolderGroupSections([
+      f("proj", "development"),
+      f("notes", "personal"),
+      f("scratch", ""),
+    ]);
+    expect(result.grouped).toBe(true);
+    expect(result.sections.map((s) => s.name)).toEqual([
+      "development",
+      "personal",
+      UNGROUPED_FOLDER_SECTION_LABEL,
+    ]);
+    const other = result.sections.find((s) => s.isOther);
+    expect(other.key).toBe(UNGROUPED_FOLDER_SECTION_KEY);
+    expect(other.folders.map((x) => x.label)).toEqual(["scratch"]);
+  });
+
+  test("all folders grouped → no Other section", () => {
+    const result = computeFolderGroupSections([
+      f("proj", "development"),
+      f("notes", "personal"),
+    ]);
+    expect(result.grouped).toBe(true);
+    expect(result.sections.every((s) => !s.isOther)).toBe(true);
+    expect(result.sections.map((s) => s.name)).toEqual(["development", "personal"]);
+  });
+
+  test("groups multiple folders under the same section name", () => {
+    const result = computeFolderGroupSections([
+      f("alpha", "development"),
+      f("zebra", "development"),
+    ]);
+    const dev = result.sections.find((s) => s.name === "development");
+    expect(dev.folders.map((x) => x.label)).toEqual(["alpha", "zebra"]);
+    expect(dev.key).toBe("group:development");
+  });
+
+  test("group whitespace is trimmed for the section name", () => {
+    const result = computeFolderGroupSections([f("proj", "  development  "), f("x", "")]);
+    const names = result.sections.map((s) => s.name);
+    expect(names).toContain("development");
+  });
+
+  test("empty/null input → grouped:false", () => {
+    expect(computeFolderGroupSections([]).grouped).toBe(false);
+    expect(computeFolderGroupSections(null).grouped).toBe(false);
+    expect(computeFolderGroupSections(undefined).grouped).toBe(false);
   });
 });
