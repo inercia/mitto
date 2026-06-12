@@ -124,7 +124,7 @@ export function WorkspacePill({
 
   return html`
     <div
-      class="workspace-pill badge badge-sm gap-1 font-medium ${cursorClass} ${className}"
+      class="workspace-pill badge badge-sm gap-1 px-2 font-medium ${cursorClass} ${className}"
       style=${{
         backgroundColor: color.background,
         color: color.text,

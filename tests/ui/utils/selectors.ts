@@ -60,10 +60,10 @@ export const selectors = {
   newSessionButton: 'button[title="New Conversation"]',
   sessionItem: (name: string) =>
     `.session-item-container:has-text("${name}")`,
-  // Active session: the clickable inner div gets a solid bg-mitto-accent-700 fill when isActive
-  activeSessionItem: '[data-session-id][class*="bg-mitto-accent-700"]',
+  // Active session: the clickable inner div gets a solid bg-mitto-accent fill when isActive
+  activeSessionItem: '[data-session-id][class*="bg-mitto-accent "]',
   activeSessionItemById: (id: string) =>
-    `[data-session-id="${id}"][class*="bg-mitto-accent-700"]`,
+    `[data-session-id="${id}"][class*="bg-mitto-accent "]`,
 
   // Dialogs
   settingsDialog: '[role="dialog"]',
