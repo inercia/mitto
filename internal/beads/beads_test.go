@@ -188,6 +188,32 @@ func TestClient_List_NotInitialized_ReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestClient_List_DoltBackend_RunsBd verifies that a Dolt-backed database — which
+// has .beads/metadata.json but no .beads/config.yaml — is recognized as
+// initialized, so List invokes bd instead of short-circuiting to "[]".
+func TestClient_List_DoltBackend_RunsBd(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte("[]")}}}
+	c := newClient(r)
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected 1 runner call (initialized via metadata.json), got %d", len(r.calls))
+	}
+	if got := r.calls[0].args[0]; got != "list" {
+		t.Errorf("expected bd \"list\" call, got %q", got)
+	}
+}
+
 // TestClient_Create_NotInitialized_RunsInitThenCreate verifies that creating a
 // task in an uninitialized folder first runs "bd init" and then "bd create".
 func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
