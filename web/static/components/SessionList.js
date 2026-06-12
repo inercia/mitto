@@ -557,7 +557,7 @@ export function SessionList({
         return html`
           <div
             key=${session.session_id}
-            class="parent-session-group border-b border-mitto-border-1 ${hasChildren
+            class="parent-session-group ${hasChildren
               ? "has-children"
               : ""}"
           >
@@ -727,7 +727,7 @@ export function SessionList({
                           e.stopPropagation();
                           onBeadsOpen && onBeadsOpen(folder.workingDir);
                         }}
-                        class="gap-2 text-sm text-mitto-text-muted"
+                        class="gap-2 text-sm text-mitto-text-muted border-0!"
                         title="Beads issues: ${folder.workingDir}"
                       >
                         <${BeadsIcon} className="w-4 h-4 shrink-0" />

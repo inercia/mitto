@@ -500,9 +500,9 @@ export function SessionItem({
         <div
           onClick=${handleClick}
           onContextMenu=${handleContextMenu}
-          class="p-3 cursor-pointer hover:bg-mitto-surface-3/50 relative bg-mitto-sidebar overflow-hidden ${isActive
-            ? "bg-mitto-accent-900/30 border-l-2 border-l-mitto-accent-500"
-            : ""} ${isSwiping
+          class="px-2.5 py-1 cursor-pointer relative overflow-hidden ${isActive
+            ? "bg-mitto-accent-700 text-mitto-accent-fg"
+            : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
             ? ""
             : "transition-transform duration-200"} ${extraLeftPadding} ${isNew
             ? "session-item-new"
@@ -542,7 +542,7 @@ export function SessionItem({
                       `
                     : null}
                   <span
-                    class="text-sm font-medium truncate ${isArchived
+                    class="text-sm truncate ${isArchived
                       ? "text-mitto-text-muted"
                       : ""}"
                     >${displayName}</span
