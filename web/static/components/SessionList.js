@@ -658,7 +658,7 @@ export function SessionList({
                 }}
               >
                 <summary
-                  class="gap-2 text-sm font-medium text-mitto-text-muted"
+                  class="gap-2 text-sm font-medium text-mitto-text-muted after:hidden"
                   onContextMenu=${(e) => {
                     if (folder.workingDir) {
                       e.preventDefault();
