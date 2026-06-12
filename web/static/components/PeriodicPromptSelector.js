@@ -93,23 +93,49 @@ export function PeriodicPromptSelector({
         <!-- Label -->
         <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0 font-medium">Prompt:</span>
 
-        <!-- Dropdown trigger button -->
-        <button
-          type="button"
-          onClick=${handleToggle}
-          disabled=${disabled}
-          class="flex-1 h-8 px-3 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors ${
-            disabled
-              ? "opacity-50 cursor-not-allowed"
-              : "cursor-pointer hover:border-mitto-accent-500/50"
-          }"
-          data-testid="periodic-prompt-selector-button"
-        >
-          <span class="truncate flex-1 ${selectedPromptName ? "text-mitto-text-strong" : "text-mitto-text-secondary dark:text-mitto-text-500"}">${displayName}</span>
-          <svg class="w-4 h-4 shrink-0 text-mitto-text-secondary transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
+        <!-- Dropdown trigger button + popover (anchored to the button) -->
+        <div class="relative flex-1">
+          <button
+            type="button"
+            onClick=${handleToggle}
+            disabled=${disabled}
+            class="w-full h-8 px-3 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors ${
+              disabled
+                ? "opacity-50 cursor-not-allowed"
+                : "cursor-pointer hover:border-mitto-accent-500/50"
+            }"
+            data-testid="periodic-prompt-selector-button"
+          >
+            <span class="truncate flex-1 ${selectedPromptName ? "text-mitto-text-strong" : "text-mitto-text-secondary dark:text-mitto-text-500"}">${displayName}</span>
+            <svg class="w-4 h-4 shrink-0 text-mitto-text-secondary transition-transform ${showDropdown ? "rotate-180" : ""}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          <!-- Dropdown panel (appears ABOVE the trigger button) -->
+          ${showDropdown && html`
+            <div
+              class="absolute bottom-full left-0 mb-1 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
+              style="max-height: 360px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+              data-testid="periodic-prompt-selector-dropdown"
+            >
+              <${PromptsMenu}
+                prompts=${prompts}
+                filterText=${filterText}
+                onFilterChange=${(value) => setFilterText(value)}
+                filterInputRef=${filterInputRef}
+                sortMode=${sortMode}
+                onSelect=${(prompt) => handleSelect(prompt)}
+                selectedName=${selectedPromptName}
+                placeholder="Search prompts..."
+                emptyText="No matching prompts"
+                keyPrefix="periodic-prompts"
+                filterTestId="periodic-prompt-selector-search"
+                listTestId="periodic-prompt-selector-list"
+              />
+            </div>
+          `}
+        </div>
 
         <!-- Toggle prompt composition area button -->
         ${onTogglePromptArea && html`
@@ -138,30 +164,6 @@ export function PeriodicPromptSelector({
           </button>
         `}
       </div>
-
-      <!-- Dropdown panel (appears ABOVE the selector) -->
-      ${showDropdown && html`
-        <div
-          class="absolute bottom-full left-0 right-0 mb-1 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
-          style="max-height: 360px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
-          data-testid="periodic-prompt-selector-dropdown"
-        >
-          <${PromptsMenu}
-            prompts=${prompts}
-            filterText=${filterText}
-            onFilterChange=${(value) => setFilterText(value)}
-            filterInputRef=${filterInputRef}
-            sortMode=${sortMode}
-            onSelect=${(prompt) => handleSelect(prompt)}
-            selectedName=${selectedPromptName}
-            placeholder="Search prompts..."
-            emptyText="No matching prompts"
-            keyPrefix="periodic-prompts"
-            filterTestId="periodic-prompt-selector-search"
-            listTestId="periodic-prompt-selector-list"
-          />
-        </div>
-      `}
     </div>
   `;
 }
