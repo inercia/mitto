@@ -142,8 +142,8 @@ export function PeriodicPromptSelector({
       <!-- Dropdown panel (appears ABOVE the selector) -->
       ${showDropdown && html`
         <div
-          class="absolute bottom-full left-0 right-0 mb-1 bg-base-200 rounded-box shadow-xl z-50 overflow-hidden flex flex-col"
-          style="max-height: 360px;"
+          class="absolute bottom-full left-0 right-0 mb-1 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
+          style="max-height: 360px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
           data-testid="periodic-prompt-selector-dropdown"
         >
           <${PromptsMenu}

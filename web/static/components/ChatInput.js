@@ -2093,10 +2093,10 @@ ${activeUIPrompt.text || ""}</textarea
 
       <!-- Periodic settings (shown when periodic is enabled) -->
       <!-- Part of normal document flow - pushes conversation area up. -->
-      <!-- Prompt selector + frequency sit on one line at md+, stacked on small screens. -->
-      <div class="max-w-4xl mx-auto flex flex-col md:flex-row md:gap-3 md:items-start">
+      <!-- Prompt selector + frequency sit on one line at lg+, stacked on small/tablet screens. -->
+      <div class="max-w-4xl mx-auto flex flex-col lg:flex-row lg:gap-3 lg:items-start">
         <!-- Periodic Prompt Selector -->
-        <div class="md:flex-1 md:min-w-0">
+        <div class="lg:flex-1 lg:min-w-0">
           <${PeriodicPromptSelector}
             isOpen=${periodicEnabled}
             prompts=${predefinedPrompts}
@@ -2109,7 +2109,7 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
 
         <!-- Periodic Frequency Panel (editable when unlocked, read-only when locked) -->
-        <div class="md:flex-1 md:min-w-0">
+        <div class="lg:flex-1 lg:min-w-0">
           <${PeriodicFrequencyPanel}
             isOpen=${periodicEnabled}
             disabled=${isPeriodicLocked}
