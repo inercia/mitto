@@ -2512,25 +2512,19 @@ export function SettingsDialog({
                             (runner) => html`
                               <div
                                 key=${runner.type}
-                                class="border border-mitto-border-2/50 rounded-md overflow-hidden"
+                                class="collapse collapse-plus ${expandedRunner === runner.type ? 'collapse-open' : 'collapse-close'} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20"
                               >
                                 <!-- Runner header (collapsible) -->
-                                <button
-                                  type="button"
+                                <div
+                                  class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                                   onClick=${() =>
                                     setExpandedRunner(
                                       expandedRunner === runner.type
                                         ? null
                                         : runner.type,
                                     )}
-                                  class="w-full flex items-center justify-between p-3 bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                                 >
                                   <div class="flex items-center gap-3">
-                                    <${expandedRunner === runner.type
-                                      ? ChevronDownIcon
-                                      : ChevronRightIcon}
-                                      className="w-4 h-4 text-mitto-text-muted"
-                                    />
                                     <div class="text-left">
                                       <div class="font-medium text-sm">
                                         ${runner.label}
@@ -2548,13 +2542,14 @@ export function SettingsDialog({
                                       Configured
                                     </span>
                                   `}
-                                </button>
+                                </div>
 
                                 <!-- Expanded content -->
-                                ${expandedRunner === runner.type &&
-                                html`
+                                <div class="collapse-content px-4 ${expandedRunner === runner.type ? 'pb-4' : ''}">
+                                  ${expandedRunner === runner.type &&
+                                  html`
                                   <div
-                                    class="p-4 space-y-4 border-t border-mitto-border-2/50"
+                                    class="space-y-4"
                                   >
                                     <!-- Allow networking toggle -->
                                     <label
@@ -3072,7 +3067,8 @@ export function SettingsDialog({
                                       </button>
                                     </div>
                                   </div>
-                                `}
+                                  `}
+                                </div>
                               </div>
                             `,
                           )}
