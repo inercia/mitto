@@ -2363,18 +2363,13 @@ export function SettingsDialog({
                                 return html`
                                   <div key=${srv._key}>
                                   <div
-                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
+                                    class="collapse ${!isRCFile ? "collapse-plus" : ""} ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
-                                      class="collapse-title flex items-center gap-3 py-2 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
+                                      class="collapse-title flex items-center gap-3 py-2 px-3 pr-12 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
                                       onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
                                     >
-                                      ${!isRCFile && html`
-                                        <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
-                                          className="w-4 h-4 text-mitto-text-muted shrink-0"
-                                        />
-                                      `}
                                       <div class="flex-1 min-w-0">
                                         <div class="font-medium text-sm flex items-center gap-2">
                                           ${srv.name}
