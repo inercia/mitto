@@ -1265,6 +1265,9 @@ a.mailto-link:hover {
      order. This rule is defined later, so it restores horizontal scrolling for
      the Beads table. */
   overflow-x: auto;
+  /* Prevent the browser's own pull-to-reload (Chrome/Android) and the iOS
+     rubber-band chain from firing while our pull-to-refresh gesture is active. */
+  overscroll-behavior-y: contain;
 }
 
 .beads-table-scroll::-webkit-scrollbar {
