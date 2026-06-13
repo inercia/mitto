@@ -82,8 +82,8 @@ func TestConfigToSettings_RoundTrip(t *testing.T) {
 			{Name: "server2", Command: "cmd2"}, // no cwd, no tags
 		},
 		Web: WebConfig{
-			Host:  "0.0.0.0",
-			Port:  8080,
+			Host: "0.0.0.0",
+			Port: 8080,
 		},
 	}
 
