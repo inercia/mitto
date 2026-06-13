@@ -754,10 +754,12 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 				// Derive from m.ctx, NOT from ctx: NewSession above may have consumed most
 				// of ctx's budget (e.g., in prewarmAuxiliarySessions where multiple goroutines
 				// were previously sharing a single deadline), making ctx already expired by the
-				// time SetSessionModel runs. Using m.ctx gives SetSessionModel its full 10-second
-				// window regardless of caller-deadline pressure. m.ctx is cancelled on manager
-				// shutdown, providing a safety backstop so this never hangs indefinitely.
-				setCtx, setCancel := context.WithTimeout(m.ctx, 10*time.Second)
+				// time SetSessionModel runs. Using m.ctx gives SetSessionModel its full 30-second
+				// window regardless of caller-deadline pressure. 30s accommodates up to 3 retry
+				// attempts (≤8s each + backoff) that may queue behind concurrent callers on the
+				// same shared process (mitto-3q9). m.ctx is cancelled on manager shutdown,
+				// providing a safety backstop so this never hangs indefinitely.
+				setCtx, setCancel := context.WithTimeout(m.ctx, 30*time.Second)
 				defer setCancel()
 				if setErr := process.SetSessionModel(setCtx, acp.SessionId(sessionHandle.SessionID), matched); setErr != nil {
 					if m.logger != nil {

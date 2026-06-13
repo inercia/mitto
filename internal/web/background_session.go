@@ -5469,8 +5469,10 @@ func (bs *BackgroundSession) applyConfigConstraints(category string) {
 			"selected_value", matchedValue)
 	}
 
-	// Use a background context since this is called during initialization
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Use a background context since this is called during initialization.
+	// 30s budget accommodates up to 3 set_model retry attempts (≤8s each + backoff)
+	// that may queue behind concurrent callers on the same shared ACP process (mitto-3q9).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := bs.SetConfigOption(ctx, category, matchedValue); err != nil {

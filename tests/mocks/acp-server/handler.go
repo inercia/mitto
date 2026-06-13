@@ -206,6 +206,20 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
 
+	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS).
+	if s.setModelDelayMs > 0 {
+		time.Sleep(time.Duration(s.setModelDelayMs) * time.Millisecond)
+	}
+
+	// Failure injection: the first N set_model calls return a JSON-RPC error whose
+	// message contains "timeout" so isRetryableSetModelError matches it (mitto-3q9).
+	// currentModel is NOT updated and no notification is sent — the retry must redo it.
+	s.setModelCallCount++
+	if s.setModelCallCount <= s.setModelFailFirst {
+		s.log("Injecting set_model failure %d/%d for model %s", s.setModelCallCount, s.setModelFailFirst, params.ModelId)
+		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
+	}
+
 	// Validate the model exists
 	validModel := false
 	for _, model := range defaultModels.AvailableModels {
