@@ -19,7 +19,6 @@ prompts:
 web:
   host: "0.0.0.0"
   port: 9000
-  theme: "v2"
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -44,10 +43,6 @@ web:
 
 	if cfg.Web.Port != 9000 {
 		t.Errorf("Web.Port = %d, want %d", cfg.Web.Port, 9000)
-	}
-
-	if cfg.Web.Theme != "v2" {
-		t.Errorf("Web.Theme = %q, want %q", cfg.Web.Theme, "v2")
 	}
 
 	if len(cfg.Prompts) != 1 {
@@ -575,8 +570,7 @@ func TestLoad_JSONFile(t *testing.T) {
 		],
 		"web": {
 			"host": "0.0.0.0",
-			"port": 9000,
-			"theme": "v2"
+			"port": 9000
 		}
 	}`
 	if err := os.WriteFile(path, []byte(jsonConfig), 0644); err != nil {
@@ -602,9 +596,6 @@ func TestLoad_JSONFile(t *testing.T) {
 	}
 	if cfg.Web.Port != 9000 {
 		t.Errorf("Web.Port = %d, want %d", cfg.Web.Port, 9000)
-	}
-	if cfg.Web.Theme != "v2" {
-		t.Errorf("Web.Theme = %q, want %q", cfg.Web.Theme, "v2")
 	}
 }
 

@@ -40,7 +40,6 @@ acp:
 web:
   host: 127.0.0.1 # Server host (default: 127.0.0.1)
   port: 8080 # Server port (default: 8080)
-  theme: v2 # UI theme: "default" or "v2"
 ```
 
 Then start the Web server with:
@@ -325,7 +324,6 @@ prompts:
 web:
   host: 0.0.0.0
   port: 8080
-  theme: v2
 
   auth:
     simple:

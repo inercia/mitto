@@ -422,10 +422,6 @@ type WebConfig struct {
 	// Default: "/mitto"
 	// Set to empty string "" to disable prefixing (use original paths).
 	APIPrefix string `json:"api_prefix,omitempty"`
-	// Theme is the UI theme/stylesheet to use.
-	// Options: "default" (original Tailwind-based), "v2" (Clawdbot-inspired)
-	// Default: "default"
-	Theme string `json:"theme,omitempty"`
 	// Hooks contains lifecycle hooks for the web server
 	Hooks WebHooks `json:"hooks,omitempty"`
 	// StaticDir is an optional directory to serve static files from instead of embedded assets.
@@ -1152,7 +1148,6 @@ type rawConfig struct {
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
 		APIPrefix    string `yaml:"api_prefix"`
-		Theme        string `yaml:"theme"`
 		StaticDir    string `yaml:"static_dir"`
 		Hooks        struct {
 			Up struct {
@@ -1387,7 +1382,6 @@ func Parse(data []byte) (*Config, error) {
 	cfg.Web.Port = raw.Web.Port
 	cfg.Web.ExternalPort = raw.Web.ExternalPort
 	cfg.Web.APIPrefix = raw.Web.APIPrefix
-	cfg.Web.Theme = raw.Web.Theme
 	cfg.Web.StaticDir = raw.Web.StaticDir
 	cfg.Web.Hooks.Up.Command = raw.Web.Hooks.Up.Command
 	cfg.Web.Hooks.Up.Name = raw.Web.Hooks.Up.Name

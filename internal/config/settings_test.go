@@ -82,9 +82,8 @@ func TestConfigToSettings_RoundTrip(t *testing.T) {
 			{Name: "server2", Command: "cmd2"}, // no cwd, no tags
 		},
 		Web: WebConfig{
-			Host:  "0.0.0.0",
-			Port:  8080,
-			Theme: "v2",
+			Host: "0.0.0.0",
+			Port: 8080,
 		},
 	}
 
@@ -130,9 +129,6 @@ func TestConfigToSettings_RoundTrip(t *testing.T) {
 	}
 	if result.Web.Port != original.Web.Port {
 		t.Errorf("Web.Port = %d, want %d", result.Web.Port, original.Web.Port)
-	}
-	if result.Web.Theme != original.Web.Theme {
-		t.Errorf("Web.Theme = %q, want %q", result.Web.Theme, original.Web.Theme)
 	}
 }
 

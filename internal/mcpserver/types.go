@@ -136,7 +136,6 @@ type WebConfigInfo struct {
 	Port             int    `json:"port"`
 	ExternalPort     int    `json:"external_port"`
 	APIPrefix        string `json:"api_prefix,omitempty"`
-	Theme            string `json:"theme,omitempty"`
 	HasAuth          bool   `json:"has_auth"`
 	ExternalEnabled  bool   `json:"external_enabled"`
 	HasHooksUp       bool   `json:"has_hooks_up"`
@@ -288,7 +287,6 @@ func configToSafeOutput(cfg *config.Config) *ConfigInfo {
 		Port:         cfg.Web.Port,
 		ExternalPort: cfg.Web.ExternalPort,
 		APIPrefix:    cfg.Web.APIPrefix,
-		Theme:        cfg.Web.Theme,
 		HasAuth:      cfg.Web.Auth != nil && cfg.Web.Auth.Simple != nil,
 	}
 	if cfg.Web.Auth != nil && cfg.Web.Auth.Simple != nil {
