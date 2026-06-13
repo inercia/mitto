@@ -297,8 +297,15 @@ async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
 /**
  * WebSocket Hook with Per-Session WebSocket Support
  * Manages both global events WebSocket and per-session WebSockets
+ *
+ * @param {Object} [options]
+ * @param {Object} [options.onActiveSessionDeletedRef] - Ref whose `.current` is a
+ *   callback invoked with the deleted conversation's folder working dir when the
+ *   ACTIVE conversation is deleted. When set, it takes over post-delete
+ *   navigation (e.g. opening that folder's Tasks view) instead of switching to
+ *   another conversation. Falls back to the previous behavior when unset.
  */
-export function useWebSocket() {
+export function useWebSocket({ onActiveSessionDeletedRef } = {}) {
   // Initialize window.__debug for test observability.
   // Tests can read window.__debug.lastLoadEventsAfterSeq to assert the client
   // used its stored watermark (not 0) when sending load_events after reconnect.
@@ -1144,6 +1151,10 @@ export function useWebSocket() {
         archived: isArchived,
         archive_pending: isArchivePending,
         gc_suspended: data.info?.gc_suspended || false,
+        // Linked beads issue ID — sourced from the connected-message metadata or
+        // the stored session. Needed so the beads view can detect when a
+        // streaming conversation belongs to an issue (pulsing ring).
+        beads_issue: data.info?.beads_issue || storedSession?.beads_issue || "",
       };
     });
 
@@ -4170,6 +4181,17 @@ export function useWebSocket() {
 
       case "session_deleted": {
         const deletedId = msg.data.session_id;
+        // Resolve the deleted conversation's folder before removing it from
+        // local state, so that if it was the active conversation we can navigate
+        // to that folder's Tasks view (mitto-17d).
+        const deletedSessForFolder = (storedSessionsRef.current || []).find(
+          (s) => s.session_id === deletedId,
+        );
+        const deletedFolderWorkingDir = resolveFolderKey(
+          deletedSessForFolder,
+          storedSessionsRef.current || [],
+          deletedSessForFolder?.working_dir,
+        );
         setStoredSessions((prev) =>
           prev.filter((s) => s.session_id !== deletedId),
         );
@@ -4177,16 +4199,28 @@ export function useWebSocket() {
         setSessions((prev) => {
           const { [deletedId]: removed, ...rest } = prev;
           if (deletedId === currentId) {
-            const remainingStored = (storedSessionsRef.current || []).filter(
-              (s) => s.session_id !== deletedId && !s.archived,
-            );
-            if (remainingStored.length > 0) {
-              setActiveSessionId(remainingStored[0].session_id);
-            } else {
-              // Don't create a new session here - let the user do it manually
-              // or let the initiating window handle it. This prevents multiple
-              // windows from all creating new sessions simultaneously.
+            // Prefer navigating to the deleted conversation's folder Tasks view
+            // so the user stays in the same workspace context instead of being
+            // bounced to another conversation or an empty state (mitto-17d).
+            if (
+              onActiveSessionDeletedRef?.current &&
+              deletedFolderWorkingDir &&
+              deletedFolderWorkingDir !== "Unknown"
+            ) {
               setActiveSessionId(null);
+              onActiveSessionDeletedRef.current(deletedFolderWorkingDir);
+            } else {
+              const remainingStored = (storedSessionsRef.current || []).filter(
+                (s) => s.session_id !== deletedId && !s.archived,
+              );
+              if (remainingStored.length > 0) {
+                setActiveSessionId(remainingStored[0].session_id);
+              } else {
+                // Don't create a new session here - let the user do it manually
+                // or let the initiating window handle it. This prevents multiple
+                // windows from all creating new sessions simultaneously.
+                setActiveSessionId(null);
+              }
             }
           }
           return rest;
@@ -5349,8 +5383,30 @@ export function useWebSocket() {
         console.error("Failed to delete session:", err);
       }
 
-      // If we removed the active session, switch to another or set to null
+      // If we removed the active session, decide where to navigate.
       if (wasActiveSession) {
+        // Prefer navigating to the deleted conversation's folder Tasks (beads)
+        // view so the user stays in the same workspace context instead of being
+        // bounced to another conversation or an empty state (mitto-17d). The
+        // callback is wired by app.js to handleBeadsOpen; fall back to the
+        // previous switch-to-another-conversation behavior when it isn't set or
+        // the folder can't be resolved.
+        const folderWorkingDir = resolveFolderKey(
+          deletedSession,
+          storedSessionsRef.current || [],
+          deletedWorkingDir,
+        );
+        if (
+          onActiveSessionDeletedRef?.current &&
+          folderWorkingDir &&
+          folderWorkingDir !== "Unknown"
+        ) {
+          setActiveSessionId(null);
+          onActiveSessionDeletedRef.current(folderWorkingDir);
+          // Refresh the sidebar so it reflects the deletion.
+          await fetchStoredSessions();
+          return;
+        }
         // Fetch remaining sessions from server to get accurate list
         const remainingSessions = await fetchStoredSessions();
         if (remainingSessions && remainingSessions.length > 0) {

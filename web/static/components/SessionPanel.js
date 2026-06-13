@@ -990,7 +990,7 @@ export function SessionPanel({
                 ? html`<button
                     type="button"
                     class="text-sm font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline transition-colors cursor-pointer"
-                    onClick=${() => onOpenBeadsIssue(sessionInfo.beads_issue, sessionInfo.working_dir)}
+                    onClick=${() => onOpenBeadsIssue(sessionInfo.beads_issue, sessionInfo.working_dir, sessionId)}
                     title="Open beads issue ${sessionInfo.beads_issue}"
                   >${sessionInfo.beads_issue}</button>`
                 : html`<span class="text-sm font-mono">${sessionInfo.beads_issue}</span>`}

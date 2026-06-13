@@ -185,6 +185,12 @@ import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialo
 // =============================================================================
 
 function App() {
+  // Holds a callback (wired below, once useBeadsIntegration is set up) that
+  // useWebSocket invokes when the ACTIVE conversation is deleted, so the UI can
+  // navigate to that conversation's folder Tasks view instead of bouncing to
+  // another conversation or an empty state (mitto-17d). A ref avoids the
+  // hook-ordering problem: useWebSocket runs before handleBeadsOpen exists.
+  const onActiveSessionDeletedRef = useRef(null);
   const {
     connected,
     messages,
@@ -240,7 +246,7 @@ function App() {
     mcpTools,
     ensureResumed,
     isCreatingSession,
-  } = useWebSocket();
+  } = useWebSocket({ onActiveSessionDeletedRef });
 
   const { showToast, dismissToast, toasts } = useToast();
 
@@ -394,6 +400,7 @@ function App() {
     beadsSelectNonce,
     beadsCreateNonce,
     beadsIssueSessionMap,
+    beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,
     fetchBeadsListPromptsForWorkspace,
     handleRunBeadsPrompt,
@@ -401,15 +408,34 @@ function App() {
     handleBeadsOpen,
     handleBeadsCreate,
     handleOpenBeadsIssue,
+    handleReturnFromBeadsIssue,
   } = useBeadsIntegration({
     allSessions,
     workspaces,
     newSession,
     showToast,
+    switchSession,
     setMainView,
     setShowSidebar,
     setShowSidePanel,
+    setSidePanelTab,
   });
+
+  // Wire the active-conversation-deleted callback consumed by useWebSocket. When
+  // the active conversation is deleted (in this window or via a cross-window
+  // session_deleted broadcast), navigate to the deleted conversation's folder
+  // Tasks (beads) view so the user stays in the same workspace context instead
+  // of being bounced to another conversation or an empty state (mitto-17d).
+  useEffect(() => {
+    onActiveSessionDeletedRef.current = (folderWorkingDir) => {
+      if (folderWorkingDir && folderWorkingDir !== "Unknown") {
+        handleBeadsOpen(folderWorkingDir);
+        setShowSidePanel(false);
+      } else {
+        setMainView("conversation");
+      }
+    };
+  }, [handleBeadsOpen]);
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
@@ -1814,7 +1840,9 @@ function App() {
               onShowSidebar=${() => setShowSidebar(true)}
               onOpenConfig=${window.mittoIsExternal === true ? undefined : () => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
               issueSessionMap=${beadsIssueSessionMap}
+              issueStreamingSet=${beadsIssueStreamingSet}
               onOpenConversation=${handleSelectSession}
+              onReturnToConversation=${handleReturnFromBeadsIssue}
               initialSelectedIssueId=${beadsInitialIssueId}
               initialSelectNonce=${beadsSelectNonce}
               initialCreateNonce=${beadsCreateNonce}

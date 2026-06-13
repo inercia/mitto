@@ -429,6 +429,10 @@ export function computeAllSessions(activeSessions, storedSessions) {
         parent_session_id: s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)
         child_origin: s.child_origin || stored.child_origin || null,
+        // Preserve the linked beads issue ID — the active session object may not
+        // carry it, so fall back to the stored session. Needed for the beads
+        // view's per-issue pulsing ring (streaming-conversation matching).
+        beads_issue: s.beads_issue || stored.beads_issue || null,
         // For isWaitingForChildren: active session is authoritative.
         // Do NOT OR with stored.isWaitingForChildren — fetchStoredSessions() can
         // clobber storedSessions with API data that lacks this runtime field,
