@@ -3461,6 +3461,7 @@ retryAfterRestart:
 	// Done unconditionally so substitution works even with no processors configured.
 	// Best-effort: unavailable fields substitute to "".
 	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
+	var worktreeBranch, worktreeBaseBranch, worktreePath string
 	var childSessions []processors.ChildSession
 	var advancedSettings map[string]bool
 	if bs.store != nil && bs.persistedID != "" {
@@ -3470,6 +3471,9 @@ retryAfterRestart:
 			parentSessionID = sessionMeta.ParentSessionID
 			advancedSettings = sessionMeta.AdvancedSettings
 			beadsIssue = sessionMeta.BeadsIssue
+			worktreeBranch = sessionMeta.WorktreeBranch
+			worktreeBaseBranch = sessionMeta.WorktreeBaseBranch
+			worktreePath = sessionMeta.WorktreePath
 		}
 		// Resolve parent session name for @mitto:parent variable
 		if parentSessionID != "" {
@@ -3549,6 +3553,9 @@ retryAfterRestart:
 		ACPServer:              acpServer,
 		WorkspaceUUID:          bs.workspaceUUID,
 		BeadsIssue:             beadsIssue,
+		WorktreeBranch:         worktreeBranch,
+		WorktreeBaseBranch:     worktreeBaseBranch,
+		WorktreePath:           worktreePath,
 		AvailableACPServers:    bs.availableACPServers,
 		ChildSessions:          childSessions,
 		MCPToolNames:           mcpToolNames,

@@ -5,9 +5,16 @@ menus: prompts
 description: "Submit changes"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"
+enabledWhen: 'fileExists(".git/config") || fileExists(".git")'
 ---
 
 Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
+
+> **Worktree-isolated conversation:** if `@mitto:worktree_base_branch` is non-empty, this
+> conversation already runs on its own branch `@mitto:worktree_branch` (worktree at
+> `@mitto:worktree_path`), created from `@mitto:worktree_base_branch`. In that case **skip step 2**
+> (you are already on a feature branch) and use `@mitto:worktree_base_branch` as the PR base in
+> steps 3 and 5 instead of inferring it.
 
 ### 1. Check for Uncommitted Changes
 
@@ -18,6 +25,9 @@ git status --porcelain
 If uncommitted changes exist: inform user to commit first (use "Commit Changes" prompt), then stop.
 
 ### 2. Ensure Feature Branch
+
+> Skip this step entirely when `@mitto:worktree_base_branch` is set — the conversation's worktree
+> is already on its own branch.
 
 ```bash
 git branch --show-current
@@ -46,12 +56,16 @@ If PR exists: extract `base.ref`, `base.repo.full_name` (target repo), identify 
 
 #### 3c. If No PR, Infer Target
 
+If `@mitto:worktree_base_branch` is set, use it as the target branch — no inference needed.
+
+Otherwise:
+
 ```bash
 git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
 git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
 ```
 
-Priority: `upstream` → `origin` → tracking branch.
+Priority: `@mitto:worktree_base_branch` → `upstream` → `origin` → tracking branch.
 
 #### 3d. Confirm with User
 
@@ -79,7 +93,7 @@ Provide PR/MR URL.
 
 **No existing PR — With Mitto UI:**
 
-First, generate a PR title and description from the commits. Then present a form for the user to review and customize:
+First, generate a PR title and description from the commits. Then present a form for the user to review and customize. When `@mitto:worktree_base_branch` is set, pre-select it as the base branch:
 
 ```
 mitto_ui_form(self_id: "@mitto:session_id", title: "Create Pull Request", html: "
