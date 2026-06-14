@@ -1,0 +1,63 @@
+// Package git provides small helpers around the git CLI for managing
+// per-session worktrees. It shells out to the git binary using the same
+// `git -C <dir> ...` convention used elsewhere in the codebase and depends
+// on no external libraries.
+package git
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// IsGitRepo reports whether dir is inside a git working tree.
+// It swallows any error (missing git, not a repo, etc.) and returns false.
+func IsGitRepo(dir string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
+// AddWorktree creates a new worktree at worktreePath on a new branch.
+// It runs `git -C repoDir worktree add worktreePath -b branch`.
+func AddWorktree(ctx context.Context, repoDir, worktreePath, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "worktree", "add", worktreePath, "-b", branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RemoveWorktree force-removes the worktree at worktreePath.
+// It runs `git -C repoDir worktree remove -f worktreePath`.
+func RemoveWorktree(ctx context.Context, repoDir, worktreePath string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "worktree", "remove", "-f", worktreePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// DeleteBranch force-deletes the given branch.
+// It runs `git -C repoDir branch -D branch`.
+func DeleteBranch(ctx context.Context, repoDir, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "branch", "-D", branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git branch -D: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// BranchName returns the worktree branch name for a session ID.
+func BranchName(sessionID string) string {
+	return fmt.Sprintf("mitto-%s", sessionID)
+}

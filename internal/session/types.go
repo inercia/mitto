@@ -260,6 +260,12 @@ type Metadata struct {
 	// Reset to 0 on successful start. When it reaches ACPStartFailureThreshold,
 	// the session is auto-archived to prevent infinite retry loops.
 	ACPStartFailureCount int `json:"acp_start_failure_count,omitempty"`
+	// WorktreePath is the absolute path to the git worktree created for this session
+	// (empty if none).
+	WorktreePath string `json:"worktree_path,omitempty"`
+	// WorktreeBranch is the git branch name created for this session's worktree
+	// (empty if none).
+	WorktreeBranch string `json:"worktree_branch,omitempty"`
 }
 
 // ChildOrigin represents how a child conversation was created.

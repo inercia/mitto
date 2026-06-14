@@ -34,6 +34,9 @@ const (
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
 
+	// WorktreesDirName is the name of the worktrees subdirectory.
+	WorktreesDirName = "worktrees"
+
 	// ProcessorsDirName is the name of the processors subdirectory.
 	ProcessorsDirName = "processors"
 
@@ -293,6 +296,25 @@ func SessionsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, SessionsDirName), nil
+}
+
+// WorktreesDir returns the full path to the worktrees directory.
+func WorktreesDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, WorktreesDirName), nil
+}
+
+// SessionWorktreePath returns the worktree path for a session.
+// The format is {appdir}/worktrees/<session-id>.
+func SessionWorktreePath(sessionID string) (string, error) {
+	worktreesDir, err := WorktreesDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(worktreesDir, sessionID), nil
 }
 
 // ProcessorsDir returns the full path to the processors directory.
