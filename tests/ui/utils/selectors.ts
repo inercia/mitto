@@ -100,7 +100,7 @@ export const selectors = {
   dateSeparator: '.date-separator',
 
   // Message list — error bubble and retry button
-  errorMessageBubble: '.error-message-bubble',
+  errorMessageBubble: '.alert.alert-error',
   retryButton: 'button[title="Retry — resend the last prompt"]',
 } as const;
 

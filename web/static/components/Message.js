@@ -301,19 +301,13 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     );
     return html`
       <div class="message-enter flex justify-start mb-3">
-        <div class="flex items-center gap-2">
-          <div
-            class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl error-message-bubble rounded-bl-sm"
-          >
-            <div class="flex items-start gap-2">
-              <span>❌</span>
-              <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
-            </div>
-          </div>
+        <div role="alert" class="alert alert-error max-w-[85%] md:max-w-[75%]">
+          <span>❌</span>
+          <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
           ${onRetry &&
           html`<button
             type="button"
-            class="btn btn-ghost btn-sm btn-circle shrink-0 text-mitto-text-muted"
+            class="btn btn-ghost btn-sm btn-circle shrink-0"
             onClick=${onRetry}
             title="Retry — resend the last prompt"
           >

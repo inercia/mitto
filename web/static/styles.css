@@ -1753,23 +1753,6 @@ mitto-action {
 }
 
 /* =============================================================================
-   Error Message Bubble (dark theme default)
-   ============================================================================= */
-
-.error-message-bubble {
-  background: rgba(127, 29, 29, 0.3);
-  color: #fca5a5;
-  border: 1px solid #991b1b;
-}
-
-/* Light theme: dark red text on subtle red background */
-.light .error-message-bubble {
-  background: #fef2f2;
-  color: #991b1b;
-  border: 1px solid #fecaca;
-}
-
-/* =============================================================================
    Utility Classes
    ============================================================================= */
 
