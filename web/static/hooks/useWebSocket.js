@@ -1316,6 +1316,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   msg.data.worktree_base_commit ??
                   session.info?.worktree_base_commit ??
                   "",
+                // Repo root the worktree was created from. Drives sidebar grouping
+                // so worktree conversations appear under their project folder.
+                worktree_repo_dir:
+                  msg.data.worktree_repo_dir ??
+                  session.info?.worktree_repo_dir ??
+                  "",
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,

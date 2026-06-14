@@ -273,6 +273,12 @@ type Metadata struct {
 	// WorktreeBaseCommit is the commit SHA the worktree was created from.
 	// Empty if none. Used to compute the diff range for the flow-back step.
 	WorktreeBaseCommit string `json:"worktree_base_commit,omitempty"`
+	// WorktreeRepoDir is the absolute path to the main repository root the worktree
+	// was created from. Used for sidebar grouping and workspace association so the
+	// conversation appears under its project folder rather than the per-session
+	// worktree path (WorkingDir, which stays the worktree for file operations).
+	// Empty if none.
+	WorktreeRepoDir string `json:"worktree_repo_dir,omitempty"`
 }
 
 // ChildOrigin represents how a child conversation was created.

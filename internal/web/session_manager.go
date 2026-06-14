@@ -1876,6 +1876,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 			m.WorktreeBranch = worktreeBranch
 			m.WorktreeBaseBranch = worktreeBaseBranch
 			m.WorktreeBaseCommit = worktreeBaseCommit
+			m.WorktreeRepoDir = worktreeRepoDir
 		}); uErr != nil && sm.logger != nil {
 			sm.logger.Warn("Failed to persist worktree metadata",
 				"error", uErr, "session_id", bs.GetSessionID())

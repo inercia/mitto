@@ -431,6 +431,9 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			// Include worktree isolation fields so the UI can show the conversation's
 			// branch/base and offer a flow-back affordance (git+worktree only).
 			if meta.WorktreePath != "" {
+				// Self-heal the repo root for sessions created before the field existed
+				// so the sidebar groups this conversation under its project folder.
+				c.server.ensureWorktreeRepoDir(&meta)
 				data["worktree_path"] = meta.WorktreePath
 				data["worktree_branch"] = meta.WorktreeBranch
 				if meta.WorktreeBaseBranch != "" {
@@ -438,6 +441,9 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 				}
 				if meta.WorktreeBaseCommit != "" {
 					data["worktree_base_commit"] = meta.WorktreeBaseCommit
+				}
+				if meta.WorktreeRepoDir != "" {
+					data["worktree_repo_dir"] = meta.WorktreeRepoDir
 				}
 			}
 			if c.logger != nil {

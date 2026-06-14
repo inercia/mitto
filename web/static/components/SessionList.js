@@ -640,11 +640,17 @@ export function SessionList({
     // Get the session's ACP server (stored when session was created)
     const sessionAcpServer =
       session.acp_server || session.info?.acp_server || "";
+    // For worktree conversations, match the workspace by the repo root rather than
+    // the per-session worktree path so the badge/color resolves to the project.
+    const workspaceDir =
+      session.worktree_repo_dir ||
+      session.info?.worktree_repo_dir ||
+      workingDir;
     // Find the workspace matching both working_dir AND acp_server
     // This is important when multiple workspaces share the same folder but use different ACP servers
     const workspace = workspaces.find(
       (ws) =>
-        ws.working_dir === workingDir &&
+        ws.working_dir === workspaceDir &&
         (!sessionAcpServer || ws.acp_server === sessionAcpServer),
     );
     // Only the active session can have queued messages

@@ -282,6 +282,30 @@ func gitMainWorktreeRoot(reqDir string) string {
 	return filepath.Dir(commonDir)
 }
 
+// ensureWorktreeRepoDir self-heals the WorktreeRepoDir metadata field for worktree
+// sessions created before the field existed. When a session has a WorktreePath but no
+// WorktreeRepoDir, it derives the main repository root from the worktree and persists
+// it once. Best-effort: on any failure the field is left empty and the frontend falls
+// back to grouping by the worktree path. Mutates meta in place so the caller can use
+// the resolved value immediately.
+func (s *Server) ensureWorktreeRepoDir(meta *session.Metadata) {
+	if meta == nil || meta.WorktreePath == "" || meta.WorktreeRepoDir != "" {
+		return
+	}
+	repoDir := gitMainWorktreeRoot(meta.WorktreePath)
+	if repoDir == "" {
+		return
+	}
+	meta.WorktreeRepoDir = repoDir
+	if store := s.Store(); store != nil {
+		_ = store.UpdateMetadata(meta.SessionID, func(m *session.Metadata) {
+			if m.WorktreeRepoDir == "" {
+				m.WorktreeRepoDir = repoDir
+			}
+		})
+	}
+}
+
 // removeSessionWorktree removes a session's git worktree and its branch.
 // The main repo root is derived from the worktree itself (the worktree still
 // exists on disk at this point). All failures are best-effort and logged;
@@ -353,7 +377,12 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with periodic_enabled status and scheduling info
 	response := make([]SessionListResponse, len(sessions))
-	for i, meta := range sessions {
+	for i := range sessions {
+		// Self-heal worktree_repo_dir for sessions created before the field existed
+		// so the sidebar groups them under their project folder rather than the
+		// per-session worktree path.
+		s.ensureWorktreeRepoDir(&sessions[i])
+		meta := sessions[i]
 		response[i] = SessionListResponse{
 			Metadata:        meta,
 			PeriodicEnabled: false, // Default to false
