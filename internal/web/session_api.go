@@ -16,6 +16,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/git"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
@@ -279,6 +280,36 @@ func gitMainWorktreeRoot(reqDir string) string {
 		commonDir = filepath.Join(reqDir, commonDir)
 	}
 	return filepath.Dir(commonDir)
+}
+
+// removeSessionWorktree removes a session's git worktree and its branch.
+// The main repo root is derived from the worktree itself (the worktree still
+// exists on disk at this point). All failures are best-effort and logged;
+// startup recovery is the backstop for any orphans left behind.
+func (s *Server) removeSessionWorktree(worktreePath, worktreeBranch string) {
+	if worktreePath == "" {
+		return
+	}
+	repoRoot := gitMainWorktreeRoot(worktreePath)
+	if repoRoot == "" {
+		if s.logger != nil {
+			s.logger.Warn("Could not resolve main repo for worktree removal",
+				"worktree_path", worktreePath)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := git.RemoveWorktree(ctx, repoRoot, worktreePath); err != nil && s.logger != nil {
+		s.logger.Warn("Failed to remove worktree",
+			"error", err, "worktree_path", worktreePath)
+	}
+	if worktreeBranch != "" {
+		if err := git.DeleteBranch(ctx, repoRoot, worktreeBranch); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to delete worktree branch",
+				"error", err, "branch", worktreeBranch)
+		}
+	}
 }
 
 // SessionListResponse extends session.Metadata with additional runtime fields.
@@ -826,6 +857,16 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		}
 	}
 
+	// Capture worktree info before deletion so we can remove it afterwards.
+	// Policy: Delete removes the worktree + branch; Archive preserves them.
+	// Children share the parent's worktree (their metadata carries no worktree
+	// path), so removal happens once, driven by the parent's metadata.
+	var worktreePath, worktreeBranch string
+	if meta, mErr := store.GetMetadata(sessionID); mErr == nil {
+		worktreePath = meta.WorktreePath
+		worktreeBranch = meta.WorktreeBranch
+	}
+
 	// Delete from store (cascade-deletes all children recursively)
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
@@ -837,6 +878,11 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		}
 		http.Error(w, "Failed to delete session", http.StatusInternalServerError)
 		return
+	}
+
+	// Remove the session worktree (if any) now that the session is gone.
+	if worktreePath != "" {
+		s.removeSessionWorktree(worktreePath, worktreeBranch)
 	}
 
 	// Broadcast deletions to all connected WebSocket clients

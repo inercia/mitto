@@ -416,9 +416,15 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	// Initialize activity timestamp
 	bs.lastActivityAt.Store(time.Now().UnixNano())
 
-	// Create recorder for persistence
+	// Create recorder for persistence. Honor a caller-supplied PersistedID so the
+	// session can reuse an ID that was pre-generated before construction (e.g. to
+	// derive a git worktree path); otherwise generate a fresh ID.
 	if cfg.Store != nil {
-		bs.recorder = session.NewRecorder(cfg.Store)
+		if cfg.PersistedID != "" {
+			bs.recorder = session.NewRecorderWithID(cfg.Store, cfg.PersistedID)
+		} else {
+			bs.recorder = session.NewRecorder(cfg.Store)
+		}
 		bs.persistedID = bs.recorder.SessionID()
 		bs.store = cfg.Store
 		// Set pruning configuration so the recorder auto-prunes after each event

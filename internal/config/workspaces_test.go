@@ -407,3 +407,64 @@ func TestLoadWorkspacesFromFile_OldFormatIgnored(t *testing.T) {
 		t.Errorf("WorkingDir = %q, want %q", workspaces[0].WorkingDir, "/proj1")
 	}
 }
+
+// ---- Worktree enable/disable resolution ----
+
+func TestResolveWorktreesEnabled(t *testing.T) {
+	bp := func(v bool) *bool { return &v }
+
+	cases := []struct {
+		name         string
+		folder       *bool
+		global       *bool
+		gitAvailable bool
+		want         bool
+	}{
+		// Non-git folders always resolve to false, regardless of config.
+		{"non-git default", nil, nil, false, false},
+		{"non-git folder-on", bp(true), nil, false, false},
+		{"non-git global-on", nil, bp(true), false, false},
+		{"non-git both-on", bp(true), bp(true), false, false},
+
+		// Default is ON when a worktree is available and nothing is configured.
+		{"git default-on", nil, nil, true, true},
+
+		// Global setting applies when no per-folder override is set.
+		{"git global-on", nil, bp(true), true, true},
+		{"git global-off", nil, bp(false), true, false},
+
+		// Per-folder override wins over the global setting in both directions.
+		{"git folder-on beats global-off", bp(true), bp(false), true, true},
+		{"git folder-off beats global-on", bp(false), bp(true), true, false},
+
+		// Per-folder override wins over the default when global is unset.
+		{"git folder-off beats default", bp(false), nil, true, false},
+		{"git folder-on with default", bp(true), nil, true, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveWorktreesEnabled(tc.folder, tc.global, tc.gitAvailable); got != tc.want {
+				t.Errorf("ResolveWorktreesEnabled(%v, %v, %v) = %v, want %v",
+					tc.folder, tc.global, tc.gitAvailable, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestConversationsConfig_GetWorktreesEnabled verifies nil-safety and passthrough.
+func TestConversationsConfig_GetWorktreesEnabled(t *testing.T) {
+	var nilCfg *ConversationsConfig
+	if nilCfg.GetWorktreesEnabled() != nil {
+		t.Errorf("nil receiver should return nil")
+	}
+
+	if (&ConversationsConfig{}).GetWorktreesEnabled() != nil {
+		t.Errorf("unset field should return nil")
+	}
+
+	v := true
+	if got := (&ConversationsConfig{WorktreesEnabled: &v}).GetWorktreesEnabled(); got == nil || *got != true {
+		t.Errorf("GetWorktreesEnabled() = %v, want pointer to true", got)
+	}
+}
