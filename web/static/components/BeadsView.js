@@ -339,11 +339,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   }, [onClose]);
 
   const handleSave = useCallback(async () => {
-    if (!title.trim()) return;
+    if (!description.trim()) return;
     setSubmitting(true);
     try {
-      const body = { working_dir: workingDir, title: title.trim(), type, priority };
-      if (description.trim()) body.description = description.trim();
+      const body = { working_dir: workingDir, type, priority, description: description.trim() };
+      if (title.trim()) body.title = title.trim();
       const res = await secureFetch(apiUrl("/api/beads/create"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -919,12 +919,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <legend class="fieldset-legend">Issue</legend>
 
               <div>
-                <label class=${labelClass} for="new-issue-title">Title <span class="text-red-400">*</span></label>
+                <label class=${labelClass} for="new-issue-title">Title</label>
                 <input
                   id="new-issue-title"
                   type="text"
                   class=${inputClass}
-                  placeholder="Issue title"
+                  placeholder="Issue title (optional — auto-generated from description)"
                   value=${title}
                   onInput=${e => setTitle(e.target.value)}
                   disabled=${submitting}
@@ -962,12 +962,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               </div>
 
               <div class="mt-3">
-                <label class=${labelClass} for="new-issue-desc">Description</label>
+                <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
                 <textarea
                   id="new-issue-desc"
                   class="${textareaClass} resize-none"
                   rows="6"
-                  placeholder="Optional description…"
+                  placeholder="Description (required)"
                   value=${description}
                   onInput=${e => setDescription(e.target.value)}
                   disabled=${submitting}
@@ -1297,7 +1297,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           <button
             type="button"
             onClick=${handleSave}
-            disabled=${!title.trim() || submitting}
+            disabled=${!description.trim() || submitting}
             class="btn btn-primary btn-sm"
           >
             ${submitting && html`<span class="loading loading-spinner w-4 h-4"></span>`}
@@ -1589,22 +1589,50 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   }, []);
 
   // Auto-select an issue when the view is opened focused on one (e.g. via the
-  // conversation properties panel's linked-issue link). We apply once per nonce
-  // — so re-opening the same issue re-selects it — and wait until the list has
-  // loaded so the row data is available.
+  // conversation properties panel's linked-issue link). Applied once per nonce
+  // so re-opening the same issue re-selects it. To avoid making the user wait
+  // for the full issue list before the detail panel appears, we open the panel
+  // as soon as we have the issue: instantly from the already-loaded list when
+  // present, otherwise via a single `/api/beads/show` fetch for just that issue
+  // (the list keeps loading in the background to back the view and the
+  // dependency picker). The nonce is consumed synchronously so the effect does
+  // not re-fire — and re-fetch — on every background list refresh.
   const appliedSelectNonceRef = useRef(0);
   useEffect(() => {
-    if (!initialSelectedIssueId) return;
+    if (!initialSelectedIssueId || !workingDir) return;
     if (initialSelectNonce === appliedSelectNonceRef.current) return;
-    if (!issues || issues.length === 0) return;
-    const match = issues.find((i) => i.id === initialSelectedIssueId);
-    if (match) {
+    appliedSelectNonceRef.current = initialSelectNonce;
+
+    // Fast path: the list is already loaded and carries this issue's row.
+    const existing = issues.find((i) => i.id === initialSelectedIssueId);
+    if (existing) {
       setIsCreating(false);
-      setSelectedIssue(match);
+      setSelectedIssue(existing);
       openedFromConversationRef.current = true;
-      appliedSelectNonceRef.current = initialSelectNonce;
+      return undefined;
     }
-  }, [initialSelectedIssueId, initialSelectNonce, issues]);
+
+    // Cold open: fetch just this one issue so the panel opens immediately.
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(
+          apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(initialSelectedIssueId),
+        );
+        const respData = await readBeadsResponse(res);
+        if (cancelled || !res.ok || respData.error) return;
+        const issueObj = Array.isArray(respData) ? respData[0] : respData;
+        if (issueObj && issueObj.id) {
+          setIsCreating(false);
+          setSelectedIssue(issueObj);
+          openedFromConversationRef.current = true;
+        }
+      } catch (_err) {
+        // Ignore: the background list load may still surface the issue's row.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [initialSelectedIssueId, initialSelectNonce, workingDir, issues]);
 
   // Open the side panel in "create" mode for a brand-new issue.
   const openCreate = useCallback(() => {

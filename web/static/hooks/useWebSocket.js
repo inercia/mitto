@@ -299,13 +299,14 @@ async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
  * Manages both global events WebSocket and per-session WebSockets
  *
  * @param {Object} [options]
- * @param {Object} [options.onActiveSessionDeletedRef] - Ref whose `.current` is a
- *   callback invoked with the deleted conversation's folder working dir when the
- *   ACTIVE conversation is deleted. When set, it takes over post-delete
- *   navigation (e.g. opening that folder's Tasks view) instead of switching to
- *   another conversation. Falls back to the previous behavior when unset.
+ * @param {Object} [options.onActiveSessionRemovedRef] - Ref whose `.current` is a
+ *   callback invoked with the removed conversation's folder working dir when the
+ *   ACTIVE conversation is removed from view (deleted or archived). When set, it
+ *   takes over post-removal navigation (e.g. opening that folder's Tasks view)
+ *   instead of switching to another conversation. Falls back to the previous
+ *   behavior when unset.
  */
-export function useWebSocket({ onActiveSessionDeletedRef } = {}) {
+export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Initialize window.__debug for test observability.
   // Tests can read window.__debug.lastLoadEventsAfterSeq to assert the client
   // used its stored watermark (not 0) when sending load_events after reconnect.
@@ -3954,18 +3955,41 @@ export function useWebSocket({ onActiveSessionDeletedRef } = {}) {
             },
           };
         });
-        // If the active session was just archived, switch to another non-archived session.
+        // If the active session was just archived, prefer navigating to that
+        // conversation's folder Tasks (beads) view so the user stays in the same
+        // workspace context instead of being bounced to another conversation
+        // (mitto-17d). The callback is wired by app.js to handleBeadsOpen; fall
+        // back to switching to another non-archived conversation when it isn't
+        // set or the folder can't be resolved. (Same-window archives navigate
+        // synchronously in archiveSession; this covers cross-window broadcasts.)
         if (
           msg.data.archived &&
           msg.data.session_id === activeSessionIdRef.current
         ) {
-          const remaining = (storedSessionsRef.current || []).filter(
-            (s) => s.session_id !== msg.data.session_id && !s.archived,
+          const archivedSess = (storedSessionsRef.current || []).find(
+            (s) => s.session_id === msg.data.session_id,
           );
-          if (remaining.length > 0) {
-            setActiveSessionId(remaining[0].session_id);
-          } else {
+          const archivedFolderWorkingDir = resolveFolderKey(
+            archivedSess,
+            storedSessionsRef.current || [],
+            archivedSess?.working_dir,
+          );
+          if (
+            onActiveSessionRemovedRef?.current &&
+            archivedFolderWorkingDir &&
+            archivedFolderWorkingDir !== "Unknown"
+          ) {
             setActiveSessionId(null);
+            onActiveSessionRemovedRef.current(archivedFolderWorkingDir);
+          } else {
+            const remaining = (storedSessionsRef.current || []).filter(
+              (s) => s.session_id !== msg.data.session_id && !s.archived,
+            );
+            if (remaining.length > 0) {
+              setActiveSessionId(remaining[0].session_id);
+            } else {
+              setActiveSessionId(null);
+            }
           }
         }
         break;
@@ -4203,12 +4227,12 @@ export function useWebSocket({ onActiveSessionDeletedRef } = {}) {
             // so the user stays in the same workspace context instead of being
             // bounced to another conversation or an empty state (mitto-17d).
             if (
-              onActiveSessionDeletedRef?.current &&
+              onActiveSessionRemovedRef?.current &&
               deletedFolderWorkingDir &&
               deletedFolderWorkingDir !== "Unknown"
             ) {
               setActiveSessionId(null);
-              onActiveSessionDeletedRef.current(deletedFolderWorkingDir);
+              onActiveSessionRemovedRef.current(deletedFolderWorkingDir);
             } else {
               const remainingStored = (storedSessionsRef.current || []).filter(
                 (s) => s.session_id !== deletedId && !s.archived,
@@ -5341,6 +5365,30 @@ export function useWebSocket({ onActiveSessionDeletedRef } = {}) {
           },
         };
       });
+      // If the active conversation was just archived, navigate to its folder
+      // Tasks (beads) view so the user stays in the same workspace context
+      // instead of being bounced to another conversation (mitto-17d). Mirrors
+      // removeSession; the session_archived broadcast covers cross-window. When
+      // the callback isn't set or the folder can't be resolved, the broadcast
+      // handler's fallback takes over (active session is left unchanged here).
+      if (archived && sessionId === activeSessionIdRef.current) {
+        const archivedSess = (storedSessionsRef.current || []).find(
+          (s) => s.session_id === sessionId,
+        );
+        const folderWorkingDir = resolveFolderKey(
+          archivedSess,
+          storedSessionsRef.current || [],
+          archivedSess?.working_dir,
+        );
+        if (
+          onActiveSessionRemovedRef?.current &&
+          folderWorkingDir &&
+          folderWorkingDir !== "Unknown"
+        ) {
+          setActiveSessionId(null);
+          onActiveSessionRemovedRef.current(folderWorkingDir);
+        }
+      }
     } catch (err) {
       console.error("Failed to archive/unarchive session:", err);
     }
@@ -5397,12 +5445,12 @@ export function useWebSocket({ onActiveSessionDeletedRef } = {}) {
           deletedWorkingDir,
         );
         if (
-          onActiveSessionDeletedRef?.current &&
+          onActiveSessionRemovedRef?.current &&
           folderWorkingDir &&
           folderWorkingDir !== "Unknown"
         ) {
           setActiveSessionId(null);
-          onActiveSessionDeletedRef.current(folderWorkingDir);
+          onActiveSessionRemovedRef.current(folderWorkingDir);
           // Refresh the sidebar so it reflects the deletion.
           await fetchStoredSessions();
           return;

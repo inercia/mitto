@@ -980,6 +980,7 @@ export function setBeadsFilters(filters) {
 // by default; only the epics the user explicitly collapses are persisted.
 
 const BEADS_GROUPING_KEY = "mitto_beads_grouping";
+const DENSITY_KEY = "mitto_conversation_density";
 
 const DEFAULT_BEADS_GROUPING = { enabled: true, collapsedEpics: [] };
 
@@ -1017,5 +1018,38 @@ export function setBeadsGrouping(state) {
     localStorage.setItem(BEADS_GROUPING_KEY, JSON.stringify(toStore));
   } catch (e) {
     console.warn("Failed to save Beads grouping to localStorage:", e);
+  }
+}
+
+/**
+ * Get the current conversation density mode from localStorage.
+ * @returns {'condensed' | 'comfortable'} The current density mode
+ */
+export function getDensity() {
+  try {
+    const value = localStorage.getItem(DENSITY_KEY);
+    if (value === "condensed" || value === "comfortable") {
+      return value;
+    }
+    return "condensed";
+  } catch (e) {
+    console.warn("Failed to read density from localStorage:", e);
+    return "condensed";
+  }
+}
+
+/**
+ * Save the conversation density mode to localStorage.
+ * @param {'condensed' | 'comfortable'} mode - The density mode to save
+ */
+export function setDensity(mode) {
+  try {
+    if (mode === "condensed" || mode === "comfortable") {
+      localStorage.setItem(DENSITY_KEY, mode);
+    } else {
+      localStorage.removeItem(DENSITY_KEY);
+    }
+  } catch (e) {
+    console.warn("Failed to save density to localStorage:", e);
   }
 }

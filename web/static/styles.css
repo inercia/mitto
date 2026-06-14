@@ -987,12 +987,20 @@ a.mailto-link:hover {
   background: #2563eb;
 }
 
-/* Positioning + pulse animation only; daisyUI .status provides the
-   circular shape, size, and theme-aware color (status-warning). */
+/* Positioning, circular shape/size, and pulse animation; daisyUI .badge
+   provides the theme-aware color (badge-warning). The shape/size overrides
+   below keep the empty badge a small dot instead of a pill. */
 .new-messages-indicator {
   position: absolute;
   top: -2px;
   right: -2px;
+  width: 0.5rem;
+  height: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 9999px;
   animation: pulse-indicator 1.5s ease-in-out infinite;
   will-change: opacity, transform;
 }
@@ -1268,6 +1276,15 @@ a.mailto-link:hover {
   /* Prevent the browser's own pull-to-reload (Chrome/Android) and the iOS
      rubber-band chain from firing while our pull-to-refresh gesture is active. */
   overscroll-behavior-y: contain;
+  /* Force a stable GPU backing layer for this composited scroller. When the
+     detail panel is open it stacks a translucent fixed backdrop
+     (BeadsDetailPanel: fixed inset-0 bg-black/50) plus the scoped drawer's
+     transparent drawer-overlay (absolute inset-0) directly over this list. In
+     WKWebView/Safari, moving the pointer over that overlay otherwise drops this
+     scroll layer's backing store and the list area paints blank. Promoting it
+     keeps it repainting correctly under the overlays. Safe: nothing
+     fixed/absolute is positioned relative to this element. */
+  transform: translateZ(0);
 }
 
 .beads-table-scroll::-webkit-scrollbar {

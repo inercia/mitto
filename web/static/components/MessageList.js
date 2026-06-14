@@ -85,7 +85,8 @@ export function MessageList({
           ${messages.length === 0 &&
           !hasMoreMessages &&
           html`
-            <div class="flex items-center justify-center h-full">
+            <div class="hero h-full">
+              <div class="hero-content">
               <div class="text-center text-mitto-text-muted">
                 <img src="./favicon.png" alt="Mitto" class="w-24 h-24 mb-6 opacity-30 mx-auto" />
                 <p class="text-2xl font-medium text-mitto-text-secondary mb-4">
@@ -146,6 +147,7 @@ export function MessageList({
                     Connecting to AI agent...
                   </p>
                 `}
+              </div>
               </div>
             </div>
           `}
@@ -261,13 +263,15 @@ export function MessageList({
         <div class="scroll-to-bottom-wrapper">
           <button
             onClick=${() => onScrollToBottom(true)}
-            class="scroll-to-bottom-btn ${hasNewMessages ? "has-new" : ""}"
+            class="btn btn-circle scroll-to-bottom-btn ${hasNewMessages
+              ? "has-new"
+              : ""}"
             title="Scroll to bottom"
           >
             <${ArrowDownIcon} className="w-5 h-5" />
             ${hasNewMessages &&
             html` <span
-              class="new-messages-indicator status status-warning"
+              class="new-messages-indicator badge badge-warning badge-xs"
             ></span> `}
           </button>
         </div>

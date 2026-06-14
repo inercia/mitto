@@ -2,7 +2,7 @@
 // Right-click menus with viewport-aware positioning and hover-flyout submenus.
 // Shared by the conversation/group menus (app.js) and the Beads issue list.
 
-const { html, useState, useEffect, useLayoutEffect, useRef, useMemo, render } =
+const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
 import { ChevronRightIcon } from "./Icons.js";
@@ -56,7 +56,10 @@ function ContextMenuItem({ item, onClose }) {
       const submenuWidth = 180;
       // Cap the estimate so long submenus (e.g. the full issue list) pin to the
       // top of the viewport and scroll instead of overflowing off-screen.
-      const submenuHeight = Math.min(item.submenu.length * 38 + 8, window.innerHeight * 0.6);
+      const submenuHeight = Math.min(
+        item.submenu.length * 38 + 8,
+        window.innerHeight * 0.6,
+      );
       // Prefer opening to the right; flip to the left if it would overflow
       let left = rect.right - 4;
       if (left + submenuWidth > window.innerWidth) {
@@ -107,7 +110,10 @@ function ContextMenuItem({ item, onClose }) {
           >
             ${item.submenu.map(
               (sub) => html`
-                <li key=${sub.label} class="${sub.disabled ? "menu-disabled" : ""}">
+                <li
+                  key=${sub.label}
+                  class="${sub.disabled ? "menu-disabled" : ""}"
+                >
                   <button
                     onClick=${(e) => {
                       e.stopPropagation();
@@ -119,7 +125,8 @@ function ContextMenuItem({ item, onClose }) {
                     disabled=${sub.disabled}
                     class="${sub.danger ? "text-error" : ""}"
                   >
-                    ${sub.icon && html`<span class="w-4 h-4">${sub.icon}</span>`}
+                    ${sub.icon &&
+                    html`<span class="w-4 h-4">${sub.icon}</span>`}
                     ${sub.label}
                   </button>
                 </li>
@@ -153,6 +160,7 @@ function ContextMenuItem({ item, onClose }) {
 
 export function ContextMenu({ x, y, items, onClose }) {
   const menuRef = useRef(null);
+  const [position, setPosition] = useState({ x, y });
 
   // Close menu when clicking outside - delay to avoid catching the click that opened the menu
   useEffect(() => {
@@ -178,34 +186,40 @@ export function ContextMenu({ x, y, items, onClose }) {
     };
   }, [onClose]);
 
-  // Calculate adjusted position synchronously using useMemo
-  // This avoids the useState + useEffect anti-pattern that causes the menu
-  // to not appear on first render (see 28-anti-patterns-ui.md)
-  const position = useMemo(() => {
-    // On first render, menuRef.current is null - use raw position
-    if (!menuRef.current) {
-      return { x, y };
-    }
-    // Menu exists - calculate adjusted position to stay within viewport
-    const rect = menuRef.current.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+  // Clamp the menu inside the viewport once it (and its current items) are laid
+  // out. useLayoutEffect runs synchronously BEFORE paint, so the correction is
+  // invisible — no position jump (the failure mode of the useEffect approach)
+  // and no stale measurement (the failure mode of useMemo keyed on a ref, which
+  // never recomputes because refs don't trigger re-renders). Re-runs when the
+  // anchor moves or the item count changes, e.g. conversation prompts that load
+  // asynchronously and grow the menu after it has already opened.
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
     let newX = x;
     let newY = y;
-    if (x + rect.width > viewportWidth) {
-      newX = viewportWidth - rect.width - 8;
+    if (newX + rect.width > window.innerWidth) {
+      newX = window.innerWidth - rect.width - margin;
     }
-    if (y + rect.height > viewportHeight) {
-      newY = viewportHeight - rect.height - 8;
+    if (newY + rect.height > window.innerHeight) {
+      newY = window.innerHeight - rect.height - margin;
     }
-    return { x: newX, y: newY };
-  }, [x, y, menuRef.current]);
+    // Never push the top-left off-screen; menus taller than the viewport pin to
+    // the top edge and scroll (max-h + overflow) instead of spilling upward.
+    newX = Math.max(margin, newX);
+    newY = Math.max(margin, newY);
+    setPosition((prev) =>
+      prev.x === newX && prev.y === newY ? prev : { x: newX, y: newY },
+    );
+  }, [x, y, items.length]);
 
   return html`
     <${Portal}>
       <ul
         ref=${menuRef}
-        class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px]"
+        class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px] max-h-[95vh] overflow-y-auto flex-nowrap"
         style="left: ${position.x}px; top: ${position.y}px;"
       >
         ${items.map(

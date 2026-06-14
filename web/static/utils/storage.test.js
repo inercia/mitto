@@ -17,7 +17,11 @@ import {
   setCategoryFilter,
   DEFAULT_CATEGORY_FILTER,
   migrateLegacyTabStorage,
+  getDensity,
+  setDensity,
 } from "./storage.js";
+
+const DENSITY_KEY = "mitto_conversation_density";
 
 // Simple localStorage mock
 let mockStore = {};
@@ -446,5 +450,59 @@ describe("migrateLegacyTabStorage", () => {
     // Second call should not touch anything
     migrateLegacyTabStorage();
     expect(mockStore["mitto_conversation_filter_tab"]).toBe("periodic");
+  });
+});
+
+// =============================================================================
+// getDensity Tests
+// =============================================================================
+
+describe("getDensity", () => {
+  test("returns 'condensed' when localStorage is empty (default)", () => {
+    expect(getDensity()).toBe("condensed");
+  });
+
+  test("returns 'condensed' when localStorage has 'condensed'", () => {
+    localStorageMock.setItem(DENSITY_KEY, "condensed");
+    expect(getDensity()).toBe("condensed");
+  });
+
+  test("returns 'comfortable' when localStorage has 'comfortable'", () => {
+    localStorageMock.setItem(DENSITY_KEY, "comfortable");
+    expect(getDensity()).toBe("comfortable");
+  });
+
+  test("returns 'condensed' for invalid values (default)", () => {
+    localStorageMock.setItem(DENSITY_KEY, "invalid");
+    expect(getDensity()).toBe("condensed");
+  });
+});
+
+// =============================================================================
+// setDensity Tests
+// =============================================================================
+
+describe("setDensity", () => {
+  test("persists 'comfortable' to localStorage", () => {
+    setDensity("comfortable");
+    expect(mockStore[DENSITY_KEY]).toBe("comfortable");
+  });
+
+  test("persists 'condensed' to localStorage", () => {
+    setDensity("condensed");
+    expect(mockStore[DENSITY_KEY]).toBe("condensed");
+  });
+
+  test("removes the stored value for invalid input", () => {
+    localStorageMock.setItem(DENSITY_KEY, "comfortable");
+    setDensity("invalid");
+    expect(mockStore[DENSITY_KEY]).toBeUndefined();
+  });
+
+  test("round-trips through getDensity (persists across reads)", () => {
+    setDensity("comfortable");
+    expect(getDensity()).toBe("comfortable");
+    setDensity("condensed");
+    expect(getDensity()).toBe("condensed");
   });
 });

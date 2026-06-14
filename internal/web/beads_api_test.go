@@ -1,14 +1,59 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 )
+
+// beadsCreateParams is a minimal helper to capture title from stubBeadsClient.
+type beadsCreateParams struct {
+	title string
+}
+
+// stubBeadsClient implements beads.Client for unit tests.
+// All methods except Create are no-ops that return nil / zero values.
+type stubBeadsClient struct {
+	createFn func(dir string, p beadsCreateParams) ([]byte, error)
+}
+
+func (c *stubBeadsClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
+func (c *stubBeadsClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (c *stubBeadsClient) Create(_ context.Context, dir string, p beads.CreateParams) ([]byte, error) {
+	if c.createFn != nil {
+		return c.createFn(dir, beadsCreateParams{title: p.Title})
+	}
+	return []byte(`{}`), nil
+}
+func (c *stubBeadsClient) Delete(_ context.Context, _, _ string) error       { return nil }
+func (c *stubBeadsClient) Cleanup(_ context.Context, _ string) (int, error)  { return 0, nil }
+func (c *stubBeadsClient) SetStatus(_ context.Context, _, _, _ string) error { return nil }
+func (c *stubBeadsClient) Update(_ context.Context, _ string, _ beads.UpdateParams) error {
+	return nil
+}
+func (c *stubBeadsClient) Comment(_ context.Context, _, _, _ string) error { return nil }
+func (c *stubBeadsClient) Dep(_ context.Context, _ string, _ beads.DepParams) error {
+	return nil
+}
+func (c *stubBeadsClient) ConfigShow(_ context.Context, _ string) (map[string]string, error) {
+	return nil, nil
+}
+func (c *stubBeadsClient) ConfigSet(_ context.Context, _, _, _ string) error   { return nil }
+func (c *stubBeadsClient) ConfigUnset(_ context.Context, _, _ string) error    { return nil }
+func (c *stubBeadsClient) EnsureInitialized(_ context.Context, _ string) error { return nil }
+func (c *stubBeadsClient) Sync(_ context.Context, _, _, _ string) (string, error) {
+	return "", nil
+}
 
 // setupMittoDir points MITTO_DIR at a fresh temp dir and resets the appdir
 // cache so folders.json reads/writes are isolated per test.
@@ -153,10 +198,66 @@ func TestHandleBeadsCreate_InvalidBody(t *testing.T) {
 	}
 }
 
-func TestHandleBeadsCreate_MissingTitle(t *testing.T) {
+func TestHandleBeadsCreate_BothEmpty(t *testing.T) {
+	// Both title and description empty (or whitespace-only) → 400.
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
 		strings.NewReader(`{"working_dir":"/test/workspace","title":"   "}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(w.Body.String(), "title or description is required") {
+		t.Errorf("body = %q, want 'title or description is required'", w.Body.String())
+	}
+}
+
+func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T) {
+	// Empty title + non-empty description: GenerateQuickTitle fallback is used
+	// (no auxiliaryManager wired), and the request reaches bd.Create → 200.
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
+	})
+
+	// Capture the title that was passed to bd.Create.
+	var capturedTitle string
+	mock := &stubBeadsClient{
+		createFn: func(_ string, p beadsCreateParams) ([]byte, error) {
+			capturedTitle = p.title
+			return []byte(`{}`), nil
+		},
+	}
+
+	s := &Server{sessionManager: sm, beads: mock}
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
+		strings.NewReader(`{"working_dir":"/test/workspace","title":"","description":"Fix the authentication bug in the login flow"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsCreate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if capturedTitle == "" {
+		t.Error("expected a non-empty title to be passed to bd.Create")
+	}
+	// The quick-title fallback should derive something meaningful from the description.
+	if capturedTitle == "New Issue" {
+		// Only acceptable if GenerateQuickTitle returned ""; log but don't fail hard.
+		t.Logf("note: capturedTitle=%q (last-resort fallback used)", capturedTitle)
+	}
+}
+
+func TestHandleBeadsCreate_EmptyTitleNoDescriptionWhitespace_Rejected(t *testing.T) {
+	// Explicitly: only description whitespace → both empty → 400.
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
+		strings.NewReader(`{"working_dir":"/test/workspace","title":"","description":"   "}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

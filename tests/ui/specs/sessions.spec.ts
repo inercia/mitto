@@ -1,4 +1,9 @@
-import { test, expect } from "../fixtures/test-fixtures";
+import { test, testWithCleanup, expect } from "../fixtures/test-fixtures";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Session management tests for Mitto Web UI.
@@ -135,4 +140,82 @@ test.describe("Session API", () => {
     const session = await response.json();
     expect(session.session_id).toBeTruthy();
   });
+});
+
+/**
+ * Active-conversation removal navigation (mitto-17d).
+ *
+ * When the ACTIVE conversation is removed from view, the UI switches to that
+ * conversation's folder Tasks (beads) view so the user stays in the same
+ * workspace context instead of being bounced to another conversation or an
+ * empty state. This covers the archive path (the delete path shares the same
+ * onActiveSessionRemoved callback wiring in useWebSocket).
+ *
+ * The Beads backend shells out to the external `bd` binary, which is not
+ * guaranteed in CI, so /api/beads/list is mocked with an empty list — the test
+ * only asserts that the Tasks view for the right folder mounts.
+ */
+const projectRoot = path.resolve(__dirname, "../../..");
+const WORKSPACE_ALPHA = path.join(
+  projectRoot,
+  "tests/fixtures/workspaces/project-alpha",
+);
+const AGENT_NAME = "mock-acp";
+
+testWithCleanup.describe("Active conversation removal opens the folder Tasks view", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl }) => {
+    // Mock the beads list so the Tasks view renders without the external `bd`
+    // binary; an empty list is enough to confirm the view mounted.
+    await page.route("**/api/beads/list**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
+
+    // Ensure the project-alpha workspace exists so its folder Tasks view resolves.
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+  });
+
+  testWithCleanup(
+    "archiving the active conversation switches to that folder's Tasks view",
+    async ({ page, request, apiUrl, helpers, timeouts }) => {
+      // Seed a conversation in project-alpha and make it the active conversation.
+      const createResp = await request.post(apiUrl("/api/sessions"), {
+        data: { name: `Archive Nav ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+      });
+      expect(createResp.ok()).toBeTruthy();
+      const created = await createResp.json();
+      const sessionId = created.session_id || created.id;
+      expect(sessionId).toBeTruthy();
+
+      await helpers.navigateAndWait(page);
+      await helpers.navigateToSession(page, sessionId);
+
+      // Open the active conversation's context menu and click Archive.
+      const sessionItem = page
+        .locator(`[data-session-id="${sessionId}"]`)
+        .first();
+      await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
+      await sessionItem.click({ button: "right" });
+
+      const menu = page.locator(".menu.fixed.z-50.shadow-xl").first();
+      await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
+      await menu
+        .getByRole("button", { name: "Archive", exact: true })
+        .click();
+
+      // The UI navigates to the archived conversation's folder Tasks (beads)
+      // view (mitto-17d). The BeadsView header is unique to that view and is
+      // scoped to the folder basename, so it confirms both that we left the
+      // conversation view and that we opened the correct folder's Tasks.
+      const beadsHeader = page
+        .locator("span.text-lg.flex-1")
+        .filter({ hasText: "project-alpha" });
+      await expect(beadsHeader).toBeVisible({ timeout: timeouts.appReady });
+    },
+  );
 });

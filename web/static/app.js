@@ -186,11 +186,12 @@ import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialo
 
 function App() {
   // Holds a callback (wired below, once useBeadsIntegration is set up) that
-  // useWebSocket invokes when the ACTIVE conversation is deleted, so the UI can
-  // navigate to that conversation's folder Tasks view instead of bouncing to
-  // another conversation or an empty state (mitto-17d). A ref avoids the
-  // hook-ordering problem: useWebSocket runs before handleBeadsOpen exists.
-  const onActiveSessionDeletedRef = useRef(null);
+  // useWebSocket invokes when the ACTIVE conversation is removed from view
+  // (deleted or archived), so the UI can navigate to that conversation's folder
+  // Tasks view instead of bouncing to another conversation or an empty state
+  // (mitto-17d). A ref avoids the hook-ordering problem: useWebSocket runs
+  // before handleBeadsOpen exists.
+  const onActiveSessionRemovedRef = useRef(null);
   const {
     connected,
     messages,
@@ -246,7 +247,7 @@ function App() {
     mcpTools,
     ensureResumed,
     isCreatingSession,
-  } = useWebSocket({ onActiveSessionDeletedRef });
+  } = useWebSocket({ onActiveSessionRemovedRef });
 
   const { showToast, dismissToast, toasts } = useToast();
 
@@ -421,13 +422,14 @@ function App() {
     setSidePanelTab,
   });
 
-  // Wire the active-conversation-deleted callback consumed by useWebSocket. When
-  // the active conversation is deleted (in this window or via a cross-window
-  // session_deleted broadcast), navigate to the deleted conversation's folder
-  // Tasks (beads) view so the user stays in the same workspace context instead
-  // of being bounced to another conversation or an empty state (mitto-17d).
+  // Wire the active-conversation-removed callback consumed by useWebSocket. When
+  // the active conversation is deleted or archived (in this window or via a
+  // cross-window session_deleted / session_archived broadcast), navigate to that
+  // conversation's folder Tasks (beads) view so the user stays in the same
+  // workspace context instead of being bounced to another conversation or an
+  // empty state (mitto-17d).
   useEffect(() => {
-    onActiveSessionDeletedRef.current = (folderWorkingDir) => {
+    onActiveSessionRemovedRef.current = (folderWorkingDir) => {
       if (folderWorkingDir && folderWorkingDir !== "Unknown") {
         handleBeadsOpen(folderWorkingDir);
         setShowSidePanel(false);
@@ -1541,18 +1543,11 @@ function App() {
     if (!archived) {
       // When unarchiving, select the session
       switchSession(session.session_id);
-    } else if (session.session_id === activeSessionId) {
-      // When archiving the active session, switch to another non-archived session.
-      // The session_archived WebSocket event handler also handles this, but we do it here
-      // too (via switchSession for a full load) in case the event arrives late.
-      const allSess = computeAllSessions(activeSessions, storedSessions);
-      const remaining = allSess.filter((s) => s.session_id !== session.session_id && !s.archived);
-      if (remaining.length > 0) {
-        switchSession(remaining[0].session_id);
-      }
-      // If no sessions left, the session_archived WebSocket event handler
-      // will call setActiveSessionId(null) to clear the active session.
     }
+    // When archiving the active conversation, navigation to that conversation's
+    // folder Tasks (beads) view is handled inside useWebSocket's archiveSession
+    // (synchronously, same window) and the session_archived broadcast handler
+    // (cross-window), mirroring how deletion defers to removeSession (mitto-17d).
   };
 
   // Convert an existing regular conversation to a periodic one by creating a
