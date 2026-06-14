@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1473,6 +1474,18 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 		return nil, nil
 	}
 
+	// When workingDir is a linked worktree, its shared git metadata lives at
+	// <main-repo>/.git (objects, refs, and the per-worktree gitdir at
+	// .git/worktrees/<name>) — outside the worktree cwd. A restricted runner
+	// must be able to write there for git status/add/commit to work. The main
+	// working tree itself is deliberately NOT exposed, preserving isolation.
+	var extraWriteFolders []string
+	if commonDir := git.CommonDir(workingDir); commonDir != "" {
+		if rel, relErr := filepath.Rel(workingDir, commonDir); relErr != nil || strings.HasPrefix(rel, "..") {
+			extraWriteFolders = append(extraWriteFolders, commonDir)
+		}
+	}
+
 	// Create runner with configuration hierarchy
 	r, err := runner.NewRunner(
 		globalRunnersByType,
@@ -1480,6 +1493,7 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 		workspaceRunnerConfigByType,
 		workingDir,
 		sm.logger,
+		extraWriteFolders...,
 	)
 	if err != nil {
 		return nil, err
