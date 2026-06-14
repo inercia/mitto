@@ -57,6 +57,26 @@ func DeleteBranch(ctx context.Context, repoDir, branch string) error {
 	return nil
 }
 
+// CommonDir returns the absolute path to the git common directory for dir
+// (the main repository's .git, shared by all linked worktrees). For a linked
+// worktree this is <main-repo>/.git; for a regular checkout it is <repo>/.git.
+//
+// It is used to grant a restricted runner write access to the shared git
+// metadata (objects, refs, and the per-worktree gitdir at
+// <main>/.git/worktrees/<name>), which lives outside a worktree's cwd.
+//
+// It swallows any error (missing git, not a repo, etc.) and returns "".
+func CommonDir(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir,
+		"rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // BranchName returns the worktree branch name for a session ID.
 func BranchName(sessionID string) string {
 	return fmt.Sprintf("mitto-%s", sessionID)

@@ -94,6 +94,50 @@ func TestAddRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestCommonDir(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+
+	// Non-repo returns "".
+	if got := CommonDir(t.TempDir()); got != "" {
+		t.Errorf("CommonDir(non-repo) = %q, want \"\"", got)
+	}
+
+	// Regular checkout: common dir is <repo>/.git, under the repo.
+	repoReal, _ := filepath.EvalSymlinks(repo)
+	common := CommonDir(repo)
+	if common == "" {
+		t.Fatal("CommonDir(repo) returned empty")
+	}
+	commonReal, _ := filepath.EvalSymlinks(common)
+	wantRepoGit, _ := filepath.EvalSymlinks(filepath.Join(repoReal, ".git"))
+	if commonReal != wantRepoGit {
+		t.Errorf("CommonDir(repo) = %q, want %q", commonReal, wantRepoGit)
+	}
+
+	// Linked worktree: common dir is the MAIN repo's .git, OUTSIDE the worktree.
+	worktreePath := filepath.Join(t.TempDir(), "wt")
+	branch := BranchName("commondir-session")
+	if err := AddWorktree(context.Background(), repo, worktreePath, branch); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+	wtCommon := CommonDir(worktreePath)
+	wtCommonReal, _ := filepath.EvalSymlinks(wtCommon)
+	if wtCommonReal != wantRepoGit {
+		t.Errorf("CommonDir(worktree) = %q, want main .git %q", wtCommonReal, wantRepoGit)
+	}
+	// It must be outside the worktree cwd (otherwise no extra allow-list entry needed).
+	wtReal, _ := filepath.EvalSymlinks(worktreePath)
+	if rel, err := filepath.Rel(wtReal, wtCommonReal); err == nil && !filepathEscapes(rel) {
+		t.Errorf("CommonDir(worktree) %q unexpectedly inside worktree %q (rel=%q)", wtCommonReal, wtReal, rel)
+	}
+}
+
+// filepathEscapes reports whether a relative path points outside its base.
+func filepathEscapes(rel string) bool {
+	return rel == ".." || len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)
+}
+
 func TestBranchName(t *testing.T) {
 	if got := BranchName("20260614-abcd"); got != "mitto-20260614-abcd" {
 		t.Errorf("BranchName = %q, want %q", got, "mitto-20260614-abcd")
