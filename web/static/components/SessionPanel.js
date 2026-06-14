@@ -10,7 +10,6 @@ import {
   CheckIcon,
   FolderIcon,
   PeriodicFilledIcon,
-  ChevronDownIcon,
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
@@ -1190,24 +1189,23 @@ export function SessionPanel({
 
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools && mcpTools.length > 0 && html`
-          <div>
-            <button type="button" class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors" style="background: transparent; border: none; padding: 0; cursor: pointer;" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
-              <span class="transition-transform ${isMcpToolsExpanded ? "" : "-rotate-90"}">
-                <${ChevronDownIcon} className="w-4 h-4" />
-              </span>
+          <div class="collapse collapse-plus ${isMcpToolsExpanded ? "collapse-open" : "collapse-close"}">
+            <div class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
               <span>MCP Tools</span>
               <span class="text-xs text-mitto-text-500">(${mcpTools.length})</span>
-            </button>
-            ${isMcpToolsExpanded && html`
-              <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
-                ${mcpTools.map((tool) => html`
-                  <div key=${tool.name} class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1" title=${tool.description || tool.name}>
-                    <span class="font-mono">${tool.name}</span>
-                    ${tool.description && html`<p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>`}
-                  </div>
-                `)}
-              </div>
-            `}
+            </div>
+            <div class="collapse-content px-0">
+              ${isMcpToolsExpanded && html`
+                <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
+                  ${mcpTools.map((tool) => html`
+                    <div key=${tool.name} class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1" title=${tool.description || tool.name}>
+                      <span class="font-mono">${tool.name}</span>
+                      ${tool.description && html`<p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>`}
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
           </div>
         `}
 
@@ -1226,20 +1224,17 @@ export function SessionPanel({
 
     return html`
       <div class="pt-4">
-        <button
-          type="button"
-          class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
-          style="background: transparent; border: none; padding: 0; cursor: pointer;"
-          onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
-        >
-          <span class="transition-transform ${isAdvancedExpanded ? "" : "-rotate-90"}">
-            <${ChevronDownIcon} className="w-4 h-4" />
-          </span>
-          <span>Permissions</span>
-        </button>
+        <div class="collapse collapse-plus ${isAdvancedExpanded ? "collapse-open" : "collapse-close"}">
+          <div
+            class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
+            onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
+          >
+            <span>Permissions</span>
+          </div>
 
-        ${isAdvancedExpanded && html`
-          <div class="mt-3 space-y-3">
+          <div class="collapse-content px-0">
+            ${isAdvancedExpanded && html`
+              <div class="mt-3 space-y-3">
             ${isLoadingFlags
               ? html`<div class="text-sm text-mitto-text-500">Loading...</div>`
               : html`
@@ -1267,8 +1262,10 @@ export function SessionPanel({
                     `;
                   })}
                 `}
+              </div>
+            `}
           </div>
-        `}
+        </div>
       </div>
     `;
   }

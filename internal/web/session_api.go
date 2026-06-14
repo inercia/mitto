@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -80,6 +81,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
+			}
+		}
+		// No exact workspace match — check whether a registered workspace OWNS the
+		// requested directory (it is a subdirectory or a git worktree of that
+		// workspace). If so, reuse that workspace so its shared ACP process serves
+		// this session while req.WorkingDir continues to flow as the per-session cwd.
+		if workspace == nil {
+			if owningWs := resolveOwningWorkspace(req.WorkingDir, workspaces); owningWs != nil && owningWs.UUID != "" {
+				workspace = owningWs
 			}
 		}
 		// If not found in workspaces but working dir provided, create ad-hoc workspace
@@ -187,6 +197,88 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Return session info
 	writeJSONCreated(w, sessionData)
+}
+
+// resolveOwningWorkspace returns the registered workspace that OWNS reqDir, so
+// its shared ACP process can be reused for a session whose per-session cwd lives
+// inside (or is) that workspace's directory. Returns nil when no workspace owns
+// reqDir, in which case the caller falls back to ad-hoc workspace creation.
+//
+// Ownership is decided by directory containment: a workspace owns reqDir when
+// reqDir equals or is strictly inside the workspace dir. When several match, the
+// deepest (longest WorkingDir) wins. If no workspace contains reqDir directly and
+// reqDir lives in a git worktree, the worktree's main repo root is resolved and
+// matched the same way. The git probe is best-effort: any failure (git missing,
+// not a repo, timeout) degrades to the containment result and never errors.
+func resolveOwningWorkspace(reqDir string, workspaces []config.WorkspaceSettings) *config.WorkspaceSettings {
+	if reqDir == "" {
+		return nil
+	}
+	if ws := ownerByContainment(normalizeDir(reqDir), workspaces); ws != nil {
+		return ws
+	}
+	// Best-effort git worktree resolution: if reqDir is inside a worktree whose
+	// main repo root is a registered workspace, reuse that workspace.
+	if mainRoot := gitMainWorktreeRoot(reqDir); mainRoot != "" {
+		return ownerByContainment(normalizeDir(mainRoot), workspaces)
+	}
+	return nil
+}
+
+// normalizeDir cleans a directory path and resolves symlinks best-effort,
+// keeping the cleaned path when the path does not exist or cannot be resolved.
+func normalizeDir(dir string) string {
+	cleaned := filepath.Clean(dir)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
+}
+
+// ownerByContainment returns the deepest workspace whose directory contains (or
+// equals) normReq, or nil. normReq must already be normalized via normalizeDir.
+func ownerByContainment(normReq string, workspaces []config.WorkspaceSettings) *config.WorkspaceSettings {
+	var best *config.WorkspaceSettings
+	var bestLen int
+	for i := range workspaces {
+		ws := &workspaces[i]
+		if ws.WorkingDir == "" || ws.UUID == "" {
+			continue
+		}
+		wsDir := normalizeDir(ws.WorkingDir)
+		rel, err := filepath.Rel(wsDir, normReq)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		if len(wsDir) > bestLen {
+			best = ws
+			bestLen = len(wsDir)
+		}
+	}
+	return best
+}
+
+// gitMainWorktreeRoot returns the main worktree root of the git repository that
+// contains reqDir, or "" when reqDir is not in a git repo or git is unavailable.
+// The main worktree root is the parent of the repository's common .git directory.
+func gitMainWorktreeRoot(reqDir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", reqDir, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if commonDir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(reqDir, commonDir)
+	}
+	return filepath.Dir(commonDir)
 }
 
 // SessionListResponse extends session.Metadata with additional runtime fields.

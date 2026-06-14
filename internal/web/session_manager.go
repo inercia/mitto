@@ -1015,6 +1015,19 @@ func (sm *SessionManager) SetACPProcessManager(pm *ACPProcessManager) {
 	sm.acpProcessManager = pm
 }
 
+// ACPProcessCount returns the number of active shared ACP processes.
+// Returns 0 when shared-process mode is disabled. Used by tests to assert that
+// sessions in subdirectories or worktrees share a single process.
+func (sm *SessionManager) ACPProcessCount() int {
+	sm.mu.RLock()
+	pm := sm.acpProcessManager
+	sm.mu.RUnlock()
+	if pm == nil {
+		return 0
+	}
+	return pm.ProcessCount()
+}
+
 // SetAuxiliaryManager sets the workspace-scoped auxiliary manager for title generation,
 // follow-up analysis, and other auxiliary tasks.
 func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryManager) {

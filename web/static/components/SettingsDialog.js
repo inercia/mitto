@@ -37,7 +37,6 @@ import {
   LockIcon,
   GlobeIcon,
   SlidersIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
   DuplicateIcon,
   ShieldIcon,
@@ -397,16 +396,12 @@ export function RunnerRestrictionsEditor({
       runnerConfig.restrictions?.docker);
 
   return html`
-    <div class="border border-mitto-border-2/50 rounded-md overflow-hidden mt-2">
-      <button
-        type="button"
+    <div class="collapse collapse-plus ${expanded ? "collapse-open" : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2">
+      <div
+        class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
         onClick=${() => setExpanded(!expanded)}
-        class="w-full flex items-center justify-between p-3 bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
       >
         <div class="flex items-center gap-2">
-          <${expanded ? ChevronDownIcon : ChevronRightIcon}
-            className="w-4 h-4 text-mitto-text-muted"
-          />
           <span class="text-sm font-medium">Runner Restrictions</span>
         </div>
         ${hasConfig &&
@@ -417,10 +412,11 @@ export function RunnerRestrictionsEditor({
             Configured
           </span>
         `}
-      </button>
+      </div>
 
-      ${expanded &&
-      html`
+      <div class="collapse-content px-0">
+        ${expanded &&
+        html`
         <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
           <fieldset class="fieldset pt-2">
             <legend class="fieldset-legend">Networking</legend>
@@ -553,6 +549,7 @@ export function RunnerRestrictionsEditor({
           </div>
         </div>
       `}
+      </div>
     </div>
   `;
 }

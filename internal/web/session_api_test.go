@@ -2574,3 +2574,70 @@ func TestToggleEnabled_GlobalProcessor(t *testing.T) {
 		t.Errorf(".mittorc does not contain 'global-proc':\n%s", string(rcData))
 	}
 }
+
+func TestResolveOwningWorkspace(t *testing.T) {
+	// Use synthetic absolute paths so the test stays pure and fast: non-existent
+	// paths skip symlink resolution and the git probe fails immediately.
+	ws := func(uuid, dir string) config.WorkspaceSettings {
+		return config.WorkspaceSettings{UUID: uuid, WorkingDir: dir}
+	}
+
+	root := filepath.Join(string(os.PathSeparator), "ws", "repo")
+	sub := filepath.Join(root, "sub")
+	deep := filepath.Join(root, "a", "b")
+	sibling := filepath.Join(string(os.PathSeparator), "ws", "repobc")
+
+	workspaces := []config.WorkspaceSettings{
+		ws("uuid-root", root),
+		ws("uuid-other", filepath.Join(string(os.PathSeparator), "other")),
+	}
+
+	tests := []struct {
+		name       string
+		reqDir     string
+		workspaces []config.WorkspaceSettings
+		wantUUID   string // "" means expect nil
+	}{
+		{"exact match", root, workspaces, "uuid-root"},
+		{"strict subdir match", sub, workspaces, "uuid-root"},
+		{"sibling dir not owned", sibling, workspaces, ""},
+		{"unrelated dir", filepath.Join(string(os.PathSeparator), "elsewhere", "x"), workspaces, ""},
+		{"empty reqDir", "", workspaces, ""},
+		{"empty workspaces", root, nil, ""},
+		{
+			name:   "deepest workspace wins",
+			reqDir: deep,
+			workspaces: []config.WorkspaceSettings{
+				ws("uuid-root", root),
+				ws("uuid-mid", filepath.Join(root, "a")),
+			},
+			wantUUID: "uuid-mid",
+		},
+		{
+			name:   "skip workspace with empty uuid",
+			reqDir: sub,
+			workspaces: []config.WorkspaceSettings{
+				ws("", root),
+			},
+			wantUUID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveOwningWorkspace(tt.reqDir, tt.workspaces)
+			if tt.wantUUID == "" {
+				if got != nil {
+					t.Fatalf("expected nil, got workspace UUID %q (dir %q)", got.UUID, got.WorkingDir)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected workspace UUID %q, got nil", tt.wantUUID)
+			}
+			if got.UUID != tt.wantUUID {
+				t.Fatalf("expected workspace UUID %q, got %q", tt.wantUUID, got.UUID)
+			}
+		})
+	}
+}
