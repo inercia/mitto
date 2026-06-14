@@ -138,6 +138,38 @@ func filepathEscapes(rel string) bool {
 	return rel == ".." || len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)
 }
 
+func TestCurrentBranchAndCommit(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+
+	// Non-repo returns "" for both.
+	nonRepo := t.TempDir()
+	if got := CurrentBranch(nonRepo); got != "" {
+		t.Errorf("CurrentBranch(non-repo) = %q, want \"\"", got)
+	}
+	if got := CurrentCommit(nonRepo); got != "" {
+		t.Errorf("CurrentCommit(non-repo) = %q, want \"\"", got)
+	}
+
+	// Regular checkout on main.
+	if got := CurrentBranch(repo); got != "main" {
+		t.Errorf("CurrentBranch(repo) = %q, want %q", got, "main")
+	}
+	commit := CurrentCommit(repo)
+	if len(commit) != 40 {
+		t.Errorf("CurrentCommit(repo) = %q, want 40-char SHA", commit)
+	}
+
+	// Detached HEAD returns "" for the branch but a valid commit.
+	runGit(t, repo, "checkout", "--detach", "HEAD")
+	if got := CurrentBranch(repo); got != "" {
+		t.Errorf("CurrentBranch(detached) = %q, want \"\"", got)
+	}
+	if got := CurrentCommit(repo); got != commit {
+		t.Errorf("CurrentCommit(detached) = %q, want %q", got, commit)
+	}
+}
+
 func TestBranchName(t *testing.T) {
 	if got := BranchName("20260614-abcd"); got != "mitto-20260614-abcd" {
 		t.Errorf("BranchName = %q, want %q", got, "mitto-20260614-abcd")

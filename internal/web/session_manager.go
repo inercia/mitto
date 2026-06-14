@@ -1571,6 +1571,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	// ResumeSession), so they inherit the parent's worktree dir without creating
 	// their own.
 	var preGeneratedID, worktreePath, worktreeBranch, worktreeRepoDir string
+	var worktreeBaseBranch, worktreeBaseCommit string
 	wtWorkspace := workspace
 	if wtWorkspace == nil {
 		wtWorkspace = foundWs
@@ -1597,6 +1598,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 			}
 		} else {
 			branch := git.BranchName(sid)
+			// Capture the base branch/commit from the repo root BEFORE creating the
+			// worktree (workingDir is still the repo root here, and is reassigned to
+			// wtPath below). The flow-back step targets this base.
+			baseBranch := git.CurrentBranch(workingDir)
+			baseCommit := git.CurrentCommit(workingDir)
 			wtCtx, wtCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			addErr := git.AddWorktree(wtCtx, workingDir, wtPath, branch)
 			wtCancel()
@@ -1609,6 +1615,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 				preGeneratedID = sid
 				worktreePath = wtPath
 				worktreeBranch = branch
+				worktreeBaseBranch = baseBranch
+				worktreeBaseCommit = baseCommit
 				worktreeRepoDir = workingDir
 				workingDir = wtPath
 				if sm.logger != nil {
@@ -1866,6 +1874,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		if uErr := store.UpdateMetadata(bs.GetSessionID(), func(m *session.Metadata) {
 			m.WorktreePath = worktreePath
 			m.WorktreeBranch = worktreeBranch
+			m.WorktreeBaseBranch = worktreeBaseBranch
+			m.WorktreeBaseCommit = worktreeBaseCommit
 		}); uErr != nil && sm.logger != nil {
 			sm.logger.Warn("Failed to persist worktree metadata",
 				"error", uErr, "session_id", bs.GetSessionID())

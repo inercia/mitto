@@ -81,3 +81,33 @@ func CommonDir(dir string) string {
 func BranchName(sessionID string) string {
 	return fmt.Sprintf("mitto-%s", sessionID)
 }
+
+// CurrentBranch returns the name of the branch currently checked out in dir,
+// or "" when dir is in a detached HEAD state (or on any error). This is used to
+// record the base branch a session worktree was created from.
+func CurrentBranch(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		return "" // detached HEAD
+	}
+	return branch
+}
+
+// CurrentCommit returns the full SHA of the commit currently checked out in dir,
+// or "" on any error. This is used to record the base commit a session worktree
+// was created from.
+func CurrentCommit(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}

@@ -266,6 +266,13 @@ type Metadata struct {
 	// WorktreeBranch is the git branch name created for this session's worktree
 	// (empty if none).
 	WorktreeBranch string `json:"worktree_branch,omitempty"`
+	// WorktreeBaseBranch is the branch the worktree was created from (the repo's
+	// checked-out branch at creation time). Empty if none or detached HEAD.
+	// Used as the target for the flow-back (merge/rebase/PR) step.
+	WorktreeBaseBranch string `json:"worktree_base_branch,omitempty"`
+	// WorktreeBaseCommit is the commit SHA the worktree was created from.
+	// Empty if none. Used to compute the diff range for the flow-back step.
+	WorktreeBaseCommit string `json:"worktree_base_commit,omitempty"`
 }
 
 // ChildOrigin represents how a child conversation was created.
