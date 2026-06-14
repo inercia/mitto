@@ -1526,6 +1526,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Session.ParentID = meta.ParentSessionID
 	ctx.Session.BeadsIssue = meta.BeadsIssue
 	ctx.Session.HasBeadsIssue = meta.BeadsIssue != ""
+	ctx.Session.HasWorktree = meta.WorktreePath != ""
 
 	// Periodic conversation type: true when a periodic configuration exists for this
 	// conversation (matches the PeriodicEnabled UI mode). Distinct from

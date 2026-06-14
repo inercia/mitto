@@ -114,6 +114,17 @@ The base/branch/path are surfaced through `@mitto:` substitution
   base as the PR/rebase target, taking priority over the usual
   `upstream`/`origin`/tracking-branch inference.
 
+`config/prompts/builtin/merge-to-main.md` (group **"Git"**, "Merge to base branch"):
+
+- Gated on `enabledWhen: 'session.hasWorktree'` — the `session.hasWorktree` CEL
+  variable is `true` only when the conversation has its **own** worktree
+  (owner-only; children that merely inherit a parent's worktree dir have an empty
+  `WorktreePath` and so this is `false` for them).
+- Agent-driven, **local merge only**: it merges `@mitto:worktree_branch` into
+  `@mitto:worktree_base_branch` (falling back to the repo's default branch when the
+  stored base is empty), running the merge from the **main checkout** (not inside the
+  worktree). It does **not** push, open a PR, or remove the worktree.
+
 ### UI affordance
 
 The Changes tab of the Session panel shows a `<branch> → <base>` line and a
