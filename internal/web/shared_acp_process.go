@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -27,6 +28,15 @@ const (
 	processStartRetryMaxDelay = 4 * time.Second
 	// processStartRetryJitterRatio is the jitter ratio (±) applied to retry delays.
 	processStartRetryJitterRatio = 0.3
+
+	// setSessionModelMaxAttempts is the maximum number of set_model RPC attempts per call.
+	// With 3 attempts and up to 8s per attempt, worst-case is ~26s (fits in the 30s caller budget).
+	setSessionModelMaxAttempts = 3
+	// setSessionModelAttemptTimeout is the per-attempt timeout for set_model RPCs.
+	// Each attempt gets a fresh 8s budget so a queued caller is not penalised by the wait.
+	setSessionModelAttemptTimeout = 8 * time.Second
+	// setSessionModelRetryBaseDelay is the base backoff between set_model retry attempts.
+	setSessionModelRetryBaseDelay = 300 * time.Millisecond
 
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
@@ -117,6 +127,13 @@ type SharedACPProcess struct {
 	// can take 70+ seconds).
 	activeRPCs atomic.Int32
 
+	// setModelSem serialises set_model RPCs per process so concurrent callers queue
+	// instead of racing the serially-served agent subprocess (mitto-3q9).
+	// Capacity 1 means at most one set_model RPC is in flight at a time; additional
+	// callers block (respecting their ctx) until the slot is released.
+	// This semaphore guards ONLY set_model — it must never be held during prompts.
+	setModelSem chan struct{}
+
 	// Restart tracking
 	restartMu    sync.Mutex
 	restartCount int
@@ -136,11 +153,12 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 	processCtx, processCancel := context.WithCancel(ctx)
 
 	p := &SharedACPProcess{
-		config:    config,
-		client:    NewMultiplexClient(),
-		ctx:       processCtx,
-		ctxCancel: processCancel,
-		logger:    config.Logger,
+		config:      config,
+		client:      NewMultiplexClient(),
+		ctx:         processCtx,
+		ctxCancel:   processCancel,
+		logger:      config.Logger,
+		setModelSem: make(chan struct{}, 1),
 	}
 
 	if err := p.startProcess(); err != nil {
@@ -941,7 +959,11 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 }
 
 // SetSessionModel sets the model for a specific session.
+// It serialises concurrent callers via setModelSem (one in-flight RPC at a time per
+// process) and retries on transient timeouts so burst startups don't race the
+// serially-served agent subprocess (mitto-3q9).
 func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error {
+	// Read conn under RLock; keep existing nil-check semantics.
 	p.mu.RLock()
 	conn := p.conn
 	p.mu.RUnlock()
@@ -950,29 +972,99 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		return fmt.Errorf("shared ACP process is not running")
 	}
 
-	ctxRemainingMs := int64(-1)
-	if dl, ok := ctx.Deadline(); ok {
-		ctxRemainingMs = time.Until(dl).Milliseconds()
+	// Acquire the per-process serialisation semaphore, respecting caller ctx.
+	// This ensures only one set_model RPC is in-flight at a time — concurrent
+	// callers queue here instead of racing the serially-served agent subprocess.
+	select {
+	case p.setModelSem <- struct{}{}:
+		defer func() { <-p.setModelSem }()
+	case <-ctx.Done():
+		return fmt.Errorf("set_model: cancelled while waiting for serialization slot: %w", ctx.Err())
 	}
-	ctxAlreadyExpired := ctx.Err() != nil
 
-	rpcStart := time.Now()
-	_, err := conn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
-		SessionId: sessionID,
-		ModelId:   acp.UnstableModelId(modelID),
-	})
-	rpcDuration := time.Since(rpcStart)
+	// Track as an active RPC for GC visibility (mirrors other methods).
+	p.activeRPCs.Add(1)
+	defer p.activeRPCs.Add(-1)
 
-	if err != nil && p.logger != nil {
-		p.logger.Warn("SharedACPProcess.SetSessionModel failed",
-			"session_id", sessionID,
-			"model_id", modelID,
-			"rpc_ms", rpcDuration.Milliseconds(),
-			"ctx_remaining_ms", ctxRemainingMs,
-			"ctx_already_expired", ctxAlreadyExpired,
-			"error", err)
+	var lastErr error
+	for attempt := 1; attempt <= setSessionModelMaxAttempts; attempt++ {
+		// Honour caller cancellation before each attempt.
+		if ctx.Err() != nil {
+			return fmt.Errorf("set_model: context cancelled before attempt %d: %w", attempt, ctx.Err())
+		}
+
+		// Backoff between retries (skip before first attempt).
+		if attempt > 1 {
+			delay := time.Duration(attempt-1) * setSessionModelRetryBaseDelay
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return fmt.Errorf("set_model: context cancelled during retry backoff: %w", ctx.Err())
+			}
+		}
+
+		// Fresh per-attempt sub-context so each attempt (especially a caller that
+		// waited on the semaphore) gets a full budget regardless of wait time.
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, setSessionModelAttemptTimeout)
+
+		ctxRemainingMs := int64(-1)
+		if dl, ok := ctx.Deadline(); ok {
+			ctxRemainingMs = time.Until(dl).Milliseconds()
+		}
+
+		rpcStart := time.Now()
+		_, err := conn.UnstableSetSessionModel(attemptCtx, acp.UnstableSetSessionModelRequest{
+			SessionId: sessionID,
+			ModelId:   acp.UnstableModelId(modelID),
+		})
+		rpcDuration := time.Since(rpcStart)
+		attemptCancel()
+
+		if err == nil {
+			if attempt > 1 && p.logger != nil {
+				p.logger.Info("SharedACPProcess.SetSessionModel succeeded after retry",
+					"session_id", sessionID,
+					"model_id", modelID,
+					"attempt", attempt,
+					"rpc_ms", rpcDuration.Milliseconds())
+			}
+			return nil
+		}
+
+		lastErr = err
+		if p.logger != nil {
+			p.logger.Warn("SharedACPProcess.SetSessionModel failed",
+				"session_id", sessionID,
+				"model_id", modelID,
+				"attempt", attempt,
+				"max_attempts", setSessionModelMaxAttempts,
+				"rpc_ms", rpcDuration.Milliseconds(),
+				"ctx_remaining_ms", ctxRemainingMs,
+				"error", err)
+		}
+
+		// Non-transient errors are not retried (e.g. invalid model ID).
+		if !isRetryableSetModelError(err) {
+			return err
+		}
 	}
-	return err
+
+	return fmt.Errorf("set_model failed after %d attempts: %w", setSessionModelMaxAttempts, lastErr)
+}
+
+// isRetryableSetModelError reports whether a set_model error is worth retrying.
+// set_model is idempotent so retrying on timeout is safe.
+func isRetryableSetModelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "timed out")
 }
 
 // SetSessionConfigOption sets a config option for a specific session.

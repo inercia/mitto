@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,17 @@ type MockACPServer struct {
 	pendingRPCError string // Set by rpc_error action; causes handlePrompt to return an error response
 	reader          *bufio.Reader
 	writer          io.Writer
+
+	// setModelFailFirst: the first N set_model requests return a JSON-RPC error whose
+	// message contains "timeout" to exercise the retry path in SetSessionModel (mitto-3q9).
+	// Controlled by env var MOCK_SET_MODEL_FAIL_FIRST (default 0 = no failures injected).
+	// The server's read loop is single-threaded so this counter needs no mutex.
+	setModelFailFirst int
+	setModelCallCount int
+
+	// setModelDelayMs: time.Sleep before responding to set_model, simulating slowness.
+	// Controlled by env var MOCK_SET_MODEL_DELAY_MS (default 0 = no delay).
+	setModelDelayMs int
 }
 
 // Default modes provided by the mock server
@@ -108,6 +120,22 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 		reader:       bufio.NewReader(os.Stdin),
 		writer:       os.Stdout,
 	}
+
+	// MOCK_SET_MODEL_FAIL_FIRST: inject failures for the first N set_model requests.
+	// Used by TestConcurrentModelSetBurst to deterministically exercise the retry path.
+	if v := os.Getenv("MOCK_SET_MODEL_FAIL_FIRST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.setModelFailFirst = n
+		}
+	}
+
+	// MOCK_SET_MODEL_DELAY_MS: sleep before responding to set_model, simulating slowness.
+	if v := os.Getenv("MOCK_SET_MODEL_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.setModelDelayMs = n
+		}
+	}
+
 	server.loadScenarios()
 	return server
 }

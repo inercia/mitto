@@ -410,6 +410,14 @@ export function computeAllSessions(activeSessions, storedSessions) {
         ...s,
         working_dir: workingDir || s.working_dir || s.info?.working_dir,
         acp_server: acpServer || stored.acp_server,
+        // Worktree repo root (used by the sidebar to group worktree conversations
+        // under their project folder). Prefer stored (list API) then the active
+        // session's WebSocket-provided info.
+        worktree_repo_dir:
+          stored.worktree_repo_dir ||
+          s.worktree_repo_dir ||
+          s.info?.worktree_repo_dir ||
+          "",
         // Merge these properties from stored session (they don't exist in active sessions)
         // For name: active session takes precedence if it has one, otherwise use stored
         archived: stored.archived,
@@ -429,6 +437,10 @@ export function computeAllSessions(activeSessions, storedSessions) {
         parent_session_id: s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)
         child_origin: s.child_origin || stored.child_origin || null,
+        // Preserve the linked beads issue ID — the active session object may not
+        // carry it, so fall back to the stored session. Needed for the beads
+        // view's per-issue pulsing ring (streaming-conversation matching).
+        beads_issue: s.beads_issue || stored.beads_issue || null,
         // For isWaitingForChildren: active session is authoritative.
         // Do NOT OR with stored.isWaitingForChildren — fetchStoredSessions() can
         // clobber storedSessions with API data that lacks this runtime field,
@@ -445,6 +457,8 @@ export function computeAllSessions(activeSessions, storedSessions) {
       ...s,
       working_dir: workingDir || s.working_dir,
       acp_server: acpServer || s.acp_server,
+      worktree_repo_dir:
+        s.worktree_repo_dir || s.info?.worktree_repo_dir || "",
       parent_session_id: s.parent_session_id || null,
       child_origin: s.child_origin || null,
       isWaitingForUserInput: s.isWaitingForUserInput || false,

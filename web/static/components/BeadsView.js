@@ -9,6 +9,7 @@ import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, 
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
+import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -338,11 +339,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   }, [onClose]);
 
   const handleSave = useCallback(async () => {
-    if (!title.trim()) return;
+    if (!description.trim()) return;
     setSubmitting(true);
     try {
-      const body = { working_dir: workingDir, title: title.trim(), type, priority };
-      if (description.trim()) body.description = description.trim();
+      const body = { working_dir: workingDir, type, priority, description: description.trim() };
+      if (title.trim()) body.title = title.trim();
       const res = await secureFetch(apiUrl("/api/beads/create"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -918,12 +919,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <legend class="fieldset-legend">Issue</legend>
 
               <div>
-                <label class=${labelClass} for="new-issue-title">Title <span class="text-red-400">*</span></label>
+                <label class=${labelClass} for="new-issue-title">Title</label>
                 <input
                   id="new-issue-title"
                   type="text"
                   class=${inputClass}
-                  placeholder="Issue title"
+                  placeholder="Issue title (optional — auto-generated from description)"
                   value=${title}
                   onInput=${e => setTitle(e.target.value)}
                   disabled=${submitting}
@@ -961,12 +962,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               </div>
 
               <div class="mt-3">
-                <label class=${labelClass} for="new-issue-desc">Description</label>
+                <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
                 <textarea
                   id="new-issue-desc"
                   class="${textareaClass} resize-none"
                   rows="6"
-                  placeholder="Optional description…"
+                  placeholder="Description (required)"
                   value=${description}
                   onInput=${e => setDescription(e.target.value)}
                   disabled=${submitting}
@@ -1296,7 +1297,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           <button
             type="button"
             onClick=${handleSave}
-            disabled=${!title.trim() || submitting}
+            disabled=${!description.trim() || submitting}
             class="btn btn-primary btn-sm"
           >
             ${submitting && html`<span class="loading loading-spinner w-4 h-4"></span>`}
@@ -1401,8 +1402,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
  *        seeded with the prompt text alone (these prompts take no parameters).
  * @param {function} onShowSidebar - Opens the conversations sidebar (mobile);
  *        used by the header hamburger button to return to the conversation list.
+ * @param {function} onReturnToConversation - Called when the detail panel that
+ *        was opened by following a conversation's linked-issue link is closed;
+ *        returns the user to that conversation and re-opens its properties panel.
  */
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, onOpenConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0 }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onReturnToConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1480,6 +1484,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
   const listPromptsRef = useRef(null);
+  // Ref for the issues scroll container — used by usePullToRefresh.
+  const scrollContainerRef = useRef(null);
 
   const workspaceLabel = workingDir ? getBasename(workingDir) : "Workspace";
 
@@ -1506,6 +1512,14 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   useEffect(() => {
     fetchList();
   }, [fetchList]);
+
+  // Pull-to-refresh: disabled while the detail panel or create drawer is open.
+  const pullToRefreshDisabled = !!(selectedIssue || isCreating);
+  const { pullDistance, refreshing } = usePullToRefresh(scrollContainerRef, fetchList, {
+    enabled: !pullToRefreshDisabled,
+    threshold: 70,
+    resistance: 0.5,
+  });
 
   // Fetch the folder's configured upstream so the sync buttons can be shown.
   useEffect(() => {
@@ -1552,33 +1566,77 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }
   }, [workingDir, syncAction, upstream, showToast, fetchList]);
 
+  // Tracks whether the currently-open detail panel was opened by navigating
+  // directly from a conversation (the properties panel's linked-issue link).
+  // When such a panel is closed, BeadsView asks the parent to return to that
+  // conversation rather than leaving the user on the beads list. The flag is
+  // cleared as soon as the user engages with the beads view in its own right
+  // (selecting a different issue or opening the create panel).
+  const openedFromConversationRef = useRef(false);
+
   // The list rows already carry all rich fields (description, parent, dates,
   // assignee, owner), so the detail panel is populated directly from the row —
   // no extra /show request needed. Clicking the open row again toggles it shut.
   const selectIssue = useCallback((issue) => {
     setIsCreating(false);
-    setSelectedIssue(prev => (prev && prev.id === issue.id ? null : issue));
+    setSelectedIssue(prev => {
+      const willClose = prev && prev.id === issue.id;
+      // Navigating to a different issue means the user is now browsing beads,
+      // so a later close should stay here instead of returning to a conversation.
+      if (!willClose) openedFromConversationRef.current = false;
+      return willClose ? null : issue;
+    });
   }, []);
 
   // Auto-select an issue when the view is opened focused on one (e.g. via the
-  // conversation properties panel's linked-issue link). We apply once per nonce
-  // — so re-opening the same issue re-selects it — and wait until the list has
-  // loaded so the row data is available.
+  // conversation properties panel's linked-issue link). Applied once per nonce
+  // so re-opening the same issue re-selects it. To avoid making the user wait
+  // for the full issue list before the detail panel appears, we open the panel
+  // as soon as we have the issue: instantly from the already-loaded list when
+  // present, otherwise via a single `/api/beads/show` fetch for just that issue
+  // (the list keeps loading in the background to back the view and the
+  // dependency picker). The nonce is consumed synchronously so the effect does
+  // not re-fire — and re-fetch — on every background list refresh.
   const appliedSelectNonceRef = useRef(0);
   useEffect(() => {
-    if (!initialSelectedIssueId) return;
+    if (!initialSelectedIssueId || !workingDir) return;
     if (initialSelectNonce === appliedSelectNonceRef.current) return;
-    if (!issues || issues.length === 0) return;
-    const match = issues.find((i) => i.id === initialSelectedIssueId);
-    if (match) {
+    appliedSelectNonceRef.current = initialSelectNonce;
+
+    // Fast path: the list is already loaded and carries this issue's row.
+    const existing = issues.find((i) => i.id === initialSelectedIssueId);
+    if (existing) {
       setIsCreating(false);
-      setSelectedIssue(match);
-      appliedSelectNonceRef.current = initialSelectNonce;
+      setSelectedIssue(existing);
+      openedFromConversationRef.current = true;
+      return undefined;
     }
-  }, [initialSelectedIssueId, initialSelectNonce, issues]);
+
+    // Cold open: fetch just this one issue so the panel opens immediately.
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(
+          apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(initialSelectedIssueId),
+        );
+        const respData = await readBeadsResponse(res);
+        if (cancelled || !res.ok || respData.error) return;
+        const issueObj = Array.isArray(respData) ? respData[0] : respData;
+        if (issueObj && issueObj.id) {
+          setIsCreating(false);
+          setSelectedIssue(issueObj);
+          openedFromConversationRef.current = true;
+        }
+      } catch (_err) {
+        // Ignore: the background list load may still surface the issue's row.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [initialSelectedIssueId, initialSelectNonce, workingDir, issues]);
 
   // Open the side panel in "create" mode for a brand-new issue.
   const openCreate = useCallback(() => {
+    openedFromConversationRef.current = false;
     setSelectedIssue(null);
     setIsCreating(true);
   }, []);
@@ -1595,11 +1653,16 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     openCreate();
   }, [initialCreateNonce, openCreate]);
 
-  // Close the side panel, whether it is in view or create mode.
+  // Close the side panel, whether it is in view or create mode. If the panel was
+  // opened by following a conversation's linked-issue link, return to that
+  // conversation instead of leaving the user on the beads list.
   const closePanel = useCallback(() => {
+    const returnToConversation = openedFromConversationRef.current;
+    openedFromConversationRef.current = false;
     setSelectedIssue(null);
     setIsCreating(false);
-  }, []);
+    if (returnToConversation && onReturnToConversation) onReturnToConversation();
+  }, [onReturnToConversation]);
 
   // Open the per-issue context menu at the cursor and load the `menus: beadsIssues`
   // prompts for this workspace so the "Prompts" submenu reflects them.
@@ -2086,6 +2149,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // readable on the red background.
   function renderIssueRow(issue) {
     const linkedSessionId = issueSessionMap[issue.id];
+    const isStreamingIssue = issueStreamingSet.has(issue.id);
     const isSelected = selectedIssue && selectedIssue.id === issue.id;
     const childCount = childCountById[issue.id] || 0;
     const isEpic = issue.issue_type === "epic" || childCount > 0;
@@ -2112,6 +2176,14 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       >
         <div class="list-col-grow flex flex-col gap-1 min-w-0">
           <div class="flex items-center gap-2 flex-wrap">
+            ${isStreamingIssue
+              ? html`<span class="shrink-0 text-mitto-accent">
+                  <span
+                    class="loading loading-ring loading-xs"
+                    title="A linked conversation is responding..."
+                  ></span>
+                </span>`
+              : null}
             <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
               ${linkedSessionId && onOpenConversation
                 ? html`<a
@@ -2197,8 +2269,23 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         />
       </div>
 
-      <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll">
-        ${loading && html`
+      <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll" ref=${scrollContainerRef}>
+        ${html`<div
+          class="pull-to-refresh-indicator"
+          style=${{
+            height: refreshing ? "40px" : `${pullDistance}px`,
+            opacity: refreshing ? 1 : Math.min(1, pullDistance / 70),
+            overflow: "hidden",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            transition: pullDistance === 0 ? "height 0.2s ease, opacity 0.2s ease" : "none",
+            flexShrink: 0,
+          }}
+        >
+          <span class="loading loading-spinner w-5 h-5 text-mitto-text-secondary"></span>
+        </div>`}
+        ${loading && issues.length === 0 && html`
           <div class="flex items-center justify-center h-24 text-mitto-text-secondary gap-2">
             <span class="loading loading-spinner w-4 h-4"></span> Loading issues…
           </div>
@@ -2212,7 +2299,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <div class="text-mitto-text-muted text-xs">Create a new issue by pressing the "+" button below.</div>
           </div>
         `}
-        ${!loading && !error && filtered.length > 0 && html`
+        ${!error && filtered.length > 0 && html`
           <div class="list p-2">
             ${grouping && groupedItems
               ? groupedItems.map(item => {

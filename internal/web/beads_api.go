@@ -1,10 +1,12 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
@@ -114,6 +116,8 @@ type beadsCreateRequest struct {
 
 // handleBeadsCreate handles POST /api/beads/create.
 // Runs "bd create <title> --json [--type T] [--priority N] [-d D]" in the workspace directory.
+// When title is empty but description is non-empty, the title is auto-generated via the
+// auxiliary session (with a 60s timeout) and falls back to GenerateQuickTitle, then "New Issue".
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -135,17 +139,51 @@ func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Title) == "" {
-		http.Error(w, "title is required", http.StatusBadRequest)
+
+	// Trim title and description before validation.
+	title := strings.TrimSpace(req.Title)
+	description := strings.TrimSpace(req.Description)
+
+	if title == "" && description == "" {
+		http.Error(w, "title or description is required", http.StatusBadRequest)
 		return
 	}
+
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
 		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
 		return
 	}
 
+	// Auto-generate title from description when the caller omitted it.
+	if title == "" {
+		ws := s.sessionManager.GetWorkspace(req.WorkingDir)
+		if ws == nil || ws.UUID == "" {
+			http.Error(w, "unable to resolve workspace", http.StatusInternalServerError)
+			return
+		}
+
+		if s.auxiliaryManager != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+			defer cancel()
+			if generated, err := s.auxiliaryManager.GenerateTitle(ctx, ws.UUID, description); err == nil && strings.TrimSpace(generated) != "" {
+				title = strings.TrimSpace(generated)
+			} else if err != nil {
+				s.logger.Warn("beads: title generation failed, using fallback", "error", err)
+			}
+		}
+
+		// Fallback: derive a quick title from the description text.
+		if title == "" {
+			title = GenerateQuickTitle(description)
+		}
+		// Last resort.
+		if title == "" {
+			title = "New Issue"
+		}
+	}
+
 	out, err := s.beadsClient().Create(r.Context(), req.WorkingDir, beads.CreateParams{
-		Title:       req.Title,
+		Title:       title,
 		Type:        req.Type,
 		Priority:    req.Priority,
 		Description: req.Description,

@@ -121,6 +121,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
   const [editIsDefault, setEditIsDefault] = useState(false);
+  // Tri-state worktree override: "" = use global default, "on" = always, "off" = never
+  const [editWorktrees, setEditWorktrees] = useState("");
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
   const [editAutoChildren, setEditAutoChildren] = useState([]);
   const [effectiveConfig, setEffectiveConfig] = useState(null);
@@ -324,6 +326,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
     setEditAutoApprove(selectedWorkspace.auto_approve === true);
     setEditIsDefault(selectedWorkspace.is_default === true);
+    setEditWorktrees(
+      selectedWorkspace.worktrees_enabled === true
+        ? "on"
+        : selectedWorkspace.worktrees_enabled === false
+          ? "off"
+          : "",
+    );
     setEffectiveConfig(null);
     setMcpTools(null);
     setMcpToolsError("");
@@ -710,6 +719,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
       auto_approve: editAutoApprove || undefined,
       is_default: editIsDefault || undefined,
+      worktrees_enabled:
+        editWorktrees === "on"
+          ? true
+          : editWorktrees === "off"
+            ? false
+            : undefined,
       acp_command_override: editAcpCommandOverride || undefined,
     };
   };
@@ -1869,7 +1884,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                         <li key=${prompt.name}
                                             class="list-row p-0">
                                           <div
-                                             class="list-col-grow collapse collapse-arrow ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${isEnabled ? 'border-mitto-border-2/50' : 'border-mitto-border-2/30 opacity-60'} w-full">
+                                             class="list-col-grow collapse collapse-plus ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${isEnabled ? 'border-mitto-border-2/50' : 'border-mitto-border-2/30 opacity-60'} w-full">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12">
                                             <input type="checkbox" checked=${isEnabled}
                                               onChange=${() => togglePromptEnabled(prompt)}
@@ -2012,7 +2027,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       const isExpanded = expandedProcessor === proc.name;
                                       return html`
                                         <div key=${proc.name}
-                                             class="collapse collapse-arrow ${isExpanded ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
+                                             class="collapse collapse-plus ${isExpanded ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
                                                onClick=${() => setExpandedProcessor(isExpanded ? null : proc.name)}>
                                             <input type="checkbox" checked=${isEnabled}
@@ -2179,6 +2194,21 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <p class="text-xs text-mitto-text-muted -mt-2 ml-7">
                         Preferred when this folder has several workspaces and one is launched without a specific agent.
                       </p>
+                      <div>
+                        <label class="block text-sm text-mitto-text-muted mb-1">Isolate changes in worktrees</label>
+                        <select
+                          value=${editWorktrees}
+                          onChange=${(e) => setEditWorktrees(e.target.value)}
+                          class="select select-sm w-full"
+                        >
+                          <option value="">Use global default</option>
+                          <option value="on">Always isolate (on)</option>
+                          <option value="off">Never isolate (off)</option>
+                        </select>
+                        <p class="text-xs text-mitto-text-muted mt-1">
+                          Run conversations in this folder in a dedicated git worktree and branch. Only applies to git repositories. Overrides the global setting.
+                        </p>
+                      </div>
                     </div>
                   `}
 

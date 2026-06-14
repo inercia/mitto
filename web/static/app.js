@@ -185,6 +185,13 @@ import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialo
 // =============================================================================
 
 function App() {
+  // Holds a callback (wired below, once useBeadsIntegration is set up) that
+  // useWebSocket invokes when the ACTIVE conversation is removed from view
+  // (deleted or archived), so the UI can navigate to that conversation's folder
+  // Tasks view instead of bouncing to another conversation or an empty state
+  // (mitto-17d). A ref avoids the hook-ordering problem: useWebSocket runs
+  // before handleBeadsOpen exists.
+  const onActiveSessionRemovedRef = useRef(null);
   const {
     connected,
     messages,
@@ -240,7 +247,7 @@ function App() {
     mcpTools,
     ensureResumed,
     isCreatingSession,
-  } = useWebSocket();
+  } = useWebSocket({ onActiveSessionRemovedRef });
 
   const { showToast, dismissToast, toasts } = useToast();
 
@@ -394,6 +401,7 @@ function App() {
     beadsSelectNonce,
     beadsCreateNonce,
     beadsIssueSessionMap,
+    beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,
     fetchBeadsListPromptsForWorkspace,
     handleRunBeadsPrompt,
@@ -401,15 +409,35 @@ function App() {
     handleBeadsOpen,
     handleBeadsCreate,
     handleOpenBeadsIssue,
+    handleReturnFromBeadsIssue,
   } = useBeadsIntegration({
     allSessions,
     workspaces,
     newSession,
     showToast,
+    switchSession,
     setMainView,
     setShowSidebar,
     setShowSidePanel,
+    setSidePanelTab,
   });
+
+  // Wire the active-conversation-removed callback consumed by useWebSocket. When
+  // the active conversation is deleted or archived (in this window or via a
+  // cross-window session_deleted / session_archived broadcast), navigate to that
+  // conversation's folder Tasks (beads) view so the user stays in the same
+  // workspace context instead of being bounced to another conversation or an
+  // empty state (mitto-17d).
+  useEffect(() => {
+    onActiveSessionRemovedRef.current = (folderWorkingDir) => {
+      if (folderWorkingDir && folderWorkingDir !== "Unknown") {
+        handleBeadsOpen(folderWorkingDir);
+        setShowSidePanel(false);
+      } else {
+        setMainView("conversation");
+      }
+    };
+  }, [handleBeadsOpen]);
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
@@ -1515,18 +1543,11 @@ function App() {
     if (!archived) {
       // When unarchiving, select the session
       switchSession(session.session_id);
-    } else if (session.session_id === activeSessionId) {
-      // When archiving the active session, switch to another non-archived session.
-      // The session_archived WebSocket event handler also handles this, but we do it here
-      // too (via switchSession for a full load) in case the event arrives late.
-      const allSess = computeAllSessions(activeSessions, storedSessions);
-      const remaining = allSess.filter((s) => s.session_id !== session.session_id && !s.archived);
-      if (remaining.length > 0) {
-        switchSession(remaining[0].session_id);
-      }
-      // If no sessions left, the session_archived WebSocket event handler
-      // will call setActiveSessionId(null) to clear the active session.
     }
+    // When archiving the active conversation, navigation to that conversation's
+    // folder Tasks (beads) view is handled inside useWebSocket's archiveSession
+    // (synchronously, same window) and the session_archived broadcast handler
+    // (cross-window), mirroring how deletion defers to removeSession (mitto-17d).
   };
 
   // Convert an existing regular conversation to a periodic one by creating a
@@ -1642,6 +1663,31 @@ function App() {
       }
     },
     [showToast],
+  );
+
+  // Run the builtin "Submit changes" prompt in the given conversation (used by
+  // the worktree flow-back affordance in the Changes panel). Finds the prompt by
+  // name in the active workspace prompt list and enqueues it like a context-menu
+  // prompt; the prompt itself resolves @mitto:worktree_base_branch to target the
+  // worktree's base. Falls back to a toast if the prompt isn't available (e.g.
+  // not a git repo, so its enabledWhen gate hid it).
+  const handleSubmitChanges = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+      const prompt = (workspacePrompts || []).find(
+        (p) => p && p.name === "Submit changes",
+      );
+      if (!prompt || !prompt.prompt) {
+        showToast({
+          style: "warning",
+          title: "\"Submit changes\" prompt is unavailable here",
+          duration: 4000,
+        });
+        return;
+      }
+      handleSendPromptToConversation({ session_id: sessionId }, prompt);
+    },
+    [workspacePrompts, handleSendPromptToConversation, showToast],
   );
 
 
@@ -1814,7 +1860,9 @@ function App() {
               onShowSidebar=${() => setShowSidebar(true)}
               onOpenConfig=${window.mittoIsExternal === true ? undefined : () => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
               issueSessionMap=${beadsIssueSessionMap}
+              issueStreamingSet=${beadsIssueStreamingSet}
               onOpenConversation=${handleSelectSession}
+              onReturnToConversation=${handleReturnFromBeadsIssue}
               initialSelectedIssueId=${beadsInitialIssueId}
               initialSelectNonce=${beadsSelectNonce}
               initialCreateNonce=${beadsCreateNonce}
@@ -2023,6 +2071,7 @@ function App() {
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
         showToast=${showToast}
+        onSubmitChanges=${handleSubmitChanges}
       />
 
       <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the

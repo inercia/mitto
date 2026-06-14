@@ -137,10 +137,32 @@ Paths in restrictions support runtime variables resolved when the runner is crea
 | `$MITTO_WORKING_DIR` / `${MITTO_WORKING_DIR}` | Workspace directory passed to `NewRunner`   | `/Users/user/project`                 |
 | `$HOME` / `${HOME}`           | `os.UserHomeDir()`                          | `/Users/user`                         |
 | `$MITTO_DIR` / `${MITTO_DIR}` | `appdir.Dir()`                              | `~/Library/Application Support/Mitto` |
+| `$MITTO_WORKTREES_DIR` / `${MITTO_WORKTREES_DIR}` | `appdir.WorktreesDir()`         | `~/Library/Application Support/Mitto/worktrees` |
 | `$USER` / `${USER}`           | `$USER` env var (falls back to `$USERNAME`) | `user`                                |
 | `$TMPDIR` / `${TMPDIR}`       | `os.TempDir()`                              | `/tmp`                                |
 
 Also supports `~/` prefix expansion to home directory.
+
+Paths that resolve to an empty string (e.g. `$MITTO_WORKTREES_DIR` when the data
+directory cannot be determined) are dropped by `ResolvePaths`, so an unset
+variable never widens the sandbox to every path via an empty allow-list entry.
+
+### Automatic write-folder safety nets
+
+For restricted runners only, `NewRunner` always ensures two entries are present
+in `allow_write_folders` (deduplicated):
+
+- `$MITTO_WORKING_DIR` — the agent's own working directory.
+- `$MITTO_WORKTREES_DIR` — the directory holding all worktree-isolated
+  conversation checkouts.
+
+In addition, `createRunner` passes the session worktree's resolved git **common
+dir** (`<main-repo>/.git`, via `git.CommonDir`) as an `extraWriteFolders`
+argument when the working directory is a linked worktree. This grants write
+access to the shared object store, refs, and the per-worktree gitdir at
+`<main-repo>/.git/worktrees/<name>` — all of which live outside the worktree
+cwd — so `git status`/`add`/`commit` work under a sandbox. The main repository's
+working tree is intentionally excluded to preserve conversation isolation.
 
 ## Integration Points
 

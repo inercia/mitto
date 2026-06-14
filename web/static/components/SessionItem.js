@@ -121,6 +121,7 @@ export function SessionItem({
   hasChildren = false, // If true, shows expand/collapse chevron
   isExpanded = false, // If true, chevron points down (expanded state)
   onToggleExpand = null, // Callback when expand/collapse is clicked
+  density = "condensed",
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -517,7 +518,7 @@ export function SessionItem({
         <div
           onClick=${handleClick}
           onContextMenu=${handleContextMenu}
-          class="px-2.5 py-1 rounded-lg cursor-pointer relative overflow-hidden ${isActive
+          class="px-2.5 ${density === "comfortable" ? "py-2.5" : "py-1"} rounded-lg cursor-pointer relative overflow-hidden ${isActive
             ? "bg-mitto-accent text-mitto-accent-fg"
             : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
             ? ""

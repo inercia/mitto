@@ -8,7 +8,12 @@ import { test, expect } from "../fixtures/test-fixtures";
 
 test.describe("Keyboard Navigation", () => {
   test.beforeEach(async ({ page, helpers }) => {
-    await helpers.navigateAndWait(page);
+    // These tests focus/fill/click the chat textarea, which is rendered but
+    // DISABLED when no active regular session exists. navigateAndWait alone is
+    // satisfied by the sidebar header, so in isolation (no prior test created a
+    // session) the textarea stays disabled and the tests fail. Ensure an active
+    // regular session so the textarea is enabled and editable.
+    await helpers.navigateAndEnsureSession(page);
   });
 
   test("should focus chat input on page load", async ({ page, selectors }) => {

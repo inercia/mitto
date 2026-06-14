@@ -264,90 +264,92 @@ export function QueueDropdown({
       </div>
       ${messages.length > 0
         ? html`
-            <div
-              class="queue-dropdown-list overflow-y-auto"
+            <ul
+              class="queue-dropdown-list menu menu-sm w-full p-0 gap-0 flex-nowrap overflow-y-auto"
               style="max-height: ${listMaxHeight}px;"
             >
               ${messages.map(
                 (msg, index) => html`
-                  <div
+                  <li
                     key=${msg.id}
-                    class="queue-dropdown-item flex items-center gap-2 px-3 py-2 hover:bg-mitto-surface-3/50 transition-colors border-b border-mitto-border-1/50 last:border-b-0 group"
+                    class="queue-dropdown-item border-b border-mitto-border-1/50 last:border-b-0"
                     data-testid="queue-item"
                     data-queue-item-index=${index}
                   >
-                    <span
-                      class="queue-item-number text-xs text-mitto-text-muted font-mono w-4 shrink-0"
-                    >
-                      ${index + 1}
-                    </span>
-                    <span
-                      class="queue-item-text flex-1 text-sm text-mitto-text truncate"
-                      title=${msg.prompt_name || msg.message}
-                    >
-                      ${msg.prompt_name || msg.title || truncateText(msg.message)}
-                    </span>
-                    ${msg.scheduled_time
-                      ? html`
-                          <span
-                            class="text-xs text-amber-400 shrink-0 font-mono"
-                            title=${new Date(
-                              msg.scheduled_time,
-                            ).toLocaleString()}
-                          >
-                            ⏰ ${formatRelativeTime(msg.scheduled_time)}
-                          </span>
-                        `
-                      : null}
-                    <div
-                      class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                    >
-                      <button
-                        type="button"
-                        onClick=${(e) => handleMoveUp(e, msg.id)}
-                        aria-disabled=${isMoving || index === 0
-                          ? "true"
-                          : "false"}
-                        class="queue-item-move-up btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
-                        index === 0
-                          ? "opacity-40 pointer-events-none"
-                          : ""}"
-                        title=${index === 0 ? "Already at top" : "Move up"}
+                    <div class="flex items-center gap-2 px-3 py-2 rounded-none hover:bg-mitto-surface-3/50 transition-colors group">
+                      <span
+                        class="queue-item-number text-xs text-mitto-text-muted font-mono w-4 shrink-0"
                       >
-                        <${ChevronUpIcon} className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick=${(e) => handleMoveDown(e, msg.id)}
-                        aria-disabled=${isMoving || index === messages.length - 1
-                          ? "true"
-                          : "false"}
-                        class="queue-item-move-down btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
-                        index === messages.length - 1
-                          ? "opacity-40 pointer-events-none"
-                          : ""}"
-                        title=${index === messages.length - 1
-                          ? "Already at bottom"
-                          : "Move down"}
+                        ${index + 1}
+                      </span>
+                      <span
+                        class="queue-item-text flex-1 text-sm text-mitto-text truncate"
+                        title=${msg.prompt_name || msg.message}
                       >
-                        <${ChevronDownIcon} className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick=${(e) => handleDelete(e, msg.id)}
-                        aria-disabled=${isDeleting ? "true" : "false"}
-                        class="queue-item-delete btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:bg-red-600/80 hover:text-mitto-text-strong ${isDeleting
-                          ? "opacity-40 pointer-events-none"
-                          : ""}"
-                        title="Remove from queue"
+                        ${msg.prompt_name || msg.title || truncateText(msg.message)}
+                      </span>
+                      ${msg.scheduled_time
+                        ? html`
+                            <span
+                              class="text-xs text-amber-400 shrink-0 font-mono"
+                              title=${new Date(
+                                msg.scheduled_time,
+                              ).toLocaleString()}
+                            >
+                              ⏰ ${formatRelativeTime(msg.scheduled_time)}
+                            </span>
+                          `
+                        : null}
+                      <div
+                        class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                       >
-                        <${TrashIcon} className="w-3.5 h-3.5" />
-                      </button>
+                        <button
+                          type="button"
+                          onClick=${(e) => handleMoveUp(e, msg.id)}
+                          aria-disabled=${isMoving || index === 0
+                            ? "true"
+                            : "false"}
+                          class="queue-item-move-up btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
+                          index === 0
+                            ? "opacity-40 pointer-events-none"
+                            : ""}"
+                          title=${index === 0 ? "Already at top" : "Move up"}
+                        >
+                          <${ChevronUpIcon} className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick=${(e) => handleMoveDown(e, msg.id)}
+                          aria-disabled=${isMoving || index === messages.length - 1
+                            ? "true"
+                            : "false"}
+                          class="queue-item-move-down btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
+                          index === messages.length - 1
+                            ? "opacity-40 pointer-events-none"
+                            : ""}"
+                          title=${index === messages.length - 1
+                            ? "Already at bottom"
+                            : "Move down"}
+                        >
+                          <${ChevronDownIcon} className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick=${(e) => handleDelete(e, msg.id)}
+                          aria-disabled=${isDeleting ? "true" : "false"}
+                          class="queue-item-delete btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:bg-red-600/80 hover:text-mitto-text-strong ${isDeleting
+                            ? "opacity-40 pointer-events-none"
+                            : ""}"
+                          title="Remove from queue"
+                        >
+                          <${TrashIcon} className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  </li>
                 `,
               )}
-            </div>
+            </ul>
           `
         : html`
             <div

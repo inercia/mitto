@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/git"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
@@ -80,6 +82,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
+			}
+		}
+		// No exact workspace match — check whether a registered workspace OWNS the
+		// requested directory (it is a subdirectory or a git worktree of that
+		// workspace). If so, reuse that workspace so its shared ACP process serves
+		// this session while req.WorkingDir continues to flow as the per-session cwd.
+		if workspace == nil {
+			if owningWs := resolveOwningWorkspace(req.WorkingDir, workspaces); owningWs != nil && owningWs.UUID != "" {
+				workspace = owningWs
 			}
 		}
 		// If not found in workspaces but working dir provided, create ad-hoc workspace
@@ -189,6 +200,142 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSONCreated(w, sessionData)
 }
 
+// resolveOwningWorkspace returns the registered workspace that OWNS reqDir, so
+// its shared ACP process can be reused for a session whose per-session cwd lives
+// inside (or is) that workspace's directory. Returns nil when no workspace owns
+// reqDir, in which case the caller falls back to ad-hoc workspace creation.
+//
+// Ownership is decided by directory containment: a workspace owns reqDir when
+// reqDir equals or is strictly inside the workspace dir. When several match, the
+// deepest (longest WorkingDir) wins. If no workspace contains reqDir directly and
+// reqDir lives in a git worktree, the worktree's main repo root is resolved and
+// matched the same way. The git probe is best-effort: any failure (git missing,
+// not a repo, timeout) degrades to the containment result and never errors.
+func resolveOwningWorkspace(reqDir string, workspaces []config.WorkspaceSettings) *config.WorkspaceSettings {
+	if reqDir == "" {
+		return nil
+	}
+	if ws := ownerByContainment(normalizeDir(reqDir), workspaces); ws != nil {
+		return ws
+	}
+	// Best-effort git worktree resolution: if reqDir is inside a worktree whose
+	// main repo root is a registered workspace, reuse that workspace.
+	if mainRoot := gitMainWorktreeRoot(reqDir); mainRoot != "" {
+		return ownerByContainment(normalizeDir(mainRoot), workspaces)
+	}
+	return nil
+}
+
+// normalizeDir cleans a directory path and resolves symlinks best-effort,
+// keeping the cleaned path when the path does not exist or cannot be resolved.
+func normalizeDir(dir string) string {
+	cleaned := filepath.Clean(dir)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
+}
+
+// ownerByContainment returns the deepest workspace whose directory contains (or
+// equals) normReq, or nil. normReq must already be normalized via normalizeDir.
+func ownerByContainment(normReq string, workspaces []config.WorkspaceSettings) *config.WorkspaceSettings {
+	var best *config.WorkspaceSettings
+	var bestLen int
+	for i := range workspaces {
+		ws := &workspaces[i]
+		if ws.WorkingDir == "" || ws.UUID == "" {
+			continue
+		}
+		wsDir := normalizeDir(ws.WorkingDir)
+		rel, err := filepath.Rel(wsDir, normReq)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		if len(wsDir) > bestLen {
+			best = ws
+			bestLen = len(wsDir)
+		}
+	}
+	return best
+}
+
+// gitMainWorktreeRoot returns the main worktree root of the git repository that
+// contains reqDir, or "" when reqDir is not in a git repo or git is unavailable.
+// The main worktree root is the parent of the repository's common .git directory.
+func gitMainWorktreeRoot(reqDir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", reqDir, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if commonDir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(reqDir, commonDir)
+	}
+	return filepath.Dir(commonDir)
+}
+
+// ensureWorktreeRepoDir self-heals the WorktreeRepoDir metadata field for worktree
+// sessions created before the field existed. When a session has a WorktreePath but no
+// WorktreeRepoDir, it derives the main repository root from the worktree and persists
+// it once. Best-effort: on any failure the field is left empty and the frontend falls
+// back to grouping by the worktree path. Mutates meta in place so the caller can use
+// the resolved value immediately.
+func (s *Server) ensureWorktreeRepoDir(meta *session.Metadata) {
+	if meta == nil || meta.WorktreePath == "" || meta.WorktreeRepoDir != "" {
+		return
+	}
+	repoDir := gitMainWorktreeRoot(meta.WorktreePath)
+	if repoDir == "" {
+		return
+	}
+	meta.WorktreeRepoDir = repoDir
+	if store := s.Store(); store != nil {
+		_ = store.UpdateMetadata(meta.SessionID, func(m *session.Metadata) {
+			if m.WorktreeRepoDir == "" {
+				m.WorktreeRepoDir = repoDir
+			}
+		})
+	}
+}
+
+// removeSessionWorktree removes a session's git worktree and its branch.
+// The main repo root is derived from the worktree itself (the worktree still
+// exists on disk at this point). All failures are best-effort and logged;
+// startup recovery is the backstop for any orphans left behind.
+func (s *Server) removeSessionWorktree(worktreePath, worktreeBranch string) {
+	if worktreePath == "" {
+		return
+	}
+	repoRoot := gitMainWorktreeRoot(worktreePath)
+	if repoRoot == "" {
+		if s.logger != nil {
+			s.logger.Warn("Could not resolve main repo for worktree removal",
+				"worktree_path", worktreePath)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := git.RemoveWorktree(ctx, repoRoot, worktreePath); err != nil && s.logger != nil {
+		s.logger.Warn("Failed to remove worktree",
+			"error", err, "worktree_path", worktreePath)
+	}
+	if worktreeBranch != "" {
+		if err := git.DeleteBranch(ctx, repoRoot, worktreeBranch); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to delete worktree branch",
+				"error", err, "branch", worktreeBranch)
+		}
+	}
+}
+
 // SessionListResponse extends session.Metadata with additional runtime fields.
 type SessionListResponse struct {
 	session.Metadata
@@ -230,7 +377,12 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with periodic_enabled status and scheduling info
 	response := make([]SessionListResponse, len(sessions))
-	for i, meta := range sessions {
+	for i := range sessions {
+		// Self-heal worktree_repo_dir for sessions created before the field existed
+		// so the sidebar groups them under their project folder rather than the
+		// per-session worktree path.
+		s.ensureWorktreeRepoDir(&sessions[i])
+		meta := sessions[i]
 		response[i] = SessionListResponse{
 			Metadata:        meta,
 			PeriodicEnabled: false, // Default to false
@@ -734,6 +886,16 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		}
 	}
 
+	// Capture worktree info before deletion so we can remove it afterwards.
+	// Policy: Delete removes the worktree + branch; Archive preserves them.
+	// Children share the parent's worktree (their metadata carries no worktree
+	// path), so removal happens once, driven by the parent's metadata.
+	var worktreePath, worktreeBranch string
+	if meta, mErr := store.GetMetadata(sessionID); mErr == nil {
+		worktreePath = meta.WorktreePath
+		worktreeBranch = meta.WorktreeBranch
+	}
+
 	// Delete from store (cascade-deletes all children recursively)
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
@@ -745,6 +907,11 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		}
 		http.Error(w, "Failed to delete session", http.StatusInternalServerError)
 		return
+	}
+
+	// Remove the session worktree (if any) now that the session is gone.
+	if worktreePath != "" {
+		s.removeSessionWorktree(worktreePath, worktreeBranch)
 	}
 
 	// Broadcast deletions to all connected WebSocket clients
@@ -1388,6 +1555,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Session.ParentID = meta.ParentSessionID
 	ctx.Session.BeadsIssue = meta.BeadsIssue
 	ctx.Session.HasBeadsIssue = meta.BeadsIssue != ""
+	ctx.Session.HasWorktree = meta.WorktreePath != ""
 
 	// Periodic conversation type: true when a periodic configuration exists for this
 	// conversation (matches the PeriodicEnabled UI mode). Distinct from

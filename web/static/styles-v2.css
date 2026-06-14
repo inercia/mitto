@@ -932,24 +932,6 @@ a:hover {
 }
 
 /* =============================================================================
-   Error Message Bubble
-   ============================================================================= */
-
-/* Light theme: dark red text on very subtle red background */
-.light .error-message-bubble {
-  background: #fef2f2 !important;
-  color: #991b1b !important;
-  border-color: #fecaca !important;
-}
-
-/* Dark theme: light red text on dark red background */
-.dark .error-message-bubble {
-  background: rgba(127, 29, 29, 0.3) !important;
-  color: #fca5a5 !important;
-  border-color: #991b1b !important;
-}
-
-/* =============================================================================
    UI Form (mitto_ui_form) - Form Element Styling
    ============================================================================= */
 

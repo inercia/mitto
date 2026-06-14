@@ -152,6 +152,22 @@ func TestSubstituteVariables(t *testing.T) {
 			expected: "agent-a [fast], agent-b [smart, expensive]",
 		},
 		{
+			name:    "worktree variables populated",
+			message: "branch=@mitto:worktree_branch base=@mitto:worktree_base_branch path=@mitto:worktree_path",
+			input: &ProcessorInput{
+				WorktreeBranch:     "mitto-abc123",
+				WorktreeBaseBranch: "main",
+				WorktreePath:       "/worktrees/mitto-abc123",
+			},
+			expected: "branch=mitto-abc123 base=main path=/worktrees/mitto-abc123",
+		},
+		{
+			name:     "worktree variables empty when not isolated",
+			message:  "branch=@mitto:worktree_branch base=@mitto:worktree_base_branch path=@mitto:worktree_path",
+			input:    &ProcessorInput{SessionID: "x"},
+			expected: "branch= base= path=",
+		},
+		{
 			name:     "escaped variable not substituted",
 			message:  `id: \@mitto:session_id`,
 			input:    input,

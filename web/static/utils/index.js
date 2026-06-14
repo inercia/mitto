@@ -47,6 +47,8 @@ export {
   setBeadsFilters,
   getBeadsGrouping,
   setBeadsGrouping,
+  getDensity,
+  setDensity,
   migrateLegacyTabStorage,
 } from "./storage.js";
 

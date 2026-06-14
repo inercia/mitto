@@ -10,7 +10,6 @@ import {
   CheckIcon,
   FolderIcon,
   PeriodicFilledIcon,
-  ChevronDownIcon,
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
@@ -203,6 +202,7 @@ export function SessionPanel({
   onSetConfigOption,
   mcpTools = [],
   showToast,
+  onSubmitChanges,
 }) {
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
@@ -788,6 +788,10 @@ export function SessionPanel({
     }
 
     const files = changesData.files || [];
+    // Worktree isolation metadata (empty when the conversation is not in an
+    // isolated worktree). Drives the base-branch line and the flow-back button.
+    const worktreeBranch = sessionInfo?.worktree_branch || "";
+    const worktreeBaseBranch = sessionInfo?.worktree_base_branch || "";
 
     return html`
       <div class="p-4 space-y-3">
@@ -812,6 +816,35 @@ export function SessionPanel({
             </svg>
           </button>
         </div>
+
+        ${worktreeBranch &&
+        html`
+          <!-- Worktree isolation: show where this conversation's branch will
+               flow back to, and offer the "Submit changes" prompt. -->
+          <div class="rounded border border-mitto-border-1 bg-mitto-surface-3/30 p-2 space-y-2">
+            <div class="flex items-center gap-1.5 text-xs text-mitto-text-secondary">
+              <span class="font-mono truncate" title=${worktreeBranch}>${worktreeBranch}</span>
+              ${worktreeBaseBranch &&
+              html`
+                <span class="text-mitto-text-muted">→</span>
+                <span class="font-mono truncate" title=${worktreeBaseBranch}>${worktreeBaseBranch}</span>
+              `}
+            </div>
+            ${onSubmitChanges &&
+            html`
+              <button
+                class="btn btn-primary btn-sm btn-block ${isStreaming ? "btn-disabled opacity-60" : ""}"
+                onClick=${() => onSubmitChanges(sessionId)}
+                disabled=${isStreaming}
+                title=${worktreeBaseBranch
+                  ? `Submit changes back to ${worktreeBaseBranch}`
+                  : "Submit changes"}
+              >
+                Submit changes
+              </button>
+            `}
+          </div>
+        `}
 
         ${files.length === 0
           ? html`
@@ -990,7 +1023,7 @@ export function SessionPanel({
                 ? html`<button
                     type="button"
                     class="text-sm font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline transition-colors cursor-pointer"
-                    onClick=${() => onOpenBeadsIssue(sessionInfo.beads_issue, sessionInfo.working_dir)}
+                    onClick=${() => onOpenBeadsIssue(sessionInfo.beads_issue, sessionInfo.working_dir, sessionId)}
                     title="Open beads issue ${sessionInfo.beads_issue}"
                   >${sessionInfo.beads_issue}</button>`
                 : html`<span class="text-sm font-mono">${sessionInfo.beads_issue}</span>`}
@@ -1190,24 +1223,23 @@ export function SessionPanel({
 
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools && mcpTools.length > 0 && html`
-          <div>
-            <button type="button" class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors" style="background: transparent; border: none; padding: 0; cursor: pointer;" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
-              <span class="transition-transform ${isMcpToolsExpanded ? "" : "-rotate-90"}">
-                <${ChevronDownIcon} className="w-4 h-4" />
-              </span>
+          <div class="collapse collapse-plus ${isMcpToolsExpanded ? "collapse-open" : "collapse-close"}">
+            <div class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors" onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}>
               <span>MCP Tools</span>
               <span class="text-xs text-mitto-text-500">(${mcpTools.length})</span>
-            </button>
-            ${isMcpToolsExpanded && html`
-              <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
-                ${mcpTools.map((tool) => html`
-                  <div key=${tool.name} class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1" title=${tool.description || tool.name}>
-                    <span class="font-mono">${tool.name}</span>
-                    ${tool.description && html`<p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>`}
-                  </div>
-                `)}
-              </div>
-            `}
+            </div>
+            <div class="collapse-content px-0">
+              ${isMcpToolsExpanded && html`
+                <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
+                  ${mcpTools.map((tool) => html`
+                    <div key=${tool.name} class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1" title=${tool.description || tool.name}>
+                      <span class="font-mono">${tool.name}</span>
+                      ${tool.description && html`<p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>`}
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
           </div>
         `}
 
@@ -1226,20 +1258,17 @@ export function SessionPanel({
 
     return html`
       <div class="pt-4">
-        <button
-          type="button"
-          class="w-full flex items-center gap-2 text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
-          style="background: transparent; border: none; padding: 0; cursor: pointer;"
-          onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
-        >
-          <span class="transition-transform ${isAdvancedExpanded ? "" : "-rotate-90"}">
-            <${ChevronDownIcon} className="w-4 h-4" />
-          </span>
-          <span>Permissions</span>
-        </button>
+        <div class="collapse collapse-plus ${isAdvancedExpanded ? "collapse-open" : "collapse-close"}">
+          <div
+            class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
+            onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
+          >
+            <span>Permissions</span>
+          </div>
 
-        ${isAdvancedExpanded && html`
-          <div class="mt-3 space-y-3">
+          <div class="collapse-content px-0">
+            ${isAdvancedExpanded && html`
+              <div class="mt-3 space-y-3">
             ${isLoadingFlags
               ? html`<div class="text-sm text-mitto-text-500">Loading...</div>`
               : html`
@@ -1267,8 +1296,10 @@ export function SessionPanel({
                     `;
                   })}
                 `}
+              </div>
+            `}
           </div>
-        `}
+        </div>
       </div>
     `;
   }

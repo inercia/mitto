@@ -4,7 +4,7 @@
 // beadsIssueSessionMap derived value, prompt fetching helpers, and the
 // handlers for opening the beads panel, running per-issue / list prompts,
 // and navigating from a conversation's linked-issue link into the beads view.
-const { useState, useCallback, useMemo } = window.preact;
+const { useState, useCallback, useMemo, useRef } = window.preact;
 
 import { apiUrl, authFetch, secureFetch } from "../utils/index.js";
 import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
@@ -17,18 +17,22 @@ import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
  * @param {Array}    deps.workspaces       - All configured workspaces; used to pick is_default on run.
  * @param {Function} deps.newSession       - Creates a new conversation (from useWebSocket).
  * @param {Function} deps.showToast        - Toast dispatcher.
+ * @param {Function} deps.switchSession    - Activates a conversation by id (from useWebSocket).
  * @param {Function} deps.setMainView      - Switches main view to "beads" / "conversation".
  * @param {Function} deps.setShowSidebar   - Closes sidebar overlay (mobile).
- * @param {Function} deps.setShowSidePanel - Closes side panel (used in handleOpenBeadsIssue).
+ * @param {Function} deps.setShowSidePanel - Closes/opens the side panel (used in handleOpenBeadsIssue / return).
+ * @param {Function} deps.setSidePanelTab  - Selects the side panel tab (used when returning to a conversation).
  */
 export function useBeadsIntegration({
   allSessions,
   workspaces,
   newSession,
   showToast,
+  switchSession,
   setMainView,
   setShowSidebar,
   setShowSidePanel,
+  setSidePanelTab,
 }) {
   const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
   // When the beads view is opened from a linked conversation (e.g. the
@@ -41,6 +45,13 @@ export function useBeadsIntegration({
   // issue (e.g. from the global "new task" keyboard shortcut). The nonce lets
   // BeadsView re-open create even when it is already mounted.
   const [beadsCreateNonce, setBeadsCreateNonce] = useState(0);
+  // Session id of the conversation a single issue was opened from (via the
+  // properties panel's "Linked beads issue" link). When the beads view's detail
+  // panel for that issue is closed, we return to this conversation and re-open
+  // its properties panel instead of leaving the user on the beads list. Held in
+  // a ref so it survives re-renders without re-triggering effects; cleared once
+  // the return is performed (or when the open did not originate from a panel).
+  const beadsReturnSessionRef = useRef(null);
 
   // Map a beads issue ID → the most recently updated conversation linked to it.
   // The beads view uses this to render issue IDs as links that open the
@@ -58,6 +69,20 @@ export function useBeadsIntegration({
       }
     }
     return map;
+  }, [allSessions]);
+
+  // Set of beads issue IDs that have at least one linked conversation currently
+  // streaming (its agent is responding). The beads view uses this to render a
+  // pulsing ring on those issues, mirroring the loading ring shown on streaming
+  // conversations in the sidebar.
+  const beadsIssueStreamingSet = useMemo(() => {
+    const set = new Set();
+    for (const s of allSessions) {
+      const issue = s.beads_issue;
+      if (!issue) continue;
+      if (s.isStreaming) set.add(issue);
+    }
+    return set;
   }, [allSessions]);
 
   // Fetch the prompts whose `menus` list includes `beadsIssues` for a workspace
@@ -261,9 +286,12 @@ export function useBeadsIntegration({
 
   // Open the beads view focused on a specific issue (used by the conversation
   // properties panel's linked-issue link). The nonce bump lets BeadsView
-  // re-select even when the same issue is opened again.
-  const handleOpenBeadsIssue = useCallback((issueId, workingDir) => {
+  // re-select even when the same issue is opened again. `originSessionId` is the
+  // conversation the link was clicked from; it is remembered so closing that
+  // issue's detail panel returns there (see handleReturnFromBeadsIssue).
+  const handleOpenBeadsIssue = useCallback((issueId, workingDir, originSessionId) => {
     if (!issueId || !workingDir) return;
+    beadsReturnSessionRef.current = originSessionId || null;
     setBeadsWorkingDir(workingDir);
     setBeadsInitialIssueId(issueId);
     setBeadsSelectNonce((n) => n + 1);
@@ -272,12 +300,28 @@ export function useBeadsIntegration({
     setShowSidePanel(false);
   }, []);
 
+  // Return to the conversation an issue was opened from, re-opening its
+  // properties panel. Called by BeadsView when the detail panel that was opened
+  // via the linked-issue link is closed. No-op when the beads view was not
+  // entered from a conversation (e.g. the Tasks button), so a normal close just
+  // leaves the user on the beads list as before.
+  const handleReturnFromBeadsIssue = useCallback(() => {
+    const origin = beadsReturnSessionRef.current;
+    beadsReturnSessionRef.current = null;
+    if (!origin) return;
+    switchSession(origin);
+    setMainView("conversation");
+    setSidePanelTab("properties");
+    setShowSidePanel(true);
+  }, [switchSession, setMainView, setSidePanelTab, setShowSidePanel]);
+
   return {
     beadsWorkingDir,
     beadsInitialIssueId,
     beadsSelectNonce,
     beadsCreateNonce,
     beadsIssueSessionMap,
+    beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,
     fetchBeadsListPromptsForWorkspace,
     handleRunBeadsPrompt,
@@ -285,5 +329,6 @@ export function useBeadsIntegration({
     handleBeadsOpen,
     handleBeadsCreate,
     handleOpenBeadsIssue,
+    handleReturnFromBeadsIssue,
   };
 }

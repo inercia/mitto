@@ -5,9 +5,15 @@ menus: prompts
 description: "Rebase changes on top of main"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"
+enabledWhen: 'fileExists(".git/config") || fileExists(".git")'
 ---
 
 Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
+
+> **Worktree-isolated conversation:** if `@mitto:worktree_base_branch` is non-empty, this
+> conversation runs on its own branch `@mitto:worktree_branch` (worktree at `@mitto:worktree_path`),
+> created from `@mitto:worktree_base_branch`. Use `@mitto:worktree_base_branch` as the rebase target
+> in step 2 instead of inferring it.
 
 ### 1. Check Repository Status
 
@@ -35,6 +41,10 @@ If PR exists: extract `base.ref` and `base.repo.full_name`, match to a configure
 
 #### 2c. If No PR, Infer Target
 
+If `@mitto:worktree_base_branch` is set, use it as the target branch — no inference needed.
+
+Otherwise:
+
 ```bash
 git config --get branch.$(git branch --show-current).remote
 git config --get branch.$(git branch --show-current).merge
@@ -42,7 +52,7 @@ git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
 git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
 ```
 
-Priority: tracking branch → `upstream` remote → `origin` remote.
+Priority: `@mitto:worktree_base_branch` → tracking branch → `upstream` remote → `origin` remote.
 
 #### 2d. Confirm with User
 

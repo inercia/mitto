@@ -129,7 +129,7 @@ export function PromptsMenu({
           autocapitalize="off"
           spellcheck=${false}
           data-testid=${filterTestId}
-          class="w-full pl-4 pr-2.5 py-1.5 bg-mitto-surface-3/50 border border-mitto-border-2 rounded-lg text-xs focus:outline-none focus:border-mitto-accent"
+          class="input input-sm w-full"
         />
       </div>
       <div

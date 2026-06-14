@@ -17,6 +17,8 @@ import {
   onUIPreferencesLoaded,
   getLastSessionForGroup,
   setLastSessionForGroup,
+  getDensity,
+  setDensity,
 } from "../utils/index.js";
 import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
@@ -122,6 +124,13 @@ export function SessionList({
   const [newGroupDialog, setNewGroupDialog] = useState(null);
   const [newGroupName, setNewGroupName] = useState("");
   const newGroupInputRef = useRef(null);
+
+  const [density, setDensityState] = useState(() => getDensity());
+  const handleDensityChange = useCallback((mode) => {
+    setDensityState(mode);
+    setDensity(mode);
+    setOpenToolbarMenu(null);
+  }, []);
 
   // Which side-panel toolbar dropdown is open ("filter" | "density" | null).
   // Controlled so the menus are mutually exclusive — opening one closes the other.
@@ -631,11 +640,17 @@ export function SessionList({
     // Get the session's ACP server (stored when session was created)
     const sessionAcpServer =
       session.acp_server || session.info?.acp_server || "";
+    // For worktree conversations, match the workspace by the repo root rather than
+    // the per-session worktree path so the badge/color resolves to the project.
+    const workspaceDir =
+      session.worktree_repo_dir ||
+      session.info?.worktree_repo_dir ||
+      workingDir;
     // Find the workspace matching both working_dir AND acp_server
     // This is important when multiple workspaces share the same folder but use different ACP servers
     const workspace = workspaces.find(
       (ws) =>
-        ws.working_dir === workingDir &&
+        ws.working_dir === workspaceDir &&
         (!sessionAcpServer || ws.acp_server === sessionAcpServer),
     );
     // Only the active session can have queued messages
@@ -681,6 +696,7 @@ export function SessionList({
         isExpanded=${isExpanded}
         onToggleExpand=${onToggleExpand}
         isNew=${isNew}
+        density=${density}
       />
     `;
   };
@@ -879,7 +895,12 @@ export function SessionList({
           const tasksActive =
             mainView === "beads" && beadsWorkingDir === folder.workingDir;
           return html`
-            <li key=${folder.key} class="folder-group min-w-0">
+            <li
+              key=${folder.key}
+              class="folder-group min-w-0 ${density === "comfortable"
+                ? "mt-2"
+                : ""}"
+            >
               <details
                 class="min-w-0 w-full"
                 open=${folderExpanded}
@@ -1315,7 +1336,7 @@ export function SessionList({
             </ul>
           </details>
           <!-- Density control: opens a menu with "Comfortable" / "Condensed".
-               UI only for now — wiring is added in a follow-up. -->
+               The active mode is checked; the choice persists in localStorage. -->
           <details
             class="dropdown flex-auto -ms-px"
             open=${openToolbarMenu === "density"}
@@ -1338,12 +1359,14 @@ export function SessionList({
             >
               <li class="menu-title text-xs">Density</li>
               <li>
-                <button type="button" data-testid="density-comfortable">
+                <button type="button" data-testid="density-comfortable" onClick=${() => handleDensityChange("comfortable")}>
+                  ${density === "comfortable" ? html`<${CheckIcon} className="w-4 h-4" />` : html`<span class="inline-block w-4 h-4"></span>`}
                   <span class="text-sm">Comfortable</span>
                 </button>
               </li>
               <li>
-                <button type="button" data-testid="density-condensed">
+                <button type="button" data-testid="density-condensed" onClick=${() => handleDensityChange("condensed")}>
+                  ${density === "condensed" ? html`<${CheckIcon} className="w-4 h-4" />` : html`<span class="inline-block w-4 h-4"></span>`}
                   <span class="text-sm">Condensed</span>
                 </button>
               </li>

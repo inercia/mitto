@@ -30,7 +30,9 @@ type TestServer struct {
 
 // SetupTestServer creates a new test server with mock ACP.
 // The returned cleanup function must be called to release resources.
-func SetupTestServer(t *testing.T) *TestServer {
+// Optional opts customize the web.Config before the server is created (e.g. to
+// register workspaces with non-default settings).
+func SetupTestServer(t *testing.T, opts ...func(*web.Config)) *TestServer {
 	t.Helper()
 
 	// Create temp directory for test data
@@ -75,6 +77,13 @@ func SetupTestServer(t *testing.T) *TestServer {
 		MittoConfig:       mittoConfig,
 
 		DisableAuxiliaryPrewarm: true, // Avoid interference with mock ACP server
+	}
+
+	// Apply optional config customizations (e.g. worktrees-enabled workspaces).
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&webConfig)
+		}
 	}
 
 	// Create web server

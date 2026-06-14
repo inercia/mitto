@@ -419,6 +419,61 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       expect(updateCalled).toBe(false);
     },
   );
+
+  testWithCleanup(
+    "issue list stays painted when hovering with the detail panel open",
+    async ({ page, timeouts }) => {
+      // Regression guard for a WKWebView/Safari compositing glitch: with the
+      // detail panel open, a translucent fixed backdrop (bg-black/50) and the
+      // scoped drawer's transparent overlay stack over the scrollable issue
+      // list. Moving the pointer over that overlay dropped the scroll layer's
+      // backing store and the list painted blank. The fix promotes
+      // .beads-table-scroll to its own GPU backing layer via translateZ(0).
+      // Chromium does not reproduce the WebKit repaint bug, so this asserts the
+      // layer-promotion is applied (the actual fix) and that the rows remain
+      // visible/painted while hovering with the panel open.
+      await openBeads(page, timeouts);
+      const panel = page.locator(DETAIL_PANEL);
+      const scroll = page.locator("div.beads-table-scroll");
+
+      // Open the panel for the short issue (mitto-bbb).
+      await page
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
+        .first()
+        .click();
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+
+      // The scroll container is promoted to its own GPU backing layer. A
+      // non-"none" transform is the layer-promotion the fix relies on; without
+      // it, this regresses to the blank-on-hover WebKit glitch.
+      const transform = await scroll.evaluate(
+        (el) => getComputedStyle(el).transform,
+      );
+      expect(transform).not.toBe("none");
+      expect(transform).not.toBe("");
+
+      // Move the pointer over the list's left region (which the panel does not
+      // cover, but the translucent backdrop and the transparent drawer-overlay
+      // do). This is the exact gesture that triggered the WebKit blank-out, so
+      // we dispatch a raw mouse move rather than Locator.hover() — the overlays
+      // intercept pointer events by design, which would fail hover's
+      // actionability check.
+      const scrollBox = await scroll.boundingBox();
+      expect(scrollBox).not.toBeNull();
+      await page.mouse.move(
+        scrollBox!.x + 20,
+        scrollBox!.y + scrollBox!.height / 2,
+      );
+
+      // The rows must remain visible and painted, not blanked out.
+      const shortRow = page.getByText("Short issue").first();
+      await expect(shortRow).toBeVisible();
+      const box = await shortRow.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.width).toBeGreaterThan(0);
+      expect(box!.height).toBeGreaterThan(0);
+    },
+  );
 });
 
 /**
@@ -792,6 +847,134 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       await expect(
         epicGroup2.locator(".pl-8").getByText("Child one", { exact: true }),
       ).toBeHidden();
+    },
+  );
+});
+
+/**
+ * Beads view — fast-open + return-to-origin from a conversation's linked issue.
+ *
+ * Covers the navigation flow for the properties panel's "Linked beads issue"
+ * link:
+ *   1. Fast-open: the issue's detail panel appears immediately from a single
+ *      `/api/beads/show` fetch, without waiting for the full `/api/beads/list`
+ *      to load. The list is deliberately gated (held pending) to prove the
+ *      panel opens before any list row renders.
+ *   2. Return-to-origin: closing that detail panel returns the user to the
+ *      originating conversation with its properties panel re-opened — instead
+ *      of leaving them stranded on the beads list.
+ *
+ * The seed conversation is created with beads_issue=mitto-bbb so the
+ * SessionPanel renders the linked-issue link. The external `bd` binary is never
+ * invoked: both list and show are mocked.
+ */
+
+// Both the SessionPanel and the beads detail panel carry the shared
+// `properties-panel` class (added by Drawer). Scope each by a heading unique to
+// it so assertions stay unambiguous even during the brief cross-view
+// transition: the SessionPanel header is "Conversation"; the detail panel
+// header is the issue title ("Short issue").
+const CONV_PANEL = 'div.properties-panel:has(h2:has-text("Conversation"))';
+const ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("Short issue"))';
+
+testWithCleanup.describe("Beads view - return to conversation", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+    // Mock the single-issue show endpoint so the fast-open path resolves
+    // immediately regardless of the (gated) list load. Returns mitto-bbb.
+    await page.route("**/api/beads/show**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MOCK_ISSUES[1]), // mitto-bbb "Short issue"
+      });
+    });
+
+    // Ensure the project-alpha workspace exists so its folder group renders.
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+
+    // Create a conversation linked to mitto-bbb so the properties panel shows
+    // the "Linked beads issue" link.
+    const createResp = await request.post(apiUrl("/api/sessions"), {
+      data: {
+        name: `Linked ${Date.now()}`,
+        working_dir: WORKSPACE_ALPHA,
+        beads_issue: "mitto-bbb",
+      },
+    });
+    expect(createResp.ok()).toBeTruthy();
+    const linkedSessionId = (await createResp.json()).session_id;
+    expect(linkedSessionId).toBeTruthy();
+
+    // Make the app open directly into the linked conversation on load. This
+    // init script runs before navigateAndWait's own init script (both persist
+    // and run on page.goto).
+    await page.addInitScript((sid) => {
+      localStorage.setItem("mitto_last_session_id", sid);
+    }, linkedSessionId);
+
+    await helpers.navigateAndWait(page);
+  });
+
+  testWithCleanup(
+    "fast-opens the linked issue before the list loads, then returns to the conversation on close",
+    async ({ page, timeouts }) => {
+      // Gate the full list so it stays pending: this proves the detail panel
+      // opens from the show fetch alone, not from the list.
+      let releaseList = () => {};
+      const listGate = new Promise<void>((resolve) => {
+        releaseList = resolve;
+      });
+      await page.route("**/api/beads/list**", async (route) => {
+        await listGate;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_ISSUES),
+        });
+      });
+
+      // Wait for the linked conversation to be active (chat input enabled).
+      await expect(page.locator("textarea")).toBeEnabled({
+        timeout: timeouts.appReady,
+      });
+
+      // Open the conversation properties side panel; confirm the linked-issue
+      // link is present.
+      await page.getByTitle("Session details").click();
+      const convPanel = page.locator(CONV_PANEL);
+      await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
+
+      // Follow the linked-issue link → opens the beads view focused on the issue.
+      await page.getByTitle("Open beads issue mitto-bbb").click();
+
+      // Fast-open: the issue detail panel appears immediately from the show
+      // fetch, even though the list request is still pending (gated).
+      const issuePanel = page.locator(ISSUE_PANEL);
+      await expect(issuePanel).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(issuePanel.getByText("mitto-bbb")).toBeVisible();
+
+      // The list has NOT loaded yet: the long-title row (mitto-aaa) is absent.
+      await expect(page.getByText(LONG_TITLE)).toHaveCount(0);
+
+      // Release the gated list; its rows now render in the background behind the
+      // already-open panel.
+      releaseList();
+      await expect(page.getByText(LONG_TITLE).first()).toBeVisible({
+        timeout: timeouts.shortAction,
+      });
+
+      // Close the detail panel → returns to the originating conversation with
+      // its properties panel re-opened (not left on the beads list).
+      await issuePanel.getByTitle("Close", { exact: true }).click();
+
+      // Back in the conversation: the conversation properties panel (with the
+      // linked-issue link) is shown again and the beads table is gone.
+      await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
+      await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
     },
   );
 });

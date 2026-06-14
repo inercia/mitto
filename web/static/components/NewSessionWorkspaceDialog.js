@@ -268,15 +268,17 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                       </button>
                     `}
                     ${isExpanded &&
-                    wsArray.map((ws) => {
-                      const currentIndex = globalIndex++;
-                      return html`
+                    html`
+                      <div
+                        class="space-y-0.5 ${showGroupHeader ? "pl-4" : ""}"
+                      >
+                        ${wsArray.map((ws) => {
+                          const currentIndex = globalIndex++;
+                          return html`
                         <button
                           key=${ws.working_dir + "|" + ws.acp_server}
                           onClick=${() => onSelect(ws)}
-                          class="w-full px-2 py-1.5 text-left rounded-md bg-mitto-surface-3/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-2 ${showGroupHeader
-                            ? "ml-4"
-                            : ""}"
+                          class="w-full px-2 py-1.5 text-left rounded-md bg-mitto-surface-3/50 hover:bg-mitto-surface-hover transition-colors flex items-center gap-2"
                         >
                           <div
                             class="w-5 h-5 shrink-0 ${currentIndex <
@@ -322,7 +324,9 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
                           </div>
                         </button>
                       `;
-                    })}
+                        })}
+                      </div>
+                    `}
                   </div>
                 `;
               },

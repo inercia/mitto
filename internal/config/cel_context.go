@@ -73,6 +73,11 @@ type SessionContext struct {
 	HasBeadsIssue bool
 	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
 	BeadsIssue string
+	// HasWorktree indicates whether this conversation has its OWN git worktree
+	// (the session metadata WorktreePath field is non-empty). Children that merely
+	// inherit a parent's worktree dir have an empty WorktreePath and so this is
+	// false for them (owner-only semantics).
+	HasWorktree bool
 }
 
 // ParentContext holds parent session context for CEL evaluation.

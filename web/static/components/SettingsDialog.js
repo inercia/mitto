@@ -37,7 +37,6 @@ import {
   LockIcon,
   GlobeIcon,
   SlidersIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
   DuplicateIcon,
   ShieldIcon,
@@ -397,16 +396,12 @@ export function RunnerRestrictionsEditor({
       runnerConfig.restrictions?.docker);
 
   return html`
-    <div class="border border-mitto-border-2/50 rounded-md overflow-hidden mt-2">
-      <button
-        type="button"
+    <div class="collapse collapse-plus ${expanded ? "collapse-open" : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2">
+      <div
+        class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
         onClick=${() => setExpanded(!expanded)}
-        class="w-full flex items-center justify-between p-3 bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
       >
         <div class="flex items-center gap-2">
-          <${expanded ? ChevronDownIcon : ChevronRightIcon}
-            className="w-4 h-4 text-mitto-text-muted"
-          />
           <span class="text-sm font-medium">Runner Restrictions</span>
         </div>
         ${hasConfig &&
@@ -417,10 +412,11 @@ export function RunnerRestrictionsEditor({
             Configured
           </span>
         `}
-      </button>
+      </div>
 
-      ${expanded &&
-      html`
+      <div class="collapse-content px-0">
+        ${expanded &&
+        html`
         <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
           <fieldset class="fieldset pt-2">
             <legend class="fieldset-legend">Networking</legend>
@@ -553,6 +549,7 @@ export function RunnerRestrictionsEditor({
           </div>
         </div>
       `}
+      </div>
     </div>
   `;
 }
@@ -1102,6 +1099,9 @@ export function SettingsDialog({
   // Max child conversations setting - default 10
   const [maxChildConversations, setMaxChildConversations] = useState(10);
 
+  // Worktree isolation setting (global) - default ON for git repositories
+  const [worktreesEnabled, setWorktreesEnabled] = useState(true);
+
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
   const [defaultFlags, setDefaultFlags] = useState({});
@@ -1532,6 +1532,11 @@ export function SettingsDialog({
         config.conversations?.max_child_conversations ?? 10,
       );
 
+      // Load worktree isolation setting - default ON (off only when explicitly disabled)
+      setWorktreesEnabled(
+        config.conversations?.worktrees_enabled !== false,
+      );
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -1770,6 +1775,7 @@ export function SettingsDialog({
           enabled: externalImagesEnabled,
         },
         max_child_conversations: maxChildConversations,
+        worktrees_enabled: worktreesEnabled,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -2363,18 +2369,13 @@ export function SettingsDialog({
                                 return html`
                                   <div key=${srv._key}>
                                   <div
-                                    class="collapse ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
+                                    class="collapse ${!isRCFile ? "collapse-plus" : ""} ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
                                   >
                                     <!-- Collapsed header row — click to expand/collapse -->
                                     <div
-                                      class="collapse-title flex items-center gap-3 py-2 px-3 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
+                                      class="collapse-title flex items-center gap-3 py-2 px-3 pr-12 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
                                       onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
                                     >
-                                      ${!isRCFile && html`
-                                        <${isExpanded ? ChevronDownIcon : ChevronRightIcon}
-                                          className="w-4 h-4 text-mitto-text-muted shrink-0"
-                                        />
-                                      `}
                                       <div class="flex-1 min-w-0">
                                         <div class="font-medium text-sm flex items-center gap-2">
                                           ${srv.name}
@@ -2517,25 +2518,19 @@ export function SettingsDialog({
                             (runner) => html`
                               <div
                                 key=${runner.type}
-                                class="border border-mitto-border-2/50 rounded-md overflow-hidden"
+                                class="collapse collapse-plus ${expandedRunner === runner.type ? 'collapse-open' : 'collapse-close'} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20"
                               >
                                 <!-- Runner header (collapsible) -->
-                                <button
-                                  type="button"
+                                <div
+                                  class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                                   onClick=${() =>
                                     setExpandedRunner(
                                       expandedRunner === runner.type
                                         ? null
                                         : runner.type,
                                     )}
-                                  class="w-full flex items-center justify-between p-3 bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                                 >
                                   <div class="flex items-center gap-3">
-                                    <${expandedRunner === runner.type
-                                      ? ChevronDownIcon
-                                      : ChevronRightIcon}
-                                      className="w-4 h-4 text-mitto-text-muted"
-                                    />
                                     <div class="text-left">
                                       <div class="font-medium text-sm">
                                         ${runner.label}
@@ -2553,13 +2548,14 @@ export function SettingsDialog({
                                       Configured
                                     </span>
                                   `}
-                                </button>
+                                </div>
 
                                 <!-- Expanded content -->
-                                ${expandedRunner === runner.type &&
-                                html`
+                                <div class="collapse-content px-4 ${expandedRunner === runner.type ? 'pb-4' : ''}">
+                                  ${expandedRunner === runner.type &&
+                                  html`
                                   <div
-                                    class="p-4 space-y-4 border-t border-mitto-border-2/50"
+                                    class="space-y-4"
                                   >
                                     <!-- Allow networking toggle -->
                                     <label
@@ -3077,7 +3073,8 @@ export function SettingsDialog({
                                       </button>
                                     </div>
                                   </div>
-                                `}
+                                  `}
+                                </div>
                               </div>
                             `,
                           )}
@@ -3445,6 +3442,35 @@ export function SettingsDialog({
                           </div>
                         </div>
                       `}
+
+                      <!-- Worktree Isolation -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
+                          Worktree Isolation
+                        </h4>
+                        <label
+                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${worktreesEnabled}
+                            onChange=${(e) =>
+                              setWorktreesEnabled(e.target.checked)}
+                            class="checkbox checkbox-sm checkbox-primary"
+                          />
+                          <div class="flex-1">
+                            <div class="font-medium text-sm">
+                              Isolate changes in worktrees
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Run each new conversation in its own dedicated git
+                              worktree and branch so changes stay isolated until
+                              merged. Only applies to git repositories. Folders
+                              can override this default.
+                            </div>
+                          </div>
+                        </label>
+                      </div>
 
                       <!-- Message Display -->
                       <div class="space-y-3">

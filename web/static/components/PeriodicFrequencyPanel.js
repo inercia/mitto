@@ -434,15 +434,17 @@ export function PeriodicFrequencyPanel({
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
           disabled=${isSaving}
-          class="input input-xs w-16 text-center"
+          class="input input-xs w-16 shrink-0 text-center"
         />
 
         <!-- Unit dropdown -->
+        <!-- shrink-0 + fixed width: daisyUI .select has flex-shrink:1 and overflow:hidden,
+             which lets it collapse to just the chevron (hiding the unit text) in tight rows -->
         <select
           value=${localUnit}
           onChange=${handleUnitChange}
           disabled=${isSaving}
-          class="select select-xs"
+          class="select select-xs shrink-0 w-28"
         >
           <option value="minutes">minutes</option>
           <option value="hours">hours</option>

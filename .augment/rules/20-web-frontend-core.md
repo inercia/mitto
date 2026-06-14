@@ -113,23 +113,44 @@ onClick=${(e) => {
 }}
 ```
 
-## Context Menu: Use useMemo Not useState+useEffect
+## Context Menu: Clamp Position with useLayoutEffect
+
+To keep a menu on-screen near a window edge, measure it and reposition. Two
+naive approaches both fail:
 
 ```javascript
-// BAD: runs after paint → visible position jump
+// BAD: useEffect runs AFTER paint → visible position jump.
 const [pos, setPos] = useState({x, y});
 useEffect(() => setPos(calculatePosition(x, y)), [x, y]);
 
-// GOOD: synchronous during render, no jump
-const position = useMemo(() => {
-    if (!menuRef.current) return {x, y};
-    const rect = menuRef.current.getBoundingClientRect();
-    let newX = x, newY = y;
-    if (x + rect.width > window.innerWidth) newX = window.innerWidth - rect.width - 8;
-    if (y + rect.height > window.innerHeight) newY = window.innerHeight - rect.height - 8;
-    return {x: newX, y: newY};
-}, [x, y, menuRef.current]);
+// BAD: useMemo keyed on a ref never recomputes — refs don't trigger re-renders,
+// so the menu stays at its raw (overflowing) position. Even when an unrelated
+// re-render happens, the memo reads the DOM BEFORE the new content commits, so a
+// menu that grows (e.g. async-loaded items) is measured too short and clips.
+const position = useMemo(() => { /* ...read menuRef.current... */ }, [x, y, menuRef.current]);
 ```
+
+```javascript
+// GOOD: useLayoutEffect runs synchronously BEFORE paint → no jump, and measures
+// the committed DOM so growth is handled. Key on item COUNT so it re-runs when
+// content changes; guard setState to avoid a render loop. Clamp top/left ≥ margin
+// and add `max-h-[95vh] overflow-y-auto` so taller-than-viewport menus scroll.
+const [position, setPosition] = useState({x, y});
+useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const m = 8;
+    let newX = x, newY = y;
+    if (newX + rect.width > window.innerWidth) newX = window.innerWidth - rect.width - m;
+    if (newY + rect.height > window.innerHeight) newY = window.innerHeight - rect.height - m;
+    newX = Math.max(m, newX); newY = Math.max(m, newY);
+    setPosition((prev) => (prev.x === newX && prev.y === newY ? prev : {x: newX, y: newY}));
+}, [x, y, items.length]);
+```
+
+Arbitrary `vh` max-heights are JIT-generated: only values already in
+`web/static/tailwind.css` (e.g. `60vh`, `70vh`, `95vh`) work without a rebuild.
 
 ## Click Outside Detection
 
