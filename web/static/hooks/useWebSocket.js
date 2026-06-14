@@ -1301,6 +1301,21 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
                 config_options:
                   msg.data.config_options ?? session.info?.config_options ?? [],
+                // Git worktree isolation fields (empty when the conversation is
+                // not in an isolated worktree). Drive the branch/base display and
+                // the "Submit changes" affordance in the Changes panel.
+                worktree_path:
+                  msg.data.worktree_path ?? session.info?.worktree_path ?? "",
+                worktree_branch:
+                  msg.data.worktree_branch ?? session.info?.worktree_branch ?? "",
+                worktree_base_branch:
+                  msg.data.worktree_base_branch ??
+                  session.info?.worktree_base_branch ??
+                  "",
+                worktree_base_commit:
+                  msg.data.worktree_base_commit ??
+                  session.info?.worktree_base_commit ??
+                  "",
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,

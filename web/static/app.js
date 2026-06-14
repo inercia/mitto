@@ -1665,6 +1665,31 @@ function App() {
     [showToast],
   );
 
+  // Run the builtin "Submit changes" prompt in the given conversation (used by
+  // the worktree flow-back affordance in the Changes panel). Finds the prompt by
+  // name in the active workspace prompt list and enqueues it like a context-menu
+  // prompt; the prompt itself resolves @mitto:worktree_base_branch to target the
+  // worktree's base. Falls back to a toast if the prompt isn't available (e.g.
+  // not a git repo, so its enabledWhen gate hid it).
+  const handleSubmitChanges = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+      const prompt = (workspacePrompts || []).find(
+        (p) => p && p.name === "Submit changes",
+      );
+      if (!prompt || !prompt.prompt) {
+        showToast({
+          style: "warning",
+          title: "\"Submit changes\" prompt is unavailable here",
+          duration: 4000,
+        });
+        return;
+      }
+      handleSendPromptToConversation({ session_id: sessionId }, prompt);
+    },
+    [workspacePrompts, handleSendPromptToConversation, showToast],
+  );
+
 
   return html`
     <div class="drawer md:drawer-open h-screen-safe">
@@ -2046,6 +2071,7 @@ function App() {
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
         showToast=${showToast}
+        onSubmitChanges=${handleSubmitChanges}
       />
 
       <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the
