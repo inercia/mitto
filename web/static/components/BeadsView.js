@@ -2273,8 +2273,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         ${html`<div
           class="pull-to-refresh-indicator"
           style=${{
-            height: refreshing ? "40px" : `${pullDistance}px`,
-            opacity: refreshing ? 1 : Math.min(1, pullDistance / 70),
+            height: refreshing || loading ? "40px" : `${pullDistance}px`,
+            opacity: refreshing || loading ? 1 : Math.min(1, pullDistance / 70),
             overflow: "hidden",
             display: "flex",
             alignItems: "center",
@@ -2285,11 +2285,6 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         >
           <span class="loading loading-spinner w-5 h-5 text-mitto-text-secondary"></span>
         </div>`}
-        ${loading && issues.length === 0 && html`
-          <div class="flex items-center justify-center h-24 text-mitto-text-secondary gap-2">
-            <span class="loading loading-spinner w-4 h-4"></span> Loading issues…
-          </div>
-        `}
         ${!loading && error && html`
           <div class="flex items-center justify-center h-24 text-red-400 text-sm px-4">${error}</div>
         `}
