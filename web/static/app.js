@@ -173,6 +173,7 @@ import {
 // Import extracted components
 import { WorkspaceBadge, WorkspacePill } from "./components/WorkspaceBadge.js";
 import { DeleteDialog } from "./components/DeleteDialog.js";
+import { ConfirmDialog } from "./components/ConfirmDialog.js";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog.js";
 import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialog.js";
 
@@ -1681,6 +1682,99 @@ function App() {
     closeDeleteDialog();
   };
 
+  // --- Standalone "Merge into" (context menu) --------------------------------
+  // Merges a conversation's worktree branch into a target without deleting it.
+  // Unlike the delete-time flow, the conversation is kept regardless of outcome;
+  // success/failure is surfaced via a toast.
+  const mergeSessionInto = useCallback(
+    async (session, target, newBranch) => {
+      const sid = session?.session_id;
+      if (!sid) return;
+      try {
+        const res = await secureFetch(apiUrl(`/api/sessions/${sid}/merge`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: target || "",
+            new_branch: newBranch || "",
+          }),
+        });
+        const result = res.ok
+          ? await res.json()
+          : { success: false, detail: "Merge request failed" };
+        if (result.success) {
+          showToast({
+            style: "success",
+            title: `Merged into "${result.target || target || newBranch}"`,
+            duration: 4000,
+          });
+          fetchStoredSessions();
+        } else {
+          const reason = result.reason;
+          const failTitle =
+            reason === "conflict"
+              ? `Rebasing onto "${target}" stopped on conflicts and was aborted.`
+              : reason === "dirty_worktree"
+                ? "This conversation's worktree has uncommitted changes."
+                : reason === "target_checked_out_dirty"
+                  ? `The target branch "${target}" has uncommitted changes. Commit or stash them first.`
+                  : reason === "session_busy"
+                    ? "The agent is currently responding. Wait for it to finish and try again."
+                    : result.detail || "Merge could not be completed.";
+          showToast({ style: "warning", title: failTitle, duration: 6000 });
+        }
+      } catch (err) {
+        console.error("Merge-back failed:", err);
+        showToast({
+          style: "error",
+          title: "Merge failed: " + (err?.message || String(err)),
+          duration: 5000,
+        });
+      }
+    },
+    [showToast, fetchStoredSessions],
+  );
+
+  // Merge into an existing branch (chosen from the context-menu submenu).
+  const handleMergeSession = useCallback(
+    (session, target) => mergeSessionInto(session, target, ""),
+    [mergeSessionInto],
+  );
+
+  // New-branch merge dialog state (opened from the "Merge into → New branch…"
+  // context-menu entry). Collects a branch name, then merges into it.
+  const [mergeBranchDialog, setMergeBranchDialog] = useState({
+    isOpen: false,
+    session: null,
+    name: "",
+  });
+  const openMergeNewBranchDialog = useCallback((session) => {
+    setMergeBranchDialog({ isOpen: true, session, name: "" });
+  }, []);
+  const closeMergeBranchDialog = () =>
+    setMergeBranchDialog({ isOpen: false, session: null, name: "" });
+  const confirmMergeNewBranch = async () => {
+    const session = mergeBranchDialog.session;
+    const name = (mergeBranchDialog.name || "").trim();
+    if (!session || !name) return;
+    closeMergeBranchDialog();
+    await mergeSessionInto(session, "", name);
+  };
+
+  // Fetch candidate merge-back branches for a conversation's "Merge into"
+  // submenu. Returns the /branches payload (or null on failure).
+  const fetchSessionBranches = useCallback(async (session) => {
+    const sid = session?.session_id;
+    if (!sid) return null;
+    try {
+      const res = await secureFetch(apiUrl(`/api/sessions/${sid}/branches`));
+      if (res.ok) return await res.json();
+    } catch (err) {
+      console.error("Failed to fetch branches:", err);
+    }
+    return null;
+  }, []);
+
   const handlePinSession = async (session, pinned) => {
     await pinSession(session.session_id, pinned);
   };
@@ -1870,6 +1964,30 @@ function App() {
         onSendAgentPrompt=${handleSendAgentPrompt}
         onCancel=${closeDeleteDialog}
       />
+
+      <!-- Merge into a new branch (from the "Merge into → New branch…" menu) -->
+      <${ConfirmDialog}
+        isOpen=${mergeBranchDialog.isOpen}
+        title="Merge into a new branch"
+        message=${`Create a new branch from the default branch and merge "${
+          mergeBranchDialog.session?.name ||
+          mergeBranchDialog.session?.description ||
+          "this conversation"
+        }" into it.`}
+        confirmLabel="Create & merge"
+        cancelLabel="Cancel"
+        onConfirm=${confirmMergeNewBranch}
+        onCancel=${closeMergeBranchDialog}
+      >
+        <input
+          type="text"
+          value=${mergeBranchDialog.name}
+          onInput=${(e) =>
+            setMergeBranchDialog((p) => ({ ...p, name: e.target.value }))}
+          class="input input-sm w-full font-mono mt-3"
+          placeholder="feature-branch"
+        />
+      </${ConfirmDialog}>
 
       <!-- Workspace Selection Dialog (for new conversations) -->
       <${NewSessionWorkspaceDialog}
@@ -2300,6 +2418,9 @@ function App() {
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
+            onFetchSessionBranches=${fetchSessionBranches}
+            onMergeSession=${handleMergeSession}
+            onMergeSessionToNewBranch=${openMergeNewBranchDialog}
             onMakePeriodic=${handleMakePeriodic}
             onMakeNonPeriodic=${handleMakeNonPeriodic}
             isCreatingSession=${isCreatingSession}

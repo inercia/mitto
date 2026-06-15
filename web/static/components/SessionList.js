@@ -94,6 +94,9 @@ export function SessionList({
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
+  onFetchSessionBranches, // Async (session) => branchesData for the "Merge into" submenu
+  onMergeSession, // (session, targetBranch) => merge worktree branch into an existing branch
+  onMergeSessionToNewBranch, // (session) => merge into a newly created branch (opens a dialog)
   onMakePeriodic, // Called with (session) to convert a regular session to periodic
   onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
   isCreatingSession = false, // True while a new-conversation request is in-flight or retrying
@@ -686,6 +689,9 @@ export function SessionList({
         groupingMode=${groupingMode}
         onFetchConversationPrompts=${onFetchConversationPrompts}
         onSendPromptToConversation=${onSendPromptToConversation}
+        onFetchSessionBranches=${onFetchSessionBranches}
+        onMergeSession=${onMergeSession}
+        onMergeSessionToNewBranch=${onMergeSessionToNewBranch}
         onMakePeriodic=${onMakePeriodic}
         onMakeNonPeriodic=${onMakeNonPeriodic}
         isSpawned=${isSpawned}
