@@ -1,8 +1,8 @@
 // Mitto Web Interface - Session Item Component
-const { html, Fragment, useState, useMemo, useCallback } = window.preact;
+const { html, Fragment, useMemo, useCallback } = window.preact;
 
 import { FILTER_TAB } from "../utils/index.js";
-import { useSwipeToAction } from "../hooks/index.js";
+import { useSwipeToAction, useConversationMenu } from "../hooks/index.js";
 import { getArchiveReasonText, getGlobalWorkingDir } from "../lib.js";
 import {
   PERIODIC_PROGRESS_STYLE,
@@ -19,9 +19,6 @@ import {
   QuestionMarkIcon,
   TrashIcon,
   ArchiveIcon,
-  ArchiveFilledIcon,
-  EditIcon,
-  getPromptIconOrDefault,
   MittoIcon,
   ClockIcon,
   EllipsisIcon,
@@ -123,12 +120,6 @@ export function SessionItem({
   onToggleExpand = null, // Callback when expand/collapse is clicked
   density = "condensed",
 }) {
-  const [contextMenu, setContextMenu] = useState(null);
-  // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
-  // when the context menu opens (enabledWhen depends on this conversation's own
-  // context, not the active session). Cached between opens; refreshed each open.
-  const [menuPrompts, setMenuPrompts] = useState([]);
-
   // Check if session is archived
   const isArchived = session.archived || false;
 
@@ -298,53 +289,35 @@ export function SessionItem({
     disabled: false,
   });
 
-  const handleRename = (e) => {
-    if (e) e.stopPropagation();
-    onRename(session);
-  };
-
-  const handleDelete = (e) => {
-    if (e) e.stopPropagation();
-    onDelete(session);
-  };
-
-  const handleArchive = (e) => {
-    if (e) e.stopPropagation();
-    onArchive(session, !isArchived);
-  };
-
-  // Open the per-item context menu at a viewport position. Used by both
-  // right-click (handleContextMenu) and the explicit three-dot button
-  // (handleMenuButtonClick). Evaluates menus:conversation prompts against THIS
-  // conversation's context so the submenu reflects the clicked conversation
-  // (e.g. "Report to parent" only for children), not the active session.
-  const openContextMenuAt = (x, y) => {
-    setContextMenu({ x, y });
-    if (onFetchConversationPrompts) {
-      onFetchConversationPrompts(session, workingDir).then((prompts) => {
-        setMenuPrompts(prompts || []);
-      });
-    }
-  };
-
-  const handleContextMenu = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openContextMenuAt(e.clientX, e.clientY);
-  };
-
-  // Explicit three-dot button: anchor the menu at the button's bottom-left.
-  // ContextMenu is viewport-aware and will flip/shift to stay on-screen.
-  const handleMenuButtonClick = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    openContextMenuAt(rect.left, rect.bottom);
-  };
-
-  const closeContextMenu = () => {
-    setContextMenu(null);
-  };
+  // Per-conversation actions menu (shared with the chat header). Provides the
+  // context-menu state, the assembled menu items, and the right-click /
+  // three-dot button handlers, all scoped to THIS conversation.
+  const {
+    contextMenu,
+    contextMenuItems,
+    closeContextMenu,
+    handleContextMenu,
+    handleMenuButtonClick,
+  } = useConversationMenu({
+    session,
+    workingDir,
+    isArchived,
+    isPeriodicEnabled,
+    isSpawned,
+    canArchive,
+    archiveBlockedReason,
+    ownsWorktree,
+    onRename,
+    onDelete,
+    onArchive,
+    onMakePeriodic,
+    onMakeNonPeriodic,
+    onFetchConversationPrompts,
+    onSendPromptToConversation,
+    onFetchSessionBranches,
+    onMergeSession,
+    onMergeSessionToNewBranch,
+  });
 
   // Handle click - only select if not swiping/revealed
   // Use ref for isSwiping to avoid stale closure issues
@@ -380,94 +353,6 @@ export function SessionItem({
   const trailingControlClass = isActive
     ? "text-mitto-accent-fg hover:text-mitto-accent-fg"
     : "text-mitto-text-muted hover:text-mitto-text-strong";
-
-  // Build group submenus from prompts flagged with menus:conversation.
-  // Prompts are grouped by their `group` attribute; ungrouped prompts fall
-  // under "Other". Each group becomes a submenu listing its prompts.
-  const promptGroupItems = [];
-  if (
-    onSendPromptToConversation &&
-    menuPrompts &&
-    menuPrompts.length > 0
-  ) {
-    const groups = new Map();
-    for (const p of menuPrompts) {
-      if (!p || !p.name) continue;
-      const groupName = (p.group && p.group.trim()) || "Other";
-      if (!groups.has(groupName)) groups.set(groupName, []);
-      groups.get(groupName).push(p);
-    }
-    for (const [groupName, prompts] of groups) {
-      promptGroupItems.push({
-        label: groupName,
-        icon: html`<${LightningIcon} />`,
-        submenu: prompts
-          .slice()
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((p) => {
-            const PromptIcon = getPromptIconOrDefault(p.icon);
-            return {
-              label: p.name,
-              icon: html`<${PromptIcon} className="w-4 h-4" />`,
-              onClick: () => onSendPromptToConversation(session, p),
-            };
-          }),
-      });
-    }
-  }
-
-  const contextMenuItems = [
-    // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
-    ...promptGroupItems,
-    {
-      label: "Properties",
-      icon: html`<${EditIcon} />`,
-      onClick: () => handleRename(),
-    },
-    // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
-    ...(!isPeriodicEnabled && !isSpawned && !isArchived
-      ? [
-          {
-            label: "Make periodic",
-            icon: html`<${ClockIcon} />`,
-            onClick: () => onMakePeriodic && onMakePeriodic(session),
-          },
-        ]
-      : []),
-    // "Make non-periodic" — inverse: only for periodic, non-spawned sessions
-    ...(isPeriodicEnabled && !isSpawned
-      ? [
-          {
-            label: "Make non-periodic",
-            icon: html`<${MittoIcon} />`,
-            onClick: () => onMakeNonPeriodic && onMakeNonPeriodic(session),
-          },
-        ]
-      : []),
-    // Hide archive option for child (spawned) sessions
-    ...(isSpawned
-      ? []
-      : [
-          {
-            label: !canArchive
-              ? archiveBlockedReason
-              : isArchived
-                ? "Unarchive"
-                : "Archive",
-            icon: isArchived
-              ? html`<${ArchiveFilledIcon} />`
-              : html`<${ArchiveIcon} />`,
-            onClick: canArchive ? () => handleArchive() : undefined,
-            disabled: !canArchive,
-          },
-        ]),
-    {
-      label: "Delete",
-      icon: html`<${TrashIcon} />`,
-      onClick: () => handleDelete(),
-      danger: true,
-    },
-  ];
 
   // Calculate visual feedback intensity based on swipe progress
   const absOffset = Math.abs(swipeOffset);
