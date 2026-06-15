@@ -16,6 +16,7 @@ import (
 	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
@@ -1026,6 +1027,14 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Live Mitto MCP server URL, exposed so the UI can offer a one-click install.
+	// Defaults to the well-known port and is overridden with the actual runtime
+	// port when the server is running (handles dynamic / fallback ports).
+	mcpURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpserver.DefaultPort)
+	if s.mcpServer != nil && s.mcpServer.IsRunning() && s.mcpServer.Port() > 0 {
+		mcpURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", s.mcpServer.Port())
+	}
+
 	// Resolve ACP server type from config
 	var acpType string
 	if s.config.MittoConfig != nil {
@@ -1074,6 +1083,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 			"agent_name":      agent.Metadata.DisplayName,
 			"message":         "Agent does not support MCP listing",
 			"mcp_scopes":      mcpScopes,
+			"mcp_url":         mcpURL,
 			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
 			"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 		})
@@ -1093,6 +1103,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 			"agent_name":      agent.Metadata.DisplayName,
 			"error":           "Failed to list MCP servers: " + err.Error(),
 			"mcp_scopes":      mcpScopes,
+			"mcp_url":         mcpURL,
 			"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
 			"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 		})
@@ -1103,6 +1114,7 @@ func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request)
 		"servers":         output.Servers,
 		"agent_name":      agent.Metadata.DisplayName,
 		"mcp_scopes":      mcpScopes,
+		"mcp_url":         mcpURL,
 		"has_mcp_install": agent.HasCommand(agents.CommandMCPInstall),
 		"has_mcp_remove":  agent.HasCommand(agents.CommandMCPRemove),
 	})

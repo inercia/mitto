@@ -30,6 +30,7 @@ import {
   RefreshIcon,
   RobotIcon,
   GlobeIcon,
+  MittoIcon,
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -658,6 +659,49 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       setMcpRemoveLoading(false);
     }
   }, [editAcpServer, selectedWorkspace, mcpTools, loadMcpTools, checkActiveSessionsForWorkspace]);
+
+  // One-click install of Mitto's own MCP server. Reuses the manual install
+  // endpoint/handling but skips the JSON dialog, building the definition from the
+  // live MCP URL reported by the backend (falling back to the default port).
+  const handleInstallMittoMcp = useCallback(async () => {
+    const mcpUrl = mcpTools?.mcp_url || "http://127.0.0.1:5757/mcp";
+    const scope = mcpTools?.mcp_scopes?.[0] || "";
+    setMcpInstallLoading(true);
+    setMcpInstallError("");
+    setMcpInstallSuccess("");
+    try {
+      const acpServer = editAcpServer || selectedWorkspace?.acp_server;
+      const res = await secureFetch(apiUrl("/api/workspace-mcp-install"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          acp_server: acpServer,
+          dir: selectedWorkspace?.working_dir || "",
+          scope,
+          definition: { mcpServers: { mitto: { url: mcpUrl } } },
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const results = data.results || [];
+      const failed = results.filter(r => !r.success);
+      if (failed.length > 0) {
+        setMcpInstallError(failed.map(r => `${r.name}: ${r.message}`).join("\n"));
+      } else {
+        setMcpInstallSuccess("Installed Mitto MCP server.");
+        if (selectedWorkspace?.uuid) {
+          checkActiveSessionsForWorkspace(selectedWorkspace.uuid).then(hasActive => {
+            if (hasActive) setNeedsRestart(true);
+          });
+        }
+        await loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+      }
+    } catch (err) {
+      setMcpInstallError("Installation failed: " + err.message);
+    } finally {
+      setMcpInstallLoading(false);
+    }
+  }, [mcpTools, editAcpServer, selectedWorkspace, loadMcpTools, checkActiveSessionsForWorkspace]);
 
   const handleMcpRemoveConfirm = useCallback((serverName) => {
     const defaultScope = mcpTools?.mcp_scopes?.[0] || "";
@@ -2263,6 +2307,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </button>
                           ${mcpTools?.has_mcp_install && html`
                             <button
+                              onClick=${() => { if (mcpInstallLoading) return; handleInstallMittoMcp(); }}
+                              aria-disabled=${mcpInstallLoading ? "true" : "false"}
+                              class="btn btn-ghost btn-square btn-sm ${mcpInstallLoading ? "opacity-40 pointer-events-none" : ""}"
+                              title="Install Mitto's MCP server"
+                            >
+                              <${MittoIcon} className="w-4 h-4" />
+                            </button>
+                            <button
                               onClick=${() => {
                                 setMcpInstallOpen(true);
                                 setMcpInstallJson("");
@@ -2279,6 +2331,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           `}
                         </div>
                       </div>
+                      ${!mcpInstallOpen && mcpInstallError && html`
+                        <p class="text-sm text-mitto-danger whitespace-pre-wrap">${mcpInstallError}</p>
+                      `}
+                      ${!mcpInstallOpen && mcpInstallSuccess && html`
+                        <p class="text-sm text-mitto-success">${mcpInstallSuccess}</p>
+                      `}
                       ${mcpToolsLoading
                         ? html`<div class="flex items-center justify-center p-8"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
                         : mcpToolsError
