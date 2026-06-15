@@ -1056,7 +1056,26 @@ function App() {
         return;
       }
 
-      // Otherwise delete immediately
+      // Confirmation disabled: never silently destroy unmerged work. Check the
+      // worktree status first — fast-path delete only when there is positively
+      // no unmerged work; otherwise route through the merge-back dialog so the
+      // user can merge or explicitly discard (mitto-n42.1 / mitto-n42.3).
+      const currentSession =
+        activeSessions.find((s) => s.session_id === activeSessionId) ||
+        storedSessions.find((s) => s.session_id === activeSessionId);
+      let worktreeStatus = null;
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${activeSessionId}/worktree-status`),
+        );
+        if (res.ok) worktreeStatus = await res.json();
+      } catch (err) {
+        console.error("Failed to check worktree status before close:", err);
+      }
+      if (!worktreeStatus || worktreeStatus.has_unmerged_work) {
+        if (currentSession) openDeleteDialog(currentSession);
+        return;
+      }
       await removeSession(activeSessionId);
       fetchStoredSessions();
     };
@@ -1608,9 +1627,10 @@ function App() {
     // Clean up plan entries, expiration tracking, and completion timers for this session
     clearPlanForSession(session.session_id);
 
-    // removeSession handles: closing WebSocket, updating local state,
-    // switching to another session (or creating new if none left), and calling DELETE API
-    await removeSession(session.session_id);
+    // Pass discard:true — the user explicitly confirmed deletion from the dialog
+    // (plain confirm or "Delete without merging"), so the server must remove the
+    // worktree even if it has unmerged work (mitto-n42.1).
+    await removeSession(session.session_id, { discard: true });
 
     // Refresh the stored sessions list
     fetchStoredSessions();

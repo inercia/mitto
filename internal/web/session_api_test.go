@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/git"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -214,7 +216,7 @@ func TestHandleDeleteSession_NotFound(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	server.handleDeleteSession(w, "nonexistent")
+	server.handleDeleteSession(w, httptest.NewRequest(http.MethodDelete, "/api/sessions/nonexistent", nil), "nonexistent")
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
@@ -757,7 +759,7 @@ func TestHandleDeleteSession_Success(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	server.handleDeleteSession(w, "test-session-delete")
+	server.handleDeleteSession(w, httptest.NewRequest(http.MethodDelete, "/api/sessions/test-session-delete", nil), "test-session-delete")
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
@@ -816,7 +818,7 @@ func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
 
 	// Delete the parent session via API
 	w := httptest.NewRecorder()
-	server.handleDeleteSession(w, "parent-api-test")
+	server.handleDeleteSession(w, httptest.NewRequest(http.MethodDelete, "/api/sessions/parent-api-test", nil), "parent-api-test")
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
@@ -2640,4 +2642,121 @@ func TestResolveOwningWorkspace(t *testing.T) {
 			}
 		})
 	}
+}
+
+
+// --- mitto-n42.1: server-side worktree-removal backstop ---
+
+// newTestWorktree creates a real repo + linked worktree under it and returns
+// (repo, worktreePath, branch). The worktree is clean unless the caller dirties
+// or advances it. Requires the hermetic git env from setupWorktreeRecoveryEnv.
+func newTestWorktree(t *testing.T, id string) (repo, wt, branch string) {
+	t.Helper()
+	repo = initTestRepo(t)
+	worktreesDir := appdir.WorkspaceWorktreesDir(repo)
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktrees: %v", err)
+	}
+	wt = filepath.Join(worktreesDir, id)
+	branch = git.BranchName(id)
+	if err := git.AddWorktree(context.Background(), repo, wt, branch, ""); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+	return repo, wt, branch
+}
+
+func TestRemoveSessionWorktree_PreservesUnmergedWork(t *testing.T) {
+	setupWorktreeRecoveryEnv(t)
+	repo, wt, branch := newTestWorktree(t, "20260614-000020-dirty000")
+	// Dirty the worktree (uncommitted file).
+	if err := os.WriteFile(filepath.Join(wt, "dirty.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write dirty: %v", err)
+	}
+
+	server := &Server{}
+	meta := session.Metadata{WorktreePath: wt, WorktreeBranch: branch, WorktreeBaseBranch: "main"}
+	server.removeSessionWorktree(meta, false) // discard=false → must preserve
+
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("dirty worktree was removed despite discard=false: %v", err)
+	}
+	if !branchExists(t, repo, branch) {
+		t.Errorf("branch %q deleted despite unmerged work", branch)
+	}
+}
+
+func TestRemoveSessionWorktree_DiscardRemovesUnmerged(t *testing.T) {
+	setupWorktreeRecoveryEnv(t)
+	repo, wt, branch := newTestWorktree(t, "20260614-000021-dirty001")
+	if err := os.WriteFile(filepath.Join(wt, "dirty.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write dirty: %v", err)
+	}
+
+	server := &Server{}
+	meta := session.Metadata{WorktreePath: wt, WorktreeBranch: branch, WorktreeBaseBranch: "main"}
+	server.removeSessionWorktree(meta, true) // discard=true → force-remove
+
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("worktree not removed with discard=true (err=%v)", err)
+	}
+	if branchExists(t, repo, branch) {
+		t.Errorf("branch %q not deleted with discard=true", branch)
+	}
+}
+
+func TestRemoveSessionWorktree_RemovesCleanMerged(t *testing.T) {
+	setupWorktreeRecoveryEnv(t)
+	repo, wt, branch := newTestWorktree(t, "20260614-000022-clean000")
+
+	server := &Server{}
+	meta := session.Metadata{WorktreePath: wt, WorktreeBranch: branch, WorktreeBaseBranch: "main"}
+	server.removeSessionWorktree(meta, false) // clean + merged → safe to remove
+
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("clean merged worktree not removed (err=%v)", err)
+	}
+	if branchExists(t, repo, branch) {
+		t.Errorf("branch %q not deleted for clean merged worktree", branch)
+	}
+}
+
+func TestWorktreeHasUnmergedWork(t *testing.T) {
+	setupWorktreeRecoveryEnv(t)
+	server := &Server{}
+	ctx := context.Background()
+
+	t.Run("clean", func(t *testing.T) {
+		_, wt, branch := newTestWorktree(t, "20260614-000030-clean000")
+		meta := session.Metadata{WorktreePath: wt, WorktreeBranch: branch, WorktreeBaseBranch: "main"}
+		dirty, ahead, has := server.worktreeHasUnmergedWork(ctx, meta)
+		if dirty || ahead != 0 || has {
+			t.Errorf("clean: dirty=%v ahead=%d has=%v, want false/0/false", dirty, ahead, has)
+		}
+	})
+
+	t.Run("dirty", func(t *testing.T) {
+		_, wt, branch := newTestWorktree(t, "20260614-000031-dirty000")
+		if err := os.WriteFile(filepath.Join(wt, "dirty.txt"), []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("write dirty: %v", err)
+		}
+		meta := session.Metadata{WorktreePath: wt, WorktreeBranch: branch, WorktreeBaseBranch: "main"}
+		dirty, _, has := server.worktreeHasUnmergedWork(ctx, meta)
+		if !dirty || !has {
+			t.Errorf("dirty: dirty=%v has=%v, want true/true", dirty, has)
+		}
+	})
+
+	t.Run("ahead", func(t *testing.T) {
+		_, wt, branch := newTestWorktree(t, "20260614-000032-ahead000")
+		if err := os.WriteFile(filepath.Join(wt, "work.txt"), []byte("c\n"), 0o644); err != nil {
+			t.Fatalf("write work: %v", err)
+		}
+		runGitT(t, wt, "add", "work.txt")
+		runGitT(t, wt, "-c", "commit.gpgsign=false", "commit", "-m", "ahead")
+		meta := session.Metadata{WorktreePath: wt, WorktreeBranch: branch, WorktreeBaseBranch: "main"}
+		_, ahead, has := server.worktreeHasUnmergedWork(ctx, meta)
+		if ahead <= 0 || !has {
+			t.Errorf("ahead: ahead=%d has=%v, want >0/true", ahead, has)
+		}
+	})
 }

@@ -5432,7 +5432,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   }, []);
 
   const removeSession = useCallback(
-    async (sessionId) => {
+    async (sessionId, { discard = false } = {}) => {
       const currentActiveSessionId = activeSessionIdRef.current;
       const wasActiveSession = sessionId === currentActiveSessionId;
 
@@ -5459,9 +5459,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         return rest;
       });
 
-      // Delete from server first
+      // Delete from server. Pass ?discard=true when the caller has confirmed
+      // with the user that losing unmerged worktree work is intentional.
+      const deleteUrl = discard
+        ? apiUrl(`/api/sessions/${sessionId}?discard=true`)
+        : apiUrl(`/api/sessions/${sessionId}`);
       try {
-        await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+        await secureFetch(deleteUrl, {
           method: "DELETE",
         });
       } catch (err) {

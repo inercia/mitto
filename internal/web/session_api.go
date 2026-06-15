@@ -306,34 +306,89 @@ func (s *Server) ensureWorktreeRepoDir(meta *session.Metadata) {
 	}
 }
 
-// removeSessionWorktree removes a session's git worktree and its branch.
+// removeSessionWorktree removes a session's git worktree and its branch, but
+// only when it is safe to do so. Safety rule (mitto-n42.1): if the worktree has
+// unmerged work (dirty or commits ahead of its base branch) and discard is
+// false, the worktree is preserved and a warning is logged. Pass discard=true
+// only when the caller has confirmed with the user that losing the work is
+// intentional.
+//
 // The main repo root is derived from the worktree itself (the worktree still
 // exists on disk at this point). All failures are best-effort and logged;
 // startup recovery is the backstop for any orphans left behind.
-func (s *Server) removeSessionWorktree(worktreePath, worktreeBranch string) {
-	if worktreePath == "" {
-		return
-	}
-	repoRoot := gitMainWorktreeRoot(worktreePath)
-	if repoRoot == "" {
-		if s.logger != nil {
-			s.logger.Warn("Could not resolve main repo for worktree removal",
-				"worktree_path", worktreePath)
-		}
+func (s *Server) removeSessionWorktree(meta session.Metadata, discard bool) {
+	if meta.WorktreePath == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := git.RemoveWorktree(ctx, repoRoot, worktreePath); err != nil && s.logger != nil {
-		s.logger.Warn("Failed to remove worktree",
-			"error", err, "worktree_path", worktreePath)
-	}
-	if worktreeBranch != "" {
-		if err := git.DeleteBranch(ctx, repoRoot, worktreeBranch); err != nil && s.logger != nil {
-			s.logger.Warn("Failed to delete worktree branch",
-				"error", err, "branch", worktreeBranch)
+
+	if !discard {
+		dirty, ahead, hasUnmerged := s.worktreeHasUnmergedWork(ctx, meta)
+		if hasUnmerged {
+			if s.logger != nil {
+				s.logger.Warn("Preserving worktree with unmerged work; not removing",
+					"worktree_path", meta.WorktreePath,
+					"branch", meta.WorktreeBranch,
+					"dirty", dirty,
+					"ahead", ahead)
+			}
+			return
 		}
 	}
+
+	repoRoot := gitMainWorktreeRoot(meta.WorktreePath)
+	if repoRoot == "" {
+		if s.logger != nil {
+			s.logger.Warn("Could not resolve main repo for worktree removal",
+				"worktree_path", meta.WorktreePath)
+		}
+		return
+	}
+	if err := git.RemoveWorktree(ctx, repoRoot, meta.WorktreePath); err != nil && s.logger != nil {
+		s.logger.Warn("Failed to remove worktree",
+			"error", err, "worktree_path", meta.WorktreePath)
+	}
+	if meta.WorktreeBranch != "" {
+		if err := git.DeleteBranch(ctx, repoRoot, meta.WorktreeBranch); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to delete worktree branch",
+				"error", err, "branch", meta.WorktreeBranch)
+		}
+	}
+}
+
+// worktreeHasUnmergedWork reports whether a session's worktree has uncommitted
+// changes (dirty) or commits on its branch not yet merged into its base branch.
+// It reuses the same git helpers as the worktree-status endpoint. When the base
+// branch is unknown it falls back to the repo default branch; on any uncertainty
+// computing the ahead count it leaves ahead=0 but dirty still gates removal.
+func (s *Server) worktreeHasUnmergedWork(ctx context.Context, meta session.Metadata) (dirty bool, ahead int, hasUnmerged bool) {
+	if meta.WorktreePath == "" {
+		return false, 0, false
+	}
+	dirty = git.IsDirty(ctx, meta.WorktreePath)
+
+	repoRoot := gitMainWorktreeRoot(meta.WorktreePath)
+	branch := meta.WorktreeBranch
+	if branch == "" {
+		branch = git.BranchName(meta.SessionID)
+	}
+	base := meta.WorktreeBaseBranch
+	if base == "" && repoRoot != "" {
+		base = git.DefaultBranch(ctx, repoRoot)
+	}
+	if repoRoot != "" && base != "" && branch != "" &&
+		git.RefExists(ctx, repoRoot, base) && git.RefExists(ctx, repoRoot, branch) {
+		if a, _, err := git.AheadBehind(ctx, repoRoot, base, branch); err == nil {
+			ahead = a
+		} else if s.logger != nil {
+			s.logger.Warn("worktreeHasUnmergedWork: AheadBehind failed",
+				"error", err, "worktree_path", meta.WorktreePath,
+				"base", base, "branch", branch)
+		}
+	}
+	hasUnmerged = dirty || ahead > 0
+	return dirty, ahead, hasUnmerged
 }
 
 // SessionListResponse extends session.Metadata with additional runtime fields.
@@ -545,7 +600,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		s.handleUpdateSession(w, r, sessionID)
 	case http.MethodDelete:
-		s.handleDeleteSession(w, sessionID)
+		s.handleDeleteSession(w, r, sessionID)
 	default:
 		methodNotAllowed(w)
 	}
@@ -670,7 +725,9 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 					"session_id", sessionID,
 					"parent_session_id", meta.ParentSessionID)
 			}
-			s.handleDeleteSession(w, sessionID)
+			// Preserve the worktree: the parent session owns it and will make
+			// the discard decision. A child archive→delete must not destroy work.
+			s.handleDeleteSession(w, r, sessionID)
 			return
 		}
 	}
@@ -870,7 +927,11 @@ func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteSession handles DELETE /api/sessions/{id}
-func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
+// Accepts an optional ?discard=true query parameter. When absent (or false),
+// the session record is deleted but the worktree is preserved if it has
+// unmerged work (mitto-n42.1). When discard=true, the worktree is force-removed.
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	discard := r != nil && r.URL.Query().Get("discard") == "true"
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := s.Store()
 	if store == nil {
@@ -903,14 +964,14 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		}
 	}
 
-	// Capture worktree info before deletion so we can remove it afterwards.
-	// Policy: Delete removes the worktree + branch; Archive preserves them.
-	// Children share the parent's worktree (their metadata carries no worktree
-	// path), so removal happens once, driven by the parent's metadata.
-	var worktreePath, worktreeBranch string
+	// Capture full metadata before deletion so we can remove the worktree
+	// afterwards. Policy: Delete removes the worktree + branch (when safe);
+	// Archive preserves them. Children share the parent's worktree (their
+	// metadata carries no worktree path), so removal happens once, driven by
+	// the parent's metadata.
+	var sessionMeta session.Metadata
 	if meta, mErr := store.GetMetadata(sessionID); mErr == nil {
-		worktreePath = meta.WorktreePath
-		worktreeBranch = meta.WorktreeBranch
+		sessionMeta = meta
 	}
 
 	// Delete from store (cascade-deletes all children recursively)
@@ -926,9 +987,12 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 
-	// Remove the session worktree (if any) now that the session is gone.
-	if worktreePath != "" {
-		s.removeSessionWorktree(worktreePath, worktreeBranch)
+	// Remove the session worktree (if any) now that the session record is gone.
+	// Safety (mitto-n42.1): the worktree is only force-removed when it is clean
+	// OR discard=true; otherwise it is preserved and a warning is logged so
+	// startup recovery (or the user) can handle it later.
+	if sessionMeta.WorktreePath != "" {
+		s.removeSessionWorktree(sessionMeta, discard)
 	}
 
 	// Broadcast deletions to all connected WebSocket clients
