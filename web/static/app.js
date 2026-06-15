@@ -1557,13 +1557,28 @@ function App() {
   );
 
   const handleDeleteSession = async (session) => {
-    // If confirmation is disabled, delete immediately
+    // Even when delete-confirmation is disabled, never bypass the worktree
+    // merge-back check — that would silently lose unmerged work. Fast-path the
+    // immediate delete only when we positively confirm there is no unmerged
+    // work; otherwise (unmerged work, or status unknown) route through the
+    // merge-back dialog so the user can merge or explicitly discard.
     if (!confirmDeleteSession) {
-      // Clean up plan entries, expiration tracking, and completion timers for this session
-      clearPlanForSession(session.session_id);
-      await removeSession(session.session_id);
-      fetchStoredSessions();
-      return;
+      let worktreeStatus = null;
+      try {
+        const res = await secureFetch(
+          apiUrl("/api/sessions/" + session.session_id + "/worktree-status"),
+        );
+        if (res.ok) worktreeStatus = await res.json();
+      } catch (err) {
+        console.error("Failed to check worktree status before delete:", err);
+      }
+      if (worktreeStatus && !worktreeStatus.has_unmerged_work) {
+        // Clean up plan entries, expiration tracking, and completion timers for this session
+        clearPlanForSession(session.session_id);
+        await removeSession(session.session_id);
+        fetchStoredSessions();
+        return;
+      }
     }
     // Otherwise show the confirmation dialog (with merge-back status)
     openDeleteDialog(session);
