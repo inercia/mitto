@@ -5,9 +5,16 @@ menus: prompts
 description: "Stage and commit changes with descriptive messages"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"
+enabledWhen: 'fileExists(".git/config") || fileExists(".git")'
 ---
 
 Create Git commits for changes in this repository with proper organization and messages.
+
+> **Worktree-isolated conversation:** if `@mitto:worktree_base_branch` is non-empty, this
+> conversation already runs on its own branch `@mitto:worktree_branch` (worktree at
+> `@mitto:worktree_path`), created from `@mitto:worktree_base_branch`. In that case **skip step 1**
+> (you are already on a feature branch) and do **not** fetch/rebase here — defer rebasing to the
+> "Rebase changes" prompt.
 
 ### 0. Prerequisites
 
@@ -19,6 +26,9 @@ Create Git commits for changes in this repository with proper organization and m
 - If failing: warn user, ask to fix or proceed
 
 ### 1. Ensure Feature Branch
+
+> Skip this step entirely when `@mitto:worktree_base_branch` is set — the conversation's worktree
+> is already on its own branch.
 
 ```bash
 git branch --show-current
@@ -45,7 +55,9 @@ If on `main`/`master`/protected branch:
   If `action == "create_branch"`: `git checkout -b <branch_name>`
 - **Without**: Ask in conversation
 
-If on feature branch: fetch and rebase on target branch (usually "main").
+If on feature branch: fetch and rebase on target branch (usually "main"). **Do not do this when
+`@mitto:worktree_base_branch` is set** — defer rebasing to the "Rebase changes" prompt to avoid
+rewriting the worktree branch before it has been pushed.
 
 ### 2. Analyze Changes
 
