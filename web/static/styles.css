@@ -1338,6 +1338,31 @@ a.mailto-link:hover {
   content: none;
 }
 
+/* Beads list swipe-to-action (mirror of .session-item-container). The row
+   slides left to reveal a close (open issues, green) or delete (closed
+   issues, red) action. */
+.beads-item-container {
+  touch-action: pan-y pinch-zoom;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.beads-item-container * {
+  -webkit-user-drag: none;
+}
+/* Explicit gradients so the reveal renders regardless of Tailwind purge state. */
+.beads-item-container .bg-green-700 {
+  background: linear-gradient(90deg, #15803d 0%, #166534 100%);
+}
+.light .beads-item-container .bg-green-700 {
+  background: linear-gradient(90deg, #16a34a 0%, #15803d 100%);
+}
+.beads-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #dc2626 0%, #b91c1c 100%);
+}
+.light .beads-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+}
+
 /* =============================================================================
    Agent Plan Panel - Light Theme
    ============================================================================= */

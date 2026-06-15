@@ -10,6 +10,7 @@ import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
+import { useSwipeToAction } from "../hooks/index.js";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -1406,6 +1407,78 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
  *        was opened by following a conversation's linked-issue link is closed;
  *        returns the user to that conversation and re-opens its properties panel.
  */
+
+// Swipeable wrapper for a single beads issue row. Mirrors the conversation
+// list's swipe-to-action: swipe left to close an open issue (green/check) or
+// to delete an already-closed issue (red/trash).
+function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onClose, onDelete, children }) {
+  // Closed issues can't be closed again — swipe deletes them instead (mirrors
+  // SessionItem, where the archived tab swaps archive for delete).
+  const isSwipeToDelete = issue.status === "closed";
+
+  const handleSwipeAction = useCallback(() => {
+    if (isSwipeToDelete) onDelete();
+    else onClose();
+  }, [isSwipeToDelete, onClose, onDelete]);
+
+  const {
+    swipeOffset,
+    isSwiping,
+    isSwipingRef,
+    isRevealed,
+    containerProps,
+    reset,
+    triggerAction,
+  } = useSwipeToAction({
+    onAction: handleSwipeAction,
+    threshold: 0.5,
+    revealWidth: 80,
+    disabled: false,
+  });
+
+  // Only select on a genuine tap (not a swipe); a revealed row resets first.
+  const handleClick = useCallback(() => {
+    if (isSwipingRef.current) return;
+    if (isRevealed) {
+      reset();
+      return;
+    }
+    onSelect();
+  }, [isSwipingRef, isRevealed, reset, onSelect]);
+
+  const absOffset = Math.abs(swipeOffset);
+
+  return html`
+    <div class="beads-item-container relative overflow-hidden" ...${containerProps}>
+      <!-- Swipe action background (revealed when swiping left) -->
+      <div
+        class="absolute inset-0 ${isSwipeToDelete ? "bg-red-600" : "bg-green-700"} flex items-center justify-end pr-6 transition-opacity"
+        style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
+      >
+        <button
+          onClick=${(e) => { e.preventDefault(); e.stopPropagation(); triggerAction(); }}
+          class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-green-900"} transition-colors"
+          title=${isSwipeToDelete ? "Delete" : "Close"}
+        >
+          ${isSwipeToDelete
+            ? html`<${TrashIcon} className="w-5 h-5 text-white" />`
+            : html`<${CheckIcon} className="w-5 h-5 text-white" />`}
+        </button>
+      </div>
+      <!-- Swipeable content (the original list-row card) -->
+      <div
+        data-has-context-menu
+        onClick=${handleClick}
+        onContextMenu=${onContextMenu}
+        class="list-row cursor-pointer select-none ${bgTone} ${borderTone} ${isSwiping ? "" : "transition-all duration-200"}"
+        style="transform: translateX(${swipeOffset}px);"
+      >
+        ${children}
+      </div>
+    </div>
+  `;
+}
+
 export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onReturnToConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -2166,49 +2239,53 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       : isEpic
         ? "border border-mitto-border border-l-4 border-l-purple-500"
         : "border border-mitto-border";
-    return html`
-      <div
-        key=${issue.id}
-        data-has-context-menu
-        class="list-row cursor-pointer select-none transition-all ${bgTone} ${borderTone}"
-        onClick=${() => selectIssue(issue)}
-        onContextMenu=${(e) => handleRowContextMenu(e, issue)}
-      >
-        <div class="list-col-grow flex flex-col gap-1 min-w-0">
-          <div class="flex items-center gap-2 flex-wrap">
-            ${isStreamingIssue
-              ? html`<span class="shrink-0 text-mitto-accent">
-                  <span
-                    class="loading loading-ring loading-xs"
-                    title="A linked conversation is responding..."
-                  ></span>
-                </span>`
-              : null}
-            <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
-              ${linkedSessionId && onOpenConversation
-                ? html`<a
-                    href="#"
-                    class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
-                    onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
-                  >${issue.id}</a>`
-                : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
+    const rowContent = html`
+      <div class="list-col-grow flex flex-col gap-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          ${isStreamingIssue
+            ? html`<span class="shrink-0 text-mitto-accent">
+                <span
+                  class="loading loading-ring loading-xs"
+                  title="A linked conversation is responding..."
+                ></span>
+              </span>`
+            : null}
+          <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
+            ${linkedSessionId && onOpenConversation
+              ? html`<a
+                  href="#"
+                  class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
+                  onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
+                >${issue.id}</a>`
+              : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
+          </span>
+          ${typeBadge(issue.issue_type)}
+          ${statusBadge(issue.status)}
+          ${priorityBadge(issue.priority)}
+          ${childCount > 0 ? html`
+            <span
+              class="inline-flex items-center gap-1 text-xs text-purple-300"
+              title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+            >
+              <${LayersIcon} className="w-3.5 h-3.5" />
+              ${childCount}
             </span>
-            ${typeBadge(issue.issue_type)}
-            ${statusBadge(issue.status)}
-            ${priorityBadge(issue.priority)}
-            ${childCount > 0 ? html`
-              <span
-                class="inline-flex items-center gap-1 text-xs text-purple-300"
-                title="${childCount} child issue${childCount === 1 ? "" : "s"}"
-              >
-                <${LayersIcon} className="w-3.5 h-3.5" />
-                ${childCount}
-              </span>
-            ` : null}
-          </div>
-          <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
+          ` : null}
         </div>
+        <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
       </div>
+    `;
+    return html`
+      <${BeadsIssueRow}
+        key=${issue.id}
+        issue=${issue}
+        bgTone=${bgTone}
+        borderTone=${borderTone}
+        onSelect=${() => selectIssue(issue)}
+        onContextMenu=${(e) => handleRowContextMenu(e, issue)}
+        onClose=${() => handleToggleStatus(issue)}
+        onDelete=${() => setDeleteTarget(issue)}
+      >${rowContent}</${BeadsIssueRow}>
     `;
   }
 
