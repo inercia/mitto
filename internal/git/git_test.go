@@ -246,55 +246,93 @@ func TestAddWorktreeFromStartPoint(t *testing.T) {
 	}
 }
 
-func TestEnsureGitignoredAndIsIgnored(t *testing.T) {
+func TestEnsureGitExcludedAndIsIgnored(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t)
 	const pattern = ".mitto/worktrees/"
+	excludePath := filepath.Join(repo, ".git", "info", "exclude")
 
 	if IsIgnored(repo, pattern) {
-		t.Fatal("path unexpectedly ignored before EnsureGitignored")
+		t.Fatal("path unexpectedly ignored before EnsureGitExcluded")
 	}
 
-	if err := EnsureGitignored(repo, pattern, "test comment"); err != nil {
-		t.Fatalf("EnsureGitignored: %v", err)
+	if err := EnsureGitExcluded(repo, pattern, "test comment"); err != nil {
+		t.Fatalf("EnsureGitExcluded: %v", err)
 	}
 	if !IsIgnored(repo, pattern) {
-		t.Error("path not ignored after EnsureGitignored")
+		t.Error("path not ignored after EnsureGitExcluded")
 	}
-	data, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	data, err := os.ReadFile(excludePath)
 	if err != nil {
-		t.Fatalf("read .gitignore: %v", err)
+		t.Fatalf("read .git/info/exclude: %v", err)
 	}
 	if !strings.Contains(string(data), pattern) {
-		t.Errorf(".gitignore missing pattern: %q", string(data))
+		t.Errorf(".git/info/exclude missing pattern: %q", string(data))
 	}
 	if !strings.Contains(string(data), "# test comment") {
-		t.Errorf(".gitignore missing comment: %q", string(data))
+		t.Errorf(".git/info/exclude missing comment: %q", string(data))
+	}
+
+	// The tracked .gitignore must NOT be created or modified.
+	if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+		t.Errorf("tracked .gitignore unexpectedly present after EnsureGitExcluded: err=%v", err)
 	}
 
 	// Idempotent: a second call must not duplicate the pattern.
-	if err := EnsureGitignored(repo, pattern, "test comment"); err != nil {
-		t.Fatalf("EnsureGitignored (2nd): %v", err)
+	if err := EnsureGitExcluded(repo, pattern, "test comment"); err != nil {
+		t.Fatalf("EnsureGitExcluded (2nd): %v", err)
 	}
-	data2, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	data2, _ := os.ReadFile(excludePath)
 	if n := strings.Count(string(data2), pattern); n != 1 {
 		t.Errorf("pattern count = %d, want 1: %q", n, string(data2))
 	}
 }
 
-func TestEnsureGitignoredSkipsWhenAlreadyIgnored(t *testing.T) {
+func TestEnsureGitExcludedSkipsWhenAlreadyIgnored(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t)
+	excludePath := filepath.Join(repo, ".git", "info", "exclude")
 
 	// Pre-ignore the whole .mitto/ dir, mirroring repos that already ignore it.
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".mitto/\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
-	if err := EnsureGitignored(repo, ".mitto/worktrees/", "test comment"); err != nil {
-		t.Fatalf("EnsureGitignored: %v", err)
+	if err := EnsureGitExcluded(repo, ".mitto/worktrees/", "test comment"); err != nil {
+		t.Fatalf("EnsureGitExcluded: %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
-	if strings.Contains(string(data), ".mitto/worktrees/") {
-		t.Errorf("EnsureGitignored appended despite parent dir already ignored: %q", string(data))
+	if data, err := os.ReadFile(excludePath); err == nil &&
+		strings.Contains(string(data), ".mitto/worktrees/") {
+		t.Errorf("EnsureGitExcluded appended despite parent dir already ignored: %q", string(data))
+	}
+}
+
+// TestEnsureGitExcludedFromLinkedWorktree verifies the exclude entry lands in
+// the MAIN repository's .git/info/exclude even when called from a linked
+// worktree (whose own gitdir lives under <main>/.git/worktrees/<name>).
+func TestEnsureGitExcludedFromLinkedWorktree(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+	worktreePath := filepath.Join(t.TempDir(), "wt")
+	branch := BranchName("exclude-session")
+	if err := AddWorktree(context.Background(), repo, worktreePath, branch, ""); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+
+	const pattern = "build-artifacts/"
+	if err := EnsureGitExcluded(worktreePath, pattern, "test comment"); err != nil {
+		t.Fatalf("EnsureGitExcluded: %v", err)
+	}
+
+	// Entry must be written to the MAIN repo's exclude file, not the worktree's.
+	mainExclude := filepath.Join(repo, ".git", "info", "exclude")
+	data, err := os.ReadFile(mainExclude)
+	if err != nil {
+		t.Fatalf("read main .git/info/exclude: %v", err)
+	}
+	if !strings.Contains(string(data), pattern) {
+		t.Errorf("main exclude missing pattern: %q", string(data))
+	}
+	if !IsIgnored(worktreePath, pattern) {
+		t.Error("path not ignored in worktree after EnsureGitExcluded")
 	}
 }

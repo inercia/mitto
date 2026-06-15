@@ -154,16 +154,28 @@ func IsIgnored(repoDir, relPath string) bool {
 	return exec.CommandContext(ctx, "git", "-C", repoDir, "check-ignore", "-q", relPath).Run() == nil
 }
 
-// EnsureGitignored makes a best-effort, idempotent attempt to ensure pattern is
-// ignored in repoDir. If git already ignores pattern (via any .gitignore,
-// global excludes, etc.) it does nothing; otherwise it appends pattern to
-// <repoDir>/.gitignore, preceded by a labeled comment line. The file is created
-// if needed and a separating newline is ensured before appending.
-func EnsureGitignored(repoDir, pattern, comment string) error {
+// EnsureGitExcluded makes a best-effort, idempotent attempt to ensure pattern is
+// ignored in repoDir WITHOUT modifying any tracked file. If git already ignores
+// pattern (via any .gitignore, global excludes, a prior exclude entry, etc.) it
+// does nothing; otherwise it appends pattern to the repository's
+// .git/info/exclude — an untracked, per-clone file — preceded by a labeled
+// comment line. For linked worktrees the entry is written to the MAIN
+// repository's exclude file (resolved via the git common dir) so it applies
+// repo-wide without dirtying the user's version-controlled .gitignore. The file
+// is created if needed and a separating newline is ensured before appending.
+func EnsureGitExcluded(repoDir, pattern, comment string) error {
 	if IsIgnored(repoDir, pattern) {
 		return nil
 	}
-	path := filepath.Join(repoDir, ".gitignore")
+	common := CommonDir(repoDir)
+	if common == "" {
+		return fmt.Errorf("could not resolve git common dir for %q", repoDir)
+	}
+	infoDir := filepath.Join(common, "info")
+	if err := os.MkdirAll(infoDir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(infoDir, "exclude")
 	existing, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

@@ -1705,12 +1705,13 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		worktreeBaseCommit = baseCommit
 		worktreeRepoDir = workingDir
 		// Best-effort: keep the in-project worktrees dir out of the main
-		// checkout's git status. No-op when already ignored (e.g. .mitto/ is
-		// ignored). Failures are non-fatal. Done while workingDir is still the
-		// repo root (it is reassigned to wtPath below).
-		if igErr := git.EnsureGitignored(workingDir, ".mitto/worktrees/",
+		// checkout's git status via the untracked .git/info/exclude (never
+		// the tracked .gitignore). No-op when already ignored (e.g. .mitto/
+		// is ignored). Failures are non-fatal. Done while workingDir is still
+		// the repo root (it is reassigned to wtPath below).
+		if igErr := git.EnsureGitExcluded(workingDir, ".mitto/worktrees/",
 			"Added by Mitto: per-conversation worktrees"); igErr != nil && sm.logger != nil {
-			sm.logger.Warn("Failed to gitignore worktrees dir",
+			sm.logger.Warn("Failed to exclude worktrees dir",
 				"error", igErr, "repo", workingDir)
 		}
 		workingDir = wtPath

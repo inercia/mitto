@@ -50,13 +50,21 @@ restricted-runner write scope (`$MITTO_WORKING_DIR`), so no separate sandbox
 allow-list entry is needed for the worktree itself.
 
 Because worktrees now sit inside the working tree, the `.mitto/worktrees/` path
-is **auto-gitignored** on first worktree creation to avoid `git status`
-pollution in the main checkout. On the first successful `AddWorktree`,
-`git.EnsureGitignored(repoRoot, ".mitto/worktrees/", …)` checks
-`git check-ignore` first and appends the pattern to `<repoRoot>/.gitignore` only
-when not already ignored (so repos that already ignore `.mitto/` are left
-untouched). It is best-effort: a failure logs a warning but does not abort
-worktree creation.
+is **auto-excluded** on first worktree creation to avoid `git status` pollution
+in the main checkout — **without** touching the user's version-controlled
+`.gitignore`. On the first successful `AddWorktree`,
+`git.EnsureGitExcluded(repoRoot, ".mitto/worktrees/", …)` checks
+`git check-ignore` first and, only when not already ignored, appends the pattern
+to the repository's **`.git/info/exclude`** (an untracked, per-clone file) rather
+than the tracked `.gitignore`. For linked worktrees the entry is written to the
+**main** repository's exclude file, resolved via the git common dir
+(`git.CommonDir`), so it applies repo-wide. Repos that already ignore `.mitto/`
+are left untouched. It is best-effort: a failure logs a warning but does not
+abort worktree creation.
+
+This avoids producing an unexpected working-tree diff (and a likely accidental
+commit) in the user's main checkout — Mitto never modifies a tracked file the
+user did not ask it to change.
 
 ### Base-branch policy: origin/HEAD by default, stored
 
