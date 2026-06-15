@@ -216,6 +216,13 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		{"matchesServerType case insensitive", `acp.matchesServerType("AUGMENT")`, augCtx, true},
 		{"matchesServerType fail-open empty acp", `acp.matchesServerType("anything")`, noACPCtx, true},
 
+		// acp.name model-name fallback (delegate-to-coder / delegate-playwright, mitto-i7n.12).
+		// contains() is case-sensitive and misses the real display name "Auggie (Opus 4.6)";
+		// the case-insensitive matches() fallback must still fire.
+		{"name contains opus is case-sensitive (documents bug)", `acp.name.contains("opus")`, augCtx, false},
+		{"name matches opus case-insensitive", `acp.name.matches("(?i)opus|o3|deep-research|codex")`, augCtx, true},
+		{"name matches no model keyword", `acp.name.matches("(?i)o3|deep-research|codex")`, augCtx, false},
+
 		// acp.matchesServerType — list arg
 		{"matchesServerType list one matches", `acp.matchesServerType(["augment", "claude-code"])`, augCtx, true},
 		{"matchesServerType list none match", `acp.matchesServerType(["cursor", "claude-code"])`, augCtx, false},
