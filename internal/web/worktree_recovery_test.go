@@ -125,6 +125,68 @@ func TestRecoverOrphanedWorktrees(t *testing.T) {
 	}
 }
 
+func TestRecoverOrphanedWorktrees_PreservesUnmergedCommits(t *testing.T) {
+	store := setupWorktreeRecoveryEnv(t)
+	repo := initTestRepo(t)
+	worktreesDir := appdir.WorkspaceWorktreesDir(repo)
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktrees: %v", err)
+	}
+	ctx := context.Background()
+
+	// Orphaned worktree with a commit ahead of main — must be PRESERVED.
+	orphanID := "20260614-000010-ahead000"
+	orphanWT := filepath.Join(worktreesDir, orphanID)
+	if err := git.AddWorktree(ctx, repo, orphanWT, git.BranchName(orphanID), ""); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+	// Commit a new file inside the orphan worktree so its branch is ahead.
+	if err := os.WriteFile(filepath.Join(orphanWT, "work.txt"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatalf("write work.txt: %v", err)
+	}
+	runGitT(t, orphanWT, "add", "work.txt")
+	runGitT(t, orphanWT, "-c", "commit.gpgsign=false", "commit", "-m", "unmerged work")
+
+	recoverOrphanedWorktrees(store, nil)
+
+	if _, err := os.Stat(orphanWT); err != nil {
+		t.Errorf("orphan worktree with unmerged commit was removed: %v", err)
+	}
+	if !branchExists(t, repo, git.BranchName(orphanID)) {
+		t.Errorf("orphan branch %q was deleted despite unmerged commits", git.BranchName(orphanID))
+	}
+}
+
+func TestRecoverOrphanedWorktrees_PreservesDirtyWorktree(t *testing.T) {
+	store := setupWorktreeRecoveryEnv(t)
+	repo := initTestRepo(t)
+	worktreesDir := appdir.WorkspaceWorktreesDir(repo)
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktrees: %v", err)
+	}
+	ctx := context.Background()
+
+	// Orphaned worktree with an uncommitted file — must be PRESERVED.
+	orphanID := "20260614-000011-dirty000"
+	orphanWT := filepath.Join(worktreesDir, orphanID)
+	if err := git.AddWorktree(ctx, repo, orphanWT, git.BranchName(orphanID), ""); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+	// Write an uncommitted file (dirty working tree).
+	if err := os.WriteFile(filepath.Join(orphanWT, "dirty.txt"), []byte("unsaved\n"), 0o644); err != nil {
+		t.Fatalf("write dirty.txt: %v", err)
+	}
+
+	recoverOrphanedWorktrees(store, nil)
+
+	if _, err := os.Stat(orphanWT); err != nil {
+		t.Errorf("dirty orphan worktree was removed: %v", err)
+	}
+	if !branchExists(t, repo, git.BranchName(orphanID)) {
+		t.Errorf("dirty orphan branch %q was deleted", git.BranchName(orphanID))
+	}
+}
+
 func TestRecoverOrphanedWorktrees_ClearsStaleMetadata(t *testing.T) {
 	store := setupWorktreeRecoveryEnv(t)
 

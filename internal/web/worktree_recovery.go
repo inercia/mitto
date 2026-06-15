@@ -89,6 +89,31 @@ func recoverOrphanedWorktrees(store *session.Store, logger *slog.Logger) {
 	}
 }
 
+// orphanHasUnmergedWork reports whether the orphaned worktree at worktreePath
+// (branch `branch`, owned by repoRoot) still holds work not merged back: the
+// working tree is dirty, OR its branch has commits ahead of the repo default
+// branch. The owning session is gone so the original base is unknown; the repo
+// default branch is used as the merge reference. On any uncertainty (no default
+// branch, branch/base ref missing, AheadBehind error) it returns true so the
+// clean-only reaper never destroys unmerged work.
+func orphanHasUnmergedWork(ctx context.Context, repoRoot, worktreePath, branch string) bool {
+	if git.IsDirty(ctx, worktreePath) {
+		return true
+	}
+	if branch == "" || !git.RefExists(ctx, repoRoot, branch) {
+		return false // no branch commits to lose
+	}
+	base := git.DefaultBranch(ctx, repoRoot)
+	if base == "" || !git.RefExists(ctx, repoRoot, base) {
+		return true // cannot determine merge status — preserve
+	}
+	ahead, _, err := git.AheadBehind(ctx, repoRoot, base, branch)
+	if err != nil {
+		return true // cannot compute — preserve
+	}
+	return ahead > 0
+}
+
 // removeOrphanWorktree removes a single orphaned worktree. A genuine linked
 // worktree (identified by a .git FILE pointing at its gitdir) is removed with
 // git.RemoveWorktree + git.DeleteBranch against its owning repo. Anything else
@@ -101,6 +126,17 @@ func removeOrphanWorktree(worktreePath, branch string, logger *slog.Logger) {
 		if repoRoot := gitMainWorktreeRoot(worktreePath); repoRoot != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+
+			// Safety backstop (mitto-n42.2): never reap an orphan that still holds
+			// unmerged work. Only clean orphans are removed.
+			if orphanHasUnmergedWork(ctx, repoRoot, worktreePath, branch) {
+				if logger != nil {
+					logger.Warn("Worktree recovery: PRESERVING orphaned worktree with unmerged work — skipping remove and branch delete",
+						"worktree_path", worktreePath, "branch", branch, "repo", repoRoot)
+				}
+				return
+			}
+
 			if err := git.RemoveWorktree(ctx, repoRoot, worktreePath); err != nil {
 				if logger != nil {
 					logger.Warn("Worktree recovery: git worktree remove failed",
