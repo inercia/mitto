@@ -502,6 +502,54 @@ func TestSessionManager_ResumeSession_OrphanedServer_NoWorkspace_Fails(t *testin
 	}
 }
 
+func TestSessionManager_ResolveWorkspaceForResume_WorktreeInheritsRepoWorkspace(t *testing.T) {
+	repoRoot := "/repo/root"
+	worktreeDir := repoRoot + "/.mitto/worktrees/sess-123"
+
+	// Only the repo-root folder has a registered workspace. The worktree's
+	// per-session cwd never matches a configured workspace root.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: "repo-uuid", WorkingDir: repoRoot, ACPServer: "test-server"},
+		},
+	})
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// Exact working-dir match for the worktree path fails, so resolution must
+	// fall back to the persisted repo root and adopt its non-empty UUID.
+	ws, viaWorktree := sm.resolveWorkspaceForResumeLocked(worktreeDir, "test-server", worktreeDir, repoRoot)
+	if ws == nil {
+		t.Fatal("expected worktree session to inherit repo-root workspace, got nil")
+	}
+	if ws.UUID != "repo-uuid" {
+		t.Errorf("expected repo-uuid, got %q", ws.UUID)
+	}
+	if !viaWorktree {
+		t.Error("expected viaWorktree=true for repo-root fallback")
+	}
+
+	// Non-worktree session (no worktree metadata) with no matching workspace must
+	// NOT fall back — it returns nil so the caller disables shared resolution.
+	noWs, noVia := sm.resolveWorkspaceForResumeLocked(worktreeDir, "test-server", "", "")
+	if noWs != nil {
+		t.Errorf("expected nil for non-worktree session with no matching workspace, got %q", noWs.UUID)
+	}
+	if noVia {
+		t.Error("expected viaWorktree=false when no fallback occurs")
+	}
+
+	// Exact match still wins without any worktree fallback.
+	exactWs, exactVia := sm.resolveWorkspaceForResumeLocked(repoRoot, "test-server", worktreeDir, repoRoot)
+	if exactWs == nil || exactWs.UUID != "repo-uuid" {
+		t.Fatalf("expected exact repo-root match, got %v", exactWs)
+	}
+	if exactVia {
+		t.Error("expected viaWorktree=false for exact working-dir match")
+	}
+}
+
 func TestSessionManager_ApplyACPServerRenames_MigratesMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)

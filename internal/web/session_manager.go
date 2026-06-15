@@ -405,6 +405,26 @@ func (sm *SessionManager) resolveWorkspaceForACPLocked(workingDir, acpServer str
 	return sm.defaultWorkspace
 }
 
+// resolveWorkspaceForResumeLocked resolves the owning workspace for a resumed
+// session's ACP server. It first tries an exact working-dir match; if that fails
+// and the session is a worktree session, it retries with the persisted repo root
+// (meta.WorktreeRepoDir) so worktree sessions inherit their repo-root workspace
+// (UUID + shared ACP process) instead of falling into the no-workspace branch.
+// viaWorktree reports whether the repo-root fallback produced the match.
+// Mirrors resolveOwningWorkspace in session_api.go but without a git subprocess:
+// the repo root is read from already-persisted metadata. Caller must hold sm.mu.
+func (sm *SessionManager) resolveWorkspaceForResumeLocked(workingDir, acpServer, worktreePath, worktreeRepoDir string) (ws *config.WorkspaceSettings, viaWorktree bool) {
+	if ws = sm.resolveWorkspaceForACPLocked(workingDir, acpServer); ws != nil {
+		return ws, false
+	}
+	if worktreePath != "" && worktreeRepoDir != "" {
+		if ws = sm.resolveWorkspaceForACPLocked(worktreeRepoDir, acpServer); ws != nil {
+			return ws, true
+		}
+	}
+	return nil, false
+}
+
 // GetWorkspaceByUUID returns the workspace with the given UUID.
 // Returns nil if no workspace with that UUID exists.
 func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
@@ -2145,13 +2165,22 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				// ACP server. The provisional workspace chosen above may point to the
 				// same directory but a different ACP server, which would incorrectly
 				// reuse the wrong shared ACP process.
-				foundWs = sm.resolveWorkspaceForACPLocked(workingDir, acpServer)
+				var viaWorktree bool
+				foundWs, viaWorktree = sm.resolveWorkspaceForResumeLocked(workingDir, acpServer, meta.WorktreePath, meta.WorktreeRepoDir)
 				if foundWs != nil {
 					workspaceUUID = foundWs.UUID
 					// Resolve command/cwd/env from the re-resolved workspace.
 					// resolveWorkspaceACPLocked applies ACPCommandOverride if set,
 					// otherwise looks up from global config.
 					acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
+					if viaWorktree && sm.logger != nil {
+						sm.logger.Debug("Worktree session resumed: adopting repo-root workspace",
+							"session_id", sessionID,
+							"working_dir", workingDir,
+							"worktree_repo_dir", meta.WorktreeRepoDir,
+							"acp_server", acpServer,
+							"workspace_uuid", workspaceUUID)
+					}
 					if sm.logger != nil && foundWs.ACPCommandOverride != "" {
 						sm.logger.Debug("Using workspace command override",
 							"session_id", sessionID,
