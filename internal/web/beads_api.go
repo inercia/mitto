@@ -863,13 +863,23 @@ func (s *Server) handleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, beadsSyncResponse{OK: true, Output: out})
 }
 
-// isKnownWorkspaceDir returns true if workingDir matches any configured workspace.
+// isKnownWorkspaceDir returns true if workingDir matches any configured
+// workspace or the working directory of any active session. The latter covers
+// conversations running in an isolated git worktree (under
+// <repo>/.mitto/worktrees/<sid>): that directory is not a registered workspace,
+// but it has its own checked-out .beads/ and is a valid bd working directory.
+// This mirrors FileServer.isValidWorkspace.
 func (s *Server) isKnownWorkspaceDir(workingDir string) bool {
 	if s.sessionManager == nil {
 		return false
 	}
 	for _, ws := range s.sessionManager.GetWorkspaces() {
 		if ws.WorkingDir == workingDir {
+			return true
+		}
+	}
+	for _, dir := range s.sessionManager.GetActiveWorkingDirs() {
+		if dir == workingDir {
 			return true
 		}
 	}

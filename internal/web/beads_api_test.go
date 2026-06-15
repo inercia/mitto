@@ -1230,3 +1230,24 @@ func TestIsKnownWorkspaceDir_NilSessionManager(t *testing.T) {
 		t.Error("isKnownWorkspaceDir should return false when sessionManager is nil")
 	}
 }
+
+func TestIsKnownWorkspaceDir_ActiveSessionWorktreeDir(t *testing.T) {
+	// A conversation running in an isolated git worktree has a working_dir
+	// under <repo>/.mitto/worktrees/<sid> that is NOT a registered workspace,
+	// but is a valid bd working directory. isKnownWorkspaceDir must accept it
+	// because it is the working dir of an active session.
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
+	})
+	worktreeDir := "/test/workspace/.mitto/worktrees/abc123"
+	sm.sessions["abc123"] = &BackgroundSession{persistedID: "abc123", workingDir: worktreeDir}
+
+	s := &Server{sessionManager: sm}
+	if !s.isKnownWorkspaceDir(worktreeDir) {
+		t.Error("isKnownWorkspaceDir should return true for an active session's worktree dir")
+	}
+	if s.isKnownWorkspaceDir("/test/workspace/.mitto/worktrees/other") {
+		t.Error("isKnownWorkspaceDir should return false for an unknown worktree dir")
+	}
+}
