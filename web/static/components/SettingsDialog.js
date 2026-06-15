@@ -1102,6 +1102,10 @@ export function SettingsDialog({
   // Worktree isolation setting (global) - default ON for git repositories
   const [worktreesEnabled, setWorktreesEnabled] = useState(true);
 
+  // Merge-back settings (global) - strategy default "rebase", target empty
+  const [mergeStrategy, setMergeStrategy] = useState("rebase");
+  const [defaultMergeTarget, setDefaultMergeTarget] = useState("");
+
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
   const [defaultFlags, setDefaultFlags] = useState({});
@@ -1537,6 +1541,10 @@ export function SettingsDialog({
         config.conversations?.worktrees_enabled !== false,
       );
 
+      // Load merge-back settings - default strategy "rebase", no default target
+      setMergeStrategy(config.conversations?.merge_strategy || "rebase");
+      setDefaultMergeTarget(config.conversations?.default_merge_target || "");
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -1776,6 +1784,8 @@ export function SettingsDialog({
         },
         max_child_conversations: maxChildConversations,
         worktrees_enabled: worktreesEnabled,
+        merge_strategy: mergeStrategy,
+        default_merge_target: defaultMergeTarget,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -3470,6 +3480,48 @@ export function SettingsDialog({
                             </div>
                           </div>
                         </label>
+                        <div class="px-3 pb-1 space-y-3">
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Merge-back strategy
+                              </div>
+                              <div class="text-xs text-mitto-text-muted">
+                                How a conversation's worktree branch is merged
+                                back into a target branch when the conversation
+                                is deleted.
+                              </div>
+                            </div>
+                            <select
+                              value=${mergeStrategy}
+                              onChange=${(e) => setMergeStrategy(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="rebase">Rebase (default)</option>
+                              <option value="merge">Merge</option>
+                            </select>
+                          </div>
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Default merge target
+                              </div>
+                              <div class="text-xs text-mitto-text-muted">
+                                Branch preselected in the merge-back dialog
+                                (e.g. "devel"). Leave empty to default to the
+                                repository's default branch.
+                              </div>
+                            </div>
+                            <input
+                              type="text"
+                              value=${defaultMergeTarget}
+                              onInput=${(e) =>
+                                setDefaultMergeTarget(e.target.value)}
+                              class="input input-sm w-40 font-mono"
+                              placeholder="(default branch)"
+                            />
+                          </div>
+                        </div>
                       </div>
 
                       <!-- Message Display -->

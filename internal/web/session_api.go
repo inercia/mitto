@@ -441,6 +441,9 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
 	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
 	isChangesRequest := len(parts) > 1 && parts[1] == "changes"
+	isWorktreeStatusRequest := len(parts) > 1 && parts[1] == "worktree-status"
+	isBranchesRequest := len(parts) > 1 && parts[1] == "branches"
+	isMergeRequest := len(parts) > 1 && parts[1] == "merge"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -519,6 +522,20 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// Handle git changes operations
 	if isChangesRequest {
 		s.handleSessionChanges(w, r, sessionID)
+		return
+	}
+
+	// Handle worktree merge-back operations
+	if isWorktreeStatusRequest {
+		s.handleSessionWorktreeStatus(w, r, sessionID)
+		return
+	}
+	if isBranchesRequest {
+		s.handleSessionBranches(w, r, sessionID)
+		return
+	}
+	if isMergeRequest {
+		s.handleSessionMerge(w, r, sessionID)
 		return
 	}
 

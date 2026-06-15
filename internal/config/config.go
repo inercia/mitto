@@ -624,6 +624,32 @@ type ConversationsConfig struct {
 	// per-folder WorkspaceSettings.WorktreesEnabled overrides this in either
 	// direction. See ResolveWorktreesEnabled for the precedence rules.
 	WorktreesEnabled *bool `json:"worktrees_enabled,omitempty" yaml:"worktrees_enabled,omitempty"`
+	// MergeStrategy selects how a conversation's worktree branch is merged back
+	// into a target branch when the conversation is deleted. Valid values are
+	// "rebase" (default) and "merge". Empty means use the default (rebase).
+	MergeStrategy string `json:"merge_strategy,omitempty" yaml:"merge_strategy,omitempty"`
+	// DefaultMergeTarget is the branch name preselected in the merge-back dialog
+	// (e.g. "devel"). Empty means no preselection — the repository default branch
+	// is offered instead. This is a global, local-only setting.
+	DefaultMergeTarget string `json:"default_merge_target,omitempty" yaml:"default_merge_target,omitempty"`
+}
+
+// GetMergeStrategy returns the configured merge-back strategy, defaulting to
+// "rebase" when unset. Safe to call on a nil receiver.
+func (c *ConversationsConfig) GetMergeStrategy() string {
+	if c == nil || c.MergeStrategy == "" {
+		return "rebase"
+	}
+	return c.MergeStrategy
+}
+
+// GetDefaultMergeTarget returns the configured default merge-back target branch,
+// or "" when unset. Safe to call on a nil receiver.
+func (c *ConversationsConfig) GetDefaultMergeTarget() string {
+	if c == nil {
+		return ""
+	}
+	return c.DefaultMergeTarget
 }
 
 // GetWorktreesEnabled returns the global "isolate changes in worktrees" setting.

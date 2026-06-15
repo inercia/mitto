@@ -161,3 +161,51 @@ enqueues the built-in "Submit changes" prompt for the conversation (same queue
 path as context-menu prompts). The worktree fields reach the frontend via the
 WebSocket `connected` message (`internal/web/session_ws.go`) and are stored in
 `session.info` by `useWebSocket.js`.
+
+## Merge-back on delete (server-side)
+
+Deleting a conversation removes its worktree and branch, so unmerged work would
+be lost. To prevent that, the delete flow detects unmerged work and offers an
+explicit, server-side **merge-back** (this is the one exception to the
+agent-driven, no-server-side-merge rule above).
+
+### Git layer
+
+- `internal/git/mergeback.go` — read-only state helpers: `IsAncestor`,
+  `RefExists`, `IsDirty`, `AheadBehind`, `ListBranches`, `WorktreeBranches`,
+  `DefaultBranch`.
+- `internal/git/merge_op.go` — `MergeBack(ctx, MergeBackOptions)` orchestrates
+  the operation. **Rebase** (default) replays the worktree branch on the target,
+  then fast-forwards the target (via the target's working tree when it is checked
+  out, else `git branch -f`). It never moves a branch checked out with
+  uncommitted changes and aborts cleanly on conflict, reporting outcomes through
+  `MergeBackResult.Reason` (`dirty_worktree`, `target_checked_out_dirty`,
+  `conflict`, `error`). `NewBranch` creates a branch off the repo default and
+  merges into it.
+
+### Endpoints
+
+Dispatched from `handleSessionDetail` (`internal/web/session_worktree_api.go`):
+
+- `GET /api/sessions/{id}/worktree-status` — `has_worktree`, `dirty`,
+  `ahead`/`behind` vs the base branch, `has_unmerged_work`, plus the configured
+  `merge_strategy` and `default_merge_target`.
+- `GET /api/sessions/{id}/branches` — candidate target branches (the session's
+  own branch excluded), `checked_out` map, `default_branch`.
+- `POST /api/sessions/{id}/merge` — body `{target | new_branch, strategy?}`.
+  Refuses while the agent is streaming (`reason: session_busy`).
+
+### Settings
+
+Global, local-only, in the `conversations` config (`ConversationsConfig`):
+`merge_strategy` (`rebase` default, or `merge`) and `default_merge_target` (a
+branch preselected in the dialog). Edited in the Settings → Conversations
+"Worktree Isolation" section.
+
+### Frontend
+
+`DeleteDialog.js` warns about unmerged work and offers "Merge and delete",
+"Delete without merging", and — on conflict/dirty/busy — "Let the agent resolve
+it", which switches to the conversation and sends an instruction prompt to
+finish the merge manually. Orchestrated by `openDeleteDialog` /
+`handleMergeAndDelete` / `handleSendAgentPrompt` in `app.js`.

@@ -347,7 +347,49 @@ function App() {
   const [deleteDialog, setDeleteDialog] = useState({
     isOpen: false,
     session: null,
+    worktreeStatus: null,
+    branchesData: null,
+    mergeResult: null,
+    isMerging: false,
   });
+  // Pending merge-resolution prompt handed to the agent after switching to the
+  // conversation; sent by the effect below once that conversation is active.
+  const [pendingMergePrompt, setPendingMergePrompt] = useState(null);
+
+  // openDeleteDialog opens the delete confirmation, first fetching the
+  // conversation's worktree merge-back status (and candidate branches) so the
+  // dialog can warn about unmerged work and offer a merge-back.
+  const openDeleteDialog = useCallback(async (session) => {
+    setDeleteDialog({
+      isOpen: true,
+      session,
+      worktreeStatus: null,
+      branchesData: null,
+      mergeResult: null,
+      isMerging: false,
+    });
+    try {
+      const sid = session.session_id;
+      const statusRes = await secureFetch(
+        apiUrl(`/api/sessions/${sid}/worktree-status`),
+      );
+      const worktreeStatus = statusRes.ok ? await statusRes.json() : null;
+      let branchesData = null;
+      if (worktreeStatus?.has_unmerged_work) {
+        const branchesRes = await secureFetch(
+          apiUrl(`/api/sessions/${sid}/branches`),
+        );
+        branchesData = branchesRes.ok ? await branchesRes.json() : null;
+      }
+      setDeleteDialog((prev) =>
+        prev.isOpen && prev.session?.session_id === sid
+          ? { ...prev, worktreeStatus, branchesData }
+          : prev,
+      );
+    } catch (err) {
+      console.error("Failed to load worktree status:", err);
+    }
+  }, []);
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
@@ -1008,7 +1050,7 @@ function App() {
           activeSessions.find((s) => s.session_id === activeSessionId) ||
           storedSessions.find((s) => s.session_id === activeSessionId);
         if (currentSession) {
-          setDeleteDialog({ isOpen: true, session: currentSession });
+          openDeleteDialog(currentSession);
         }
         return;
       }
@@ -1108,6 +1150,7 @@ function App() {
     fetchStoredSessions,
     activeSessionId,
     confirmDeleteSession,
+    openDeleteDialog,
     activeSessions,
     storedSessions,
     configReadonly,
@@ -1339,6 +1382,17 @@ function App() {
     [sendPrompt, trackUserMessageForPlanExpiration, activeSessionId],
   );
 
+  // Send a queued merge-resolution prompt once its conversation is active.
+  useEffect(() => {
+    if (!pendingMergePrompt) return;
+    if (activeSessionId !== pendingMergePrompt.sessionId) return;
+    const { text } = pendingMergePrompt;
+    setPendingMergePrompt(null);
+    handleSendPrompt(text).catch((err) =>
+      console.error("Failed to send merge-resolution prompt:", err),
+    );
+  }, [pendingMergePrompt, activeSessionId, handleSendPrompt]);
+
   // Handler for prompts dropdown open - refreshes workspace prompts (which now include all sources)
   const handlePromptsOpen = useCallback(() => {
     if (sessionInfo?.working_dir) {
@@ -1511,16 +1565,29 @@ function App() {
       fetchStoredSessions();
       return;
     }
-    // Otherwise show the confirmation dialog
-    setDeleteDialog({ isOpen: true, session });
+    // Otherwise show the confirmation dialog (with merge-back status)
+    openDeleteDialog(session);
   };
 
+  // closeDeleteDialog resets the dialog to its initial, closed state.
+  const closeDeleteDialog = () =>
+    setDeleteDialog({
+      isOpen: false,
+      session: null,
+      worktreeStatus: null,
+      branchesData: null,
+      mergeResult: null,
+      isMerging: false,
+    });
+
+  // handleConfirmDelete performs the actual deletion. Used for the plain
+  // confirmation and for "Delete without merging".
   const handleConfirmDelete = async () => {
     const session = deleteDialog.session;
     if (!session) return;
 
     // Close the dialog first
-    setDeleteDialog({ isOpen: false, session: null });
+    closeDeleteDialog();
 
     // Clean up plan entries, expiration tracking, and completion timers for this session
     clearPlanForSession(session.session_id);
@@ -1531,6 +1598,72 @@ function App() {
 
     // Refresh the stored sessions list
     fetchStoredSessions();
+  };
+
+  // handleMergeAndDelete merges the conversation's worktree branch into the
+  // chosen target, then deletes on success. On failure the conversation is kept
+  // and the reason is surfaced in the dialog so the user can retry or hand it
+  // to the agent.
+  const handleMergeAndDelete = async (target, newBranch) => {
+    const session = deleteDialog.session;
+    if (!session) return;
+    setDeleteDialog((prev) => ({
+      ...prev,
+      isMerging: true,
+      mergeResult: null,
+    }));
+    try {
+      const res = await secureFetch(
+        apiUrl(`/api/sessions/${session.session_id}/merge`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target, new_branch: newBranch }),
+        },
+      );
+      const result = res.ok
+        ? await res.json()
+        : { success: false, detail: "Merge request failed" };
+      if (result.success) {
+        await handleConfirmDelete();
+        return;
+      }
+      setDeleteDialog((prev) => ({
+        ...prev,
+        isMerging: false,
+        mergeResult: result,
+      }));
+    } catch (err) {
+      console.error("Merge-back failed:", err);
+      setDeleteDialog((prev) => ({
+        ...prev,
+        isMerging: false,
+        mergeResult: { success: false, detail: String(err) },
+      }));
+    }
+  };
+
+  // handleSendAgentPrompt hands the merge over to the agent: it switches to the
+  // conversation and queues an instruction prompt (sent by the effect once that
+  // conversation becomes active).
+  const handleSendAgentPrompt = (target, newBranch) => {
+    const session = deleteDialog.session;
+    if (!session) return;
+    const strategy = deleteDialog.worktreeStatus?.merge_strategy || "rebase";
+    const action = newBranch
+      ? `create a new branch "${newBranch}" from the repository's default branch and ${strategy} this conversation's branch onto it`
+      : strategy === "merge"
+        ? `merge "${target}" into this conversation's branch`
+        : `rebase this conversation's branch onto "${target}"`;
+    const text =
+      `The automatic merge-back could not be completed. Please finish it carefully:\n` +
+      `1. Commit or stash any uncommitted changes in this worktree.\n` +
+      `2. ${action} using git.\n` +
+      `3. Resolve any conflicts and verify the result builds and tests cleanly.\n` +
+      `4. Confirm here once the branch is cleanly merged. Do not force-push or discard work.`;
+    setPendingMergePrompt({ sessionId: session.session_id, text });
+    switchSession(session.session_id);
+    closeDeleteDialog();
   };
 
   const handlePinSession = async (session, pinned) => {
@@ -1713,8 +1846,14 @@ function App() {
         "Untitled"}
         isActive=${deleteDialog.session?.session_id === activeSessionId}
         isStreaming=${deleteDialog.session?.isStreaming || false}
-        onConfirm=${handleConfirmDelete}
-        onCancel=${() => setDeleteDialog({ isOpen: false, session: null })}
+        worktreeStatus=${deleteDialog.worktreeStatus}
+        branchesData=${deleteDialog.branchesData}
+        mergeResult=${deleteDialog.mergeResult}
+        isMerging=${deleteDialog.isMerging}
+        onDelete=${handleConfirmDelete}
+        onMergeAndDelete=${handleMergeAndDelete}
+        onSendAgentPrompt=${handleSendAgentPrompt}
+        onCancel=${closeDeleteDialog}
       />
 
       <!-- Workspace Selection Dialog (for new conversations) -->
