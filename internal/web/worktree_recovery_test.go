@@ -84,7 +84,7 @@ func TestRecoverOrphanedWorktrees(t *testing.T) {
 	// Valid session with a live worktree (must be preserved).
 	validID := "20260614-000001-valid000"
 	validWT := filepath.Join(worktreesDir, validID)
-	if err := git.AddWorktree(ctx, repo, validWT, git.BranchName(validID)); err != nil {
+	if err := git.AddWorktree(ctx, repo, validWT, git.BranchName(validID), ""); err != nil {
 		t.Fatalf("AddWorktree valid: %v", err)
 	}
 	if err := store.Create(session.Metadata{
@@ -99,7 +99,7 @@ func TestRecoverOrphanedWorktrees(t *testing.T) {
 	// Orphaned worktree (real git worktree, no session) — must be removed.
 	orphanID := "20260614-000002-orphan00"
 	orphanWT := filepath.Join(worktreesDir, orphanID)
-	if err := git.AddWorktree(ctx, repo, orphanWT, git.BranchName(orphanID)); err != nil {
+	if err := git.AddWorktree(ctx, repo, orphanWT, git.BranchName(orphanID), ""); err != nil {
 		t.Fatalf("AddWorktree orphan: %v", err)
 	}
 

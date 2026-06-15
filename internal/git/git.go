@@ -28,9 +28,15 @@ func IsGitRepo(dir string) bool {
 }
 
 // AddWorktree creates a new worktree at worktreePath on a new branch.
-// It runs `git -C repoDir worktree add worktreePath -b branch`.
-func AddWorktree(ctx context.Context, repoDir, worktreePath, branch string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "worktree", "add", worktreePath, "-b", branch)
+// When startPoint is non-empty the new branch is created from it (e.g.
+// "origin/main"); otherwise it is created from the repo's current HEAD.
+// It runs `git -C repoDir worktree add worktreePath -b branch [startPoint]`.
+func AddWorktree(ctx context.Context, repoDir, worktreePath, branch, startPoint string) error {
+	args := []string{"-C", repoDir, "worktree", "add", worktreePath, "-b", branch}
+	if startPoint != "" {
+		args = append(args, startPoint)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
@@ -106,9 +112,32 @@ func CurrentBranch(dir string) string {
 // or "" on any error. This is used to record the base commit a session worktree
 // was created from.
 func CurrentCommit(dir string) string {
+	return CommitOf(dir, "HEAD")
+}
+
+// CommitOf returns the full SHA that rev resolves to in dir, or "" on any error
+// (missing git, not a repo, unknown revision). Used to record the base commit a
+// session worktree was created from when the start point is not HEAD.
+func CommitOf(dir, rev string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD").Output()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", rev).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// DefaultBranchRef returns the remote default branch as recorded by origin/HEAD,
+// e.g. "origin/main". It returns "" when there is no origin remote, origin/HEAD
+// is not configured, or on any error. This is used as the default start point
+// for new session worktrees so they branch from the canonical upstream tip
+// rather than whatever the main checkout currently has checked out.
+func DefaultBranchRef(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir,
+		"symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
 	if err != nil {
 		return ""
 	}

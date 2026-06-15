@@ -1600,10 +1600,24 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 			// Capture the base branch/commit from the repo root BEFORE creating the
 			// worktree (workingDir is still the repo root here, and is reassigned to
 			// wtPath below). The flow-back step targets this base.
-			baseBranch := git.CurrentBranch(workingDir)
-			baseCommit := git.CurrentCommit(workingDir)
+			//
+			// New worktrees branch from the remote's default branch (origin/HEAD) by
+			// default so they start from the canonical upstream tip; when there is no
+			// origin remote we fall back to the repo root's current HEAD. The recorded
+			// base reflects the actual start point: for origin/HEAD the flow-back
+			// target is the local branch name (e.g. "main"), with the base commit
+			// resolved from origin/HEAD.
+			startPoint := git.DefaultBranchRef(workingDir) // e.g. "origin/main", "" if none
+			var baseBranch, baseCommit string
+			if startPoint != "" {
+				baseBranch = strings.TrimPrefix(startPoint, "origin/")
+				baseCommit = git.CommitOf(workingDir, startPoint)
+			} else {
+				baseBranch = git.CurrentBranch(workingDir)
+				baseCommit = git.CurrentCommit(workingDir)
+			}
 			wtCtx, wtCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			addErr := git.AddWorktree(wtCtx, workingDir, wtPath, branch)
+			addErr := git.AddWorktree(wtCtx, workingDir, wtPath, branch, startPoint)
 			wtCancel()
 			if addErr != nil {
 				if sm.logger != nil {

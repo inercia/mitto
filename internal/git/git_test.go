@@ -73,7 +73,7 @@ func TestAddRemoveWorktree(t *testing.T) {
 	branch := BranchName("test-session")
 
 	ctx := context.Background()
-	if err := AddWorktree(ctx, repo, worktreePath, branch); err != nil {
+	if err := AddWorktree(ctx, repo, worktreePath, branch, ""); err != nil {
 		t.Fatalf("AddWorktree: %v", err)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
@@ -119,7 +119,7 @@ func TestCommonDir(t *testing.T) {
 	// Linked worktree: common dir is the MAIN repo's .git, OUTSIDE the worktree.
 	worktreePath := filepath.Join(t.TempDir(), "wt")
 	branch := BranchName("commondir-session")
-	if err := AddWorktree(context.Background(), repo, worktreePath, branch); err != nil {
+	if err := AddWorktree(context.Background(), repo, worktreePath, branch, ""); err != nil {
 		t.Fatalf("AddWorktree: %v", err)
 	}
 	wtCommon := CommonDir(worktreePath)
@@ -174,6 +174,75 @@ func TestCurrentBranchAndCommit(t *testing.T) {
 func TestBranchName(t *testing.T) {
 	if got := BranchName("20260614-abcd"); got != "mitto-20260614-abcd" {
 		t.Errorf("BranchName = %q, want %q", got, "mitto-20260614-abcd")
+	}
+}
+
+func TestCommitOf(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+
+	head := CurrentCommit(repo)
+	if got := CommitOf(repo, "HEAD"); got != head {
+		t.Errorf("CommitOf(HEAD) = %q, want %q", got, head)
+	}
+	if got := CommitOf(repo, "no-such-ref"); got != "" {
+		t.Errorf("CommitOf(unknown rev) = %q, want \"\"", got)
+	}
+	if got := CommitOf(t.TempDir(), "HEAD"); got != "" {
+		t.Errorf("CommitOf(non-repo) = %q, want \"\"", got)
+	}
+}
+
+// initRemote creates a bare remote, pushes main, and records origin/HEAD,
+// returning the resolved commit at origin/main.
+func initRemote(t *testing.T, repo string) string {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, repo, "init", "--bare", remote)
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "origin", "main")
+	runGit(t, repo, "remote", "set-head", "origin", "main")
+	return CommitOf(repo, "origin/main")
+}
+
+func TestDefaultBranchRef(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+
+	// No remote configured: empty.
+	if got := DefaultBranchRef(repo); got != "" {
+		t.Errorf("DefaultBranchRef(no remote) = %q, want \"\"", got)
+	}
+	if got := DefaultBranchRef(t.TempDir()); got != "" {
+		t.Errorf("DefaultBranchRef(non-repo) = %q, want \"\"", got)
+	}
+
+	initRemote(t, repo)
+	if got := DefaultBranchRef(repo); got != "origin/main" {
+		t.Errorf("DefaultBranchRef = %q, want %q", got, "origin/main")
+	}
+}
+
+func TestAddWorktreeFromStartPoint(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+	wantCommit := initRemote(t, repo)
+
+	// Advance main past origin/main so the start point matters.
+	if err := os.WriteFile(filepath.Join(repo, "second.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, repo, "add", "second.txt")
+	runGit(t, repo, "-c", "commit.gpgsign=false", "commit", "-m", "second")
+
+	worktreePath := filepath.Join(t.TempDir(), "wt")
+	branch := BranchName("startpoint-session")
+	if err := AddWorktree(context.Background(), repo, worktreePath, branch, "origin/main"); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+	// The worktree's HEAD must match origin/main, not the advanced local main.
+	if got := CurrentCommit(worktreePath); got != wantCommit {
+		t.Errorf("worktree HEAD = %q, want origin/main %q", got, wantCommit)
 	}
 }
 

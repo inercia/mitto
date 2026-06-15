@@ -58,19 +58,27 @@ when not already ignored (so repos that already ignore `.mitto/` are left
 untouched). It is best-effort: a failure logs a warning but does not abort
 worktree creation.
 
-### Base-branch policy: current HEAD at creation, stored
+### Base-branch policy: origin/HEAD by default, stored
 
 When the worktree is created, Mitto records **where it branched from** so that
-flow-back can later target the right place even if the main checkout moves on:
+flow-back can later target the right place even if the main checkout moves on.
+New worktrees branch from the remote's default branch (`origin/HEAD`) by default
+so they start from the canonical upstream tip rather than whatever the main
+checkout has checked out:
 
-- `git.CurrentBranch(repoRoot)` → `WorktreeBaseBranch`
-  (empty when the repo root is on a **detached HEAD**).
-- `git.CurrentCommit(repoRoot)` → `WorktreeBaseCommit` (full 40-char SHA).
+- `git.DefaultBranchRef(repoRoot)` resolves `origin/HEAD` (e.g. `origin/main`).
+  When non-empty it is passed as the **start point** to
+  `git worktree add <path> -b <branch> origin/main`, and:
+  - `WorktreeBaseBranch` ← the local branch name (`origin/` prefix stripped,
+    e.g. `main`) — the flow-back target.
+  - `WorktreeBaseCommit` ← `git.CommitOf(repoRoot, "origin/main")` (full SHA).
+- **Fallback** (no `origin` remote / `origin/HEAD` unset): branch from the repo
+  root's current HEAD (`git worktree add <path> -b <branch>`, no explicit start
+  point), with `WorktreeBaseBranch` ← `git.CurrentBranch(repoRoot)` (empty on a
+  **detached HEAD**) and `WorktreeBaseCommit` ← `git.CurrentCommit(repoRoot)`.
 
 Both are captured **before** `AddWorktree`, while `workingDir` still points at
-the repo root. The new branch is created from the repo root's current HEAD
-(`git worktree add <path> -b <branch>`, no explicit start-point), so the base
-commit is the HEAD at creation time.
+the repo root.
 
 ### Persisted metadata
 
