@@ -108,33 +108,15 @@ func TestVariableResolver_ResolvePaths(t *testing.T) {
 	}
 }
 
-func TestVariableResolver_WorktreesDir(t *testing.T) {
-	resolver, err := NewVariableResolver("/workspace")
-	if err != nil {
-		t.Fatalf("failed to create resolver: %v", err)
-	}
-	if resolver.worktreesDir == "" {
-		t.Skip("worktrees dir not resolvable in this environment")
-	}
-
-	for _, input := range []string{"$MITTO_WORKTREES_DIR/abc", "${MITTO_WORKTREES_DIR}/abc"} {
-		got := resolver.Resolve(input)
-		want := resolver.worktreesDir + "/abc"
-		if got != want {
-			t.Errorf("Resolve(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestVariableResolver_ResolvePathsDropsEmpty(t *testing.T) {
 	resolver, err := NewVariableResolver("/workspace")
 	if err != nil {
 		t.Fatalf("failed to create resolver: %v", err)
 	}
-	// Force the worktrees variable to resolve to empty so it is dropped.
-	resolver.worktreesDir = ""
+	// Force a variable to resolve to empty so it is dropped.
+	resolver.mittoDir = ""
 
-	resolved := resolver.ResolvePaths([]string{"$MITTO_WORKTREES_DIR", "/keep"})
+	resolved := resolver.ResolvePaths([]string{"$MITTO_DIR", "/keep"})
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 path after dropping empty, got %d: %v", len(resolved), resolved)
 	}

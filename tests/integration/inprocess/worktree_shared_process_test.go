@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web"
@@ -128,7 +129,7 @@ func TestWorktreeLifecycle_CreateAndDelete(t *testing.T) {
 	}
 
 	// Worktrees are ON by default in a git repo (no per-folder/global override):
-	// a dedicated out-of-tree worktree is materialized and recorded in metadata.
+	// a dedicated in-project worktree is materialized and recorded in metadata.
 	cwd := assertWorktreeCreated(t, ts, sess, repoDir)
 
 	// Deleting the session must remove the worktree from disk.
@@ -145,9 +146,9 @@ func TestWorktreeLifecycle_CreateAndDelete(t *testing.T) {
 func wtBoolPtr(b bool) *bool { return &b }
 
 // assertWorktreeCreated asserts that the session was placed in a dedicated
-// out-of-tree git worktree: the cwd diverged from repoDir into the appdir
-// worktrees directory, exists on disk, and the path + branch are recorded in
-// metadata. Returns the resolved worktree path.
+// in-project git worktree: the cwd diverged from repoDir into the
+// <repoDir>/.mitto/worktrees directory, exists on disk, and the path + branch
+// are recorded in metadata. Returns the resolved worktree path.
 func assertWorktreeCreated(t *testing.T, ts *TestServer, sess *client.SessionInfo, repoDir string) string {
 	t.Helper()
 	bs := ts.Server.GetSessionManager().GetSession(sess.SessionID)
@@ -158,7 +159,7 @@ func assertWorktreeCreated(t *testing.T, ts *TestServer, sess *client.SessionInf
 	if cwd == repoDir {
 		t.Fatalf("expected worktree cwd to diverge from repo root %q", repoDir)
 	}
-	worktreesDir := filepath.Join(ts.TempDir, "worktrees")
+	worktreesDir := appdir.WorkspaceWorktreesDir(repoDir)
 	if !strings.HasPrefix(cwd, worktreesDir) {
 		t.Errorf("worktree cwd %q is not under %q", cwd, worktreesDir)
 	}

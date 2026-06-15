@@ -441,30 +441,27 @@ allow_write_folders:
   - "$HOME/.cache" # Cache directory
 ```
 
-> **Automatic entries (restricted runners only):** `$MITTO_WORKING_DIR` and
-> `$MITTO_WORKTREES_DIR` are always added to `allow_write_folders` if missing,
-> so the agent can always write to its own working directory and to
-> worktree-isolated conversations. See
-> [Worktree Isolation](#worktree-isolation) below.
+> **Automatic entry (restricted runners only):** `$MITTO_WORKING_DIR` is always
+> added to `allow_write_folders` if missing, so the agent can always write to
+> its own working directory. See [Worktree Isolation](#worktree-isolation)
+> below.
 
 ### Worktree Isolation
 
 When a conversation runs in an isolated git worktree (see
-[conversations](conversations.md)), its working directory lives under the Mitto
-data directory (`$MITTO_WORKTREES_DIR`), and its shared git metadata — the
-common object store, refs, and the per-worktree gitdir at
-`<main-repo>/.git/worktrees/<name>` — lives inside the main repository's `.git`,
-**outside** the worktree.
+[conversations](conversations.md)), its working directory lives **in-project**
+at `<repoRoot>/.mitto/worktrees/<session-id>` — which is the session's
+`$MITTO_WORKING_DIR`. Its shared git metadata — the common object store, refs,
+and the per-worktree gitdir at `<main-repo>/.git/worktrees/<name>` — lives
+inside the main repository's `.git`, **outside** the worktree.
 
-For `git status`/`add`/`commit` to work under a restricted runner, Mitto
-automatically adds two entries to `allow_write_folders` for every restricted
-runner:
+For `git status`/`add`/`commit` to work under a restricted runner, Mitto:
 
-- `$MITTO_WORKTREES_DIR` — the directory holding all worktree checkouts, so the
-  agent can edit its own files.
-- The resolved git **common dir** (`<main-repo>/.git`) of the session's
-  worktree, so git can update the shared object store, refs, and the worktree
-  gitdir.
+- Covers the worktree itself via the automatic `$MITTO_WORKING_DIR` entry above
+  (the worktree is the session's working directory).
+- Adds the resolved git **common dir** (`<main-repo>/.git`) of the session's
+  worktree to `allow_write_folders`, so git can update the shared object store,
+  refs, and the worktree gitdir.
 
 The main repository's **working tree** is deliberately not added, preserving
 isolation between conversations. No configuration is required — these entries
@@ -526,7 +523,6 @@ Variables are resolved at runtime when the agent starts.
 | `$MITTO_WORKING_DIR` | Current workspace directory | `/Users/user/project`                 |
 | `$HOME`      | User's home directory       | `/Users/user`                         |
 | `$MITTO_DIR` | Mitto data directory        | `~/Library/Application Support/Mitto` |
-| `$MITTO_WORKTREES_DIR` | Worktree checkouts directory | `~/Library/Application Support/Mitto/worktrees` |
 | `$USER`      | Current username            | `user`                                |
 | `$TMPDIR`    | System temp directory       | `/tmp`                                |
 

@@ -92,23 +92,12 @@ func NewRunner(
 			)
 		}
 
-		// Ensure $MITTO_WORKTREES_DIR is always in allow_write_folders for restricted runners.
-		// Worktree-isolated conversations get a per-session working directory under the
-		// out-of-tree worktrees directory, which lives outside the workspace and would
-		// otherwise be blocked by the sandbox.
-		hasWorktrees := false
-		for _, f := range resolved.Restrictions.AllowWriteFolders {
-			if f == "$MITTO_WORKTREES_DIR" || f == "${MITTO_WORKTREES_DIR}" {
-				hasWorktrees = true
-				break
-			}
-		}
-		if !hasWorktrees {
-			resolved.Restrictions.AllowWriteFolders = append(
-				resolved.Restrictions.AllowWriteFolders,
-				"$MITTO_WORKTREES_DIR",
-			)
-		}
+		// Worktree-isolated conversations get a per-session working directory at
+		// <repoRoot>/.mitto/worktrees/<session-id>, which is the runner's
+		// $MITTO_WORKING_DIR and so is already covered by the safety net above.
+		// Only the shared git metadata (the worktree gitdir + common .git, which
+		// live at the repo root, outside the worktree cwd) needs the extra
+		// caller-supplied write folders below.
 
 		// Add caller-supplied extra writable folders (e.g. a worktree session's
 		// shared git common dir), deduplicating against existing entries.

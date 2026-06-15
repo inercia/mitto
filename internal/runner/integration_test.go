@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -288,50 +287,6 @@ func TestRunnerFallback_IsRestricted(t *testing.T) {
 	}
 }
 
-// TestNewRunner_AddsWorktreesDirToAllowWrite verifies that restricted runners always
-// include the out-of-tree worktrees directory in allow_write_folders, so that
-// worktree-isolated conversations (whose per-session working dir lives under the
-// worktrees directory) can write to their own files.
-func TestNewRunner_AddsWorktreesDirToAllowWrite(t *testing.T) {
-	restrictedType := "sandbox-exec"
-	if runtime.GOOS == "linux" {
-		restrictedType = "firejail"
-	}
-
-	// The map is keyed by the lookup type "exec"; the actual runner type is set
-	// via the Type field (see resolveConfig).
-	runnerConfigs := map[string]*config.WorkspaceRunnerConfig{
-		"exec": {
-			Type:         restrictedType,
-			Restrictions: &config.RunnerRestrictions{},
-		},
-	}
-
-	// The safety-net adds the worktrees dir to the resolved config before any
-	// platform-availability fallback, so this assertion holds even when the
-	// requested sandbox runner is unavailable and falls back to exec.
-	r, err := NewRunner(nil, nil, runnerConfigs, "/tmp", nil)
-	if err != nil {
-		t.Fatalf("NewRunner failed: %v", err)
-	}
-
-	worktreesDir, err := appdir.WorktreesDir()
-	if err != nil || worktreesDir == "" {
-		t.Skip("worktrees dir not resolvable in this environment")
-	}
-
-	found := false
-	for _, f := range r.config.Restrictions.AllowWriteFolders {
-		if f == worktreesDir {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected worktrees dir %q in AllowWriteFolders, got %v",
-			worktreesDir, r.config.Restrictions.AllowWriteFolders)
-	}
-}
 
 // TestNewRunner_AddsExtraWriteFolders verifies that caller-supplied extra write
 // folders (e.g. a worktree session's shared git common dir) are added to the

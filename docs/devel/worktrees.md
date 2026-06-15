@@ -41,10 +41,13 @@ branch `mitto-abc123`.
 
 ### Worktree location
 
-Worktrees live **outside** the repository, under the Mitto data dir:
-`appdir.SessionWorktreePath(sessionID)` →
-`<MITTO_DIR>/worktrees/<sessionID>` (e.g.
-`~/Library/Application Support/Mitto/worktrees/<sessionID>` on macOS).
+Worktrees live **in-project**, under the repository's `.mitto` directory:
+`appdir.SessionWorktreePath(repoRoot, sessionID)` →
+`<repoRoot>/.mitto/worktrees/<sessionID>`. Keeping worktrees inside the
+repository (rather than the centralized `<MITTO_DIR>/worktrees`) improves
+filesystem locality and keeps each worktree under the workspace's
+restricted-runner write scope (`$MITTO_WORKING_DIR`), so no separate sandbox
+allow-list entry is needed for the worktree itself.
 
 ### Base-branch policy: current HEAD at creation, stored
 
@@ -75,12 +78,20 @@ all `omitempty`:
 ## Cleanup
 
 Orphaned worktrees are reaped at server startup by
-`recoverOrphanedWorktrees` (`internal/web/worktree_recovery.go`): it scans
-`<MITTO_DIR>/worktrees/` for directories whose `<sessionID>` no longer has a
-session in the store and removes them via `git.RemoveWorktree`
-(`git worktree remove -f <path>`) and `git.DeleteBranch`
-(`git branch -D <branch>`). Stale worktree metadata for sessions whose worktree
-directory has disappeared is also cleared.
+`recoverOrphanedWorktrees` (`internal/web/worktree_recovery.go`). Since
+worktrees are in-project there is no single directory to scan; instead it
+derives the candidate worktree roots from the `WorktreePath` of every known
+session (their parent `<repoRoot>/.mitto/worktrees` dir) and scans each for
+`<sessionID>` directories whose session no longer exists. A genuine linked
+worktree (identified by a `.git` **file** gitdir pointer) is removed via
+`git.RemoveWorktree` (`git worktree remove -f <path>`) and `git.DeleteBranch`
+(`git branch -D <branch>`); a stray plain directory — which would otherwise
+resolve to the enclosing repo by ancestry — is removed directly. Stale worktree
+metadata for sessions whose worktree directory has disappeared is also cleared.
+
+A repository whose sessions have all been removed is not discovered (no known
+session points at its worktree root); such fully-orphaned roots are expected to
+have been cleaned by the per-session delete path already.
 
 ## Flow-back (agent-driven)
 

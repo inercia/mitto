@@ -298,23 +298,19 @@ func SessionsDir() (string, error) {
 	return filepath.Join(dir, SessionsDirName), nil
 }
 
-// WorktreesDir returns the full path to the worktrees directory.
-func WorktreesDir() (string, error) {
-	dir, err := Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, WorktreesDirName), nil
+// WorkspaceWorktreesDir returns the full path to the in-project worktrees
+// directory for a workspace. This is $MITTO_WORKING_DIR/.mitto/worktrees/ and
+// holds the per-conversation git worktrees. Keeping worktrees inside the
+// repository (rather than the centralized Mitto data dir) improves filesystem
+// locality and keeps them under the workspace's restricted-runner write scope.
+func WorkspaceWorktreesDir(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, WorktreesDirName)
 }
 
-// SessionWorktreePath returns the worktree path for a session.
-// The format is {appdir}/worktrees/<session-id>.
-func SessionWorktreePath(sessionID string) (string, error) {
-	worktreesDir, err := WorktreesDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(worktreesDir, sessionID), nil
+// SessionWorktreePath returns the worktree path for a session, located inside
+// the workspace. The format is <workspaceRoot>/.mitto/worktrees/<session-id>.
+func SessionWorktreePath(workspaceRoot, sessionID string) string {
+	return filepath.Join(WorkspaceWorktreesDir(workspaceRoot), sessionID)
 }
 
 // ProcessorsDir returns the full path to the processors directory.

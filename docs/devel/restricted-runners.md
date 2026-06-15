@@ -137,24 +137,23 @@ Paths in restrictions support runtime variables resolved when the runner is crea
 | `$MITTO_WORKING_DIR` / `${MITTO_WORKING_DIR}` | Workspace directory passed to `NewRunner`   | `/Users/user/project`                 |
 | `$HOME` / `${HOME}`           | `os.UserHomeDir()`                          | `/Users/user`                         |
 | `$MITTO_DIR` / `${MITTO_DIR}` | `appdir.Dir()`                              | `~/Library/Application Support/Mitto` |
-| `$MITTO_WORKTREES_DIR` / `${MITTO_WORKTREES_DIR}` | `appdir.WorktreesDir()`         | `~/Library/Application Support/Mitto/worktrees` |
 | `$USER` / `${USER}`           | `$USER` env var (falls back to `$USERNAME`) | `user`                                |
 | `$TMPDIR` / `${TMPDIR}`       | `os.TempDir()`                              | `/tmp`                                |
 
 Also supports `~/` prefix expansion to home directory.
 
-Paths that resolve to an empty string (e.g. `$MITTO_WORKTREES_DIR` when the data
+Paths that resolve to an empty string (e.g. `$MITTO_DIR` when the data
 directory cannot be determined) are dropped by `ResolvePaths`, so an unset
 variable never widens the sandbox to every path via an empty allow-list entry.
 
 ### Automatic write-folder safety nets
 
-For restricted runners only, `NewRunner` always ensures two entries are present
-in `allow_write_folders` (deduplicated):
-
-- `$MITTO_WORKING_DIR` — the agent's own working directory.
-- `$MITTO_WORKTREES_DIR` — the directory holding all worktree-isolated
-  conversation checkouts.
+For restricted runners only, `NewRunner` always ensures `$MITTO_WORKING_DIR`
+(the agent's own working directory) is present in `allow_write_folders`
+(deduplicated). Worktree-isolated conversations run with their per-session
+working directory set to `<repoRoot>/.mitto/worktrees/<session-id>`, which **is**
+`$MITTO_WORKING_DIR`, so the worktree itself is covered by this safety net with
+no separate entry.
 
 In addition, `createRunner` passes the session worktree's resolved git **common
 dir** (`<main-repo>/.git`, via `git.CommonDir`) as an `extraWriteFolders`

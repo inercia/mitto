@@ -14,8 +14,9 @@ import (
 )
 
 // setupWorktreeRecoveryEnv points appdir at a temp dir with hermetic git
-// identity, returns a fresh store and the worktrees directory.
-func setupWorktreeRecoveryEnv(t *testing.T) (*session.Store, string) {
+// identity and returns a fresh store. In-project worktree roots are created
+// per-repo by the caller via appdir.WorkspaceWorktreesDir.
+func setupWorktreeRecoveryEnv(t *testing.T) *session.Store {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not found in PATH")
@@ -38,14 +39,7 @@ func setupWorktreeRecoveryEnv(t *testing.T) (*session.Store, string) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	worktreesDir, err := appdir.WorktreesDir()
-	if err != nil {
-		t.Fatalf("WorktreesDir: %v", err)
-	}
-	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
-		t.Fatalf("mkdir worktrees: %v", err)
-	}
-	return store, worktreesDir
+	return store
 }
 
 func runGitT(t *testing.T, dir string, args ...string) {
@@ -78,8 +72,13 @@ func branchExists(t *testing.T, repo, branch string) bool {
 }
 
 func TestRecoverOrphanedWorktrees(t *testing.T) {
-	store, worktreesDir := setupWorktreeRecoveryEnv(t)
+	store := setupWorktreeRecoveryEnv(t)
 	repo := initTestRepo(t)
+	// Worktrees live in-project under <repo>/.mitto/worktrees/<session-id>.
+	worktreesDir := appdir.WorkspaceWorktreesDir(repo)
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktrees: %v", err)
+	}
 	ctx := context.Background()
 
 	// Valid session with a live worktree (must be preserved).
@@ -127,7 +126,7 @@ func TestRecoverOrphanedWorktrees(t *testing.T) {
 }
 
 func TestRecoverOrphanedWorktrees_ClearsStaleMetadata(t *testing.T) {
-	store, _ := setupWorktreeRecoveryEnv(t)
+	store := setupWorktreeRecoveryEnv(t)
 
 	sid := "20260614-000004-stale000"
 	gone := filepath.Join(t.TempDir(), "removed-worktree")

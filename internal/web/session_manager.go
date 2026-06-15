@@ -1586,12 +1586,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	gitAvailable := workingDir != "" && git.IsGitRepo(workingDir)
 	if config.ResolveWorktreesEnabled(folderWorktrees, globalConv.GetWorktreesEnabled(), gitAvailable) {
 		sid := session.GenerateSessionID()
-		if wtPath, perr := appdir.SessionWorktreePath(sid); perr != nil {
-			if sm.logger != nil {
-				sm.logger.Warn("Worktree path resolution failed; using plain working dir",
-					"error", perr, "session_id", sid)
-			}
-		} else if mkErr := os.MkdirAll(filepath.Dir(wtPath), 0o755); mkErr != nil {
+		// Worktrees live in-project under <repoRoot>/.mitto/worktrees/<sid>.
+		// workingDir is still the repo root here (it is reassigned to the
+		// worktree below).
+		wtPath := appdir.SessionWorktreePath(workingDir, sid)
+		if mkErr := os.MkdirAll(filepath.Dir(wtPath), 0o755); mkErr != nil {
 			if sm.logger != nil {
 				sm.logger.Warn("Worktree parent dir creation failed; using plain working dir",
 					"error", mkErr, "path", wtPath)
