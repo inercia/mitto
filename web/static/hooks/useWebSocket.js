@@ -56,7 +56,6 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
-
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   isReconnectLimitReached,
@@ -1274,7 +1273,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 gc_suspended:
                   msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
                 // Linked beads issue ID (always include, even if empty, so frontend can clear the control)
-                beads_issue: msg.data.beads_issue ?? session.info?.beads_issue ?? "",
+                beads_issue:
+                  msg.data.beads_issue ?? session.info?.beads_issue ?? "",
                 // Processor stats
                 processor_count:
                   msg.data.processor_count ??
@@ -1307,7 +1307,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 worktree_path:
                   msg.data.worktree_path ?? session.info?.worktree_path ?? "",
                 worktree_branch:
-                  msg.data.worktree_branch ?? session.info?.worktree_branch ?? "",
+                  msg.data.worktree_branch ??
+                  session.info?.worktree_branch ??
+                  "",
                 worktree_base_branch:
                   msg.data.worktree_base_branch ??
                   session.info?.worktree_base_branch ??
@@ -3604,9 +3606,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Helper to expand the target session's group when navigating
   // Always expands the group containing the session so it's visible in the sidebar
   // In accordion mode, also collapses all other groups
-  // Resolve a session's root-parent working_dir, which is the folder key the
-  // unified sidebar tree groups it under (children are nested below their root
-  // parent's folder). Returns "Unknown" when no working_dir is available.
+  // Resolve a session's root-parent folder key, which is the folder the unified
+  // sidebar tree groups it under (children are nested below their root parent's
+  // folder). For worktree conversations this is the repo root (worktree_repo_dir),
+  // NOT working_dir (the per-session worktree path, which is removed on deletion),
+  // mirroring getSessionInfo() in sessionGrouping.js so navigation targets the
+  // still-existing project folder. Returns "Unknown" when no folder is available.
   const resolveFolderKey = (session, storedSessions, fallbackWorkingDir) => {
     let rootParent = session;
     let depth = 0;
@@ -3618,7 +3623,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       rootParent = next;
       depth++;
     }
-    return rootParent?.working_dir || fallbackWorkingDir || "Unknown";
+    return (
+      rootParent?.worktree_repo_dir ||
+      rootParent?.working_dir ||
+      fallbackWorkingDir ||
+      "Unknown"
+    );
   };
 
   const expandGroupForSession = useCallback(
@@ -3874,9 +3884,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           setGroupExpanded(parentKey, true);
 
           // Also expand the folder containing the parent session (unscoped key).
-          const folderKey = resolveFolderKey(msg.data, storedSessionsRef.current, msg.data.working_dir);
+          const folderKey = resolveFolderKey(
+            msg.data,
+            storedSessionsRef.current,
+            msg.data.working_dir,
+          );
           if (folderKey) setGroupExpanded(folderKey, true);
-          if (msg.data.archived && folderKey) setGroupExpanded(`archived:${folderKey}`, true);
+          if (msg.data.archived && folderKey)
+            setGroupExpanded(`archived:${folderKey}`, true);
         }
 
         setStoredSessions((prev) => {
@@ -4437,7 +4452,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
           const lastSessionId = getLastActiveSessionId();
           const lastSession =
-            lastSessionId && sessions.find((s) => s.session_id === lastSessionId);
+            lastSessionId &&
+            sessions.find((s) => s.session_id === lastSessionId);
 
           // Lazy-connect: only the active session opens a per-session WebSocket
           // at startup. Background sessions are NOT pre-connected — they connect
