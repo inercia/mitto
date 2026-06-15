@@ -15,3 +15,4 @@ export { useAgentPlan } from "./useAgentPlan.js";
 export { useWorkspacePrompts } from "./useWorkspacePrompts.js";
 export { useBeadsIntegration } from "./useBeadsIntegration.js";
 export { useSessionNavigation } from "./useSessionNavigation.js";
+export { useConversationMenu } from "./useConversationMenu.js";

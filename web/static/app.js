@@ -85,6 +85,7 @@ import {
   useWorkspacePrompts,
   useBeadsIntegration,
   useSessionNavigation,
+  useConversationMenu,
 } from "./hooks/index.js";
 
 // Import components
@@ -143,6 +144,7 @@ import {
   TerminalIcon,
   FolderOpenIcon,
   BeadsIcon,
+  EllipsisIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
 import { BeadsView, BeadsDetailPanel } from "./components/BeadsView.js";
@@ -1952,6 +1954,71 @@ function App() {
     [workspacePrompts, handleSendPromptToConversation, showToast],
   );
 
+  // ----- Chat header conversation menu -----
+  // Resolve the active conversation object (the same enriched object the sidebar
+  // list uses) so the header three-dot menu mirrors the sidebar row menu exactly.
+  const activeSession = useMemo(
+    () =>
+      activeSessionId
+        ? allSessions.find((s) => s.session_id === activeSessionId) || null
+        : null,
+    [allSessions, activeSessionId],
+  );
+  // A conversation is "spawned" (a child) when it has a parent and is not itself
+  // a parent of other conversations — mirrors SessionList's row classification.
+  const activeHasChildren = useMemo(
+    () =>
+      !!activeSessionId &&
+      allSessions.some((s) => s.parent_session_id === activeSessionId),
+    [allSessions, activeSessionId],
+  );
+  const headerIsArchived = activeSession?.archived || false;
+  const headerIsPeriodic = activeSession?.periodic_enabled || false;
+  const headerIsSpawned =
+    !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
+  // Only the active conversation can have queued messages; streaming state comes
+  // from the live socket. Both block archiving (matches SessionItem logic).
+  const headerHasQueued = queueLength > 0;
+  const headerCanArchive = !headerHasQueued && !isStreaming;
+  const headerArchiveBlockedReason = headerHasQueued
+    ? "Clear queue before archiving"
+    : isStreaming
+      ? "Wait for response to complete"
+      : null;
+  const headerWorkingDir =
+    activeSession?.working_dir || sessionInfo?.working_dir || "";
+  // Whether the active conversation owns a git worktree (drives "Merge into").
+  // Mirrors SessionItem's ownsWorktree derivation.
+  const headerOwnsWorktree = !!(
+    activeSession &&
+    (activeSession.worktree_branch || activeSession.info?.worktree_branch)
+  );
+
+  const {
+    contextMenu: headerMenu,
+    contextMenuItems: headerMenuItems,
+    closeContextMenu: closeHeaderMenu,
+    handleMenuButtonClick: handleHeaderMenuButtonClick,
+  } = useConversationMenu({
+    session: activeSession,
+    workingDir: headerWorkingDir,
+    isArchived: headerIsArchived,
+    isPeriodicEnabled: headerIsPeriodic,
+    isSpawned: headerIsSpawned,
+    canArchive: headerCanArchive,
+    archiveBlockedReason: headerArchiveBlockedReason,
+    ownsWorktree: headerOwnsWorktree,
+    onRename: handleOpenSessionProperties,
+    onDelete: handleDeleteSession,
+    onArchive: handleArchiveSession,
+    onMakePeriodic: handleMakePeriodic,
+    onMakeNonPeriodic: handleMakeNonPeriodic,
+    onFetchConversationPrompts: fetchConversationPromptsForSession,
+    onSendPromptToConversation: handleSendPromptToConversation,
+    onFetchSessionBranches: fetchSessionBranches,
+    onMergeSession: handleMergeSession,
+    onMergeSessionToNewBranch: openMergeNewBranchDialog,
+  });
 
   return html`
     <div class="drawer md:drawer-open h-screen-safe">
@@ -2181,20 +2248,36 @@ function App() {
           <h1
             class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
               ? "text-mitto-text-muted"
-              : "cursor-pointer hover:text-mitto-accent-400 transition-colors"}"
+              : connected
+                ? "cursor-pointer hover:text-mitto-accent-400 transition-colors"
+                : "text-mitto-text-muted cursor-pointer hover:text-mitto-text-secondary transition-colors"}"
             onClick=${activeSessionId ? handleToggleSidePanel : undefined}
-            title=${activeSessionId ? "Click to view properties" : ""}
+            title=${activeSessionId
+              ? connected
+                ? "Click to view properties"
+                : "Not connected — click to view properties"
+              : ""}
           >
             ${activeSessionId
               ? sessionInfo?.name || "New conversation"
               : "No Active Session"}
           </h1>
           <div class="ml-auto flex items-center gap-2">
-            <!-- Status indicator dot (matches session list style) -->
-            <span
-              class="w-2 h-2 rounded-full shrink-0 ${isStreaming ? "bg-mitto-accent-400 streaming-indicator" : connected ? "bg-green-400" : "bg-amber-400"}"
-              title=${isStreaming ? "Streaming" : connected ? "Connected" : "Not connected"}
-            ></span>
+            <!-- Conversation actions menu (mirrors the sidebar row menu) -->
+            ${activeSessionId
+              ? html`
+                  <button
+                    type="button"
+                    onClick=${handleHeaderMenuButtonClick}
+                    class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
+                    title="Conversation actions"
+                    aria-label="Conversation actions"
+                    data-testid="header-conversation-menu"
+                  >
+                    <${EllipsisIcon} className="w-4 h-4" />
+                  </button>
+                `
+              : null}
             <!-- Unified side panel toggle -->
             <button
               onClick=${handleToggleSidePanel}
@@ -2205,6 +2288,15 @@ function App() {
             </button>
           </div>
         </div>
+        ${headerMenu &&
+        html`
+          <${ContextMenu}
+            x=${headerMenu.x}
+            y=${headerMenu.y}
+            items=${headerMenuItems}
+            onClose=${closeHeaderMenu}
+          />
+        `}
 
         <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
         <div class="flex-1 relative min-h-0 overflow-hidden">
