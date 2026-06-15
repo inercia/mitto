@@ -34,17 +34,6 @@ type ProcessorInput struct {
 	// Used for @mitto:beads_issue variable substitution and the session.hasBeadsIssue /
 	// session.beadsIssue CEL context in enabledWhen expressions.
 	BeadsIssue string `json:"beads_issue,omitempty"`
-	// WorktreeBranch is the git branch this conversation's isolated worktree runs on
-	// (e.g. "mitto-<sid>"), empty if the conversation is not in an isolated worktree.
-	// Used for @mitto:worktree_branch substitution.
-	WorktreeBranch string `json:"worktree_branch,omitempty"`
-	// WorktreeBaseBranch is the branch the worktree was created from (the flow-back
-	// target), empty if not in a worktree or the base was a detached HEAD.
-	// Used for @mitto:worktree_base_branch substitution.
-	WorktreeBaseBranch string `json:"worktree_base_branch,omitempty"`
-	// WorktreePath is the absolute path to this conversation's worktree, empty if none.
-	// Used for @mitto:worktree_path substitution.
-	WorktreePath string `json:"worktree_path,omitempty"`
 	// AvailableACPServers lists the ACP servers that have workspaces configured for the
 	// session's working directory. Mirrors the data reported by the MCP tool.
 	// Each entry includes the server name, type, tags, and whether it is the current server.

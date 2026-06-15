@@ -79,7 +79,7 @@ func SetupTestServer(t *testing.T, opts ...func(*web.Config)) *TestServer {
 		DisableAuxiliaryPrewarm: true, // Avoid interference with mock ACP server
 	}
 
-	// Apply optional config customizations (e.g. worktrees-enabled workspaces).
+	// Apply optional config customizations.
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&webConfig)

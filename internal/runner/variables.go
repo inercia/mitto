@@ -14,7 +14,6 @@ import (
 // Supported variables:
 //   - $MITTO_WORKING_DIR or ${MITTO_WORKING_DIR} - Current workspace directory
 //   - $WORKSPACE or ${WORKSPACE} - Legacy alias for $MITTO_WORKING_DIR (backward compatible)
-//   - $MITTO_WORKTREES_DIR or ${MITTO_WORKTREES_DIR} - Mitto out-of-tree worktrees directory
 //   - $HOME or ${HOME} - User's home directory
 //   - $MITTO_DIR or ${MITTO_DIR} - Mitto data directory
 //   - $USER or ${USER} - Current username
@@ -22,19 +21,17 @@ import (
 //
 // Variables are resolved at runtime when the runner is created.
 type VariableResolver struct {
-	workspace    string
-	home         string
-	mittoDir     string
-	worktreesDir string
-	user         string
-	tmpDir       string
+	workspace string
+	home      string
+	mittoDir  string
+	user      string
+	tmpDir    string
 }
 
 // NewVariableResolver creates a resolver with runtime values.
 func NewVariableResolver(workspace string) (*VariableResolver, error) {
 	home, _ := os.UserHomeDir()
 	mittoDir, _ := appdir.Dir()
-	worktreesDir, _ := appdir.WorktreesDir()
 	user := os.Getenv("USER")
 	if user == "" {
 		user = os.Getenv("USERNAME") // Windows fallback
@@ -42,12 +39,11 @@ func NewVariableResolver(workspace string) (*VariableResolver, error) {
 	tmpDir := os.TempDir()
 
 	return &VariableResolver{
-		workspace:    workspace,
-		home:         home,
-		mittoDir:     mittoDir,
-		worktreesDir: worktreesDir,
-		user:         user,
-		tmpDir:       tmpDir,
+		workspace: workspace,
+		home:      home,
+		mittoDir:  mittoDir,
+		user:      user,
+		tmpDir:    tmpDir,
 	}, nil
 }
 
@@ -65,8 +61,6 @@ func (vr *VariableResolver) Resolve(path string) string {
 	path = strings.ReplaceAll(path, "${WORKSPACE}", vr.workspace)
 	path = strings.ReplaceAll(path, "$HOME", vr.home)
 	path = strings.ReplaceAll(path, "${HOME}", vr.home)
-	path = strings.ReplaceAll(path, "$MITTO_WORKTREES_DIR", vr.worktreesDir)
-	path = strings.ReplaceAll(path, "${MITTO_WORKTREES_DIR}", vr.worktreesDir)
 	path = strings.ReplaceAll(path, "$MITTO_DIR", vr.mittoDir)
 	path = strings.ReplaceAll(path, "${MITTO_DIR}", vr.mittoDir)
 	path = strings.ReplaceAll(path, "$USER", vr.user)
@@ -83,26 +77,14 @@ func (vr *VariableResolver) Resolve(path string) string {
 }
 
 // ResolvePaths resolves variables in a list of paths.
-//
-// Paths that resolve to an empty string (e.g. an unset variable like
-// $MITTO_WORKTREES_DIR when the data directory cannot be determined) are
-// dropped, since an empty allow-list entry would otherwise widen the sandbox
-// to every path.
 func (vr *VariableResolver) ResolvePaths(paths []string) []string {
 	if len(paths) == 0 {
 		return nil
 	}
 
-	resolved := make([]string, 0, len(paths))
-	for _, path := range paths {
-		r := vr.Resolve(path)
-		if r == "" {
-			continue
-		}
-		resolved = append(resolved, r)
-	}
-	if len(resolved) == 0 {
-		return nil
+	resolved := make([]string, len(paths))
+	for i, path := range paths {
+		resolved[i] = vr.Resolve(path)
 	}
 	return resolved
 }

@@ -85,11 +85,6 @@ type WorkspaceSettings struct {
 	// When true, all permission requests (file writes, command execution, etc.) are auto-approved.
 	// When false or nil, the global auto_approve setting or per-conversation settings apply.
 	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
-	// WorktreesEnabled controls whether sessions in this workspace are created in a
-	// dedicated git worktree. When true, a session is created in its own worktree
-	// (only if the working dir is a git repo); nil or false means no worktree and
-	// the plain working dir is used. Default OFF.
-	WorktreesEnabled *bool `json:"worktrees_enabled,omitempty" yaml:"worktrees_enabled,omitempty"`
 	// RestrictedRunnerConfig holds per-workspace runner restriction overrides.
 	// Applied as level 3 in the config hierarchy (global → agent → workspace).
 	// Only used when RestrictedRunner is not "exec".
@@ -152,13 +147,6 @@ func (w *WorkspaceSettings) GetRestrictedRunner() string {
 // or false if explicitly disabled.
 func (w *WorkspaceSettings) GetAutoApprove() *bool {
 	return w.AutoApprove
-}
-
-// GetWorktreesEnabled returns whether sessions in this workspace should be created
-// in a dedicated git worktree. Returns nil if not configured (default OFF), true if
-// explicitly enabled, or false if explicitly disabled.
-func (w *WorkspaceSettings) GetWorktreesEnabled() *bool {
-	return w.WorktreesEnabled
 }
 
 // NormalizeDefaultWorkspaces enforces the invariant that at most one workspace

@@ -394,7 +394,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	ctx := &PromptEnabledContext{
 		ACP:       ACPContext{Name: "test", Type: "mytype", Tags: []string{"t1"}, AutoApprove: true},
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
-		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true, HasWorktree: true},
+		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
@@ -422,7 +422,6 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`!session.isAutoChild`,
 		`session.parentId == "pid"`,
 		`session.isPeriodicConversation`,
-		`session.hasWorktree`,
 		`parent.exists`,
 		`parent.name == "pname"`,
 		`parent.acpServer == "pacp"`,

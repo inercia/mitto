@@ -20,8 +20,6 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Workspaces](workspaces.md)** — Multi-workspace architecture, CLI usage, REST API, and workspace persistence
 
-- **[Per-Conversation Git Worktrees](worktrees.md)** — Worktree isolation toggle, branch naming, base-branch policy, cleanup, and agent-driven flow-back (submission prompts + UI affordance)
-
 - **[Follow-up Suggestions](follow-up-suggestions.md)** — AI-generated response suggestions, persistence, multi-client sync, and lifecycle
 
 - **[Callbacks](callbacks.md)** — HTTP callback endpoints for triggering periodic conversations on-demand, token management, security model

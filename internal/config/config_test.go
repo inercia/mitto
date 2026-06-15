@@ -1672,47 +1672,6 @@ conversations:
 	}
 }
 
-func TestParse_ConversationsWorktreesEnabled(t *testing.T) {
-	t.Run("explicit true", func(t *testing.T) {
-		cfg, err := Parse([]byte("acp:\n  - test:\n      command: \"test --acp\"\nconversations:\n  worktrees_enabled: true\n"))
-		if err != nil {
-			t.Fatalf("Parse failed: %v", err)
-		}
-		if cfg.Conversations == nil || cfg.Conversations.WorktreesEnabled == nil {
-			t.Fatalf("WorktreesEnabled not parsed: %+v", cfg.Conversations)
-		}
-		if !*cfg.Conversations.WorktreesEnabled {
-			t.Errorf("WorktreesEnabled = false, want true")
-		}
-	})
-
-	t.Run("explicit false", func(t *testing.T) {
-		cfg, err := Parse([]byte("acp:\n  - test:\n      command: \"test --acp\"\nconversations:\n  worktrees_enabled: false\n"))
-		if err != nil {
-			t.Fatalf("Parse failed: %v", err)
-		}
-		if cfg.Conversations == nil || cfg.Conversations.WorktreesEnabled == nil {
-			t.Fatalf("WorktreesEnabled not parsed: %+v", cfg.Conversations)
-		}
-		if *cfg.Conversations.WorktreesEnabled {
-			t.Errorf("WorktreesEnabled = true, want false")
-		}
-	})
-
-	t.Run("unset leaves nil", func(t *testing.T) {
-		cfg, err := Parse([]byte("acp:\n  - test:\n      command: \"test --acp\"\nconversations:\n  max_child_conversations: 3\n"))
-		if err != nil {
-			t.Fatalf("Parse failed: %v", err)
-		}
-		if cfg.Conversations == nil {
-			t.Fatal("Conversations is nil")
-		}
-		if cfg.Conversations.WorktreesEnabled != nil {
-			t.Errorf("WorktreesEnabled = %v, want nil", *cfg.Conversations.WorktreesEnabled)
-		}
-	})
-}
-
 func TestExternalImagesConfig(t *testing.T) {
 	t.Run("nil config returns false", func(t *testing.T) {
 		var nilConfig *ExternalImagesConfig

@@ -441,34 +441,9 @@ allow_write_folders:
   - "$HOME/.cache" # Cache directory
 ```
 
-> **Automatic entries (restricted runners only):** `$MITTO_WORKING_DIR` and
-> `$MITTO_WORKTREES_DIR` are always added to `allow_write_folders` if missing,
-> so the agent can always write to its own working directory and to
-> worktree-isolated conversations. See
-> [Worktree Isolation](#worktree-isolation) below.
-
-### Worktree Isolation
-
-When a conversation runs in an isolated git worktree (see
-[conversations](conversations.md)), its working directory lives under the Mitto
-data directory (`$MITTO_WORKTREES_DIR`), and its shared git metadata — the
-common object store, refs, and the per-worktree gitdir at
-`<main-repo>/.git/worktrees/<name>` — lives inside the main repository's `.git`,
-**outside** the worktree.
-
-For `git status`/`add`/`commit` to work under a restricted runner, Mitto
-automatically adds two entries to `allow_write_folders` for every restricted
-runner:
-
-- `$MITTO_WORKTREES_DIR` — the directory holding all worktree checkouts, so the
-  agent can edit its own files.
-- The resolved git **common dir** (`<main-repo>/.git`) of the session's
-  worktree, so git can update the shared object store, refs, and the worktree
-  gitdir.
-
-The main repository's **working tree** is deliberately not added, preserving
-isolation between conversations. No configuration is required — these entries
-are applied automatically and merged with any folders you configure.
+> **Automatic entries (restricted runners only):** `$MITTO_WORKING_DIR` is
+> always added to `allow_write_folders` if missing, so the agent can always
+> write to its own working directory.
 
 ### Docker-Specific Options
 
@@ -526,7 +501,6 @@ Variables are resolved at runtime when the agent starts.
 | `$MITTO_WORKING_DIR` | Current workspace directory | `/Users/user/project`                 |
 | `$HOME`      | User's home directory       | `/Users/user`                         |
 | `$MITTO_DIR` | Mitto data directory        | `~/Library/Application Support/Mitto` |
-| `$MITTO_WORKTREES_DIR` | Worktree checkouts directory | `~/Library/Application Support/Mitto/worktrees` |
 | `$USER`      | Current username            | `user`                                |
 | `$TMPDIR`    | System temp directory       | `/tmp`                                |
 

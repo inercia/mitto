@@ -263,10 +263,6 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
-	// Crash-recovery: remove git worktrees orphaned by deleted/crashed sessions
-	// and clear stale worktree metadata. Best-effort; never blocks startup.
-	recoverOrphanedWorktrees(store, logger)
-
 	// Ensure builtin agent definitions are deployed to the agents directory.
 	// This is done on every startup so new agents added in updates are deployed automatically.
 	if agentsDir, err := appdir.BuiltinAgentsDir(); err == nil {

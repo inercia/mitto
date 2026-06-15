@@ -1667,31 +1667,6 @@ function App() {
     [showToast],
   );
 
-  // Run the builtin "Submit changes" prompt in the given conversation (used by
-  // the worktree flow-back affordance in the Changes panel). Finds the prompt by
-  // name in the active workspace prompt list and enqueues it like a context-menu
-  // prompt; the prompt itself resolves @mitto:worktree_base_branch to target the
-  // worktree's base. Falls back to a toast if the prompt isn't available (e.g.
-  // not a git repo, so its enabledWhen gate hid it).
-  const handleSubmitChanges = useCallback(
-    (sessionId) => {
-      if (!sessionId) return;
-      const prompt = (workspacePrompts || []).find(
-        (p) => p && p.name === "Submit changes",
-      );
-      if (!prompt || !prompt.prompt) {
-        showToast({
-          style: "warning",
-          title: "\"Submit changes\" prompt is unavailable here",
-          duration: 4000,
-        });
-        return;
-      }
-      handleSendPromptToConversation({ session_id: sessionId }, prompt);
-    },
-    [workspacePrompts, handleSendPromptToConversation, showToast],
-  );
-
   // ----- Chat header conversation menu -----
   // Resolve the active conversation object (the same enriched object the sidebar
   // list uses) so the header three-dot menu mirrors the sidebar row menu exactly.
@@ -1725,12 +1700,6 @@ function App() {
       : null;
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
-  // Whether the active conversation owns a git worktree (drives "Merge into").
-  // Mirrors SessionItem's ownsWorktree derivation.
-  const headerOwnsWorktree = !!(
-    activeSession &&
-    (activeSession.worktree_branch || activeSession.info?.worktree_branch)
-  );
 
   const {
     contextMenu: headerMenu,
@@ -1745,7 +1714,6 @@ function App() {
     isSpawned: headerIsSpawned,
     canArchive: headerCanArchive,
     archiveBlockedReason: headerArchiveBlockedReason,
-    ownsWorktree: headerOwnsWorktree,
     onRename: handleOpenSessionProperties,
     onDelete: handleDeleteSession,
     onArchive: handleArchiveSession,
@@ -1753,9 +1721,6 @@ function App() {
     onMakeNonPeriodic: handleMakeNonPeriodic,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
-    onFetchSessionBranches: fetchSessionBranches,
-    onMergeSession: handleMergeSession,
-    onMergeSessionToNewBranch: openMergeNewBranchDialog,
   });
 
   return html`
@@ -2163,7 +2128,6 @@ function App() {
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
         showToast=${showToast}
-        onSubmitChanges=${handleSubmitChanges}
       />
 
       <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the

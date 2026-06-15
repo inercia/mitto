@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +14,6 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
-	"github.com/inercia/mitto/internal/git"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
@@ -1020,7 +1017,7 @@ func (sm *SessionManager) SetACPProcessManager(pm *ACPProcessManager) {
 
 // ACPProcessCount returns the number of active shared ACP processes.
 // Returns 0 when shared-process mode is disabled. Used by tests to assert that
-// sessions in subdirectories or worktrees share a single process.
+// sessions in subdirectories share a single process.
 func (sm *SessionManager) ACPProcessCount() int {
 	sm.mu.RLock()
 	pm := sm.acpProcessManager
@@ -1474,18 +1471,6 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 		return nil, nil
 	}
 
-	// When workingDir is a linked worktree, its shared git metadata lives at
-	// <main-repo>/.git (objects, refs, and the per-worktree gitdir at
-	// .git/worktrees/<name>) — outside the worktree cwd. A restricted runner
-	// must be able to write there for git status/add/commit to work. The main
-	// working tree itself is deliberately NOT exposed, preserving isolation.
-	var extraWriteFolders []string
-	if commonDir := git.CommonDir(workingDir); commonDir != "" {
-		if rel, relErr := filepath.Rel(workingDir, commonDir); relErr != nil || strings.HasPrefix(rel, "..") {
-			extraWriteFolders = append(extraWriteFolders, commonDir)
-		}
-	}
-
 	// Create runner with configuration hierarchy
 	r, err := runner.NewRunner(
 		globalRunnersByType,
@@ -1493,7 +1478,6 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 		workspaceRunnerConfigByType,
 		workingDir,
 		sm.logger,
-		extraWriteFolders...,
 	)
 	if err != nil {
 		return nil, err
@@ -1559,73 +1543,6 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		}
 	}
 	sm.mu.Unlock()
-
-	// Resolve a per-session git worktree when worktree isolation is enabled for
-	// this conversation. The decision follows ResolveWorktreesEnabled: a per-folder
-	// override wins, else the global conversations setting, else the default (ON
-	// when a worktree is available, i.e. the working dir is a git repo). The
-	// worktree diverges only the session's working directory; the shared ACP
-	// process stays keyed to the workspace UUID and is launched at the repo root.
-	// It degrades gracefully on any failure (the session falls back to the plain
-	// working dir). Children never reach this path (they use store.Create +
-	// ResumeSession), so they inherit the parent's worktree dir without creating
-	// their own.
-	var preGeneratedID, worktreePath, worktreeBranch, worktreeRepoDir string
-	var worktreeBaseBranch, worktreeBaseCommit string
-	wtWorkspace := workspace
-	if wtWorkspace == nil {
-		wtWorkspace = foundWs
-	}
-	if wtWorkspace == nil {
-		wtWorkspace = sm.defaultWorkspace
-	}
-	var folderWorktrees *bool
-	if wtWorkspace != nil {
-		folderWorktrees = wtWorkspace.GetWorktreesEnabled()
-	}
-	gitAvailable := workingDir != "" && git.IsGitRepo(workingDir)
-	if config.ResolveWorktreesEnabled(folderWorktrees, globalConv.GetWorktreesEnabled(), gitAvailable) {
-		sid := session.GenerateSessionID()
-		if wtPath, perr := appdir.SessionWorktreePath(sid); perr != nil {
-			if sm.logger != nil {
-				sm.logger.Warn("Worktree path resolution failed; using plain working dir",
-					"error", perr, "session_id", sid)
-			}
-		} else if mkErr := os.MkdirAll(filepath.Dir(wtPath), 0o755); mkErr != nil {
-			if sm.logger != nil {
-				sm.logger.Warn("Worktree parent dir creation failed; using plain working dir",
-					"error", mkErr, "path", wtPath)
-			}
-		} else {
-			branch := git.BranchName(sid)
-			// Capture the base branch/commit from the repo root BEFORE creating the
-			// worktree (workingDir is still the repo root here, and is reassigned to
-			// wtPath below). The flow-back step targets this base.
-			baseBranch := git.CurrentBranch(workingDir)
-			baseCommit := git.CurrentCommit(workingDir)
-			wtCtx, wtCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			addErr := git.AddWorktree(wtCtx, workingDir, wtPath, branch)
-			wtCancel()
-			if addErr != nil {
-				if sm.logger != nil {
-					sm.logger.Warn("git worktree add failed; using plain working dir",
-						"error", addErr, "repo", workingDir, "worktree", wtPath)
-				}
-			} else {
-				preGeneratedID = sid
-				worktreePath = wtPath
-				worktreeBranch = branch
-				worktreeBaseBranch = baseBranch
-				worktreeBaseCommit = baseCommit
-				worktreeRepoDir = workingDir
-				workingDir = wtPath
-				if sm.logger != nil {
-					sm.logger.Info("Created session worktree",
-						"session_id", sid, "worktree", wtPath, "branch", branch)
-				}
-			}
-		}
-	}
 
 	// Debug logging for workspace UUID
 	if sm.logger != nil {
@@ -1767,8 +1684,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
-		PersistedID:         preGeneratedID, // Reuse the worktree-derived ID (empty = generate fresh)
-		CreationCtx:         ctx,            // Propagate caller's context for the initial NewSession RPC
+		PersistedID:         "",  // Empty = generate fresh
+		CreationCtx:         ctx, // Propagate caller's context for the initial NewSession RPC
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
 		Env:                 acpEnv,
@@ -1856,31 +1773,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		},
 	})
 	if err != nil {
-		// Clean up a freshly created worktree if session construction failed, to
-		// avoid leaving an orphan. Best-effort; startup recovery is the backstop.
-		if worktreePath != "" && worktreeRepoDir != "" {
-			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = git.RemoveWorktree(cleanupCtx, worktreeRepoDir, worktreePath)
-			if worktreeBranch != "" {
-				_ = git.DeleteBranch(cleanupCtx, worktreeRepoDir, worktreeBranch)
-			}
-			cancelCleanup()
-		}
 		return nil, err
-	}
-
-	// Persist worktree metadata so the delete hook can clean it up later.
-	if worktreePath != "" && store != nil {
-		if uErr := store.UpdateMetadata(bs.GetSessionID(), func(m *session.Metadata) {
-			m.WorktreePath = worktreePath
-			m.WorktreeBranch = worktreeBranch
-			m.WorktreeBaseBranch = worktreeBaseBranch
-			m.WorktreeBaseCommit = worktreeBaseCommit
-			m.WorktreeRepoDir = worktreeRepoDir
-		}); uErr != nil && sm.logger != nil {
-			sm.logger.Warn("Failed to persist worktree metadata",
-				"error", uErr, "session_id", bs.GetSessionID())
-		}
 	}
 
 	sm.mu.Lock()

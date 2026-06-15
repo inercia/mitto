@@ -417,8 +417,8 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	bs.lastActivityAt.Store(time.Now().UnixNano())
 
 	// Create recorder for persistence. Honor a caller-supplied PersistedID so the
-	// session can reuse an ID that was pre-generated before construction (e.g. to
-	// derive a git worktree path); otherwise generate a fresh ID.
+	// session can reuse an ID that was pre-generated before construction;
+	// otherwise generate a fresh ID.
 	if cfg.Store != nil {
 		if cfg.PersistedID != "" {
 			bs.recorder = session.NewRecorderWithID(cfg.Store, cfg.PersistedID)
@@ -3461,7 +3461,6 @@ retryAfterRestart:
 	// Done unconditionally so substitution works even with no processors configured.
 	// Best-effort: unavailable fields substitute to "".
 	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
-	var worktreeBranch, worktreeBaseBranch, worktreePath string
 	var childSessions []processors.ChildSession
 	var advancedSettings map[string]bool
 	if bs.store != nil && bs.persistedID != "" {
@@ -3471,9 +3470,6 @@ retryAfterRestart:
 			parentSessionID = sessionMeta.ParentSessionID
 			advancedSettings = sessionMeta.AdvancedSettings
 			beadsIssue = sessionMeta.BeadsIssue
-			worktreeBranch = sessionMeta.WorktreeBranch
-			worktreeBaseBranch = sessionMeta.WorktreeBaseBranch
-			worktreePath = sessionMeta.WorktreePath
 		}
 		// Resolve parent session name for @mitto:parent variable
 		if parentSessionID != "" {
@@ -3553,9 +3549,6 @@ retryAfterRestart:
 		ACPServer:              acpServer,
 		WorkspaceUUID:          bs.workspaceUUID,
 		BeadsIssue:             beadsIssue,
-		WorktreeBranch:         worktreeBranch,
-		WorktreeBaseBranch:     worktreeBaseBranch,
-		WorktreePath:           worktreePath,
 		AvailableACPServers:    bs.availableACPServers,
 		ChildSessions:          childSessions,
 		MCPToolNames:           mcpToolNames,

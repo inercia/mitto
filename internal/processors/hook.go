@@ -181,7 +181,6 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.IsPeriodic = input.IsPeriodic
 	ctx.Session.BeadsIssue = input.BeadsIssue
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
-	ctx.Session.HasWorktree = input.WorktreePath != ""
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer

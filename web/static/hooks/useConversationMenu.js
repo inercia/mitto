@@ -16,8 +16,6 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   TrashIcon,
-  SyncIcon,
-  PlusIcon,
   getPromptIconOrDefault,
 } from "../components/Icons.js";
 
@@ -29,7 +27,6 @@ export function useConversationMenu({
   isSpawned = false,
   canArchive = true,
   archiveBlockedReason = null,
-  ownsWorktree = false, // If true, the "Merge into" submenu is shown (worktree conversations)
   onRename,
   onDelete,
   onArchive,
@@ -37,19 +34,12 @@ export function useConversationMenu({
   onMakeNonPeriodic,
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
-  onFetchSessionBranches, // async (session) => branchesData for the "Merge into" submenu
-  onMergeSession, // (session, targetBranch) => merge the worktree branch into an existing branch
-  onMergeSessionToNewBranch, // (session) => merge into a newly created branch (opens a name dialog)
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
   // when the menu opens (enabledWhen depends on this conversation's own context,
   // not the active session). Cached between opens; refreshed each open.
   const [menuPrompts, setMenuPrompts] = useState([]);
-  // Candidate merge-back branches for the "Merge into" submenu, loaded lazily
-  // when the menu opens (worktree conversations only). null = not yet loaded
-  // (submenu shows a "Loading…" placeholder).
-  const [menuBranches, setMenuBranches] = useState(null);
 
   // Open the menu at a viewport position. Used by both right-click and the
   // explicit three-dot button. Evaluates menus:conversation prompts against
@@ -62,22 +52,8 @@ export function useConversationMenu({
           setMenuPrompts(prompts || []);
         });
       }
-      // Lazily load candidate merge-back branches for worktree conversations so
-      // the "Merge into" submenu reflects the repo's current branches.
-      if (ownsWorktree && onFetchSessionBranches && session) {
-        setMenuBranches(null);
-        onFetchSessionBranches(session).then((data) => {
-          setMenuBranches(data || { branches: [] });
-        });
-      }
     },
-    [
-      onFetchConversationPrompts,
-      session,
-      workingDir,
-      ownsWorktree,
-      onFetchSessionBranches,
-    ],
+    [onFetchConversationPrompts, session, workingDir],
   );
 
   const handleContextMenu = useCallback(
@@ -135,52 +111,9 @@ export function useConversationMenu({
       }
     }
 
-    // "Merge into" submenu (worktree conversations): lists candidate branches
-    // plus a "New branch…" entry. Branches checked out in *other* worktrees are
-    // filtered out (per-conversation branches are never useful merge targets);
-    // the repo's default branch is always kept.
-    let mergeIntoItem = null;
-    if (ownsWorktree && (onMergeSession || onMergeSessionToNewBranch)) {
-      const submenu = [];
-      if (menuBranches === null) {
-        submenu.push({ label: "Loading…", disabled: true });
-      } else {
-        const checkedOut = menuBranches.checked_out || {};
-        const defaultBranch = menuBranches.default_branch || "";
-        const candidates = (menuBranches.branches || []).filter(
-          (b) => !(checkedOut[b] && b !== defaultBranch),
-        );
-        if (candidates.length === 0) {
-          submenu.push({ label: "No other branches", disabled: true });
-        } else if (onMergeSession) {
-          for (const b of candidates) {
-            submenu.push({
-              label: b,
-              onClick: () => onMergeSession(session, b),
-            });
-          }
-        }
-      }
-      if (onMergeSessionToNewBranch) {
-        submenu.push({
-          label: "New branch…",
-          icon: html`<${PlusIcon} className="w-4 h-4" />`,
-          onClick: () => onMergeSessionToNewBranch(session),
-        });
-      }
-      mergeIntoItem = {
-        label: "Merge into",
-        icon: html`<${SyncIcon} className="w-4 h-4" />`,
-        submenu,
-      };
-    }
-
     return [
       // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
       ...promptGroupItems,
-      // "Merge into" submenu — merge this worktree's branch into another branch
-      // without deleting the conversation (worktree conversations only).
-      ...(mergeIntoItem ? [mergeIntoItem] : []),
       {
         label: "Properties",
         icon: html`<${EditIcon} />`,
@@ -246,10 +179,6 @@ export function useConversationMenu({
     archiveBlockedReason,
     onArchive,
     onDelete,
-    ownsWorktree,
-    menuBranches,
-    onMergeSession,
-    onMergeSessionToNewBranch,
   ]);
 
   return {

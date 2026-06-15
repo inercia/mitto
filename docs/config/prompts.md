@@ -724,7 +724,6 @@ Information about the current conversation/session.
 | `session.isPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
 | `session.hasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
 | `session.beadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
-| `session.hasWorktree` | bool   | `true` when this conversation has its own git worktree (owner-only; false for children that inherit a parent's worktree) |
 
 #### Parent Context (`parent.*`)
 

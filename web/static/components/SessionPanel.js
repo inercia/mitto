@@ -202,7 +202,6 @@ export function SessionPanel({
   onSetConfigOption,
   mcpTools = [],
   showToast,
-  onSubmitChanges,
 }) {
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
@@ -788,10 +787,6 @@ export function SessionPanel({
     }
 
     const files = changesData.files || [];
-    // Worktree isolation metadata (empty when the conversation is not in an
-    // isolated worktree). Drives the base-branch line and the flow-back button.
-    const worktreeBranch = sessionInfo?.worktree_branch || "";
-    const worktreeBaseBranch = sessionInfo?.worktree_base_branch || "";
 
     return html`
       <div class="p-4 space-y-3">
@@ -816,35 +811,6 @@ export function SessionPanel({
             </svg>
           </button>
         </div>
-
-        ${worktreeBranch &&
-        html`
-          <!-- Worktree isolation: show where this conversation's branch will
-               flow back to, and offer the "Submit changes" prompt. -->
-          <div class="rounded border border-mitto-border-1 bg-mitto-surface-3/30 p-2 space-y-2">
-            <div class="flex items-center gap-1.5 text-xs text-mitto-text-secondary">
-              <span class="font-mono truncate" title=${worktreeBranch}>${worktreeBranch}</span>
-              ${worktreeBaseBranch &&
-              html`
-                <span class="text-mitto-text-muted">→</span>
-                <span class="font-mono truncate" title=${worktreeBaseBranch}>${worktreeBaseBranch}</span>
-              `}
-            </div>
-            ${onSubmitChanges &&
-            html`
-              <button
-                class="btn btn-primary btn-sm btn-block ${isStreaming ? "btn-disabled opacity-60" : ""}"
-                onClick=${() => onSubmitChanges(sessionId)}
-                disabled=${isStreaming}
-                title=${worktreeBaseBranch
-                  ? `Submit changes back to ${worktreeBaseBranch}`
-                  : "Submit changes"}
-              >
-                Submit changes
-              </button>
-            `}
-          </div>
-        `}
 
         ${files.length === 0
           ? html`

@@ -1099,9 +1099,6 @@ export function SettingsDialog({
   // Max child conversations setting - default 10
   const [maxChildConversations, setMaxChildConversations] = useState(10);
 
-  // Worktree isolation setting (global) - default ON for git repositories
-  const [worktreesEnabled, setWorktreesEnabled] = useState(true);
-
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
   const [defaultFlags, setDefaultFlags] = useState({});
@@ -1532,11 +1529,6 @@ export function SettingsDialog({
         config.conversations?.max_child_conversations ?? 10,
       );
 
-      // Load worktree isolation setting - default ON (off only when explicitly disabled)
-      setWorktreesEnabled(
-        config.conversations?.worktrees_enabled !== false,
-      );
-
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -1775,7 +1767,6 @@ export function SettingsDialog({
           enabled: externalImagesEnabled,
         },
         max_child_conversations: maxChildConversations,
-        worktrees_enabled: worktreesEnabled,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -3442,35 +3433,6 @@ export function SettingsDialog({
                           </div>
                         </div>
                       `}
-
-                      <!-- Worktree Isolation -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Worktree Isolation
-                        </h4>
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${worktreesEnabled}
-                            onChange=${(e) =>
-                              setWorktreesEnabled(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div class="flex-1">
-                            <div class="font-medium text-sm">
-                              Isolate changes in worktrees
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Run each new conversation in its own dedicated git
-                              worktree and branch so changes stay isolated until
-                              merged. Only applies to git repositories. Folders
-                              can override this default.
-                            </div>
-                          </div>
-                        </label>
-                      </div>
 
                       <!-- Message Display -->
                       <div class="space-y-3">

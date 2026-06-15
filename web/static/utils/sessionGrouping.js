@@ -41,11 +41,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
 
 function getSessionInfo(session) {
   return {
-    // Group/associate by the repo root for worktree conversations so they appear
-    // under their project folder rather than the per-session worktree path.
-    // working_dir (the worktree path) stays the operational cwd elsewhere.
     workingDir:
-      session.worktree_repo_dir ||
       session.working_dir ||
       getGlobalWorkingDir(session.session_id) ||
       "",

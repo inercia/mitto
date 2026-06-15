@@ -260,25 +260,6 @@ type Metadata struct {
 	// Reset to 0 on successful start. When it reaches ACPStartFailureThreshold,
 	// the session is auto-archived to prevent infinite retry loops.
 	ACPStartFailureCount int `json:"acp_start_failure_count,omitempty"`
-	// WorktreePath is the absolute path to the git worktree created for this session
-	// (empty if none).
-	WorktreePath string `json:"worktree_path,omitempty"`
-	// WorktreeBranch is the git branch name created for this session's worktree
-	// (empty if none).
-	WorktreeBranch string `json:"worktree_branch,omitempty"`
-	// WorktreeBaseBranch is the branch the worktree was created from (the repo's
-	// checked-out branch at creation time). Empty if none or detached HEAD.
-	// Used as the target for the flow-back (merge/rebase/PR) step.
-	WorktreeBaseBranch string `json:"worktree_base_branch,omitempty"`
-	// WorktreeBaseCommit is the commit SHA the worktree was created from.
-	// Empty if none. Used to compute the diff range for the flow-back step.
-	WorktreeBaseCommit string `json:"worktree_base_commit,omitempty"`
-	// WorktreeRepoDir is the absolute path to the main repository root the worktree
-	// was created from. Used for sidebar grouping and workspace association so the
-	// conversation appears under its project folder rather than the per-session
-	// worktree path (WorkingDir, which stays the worktree for file operations).
-	// Empty if none.
-	WorktreeRepoDir string `json:"worktree_repo_dir,omitempty"`
 }
 
 // ChildOrigin represents how a child conversation was created.

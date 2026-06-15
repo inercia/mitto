@@ -194,27 +194,6 @@ describe("computeGroupedSessions – folder", () => {
     expect(result[0].label).toBe("myrepo");
   });
 
-  test("worktree sessions group by worktree_repo_dir, not the worktree path", () => {
-    // Two worktree conversations from the same repo, each with a distinct
-    // per-session worktree path. They must collapse into the single repo folder
-    // instead of disappearing into per-session worktree-path folders.
-    const s1 = makeSession({
-      session_id: "s1",
-      working_dir: "/data/Mitto/worktrees/s1",
-      worktree_repo_dir: "/home/user/project",
-    });
-    const s2 = makeSession({
-      session_id: "s2",
-      working_dir: "/data/Mitto/worktrees/s2",
-      worktree_repo_dir: "/home/user/project",
-    });
-    const result = computeGroupedSessions([s1, s2], "folder", [s1, s2], [ws1]);
-    expect(result).toHaveLength(1);
-    expect(result[0].workingDir).toBe("/home/user/project");
-    expect(result[0].label).toBe("MyProject");
-    expect(result[0].sessions).toHaveLength(2);
-  });
-
   test("child session goes in same folder group as parent", () => {
     const parent = makeSession({
       session_id: "parent",

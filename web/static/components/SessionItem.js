@@ -306,7 +306,6 @@ export function SessionItem({
     isSpawned,
     canArchive,
     archiveBlockedReason,
-    ownsWorktree,
     onRename,
     onDelete,
     onArchive,
@@ -314,9 +313,6 @@ export function SessionItem({
     onMakeNonPeriodic,
     onFetchConversationPrompts,
     onSendPromptToConversation,
-    onFetchSessionBranches,
-    onMergeSession,
-    onMergeSessionToNewBranch,
   });
 
   // Handle click - only select if not swiping/revealed

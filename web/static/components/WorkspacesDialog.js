@@ -122,8 +122,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
   const [editIsDefault, setEditIsDefault] = useState(false);
-  // Tri-state worktree override: "" = use global default, "on" = always, "off" = never
-  const [editWorktrees, setEditWorktrees] = useState("");
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
   const [editAutoChildren, setEditAutoChildren] = useState([]);
   const [effectiveConfig, setEffectiveConfig] = useState(null);
@@ -327,13 +325,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
     setEditAutoApprove(selectedWorkspace.auto_approve === true);
     setEditIsDefault(selectedWorkspace.is_default === true);
-    setEditWorktrees(
-      selectedWorkspace.worktrees_enabled === true
-        ? "on"
-        : selectedWorkspace.worktrees_enabled === false
-          ? "off"
-          : "",
-    );
     setEffectiveConfig(null);
     setMcpTools(null);
     setMcpToolsError("");
@@ -763,12 +754,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
       auto_approve: editAutoApprove || undefined,
       is_default: editIsDefault || undefined,
-      worktrees_enabled:
-        editWorktrees === "on"
-          ? true
-          : editWorktrees === "off"
-            ? false
-            : undefined,
       acp_command_override: editAcpCommandOverride || undefined,
     };
   };
@@ -2238,21 +2223,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                       <p class="text-xs text-mitto-text-muted -mt-2 ml-7">
                         Preferred when this folder has several workspaces and one is launched without a specific agent.
                       </p>
-                      <div>
-                        <label class="block text-sm text-mitto-text-muted mb-1">Isolate changes in worktrees</label>
-                        <select
-                          value=${editWorktrees}
-                          onChange=${(e) => setEditWorktrees(e.target.value)}
-                          class="select select-sm w-full"
-                        >
-                          <option value="">Use global default</option>
-                          <option value="on">Always isolate (on)</option>
-                          <option value="off">Never isolate (off)</option>
-                        </select>
-                        <p class="text-xs text-mitto-text-muted mt-1">
-                          Run conversations in this folder in a dedicated git worktree and branch. Only applies to git repositories. Overrides the global setting.
-                        </p>
-                      </div>
                     </div>
                   `}
 

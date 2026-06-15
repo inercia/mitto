@@ -617,42 +617,6 @@ type ConversationsConfig struct {
 	// workspace auto_children config) are NOT counted toward this limit.
 	// nil means use default (10). 0 means unlimited.
 	MaxChildConversations *int `json:"max_child_conversations,omitempty" yaml:"max_child_conversations,omitempty"`
-	// WorktreesEnabled is the global "isolate changes in worktrees" toggle. When a
-	// new conversation is created in a git repository, it controls whether the
-	// session runs in its own dedicated git worktree + branch. nil means unset
-	// (fall back to the default, which is ON when a worktree is available). A
-	// per-folder WorkspaceSettings.WorktreesEnabled overrides this in either
-	// direction. See ResolveWorktreesEnabled for the precedence rules.
-	WorktreesEnabled *bool `json:"worktrees_enabled,omitempty" yaml:"worktrees_enabled,omitempty"`
-}
-
-// GetWorktreesEnabled returns the global "isolate changes in worktrees" setting.
-// Safe to call on a nil receiver — returns nil (unset) so callers fall back to
-// the per-folder override or the default.
-func (c *ConversationsConfig) GetWorktreesEnabled() *bool {
-	if c == nil {
-		return nil
-	}
-	return c.WorktreesEnabled
-}
-
-// ResolveWorktreesEnabled computes whether a new conversation should run in a
-// dedicated git worktree, applying the precedence: per-folder override wins,
-// else the global setting, else the default. The default is ON when a worktree
-// is available (gitAvailable) and OFF otherwise. When gitAvailable is false the
-// result is always false, regardless of the configured values — worktrees are
-// only ever materialized inside a git repository.
-func ResolveWorktreesEnabled(folder, global *bool, gitAvailable bool) bool {
-	if !gitAvailable {
-		return false
-	}
-	if folder != nil {
-		return *folder
-	}
-	if global != nil {
-		return *global
-	}
-	return true
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -1277,7 +1241,6 @@ type rawConfig struct {
 		} `yaml:"external_images"`
 		DefaultFlags          map[string]bool `yaml:"default_flags"`
 		MaxChildConversations *int            `yaml:"max_child_conversations"`
-		WorktreesEnabled      *bool           `yaml:"worktrees_enabled"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1587,16 +1550,10 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MaxChildConversations = raw.Conversations.MaxChildConversations
 		}
 
-		// Copy global worktrees toggle
-		if raw.Conversations.WorktreesEnabled != nil {
-			cfg.Conversations.WorktreesEnabled = raw.Conversations.WorktreesEnabled
-		}
-
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
-			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.WorktreesEnabled == nil {
+			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil {
 			cfg.Conversations = nil
 		}
 	}

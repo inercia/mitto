@@ -52,18 +52,12 @@ type ResolvedConfig struct {
 //
 // All parameters are maps of runner type -> config.
 // The config for the resolved runner type is applied at each level.
-//
-// extraWriteFolders are absolute paths that must always be writable for
-// restricted runners (e.g. a worktree session's shared git common dir, which
-// lives outside the workspace). They are ignored for the unrestricted exec
-// runner.
 func NewRunner(
 	globalRunnersByType map[string]*config.WorkspaceRunnerConfig,
 	agentRunnersByType map[string]*config.WorkspaceRunnerConfig,
 	workspaceConfigByType map[string]*config.WorkspaceRunnerConfig,
 	workspace string,
 	logger *slog.Logger,
-	extraWriteFolders ...string,
 ) (*Runner, error) {
 	// Resolve configuration hierarchy
 	resolved := resolveConfig(
@@ -90,45 +84,6 @@ func NewRunner(
 				resolved.Restrictions.AllowWriteFolders,
 				"$MITTO_WORKING_DIR",
 			)
-		}
-
-		// Ensure $MITTO_WORKTREES_DIR is always in allow_write_folders for restricted runners.
-		// Worktree-isolated conversations get a per-session working directory under the
-		// out-of-tree worktrees directory, which lives outside the workspace and would
-		// otherwise be blocked by the sandbox.
-		hasWorktrees := false
-		for _, f := range resolved.Restrictions.AllowWriteFolders {
-			if f == "$MITTO_WORKTREES_DIR" || f == "${MITTO_WORKTREES_DIR}" {
-				hasWorktrees = true
-				break
-			}
-		}
-		if !hasWorktrees {
-			resolved.Restrictions.AllowWriteFolders = append(
-				resolved.Restrictions.AllowWriteFolders,
-				"$MITTO_WORKTREES_DIR",
-			)
-		}
-
-		// Add caller-supplied extra writable folders (e.g. a worktree session's
-		// shared git common dir), deduplicating against existing entries.
-		for _, extra := range extraWriteFolders {
-			if extra == "" {
-				continue
-			}
-			exists := false
-			for _, f := range resolved.Restrictions.AllowWriteFolders {
-				if f == extra {
-					exists = true
-					break
-				}
-			}
-			if !exists {
-				resolved.Restrictions.AllowWriteFolders = append(
-					resolved.Restrictions.AllowWriteFolders,
-					extra,
-				)
-			}
 		}
 	}
 
