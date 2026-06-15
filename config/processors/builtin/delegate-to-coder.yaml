@@ -26,10 +26,7 @@ priority: 90
 enabledWhen: >-
   acp.tags.exists(t, t == "reasoning")
   || acp.tags.exists(t, t == "thinking")
-  || acp.name.contains("opus")
-  || acp.name.contains("o3")
-  || acp.name.contains("deep-research")
-  || acp.name.contains("codex")
+  || acp.name.matches("(?i)opus|o3|deep-research|codex")
 text: |
   ---
   [Multi-Agent Delegation Guidance]
