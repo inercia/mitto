@@ -49,6 +49,15 @@ filesystem locality and keeps each worktree under the workspace's
 restricted-runner write scope (`$MITTO_WORKING_DIR`), so no separate sandbox
 allow-list entry is needed for the worktree itself.
 
+Because worktrees now sit inside the working tree, the `.mitto/worktrees/` path
+is **auto-gitignored** on first worktree creation to avoid `git status`
+pollution in the main checkout. On the first successful `AddWorktree`,
+`git.EnsureGitignored(repoRoot, ".mitto/worktrees/", …)` checks
+`git check-ignore` first and appends the pattern to `<repoRoot>/.gitignore` only
+when not already ignored (so repos that already ignore `.mitto/` are left
+untouched). It is best-effort: a failure logs a warning but does not abort
+worktree creation.
+
 ### Base-branch policy: current HEAD at creation, stored
 
 When the worktree is created, Mitto records **where it branched from** so that

@@ -6,8 +6,11 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -110,4 +113,52 @@ func CurrentCommit(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// IsIgnored reports whether relPath (relative to repoDir) is ignored by git in
+// repoDir, honoring .gitignore files, global excludes, and so on. It returns
+// false on any error (missing git, not a repo).
+func IsIgnored(repoDir, relPath string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// `git check-ignore -q <path>` exits 0 when ignored, 1 when not ignored.
+	return exec.CommandContext(ctx, "git", "-C", repoDir, "check-ignore", "-q", relPath).Run() == nil
+}
+
+// EnsureGitignored makes a best-effort, idempotent attempt to ensure pattern is
+// ignored in repoDir. If git already ignores pattern (via any .gitignore,
+// global excludes, etc.) it does nothing; otherwise it appends pattern to
+// <repoDir>/.gitignore, preceded by a labeled comment line. The file is created
+// if needed and a separating newline is ensured before appending.
+func EnsureGitignored(repoDir, pattern, comment string) error {
+	if IsIgnored(repoDir, pattern) {
+		return nil
+	}
+	path := filepath.Join(repoDir, ".gitignore")
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return nil // already listed verbatim
+		}
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close() //nolint:errcheck
+
+	var b strings.Builder
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		b.WriteString("\n")
+	}
+	if comment != "" {
+		b.WriteString("# " + comment + "\n")
+	}
+	b.WriteString(pattern + "\n")
+	_, err = f.WriteString(b.String())
+	return err
 }

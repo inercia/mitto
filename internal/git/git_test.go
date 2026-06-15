@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -173,5 +174,58 @@ func TestCurrentBranchAndCommit(t *testing.T) {
 func TestBranchName(t *testing.T) {
 	if got := BranchName("20260614-abcd"); got != "mitto-20260614-abcd" {
 		t.Errorf("BranchName = %q, want %q", got, "mitto-20260614-abcd")
+	}
+}
+
+func TestEnsureGitignoredAndIsIgnored(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+	const pattern = ".mitto/worktrees/"
+
+	if IsIgnored(repo, pattern) {
+		t.Fatal("path unexpectedly ignored before EnsureGitignored")
+	}
+
+	if err := EnsureGitignored(repo, pattern, "test comment"); err != nil {
+		t.Fatalf("EnsureGitignored: %v", err)
+	}
+	if !IsIgnored(repo, pattern) {
+		t.Error("path not ignored after EnsureGitignored")
+	}
+	data, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(data), pattern) {
+		t.Errorf(".gitignore missing pattern: %q", string(data))
+	}
+	if !strings.Contains(string(data), "# test comment") {
+		t.Errorf(".gitignore missing comment: %q", string(data))
+	}
+
+	// Idempotent: a second call must not duplicate the pattern.
+	if err := EnsureGitignored(repo, pattern, "test comment"); err != nil {
+		t.Fatalf("EnsureGitignored (2nd): %v", err)
+	}
+	data2, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	if n := strings.Count(string(data2), pattern); n != 1 {
+		t.Errorf("pattern count = %d, want 1: %q", n, string(data2))
+	}
+}
+
+func TestEnsureGitignoredSkipsWhenAlreadyIgnored(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+
+	// Pre-ignore the whole .mitto/ dir, mirroring repos that already ignore it.
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".mitto/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	if err := EnsureGitignored(repo, ".mitto/worktrees/", "test comment"); err != nil {
+		t.Fatalf("EnsureGitignored: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	if strings.Contains(string(data), ".mitto/worktrees/") {
+		t.Errorf("EnsureGitignored appended despite parent dir already ignored: %q", string(data))
 	}
 }
