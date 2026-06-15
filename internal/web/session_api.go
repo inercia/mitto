@@ -153,6 +153,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				"Agent is busy — please try again in a moment")
 			return
 		}
+		if errors.Is(err, ErrWorktreeCreationFailed) {
+			if s.logger != nil {
+				s.logger.Error("Worktree creation failed; refusing to fall back to shared working dir", "error", err)
+			}
+			writeErrorJSON(w, http.StatusInternalServerError, "worktree_creation_failed",
+				"Could not create an isolated git worktree for this conversation. Resolve the git error (e.g. a stale .git/index.lock) and try again, or disable worktree isolation for this folder.")
+			return
+		}
 		if s.logger != nil {
 			s.logger.Error("Failed to create session", "error", err)
 		}

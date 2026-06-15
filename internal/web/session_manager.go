@@ -49,6 +49,53 @@ const DefaultMaxMessagesPerSession = 2000
 // ErrTooManySessions is returned when the session limit is reached.
 var ErrTooManySessions = errors.New("maximum number of sessions reached")
 
+// ErrWorktreeCreationFailed is returned when git worktree creation fails after
+// all retries. When worktree isolation is resolved ON, this is surfaced to the
+// caller rather than silently falling back to the shared working dir.
+var ErrWorktreeCreationFailed = errors.New("worktree creation failed")
+
+// Retry constants for git worktree creation. A bounded retry absorbs transient
+// index.lock contention from concurrent `git worktree add` calls before the
+// failure is surfaced.
+const maxWorktreeAddAttempts = 3
+
+const (
+	worktreeAddRetryBaseDelay   = 150 * time.Millisecond
+	worktreeAddRetryMaxDelay    = 1 * time.Second
+	worktreeAddRetryJitterRatio = 0.2
+)
+
+// worktreeAddFn is the function used to add a git worktree. Overridable in tests.
+var worktreeAddFn = git.AddWorktree
+
+// addWorktreeWithRetry creates a git worktree at wtPath, retrying up to
+// maxWorktreeAddAttempts times to absorb transient index.lock contention from
+// concurrent `git worktree add` calls. Between attempts it backs off and clears
+// any partial state. It returns nil on the first success, or the last error if
+// every attempt fails; the caller surfaces ErrWorktreeCreationFailed and is
+// responsible for final cleanup.
+func (sm *SessionManager) addWorktreeWithRetry(workingDir, wtPath, branch, startPoint string) error {
+	var addErr error
+	for attempt := 0; attempt < maxWorktreeAddAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(backoffDelay(attempt-1, worktreeAddRetryBaseDelay, worktreeAddRetryMaxDelay, worktreeAddRetryJitterRatio))
+			_ = os.RemoveAll(wtPath) // best-effort clear partial state before retry
+		}
+		wtCtx, wtCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		addErr = worktreeAddFn(wtCtx, workingDir, wtPath, branch, startPoint)
+		wtCancel()
+		if addErr == nil {
+			return nil
+		}
+		if sm.logger != nil {
+			sm.logger.Warn("git worktree add failed",
+				"attempt", attempt+1, "max", maxWorktreeAddAttempts,
+				"error", addErr, "repo", workingDir, "worktree", wtPath)
+		}
+	}
+	return addErr
+}
+
 // pendingResumeResult holds the outcome of an in-progress session resume operation.
 // Goroutines that race to resume the same session ID wait on done, then read
 // the result set by the first (primary) goroutine — preventing duplicate ACP launches.
@@ -1586,10 +1633,13 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	// when a worktree is available, i.e. the working dir is a git repo). The
 	// worktree diverges only the session's working directory; the shared ACP
 	// process stays keyed to the workspace UUID and is launched at the repo root.
-	// It degrades gracefully on any failure (the session falls back to the plain
-	// working dir). Children never reach this path (they use store.Create +
-	// ResumeSession), so they inherit the parent's worktree dir without creating
-	// their own.
+	// When isolation is resolved ON and worktree creation fails (after a bounded
+	// retry to absorb transient index.lock contention), the error is surfaced to
+	// the caller — silent fallback to the plain working dir is not allowed here.
+	// The plain-dir path applies only when isolation is not resolved on (non-git /
+	// opted-out), which skips this block entirely. Children never reach this path
+	// (they use store.Create + ResumeSession), so they inherit the parent's
+	// worktree dir without creating their own.
 	var preGeneratedID, worktreePath, worktreeBranch, worktreeRepoDir string
 	var worktreeBaseBranch, worktreeBaseCommit string
 	wtWorkspace := workspace
@@ -1612,60 +1662,61 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		wtPath := appdir.SessionWorktreePath(workingDir, sid)
 		if mkErr := os.MkdirAll(filepath.Dir(wtPath), 0o755); mkErr != nil {
 			if sm.logger != nil {
-				sm.logger.Warn("Worktree parent dir creation failed; using plain working dir",
+				sm.logger.Error("Worktree parent dir creation failed",
 					"error", mkErr, "path", wtPath)
 			}
+			return nil, fmt.Errorf("%w: %v", ErrWorktreeCreationFailed, mkErr)
+		}
+		branch := git.BranchName(sid)
+		// Capture the base branch/commit from the repo root BEFORE creating the
+		// worktree (workingDir is still the repo root here, and is reassigned to
+		// wtPath below). The flow-back step targets this base.
+		//
+		// New worktrees branch from the remote's default branch (origin/HEAD) by
+		// default so they start from the canonical upstream tip; when there is no
+		// origin remote we fall back to the repo root's current HEAD. The recorded
+		// base reflects the actual start point: for origin/HEAD the flow-back
+		// target is the local branch name (e.g. "main"), with the base commit
+		// resolved from origin/HEAD.
+		startPoint := git.DefaultBranchRef(workingDir) // e.g. "origin/main", "" if none
+		var baseBranch, baseCommit string
+		if startPoint != "" {
+			baseBranch = strings.TrimPrefix(startPoint, "origin/")
+			baseCommit = git.CommitOf(workingDir, startPoint)
 		} else {
-			branch := git.BranchName(sid)
-			// Capture the base branch/commit from the repo root BEFORE creating the
-			// worktree (workingDir is still the repo root here, and is reassigned to
-			// wtPath below). The flow-back step targets this base.
-			//
-			// New worktrees branch from the remote's default branch (origin/HEAD) by
-			// default so they start from the canonical upstream tip; when there is no
-			// origin remote we fall back to the repo root's current HEAD. The recorded
-			// base reflects the actual start point: for origin/HEAD the flow-back
-			// target is the local branch name (e.g. "main"), with the base commit
-			// resolved from origin/HEAD.
-			startPoint := git.DefaultBranchRef(workingDir) // e.g. "origin/main", "" if none
-			var baseBranch, baseCommit string
-			if startPoint != "" {
-				baseBranch = strings.TrimPrefix(startPoint, "origin/")
-				baseCommit = git.CommitOf(workingDir, startPoint)
-			} else {
-				baseBranch = git.CurrentBranch(workingDir)
-				baseCommit = git.CurrentCommit(workingDir)
+			baseBranch = git.CurrentBranch(workingDir)
+			baseCommit = git.CurrentCommit(workingDir)
+		}
+		// Bounded retry to absorb transient index.lock contention from concurrent
+		// `git worktree add` calls; partial state is cleared between attempts.
+		addErr := sm.addWorktreeWithRetry(workingDir, wtPath, branch, startPoint)
+		if addErr != nil {
+			_ = os.RemoveAll(wtPath) // best-effort cleanup of any partial state
+			if sm.logger != nil {
+				sm.logger.Error("git worktree add failed after all retries",
+					"error", addErr, "repo", workingDir, "worktree", wtPath)
 			}
-			wtCtx, wtCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			addErr := git.AddWorktree(wtCtx, workingDir, wtPath, branch, startPoint)
-			wtCancel()
-			if addErr != nil {
-				if sm.logger != nil {
-					sm.logger.Warn("git worktree add failed; using plain working dir",
-						"error", addErr, "repo", workingDir, "worktree", wtPath)
-				}
-			} else {
-				preGeneratedID = sid
-				worktreePath = wtPath
-				worktreeBranch = branch
-				worktreeBaseBranch = baseBranch
-				worktreeBaseCommit = baseCommit
-				worktreeRepoDir = workingDir
-				// Best-effort: keep the in-project worktrees dir out of the main
-				// checkout's git status. No-op when already ignored (e.g. .mitto/ is
-				// ignored). Failures are non-fatal. Done while workingDir is still the
-				// repo root (it is reassigned to wtPath below).
-				if igErr := git.EnsureGitignored(workingDir, ".mitto/worktrees/",
-					"Added by Mitto: per-conversation worktrees"); igErr != nil && sm.logger != nil {
-					sm.logger.Warn("Failed to gitignore worktrees dir",
-						"error", igErr, "repo", workingDir)
-				}
-				workingDir = wtPath
-				if sm.logger != nil {
-					sm.logger.Info("Created session worktree",
-						"session_id", sid, "worktree", wtPath, "branch", branch)
-				}
-			}
+			return nil, fmt.Errorf("%w: %v", ErrWorktreeCreationFailed, addErr)
+		}
+		preGeneratedID = sid
+		worktreePath = wtPath
+		worktreeBranch = branch
+		worktreeBaseBranch = baseBranch
+		worktreeBaseCommit = baseCommit
+		worktreeRepoDir = workingDir
+		// Best-effort: keep the in-project worktrees dir out of the main
+		// checkout's git status. No-op when already ignored (e.g. .mitto/ is
+		// ignored). Failures are non-fatal. Done while workingDir is still the
+		// repo root (it is reassigned to wtPath below).
+		if igErr := git.EnsureGitignored(workingDir, ".mitto/worktrees/",
+			"Added by Mitto: per-conversation worktrees"); igErr != nil && sm.logger != nil {
+			sm.logger.Warn("Failed to gitignore worktrees dir",
+				"error", igErr, "repo", workingDir)
+		}
+		workingDir = wtPath
+		if sm.logger != nil {
+			sm.logger.Info("Created session worktree",
+				"session_id", sid, "worktree", wtPath, "branch", branch)
 		}
 	}
 

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/git"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -208,5 +210,68 @@ func TestRecoverOrphanedWorktrees_ClearsStaleMetadata(t *testing.T) {
 	}
 	if meta.WorktreePath != "" || meta.WorktreeBranch != "" {
 		t.Errorf("stale metadata not cleared: path=%q branch=%q", meta.WorktreePath, meta.WorktreeBranch)
+	}
+}
+
+// stubWorktreeAddFn temporarily replaces the worktreeAddFn seam and restores it
+// when the test finishes.
+func stubWorktreeAddFn(t *testing.T, fn func(ctx context.Context, repoDir, worktreePath, branch, startPoint string) error) {
+	t.Helper()
+	orig := worktreeAddFn
+	worktreeAddFn = fn
+	t.Cleanup(func() { worktreeAddFn = orig })
+}
+
+// TestWorktreeAddFn_RetryThenSuccess verifies the bounded retry absorbs a
+// transient index.lock failure: the first attempt fails, the second succeeds,
+// and no error is returned.
+func TestWorktreeAddFn_RetryThenSuccess(t *testing.T) {
+	var calls int
+	stubWorktreeAddFn(t, func(_ context.Context, _, _, _, _ string) error {
+		calls++
+		if calls < 2 {
+			return errors.New("fatal: Unable to create index.lock: File exists")
+		}
+		return nil
+	})
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	if err := sm.addWorktreeWithRetry("/repo", filepath.Join(t.TempDir(), "wt"), "mitto/x", ""); err != nil {
+		t.Fatalf("addWorktreeWithRetry: unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("worktreeAddFn called %d times, want 2 (one transient failure absorbed)", calls)
+	}
+}
+
+// TestWorktreeAddFn_ExhaustedFailure verifies that when worktree creation fails
+// on every attempt, CreateSessionWithWorkspace surfaces ErrWorktreeCreationFailed
+// instead of silently falling back to the shared working dir, retries the
+// configured number of times, and registers no session.
+func TestWorktreeAddFn_ExhaustedFailure(t *testing.T) {
+	setupWorktreeRecoveryEnv(t) // hermetic git identity + MITTO_DIR
+	repo := initTestRepo(t)
+
+	var calls int
+	stubWorktreeAddFn(t, func(_ context.Context, _, _, _, _ string) error {
+		calls++
+		return errors.New("fatal: Unable to create index.lock: File exists")
+	})
+
+	ws := &config.WorkspaceSettings{ACPServer: "mock-acp", WorkingDir: repo}
+	ws.EnsureUUID()
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{*ws},
+	})
+
+	_, err := sm.CreateSessionWithWorkspace(context.Background(), "wt", repo, ws)
+	if !errors.Is(err, ErrWorktreeCreationFailed) {
+		t.Fatalf("CreateSessionWithWorkspace error = %v, want ErrWorktreeCreationFailed", err)
+	}
+	if calls != maxWorktreeAddAttempts {
+		t.Errorf("worktreeAddFn called %d times, want %d", calls, maxWorktreeAddAttempts)
+	}
+	if n := sm.SessionCount(); n != 0 {
+		t.Errorf("SessionCount = %d, want 0 (no session registered on worktree failure)", n)
 	}
 }
