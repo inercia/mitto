@@ -4531,15 +4531,20 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // Support both old (name string) and new (options object) signatures
         const opts = typeof options === "string" ? { name: options } : options;
 
+        const sessionBody = {
+          name: opts.name || "",
+          working_dir: opts.workingDir || "",
+          acp_server: opts.acpServer || "",
+          beads_issue: opts.beadsIssue || "",
+          initial_prompt_name: opts.initialPromptName || "",
+        };
+        if (opts.arguments && Object.keys(opts.arguments).length > 0) {
+          sessionBody.arguments = opts.arguments;
+        }
         const response = await secureFetch(apiUrl("/api/sessions"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: opts.name || "",
-            working_dir: opts.workingDir || "",
-            acp_server: opts.acpServer || "",
-            beads_issue: opts.beadsIssue || "",
-          }),
+          body: JSON.stringify(sessionBody),
         });
 
         if (!response.ok) {

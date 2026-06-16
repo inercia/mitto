@@ -34,10 +34,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 // SessionCreateRequest represents a request to create a new session.
 type SessionCreateRequest struct {
-	Name       string `json:"name,omitempty"`
-	WorkingDir string `json:"working_dir,omitempty"`
-	ACPServer  string `json:"acp_server,omitempty"`  // Optional: specify ACP server for the session
-	BeadsIssue string `json:"beads_issue,omitempty"` // Optional: link conversation to a beads issue ID at creation
+	Name              string            `json:"name,omitempty"`
+	WorkingDir        string            `json:"working_dir,omitempty"`
+	ACPServer         string            `json:"acp_server,omitempty"`           // Optional: specify ACP server for the session
+	BeadsIssue        string            `json:"beads_issue,omitempty"`          // Optional: link conversation to a beads issue ID at creation
+	InitialPromptName string            `json:"initial_prompt_name,omitempty"`  // Optional: seed the queue with a named prompt atomically on creation
+	Arguments         map[string]string `json:"arguments,omitempty"`            // Optional: ${VAR} substitution arguments for the initial prompt
 }
 
 // handleCreateSession handles POST /api/sessions
@@ -182,6 +184,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		acpServerName = workspace.ACPServer
 	}
 
+	// Seed the queue with the named prompt if provided (atomic create+seed).
+	// This uses the same queue plumbing as POST /api/sessions/{id}/queue so
+	// dispatch happens via the normal TryProcessQueuedMessage path.
+	if req.InitialPromptName != "" {
+		s.seedQueueWithNamedPrompt(bs, bs.GetSessionID(), req.InitialPromptName, req.Arguments)
+	}
+
 	// Broadcast session creation to all global events clients
 	sessionData := map[string]interface{}{
 		"session_id":     bs.GetSessionID(),
@@ -196,6 +205,30 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Return session info
 	writeJSONCreated(w, sessionData)
+}
+
+// seedQueueWithNamedPrompt enqueues a named prompt on a freshly created session,
+// reusing the same queue plumbing as the queue API (Add + notifyQueueUpdate +
+// TryProcessQueuedMessage). Title generation is skipped for named-prompt items.
+func (s *Server) seedQueueWithNamedPrompt(bs *BackgroundSession, sessionID, promptName string, arguments map[string]string) {
+	queue := s.store.Queue(sessionID)
+	maxSize := config.DefaultQueueMaxSize
+	if qc := bs.GetQueueConfig(); qc != nil {
+		maxSize = qc.GetMaxSize()
+	}
+	msg, err := queue.Add("", nil, nil, "", nil, maxSize, arguments, promptName)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("Failed to seed new session with named prompt",
+				"error", err,
+				"session_id", sessionID,
+				"prompt_name", promptName)
+		}
+		return
+	}
+	s.notifyQueueUpdate(sessionID, "added", msg.ID)
+	// Dispatch immediately if the agent is idle — same path as the queue API.
+	go bs.TryProcessQueuedMessage()
 }
 
 // resolveOwningWorkspace returns the registered workspace that OWNS reqDir, so

@@ -3,7 +3,7 @@
  */
 
 import { jest } from "@jest/globals";
-import { buildSeedQueueBody, seedConversationWithPrompt } from "./useConversationSeeding.js";
+import { buildSeedQueueBody, seedConversationWithPrompt, useConversationSeeding } from "./useConversationSeeding.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
 global.window = global.window || {};
@@ -127,5 +127,89 @@ describe("seedConversationWithPrompt", () => {
     const fetchImpl = makeFetch(200, { id: "msg-200" });
     const result = await seedConversationWithPrompt("sess-1", prompt, { fetchImpl });
     expect(result).toEqual({ success: true, messageId: "msg-200" });
+  });
+});
+
+// =============================================================================
+// useConversationSeeding — startConversationWithPrompt (single-call path)
+// =============================================================================
+
+describe("useConversationSeeding — startConversationWithPrompt", () => {
+  test("calls newSession with initialPromptName and arguments, returns sessionId", async () => {
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    const result = await startConversationWithPrompt({
+      prompt: { name: "p1" },
+      arguments: { ISSUE_ID: "mitto-1" },
+      workingDir: "/w",
+      acpServer: "X",
+      name: "N",
+      beadsIssue: "mitto-1",
+    });
+
+    expect(newSession).toHaveBeenCalledTimes(1);
+    const callArg = newSession.mock.calls[0][0];
+    expect(callArg.initialPromptName).toBe("p1");
+    expect(callArg.arguments).toEqual({ ISSUE_ID: "mitto-1" });
+    expect(result).toEqual({ sessionId: "sess-9" });
+  });
+
+  test("passes workingDir, acpServer, name, beadsIssue through to newSession", async () => {
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    await startConversationWithPrompt({
+      prompt: { name: "p1" },
+      workingDir: "/my/dir",
+      acpServer: "auggie",
+      name: "MyConvo",
+      beadsIssue: "mitto-42",
+    });
+
+    const callArg = newSession.mock.calls[0][0];
+    expect(callArg.workingDir).toBe("/my/dir");
+    expect(callArg.acpServer).toBe("auggie");
+    expect(callArg.name).toBe("MyConvo");
+    expect(callArg.beadsIssue).toBe("mitto-42");
+  });
+
+  test("does NOT call seedConversationWithPrompt — single-call path only invokes newSession", async () => {
+    // The new implementation calls newSession only; it does NOT call seedConversationWithPrompt.
+    // We verify this by confirming newSession is the sole mock and the result is clean (no seedError).
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    const result = await startConversationWithPrompt({
+      prompt: { name: "p1" },
+      workingDir: "/w",
+    });
+
+    // Single call to newSession, no extra calls
+    expect(newSession).toHaveBeenCalledTimes(1);
+    // Result has sessionId and no seedError (old two-call path would set seedError on failure)
+    expect(result).toEqual({ sessionId: "sess-9" });
+    expect(result).not.toHaveProperty("seedError");
+  });
+
+  test("returns error when newSession returns no sessionId", async () => {
+    const newSession = jest.fn().mockResolvedValue({ error: "boom" });
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    const result = await startConversationWithPrompt({
+      prompt: { name: "p1" },
+      workingDir: "/w",
+    });
+
+    expect(result).toEqual({ error: "boom" });
+  });
+
+  test("returns session_creation_failed when newSession returns empty object", async () => {
+    const newSession = jest.fn().mockResolvedValue({});
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    const result = await startConversationWithPrompt({ prompt: { name: "p1" } });
+
+    expect(result).toEqual({ error: "session_creation_failed" });
   });
 });

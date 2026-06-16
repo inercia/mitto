@@ -67,16 +67,18 @@ export function useConversationSeeding({ newSession }) {
 
   const startConversationWithPrompt = useCallback(
     async ({ workingDir, acpServer, name, beadsIssue, prompt, arguments: args }) => {
-      const result = await newSession({ workingDir, acpServer, name, beadsIssue });
+      const result = await newSession({
+        workingDir,
+        acpServer,
+        name,
+        beadsIssue,
+        initialPromptName: prompt?.name,
+        arguments: args,
+      });
       if (!result?.sessionId) {
         return { error: result?.error || "session_creation_failed" };
       }
-      const seedResult = await seedConversationWithPrompt(result.sessionId, prompt, { arguments: args });
-      const out = { sessionId: result.sessionId };
-      if (!seedResult.success) {
-        out.seedError = seedResult.error;
-      }
-      return out;
+      return { sessionId: result.sessionId };
     },
     [newSession],
   );

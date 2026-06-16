@@ -74,9 +74,11 @@ type SessionInfo struct {
 
 // CreateSessionRequest represents a request to create a new session.
 type CreateSessionRequest struct {
-	Name       string `json:"name,omitempty"`
-	WorkingDir string `json:"working_dir,omitempty"`
-	ACPServer  string `json:"acp_server,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	WorkingDir        string            `json:"working_dir,omitempty"`
+	ACPServer         string            `json:"acp_server,omitempty"`
+	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
+	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: ${VAR} substitution arguments for the initial prompt
 }
 
 // ListSessions returns all sessions.

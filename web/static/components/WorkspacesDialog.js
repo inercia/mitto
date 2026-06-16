@@ -1693,7 +1693,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           <!-- Upstream task system selector (persisted in folders.json) -->
                           <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Upstream Tasks</legend>
-                            <p class="label">
+                            <p class="text-xs text-mitto-text-muted">
                               Select the external task system beads syncs with. When set, Pull/Push/Sync
                               actions appear in the Tasks view for this folder.
                             </p>
