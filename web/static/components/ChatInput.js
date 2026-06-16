@@ -2128,17 +2128,6 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       </div>
 
-      ${isResuming &&
-      html`
-        <div class="max-w-4xl mx-auto mb-2">
-          <div
-            class="alert alert-warning text-sm"
-          >
-            <span class="loading loading-spinner w-4 h-4 shrink-0"></span>
-            <span>Resuming session…</span>
-          </div>
-        </div>
-      `}
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
