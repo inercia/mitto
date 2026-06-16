@@ -402,6 +402,8 @@ function App() {
     beadsInitialIssueId,
     beadsSelectNonce,
     beadsCreateNonce,
+    beadsRefreshNonce,
+    beadsCleanupNonce,
     beadsIssueSessionMap,
     beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,
@@ -410,6 +412,8 @@ function App() {
     handleRunBeadsListPrompt,
     handleBeadsOpen,
     handleBeadsCreate,
+    handleBeadsRefresh,
+    handleBeadsCleanup,
     handleOpenBeadsIssue,
     handleReturnFromBeadsIssue,
   } = useBeadsIntegration({
@@ -1898,6 +1902,8 @@ function App() {
               initialSelectedIssueId=${beadsInitialIssueId}
               initialSelectNonce=${beadsSelectNonce}
               initialCreateNonce=${beadsCreateNonce}
+              initialRefreshNonce=${beadsRefreshNonce}
+              initialCleanupNonce=${beadsCleanupNonce}
             />
           </div>
         `
@@ -2196,6 +2202,11 @@ function App() {
             onMoveFolderToGroup=${handleMoveFolderToGroup}
             onTerminalClick=${handleTerminalClick}
             onBeadsOpen=${handleBeadsOpen}
+            onBeadsCreate=${(wd) => setQuickCreate({ open: true, workingDir: wd })}
+            onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
+            onRunBeadsListPrompt=${handleRunBeadsListPrompt}
+            onBeadsRefresh=${handleBeadsRefresh}
+            onBeadsCleanup=${handleBeadsCleanup}
             onShowDashboard=${handleShowDashboard}
             mainView=${mainView}
             beadsWorkingDir=${beadsWorkingDir}

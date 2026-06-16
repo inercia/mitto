@@ -45,6 +45,11 @@ export function useBeadsIntegration({
   // issue (e.g. from the global "new task" keyboard shortcut). The nonce lets
   // BeadsView re-open create even when it is already mounted.
   const [beadsCreateNonce, setBeadsCreateNonce] = useState(0);
+  // Bumped to ask an open beads view to re-fetch its issue list / open its
+  // "clean up closed issues" confirmation. Used by the sidebar Tasks menu so
+  // its Refresh / Cleanup actions drive the beads view's existing handlers.
+  const [beadsRefreshNonce, setBeadsRefreshNonce] = useState(0);
+  const [beadsCleanupNonce, setBeadsCleanupNonce] = useState(0);
   // Session id of the conversation a single issue was opened from (via the
   // properties panel's "Linked beads issue" link). When the beads view's detail
   // panel for that issue is closed, we return to this conversation and re-open
@@ -215,15 +220,19 @@ export function useBeadsIntegration({
   // minus the per-issue context. The conversation is named after the prompt so it
   // doesn't linger as "New conversation" (this also suppresses auto-title gen).
   const handleRunBeadsListPrompt = useCallback(
-    async (prompt) => {
+    async (prompt, workingDirOverride) => {
       const text = prompt?.prompt;
-      if (!text || !beadsWorkingDir) return;
+      // Allow an explicit working dir (e.g. the sidebar Tasks menu, which runs a
+      // list prompt for a folder that may not be the one currently open in the
+      // beads view). Falls back to the open beads working dir for in-view use.
+      const wd = workingDirOverride || beadsWorkingDir;
+      if (!text || !wd) return;
 
       // Prefer the folder's default workspace when several share this directory.
-      const beadsMatches = workspaces.filter((w) => w.working_dir === beadsWorkingDir);
+      const beadsMatches = workspaces.filter((w) => w.working_dir === wd);
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
       const result = await newSession({
-        workingDir: beadsWorkingDir,
+        workingDir: wd,
         acpServer: ws?.acp_server,
         name: prompt.name,
       });
@@ -284,6 +293,28 @@ export function useBeadsIntegration({
     setShowSidePanel(false);
   }, []);
 
+  // Open the beads view for a folder and force a refresh of its issue list.
+  // Used by the sidebar Tasks menu's "Refresh" action. The nonce bump makes the
+  // beads view re-fetch even when it is already showing this folder.
+  const handleBeadsRefresh = useCallback((workingDir) => {
+    if (!workingDir) return;
+    setBeadsWorkingDir(workingDir);
+    setMainView("beads");
+    setShowSidebar(false);
+    setBeadsRefreshNonce((n) => n + 1);
+  }, []);
+
+  // Open the beads view for a folder and trigger its "clean up closed issues"
+  // confirmation dialog. Used by the sidebar Tasks menu's "Cleanup closed"
+  // action; the beads view owns the confirmation, cleanup request, and refresh.
+  const handleBeadsCleanup = useCallback((workingDir) => {
+    if (!workingDir) return;
+    setBeadsWorkingDir(workingDir);
+    setMainView("beads");
+    setShowSidebar(false);
+    setBeadsCleanupNonce((n) => n + 1);
+  }, []);
+
   // Open the beads view focused on a specific issue (used by the conversation
   // properties panel's linked-issue link). The nonce bump lets BeadsView
   // re-select even when the same issue is opened again. `originSessionId` is the
@@ -320,6 +351,8 @@ export function useBeadsIntegration({
     beadsInitialIssueId,
     beadsSelectNonce,
     beadsCreateNonce,
+    beadsRefreshNonce,
+    beadsCleanupNonce,
     beadsIssueSessionMap,
     beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,
@@ -328,6 +361,8 @@ export function useBeadsIntegration({
     handleRunBeadsListPrompt,
     handleBeadsOpen,
     handleBeadsCreate,
+    handleBeadsRefresh,
+    handleBeadsCleanup,
     handleOpenBeadsIssue,
     handleReturnFromBeadsIssue,
   };

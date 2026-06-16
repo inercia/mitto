@@ -1569,7 +1569,7 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
   `;
 }
 
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onReturnToConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0 }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onReturnToConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1827,6 +1827,28 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     appliedCreateNonceRef.current = initialCreateNonce;
     openCreate();
   }, [initialCreateNonce, openCreate]);
+
+  // Refresh the issue list when asked from outside (the sidebar Tasks menu's
+  // "Refresh" action). Applied once per nonce so it re-fetches even when the
+  // beads view is already showing this folder.
+  const appliedRefreshNonceRef = useRef(0);
+  useEffect(() => {
+    if (!initialRefreshNonce) return;
+    if (initialRefreshNonce === appliedRefreshNonceRef.current) return;
+    appliedRefreshNonceRef.current = initialRefreshNonce;
+    fetchList();
+  }, [initialRefreshNonce, fetchList]);
+
+  // Open the "clean up closed issues" confirmation when asked from outside (the
+  // sidebar Tasks menu's "Cleanup closed" action). The dialog, cleanup request,
+  // toast, and subsequent refresh are all owned here.
+  const appliedCleanupNonceRef = useRef(0);
+  useEffect(() => {
+    if (!initialCleanupNonce) return;
+    if (initialCleanupNonce === appliedCleanupNonceRef.current) return;
+    appliedCleanupNonceRef.current = initialCleanupNonce;
+    setShowCleanupConfirm(true);
+  }, [initialCleanupNonce]);
 
   // Close the side panel, whether it is in view or create mode. If the panel was
   // opened by following a conversation's linked-issue link, return to that

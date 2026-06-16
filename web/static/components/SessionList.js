@@ -46,6 +46,10 @@ import {
   CheckIcon,
   SlidersIcon,
   SearchIcon,
+  RefreshIcon,
+  BroomIcon,
+  LightningIcon,
+  getPromptIconOrDefault,
 } from "./Icons.js";
 
 // The Archived subgroup expansion is intentionally NOT memorized: it always
@@ -88,6 +92,11 @@ export function SessionList({
   onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
   onTerminalClick,
   onBeadsOpen,
+  onBeadsCreate, // (workingDir) => open the new-issue side panel for a folder
+  onFetchBeadsListPrompts, // async (workingDir) => menus:beadsList prompts[]
+  onRunBeadsListPrompt, // (prompt, workingDir) => run a beadsList prompt
+  onBeadsRefresh, // (workingDir) => open the beads view and refresh its list
+  onBeadsCleanup, // (workingDir) => open the beads view and clean up closed issues
   onShowDashboard,
   mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
   beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
@@ -119,6 +128,27 @@ export function SessionList({
   // Group header context menu state: { x, y, workingDir, label }
   const [groupContextMenu, setGroupContextMenu] = useState(null);
   const closeGroupContextMenu = () => setGroupContextMenu(null);
+
+  // Per-folder "Tasks" entry context menu state: { x, y, workingDir, label }.
+  // Mirrors groupContextMenu but for the static Tasks node. The beadsList
+  // prompts shown in its "Tasks" submenu are loaded lazily when the menu opens.
+  const [tasksContextMenu, setTasksContextMenu] = useState(null);
+  const [tasksMenuPrompts, setTasksMenuPrompts] = useState([]);
+  const [tasksMenuPromptsLoading, setTasksMenuPromptsLoading] = useState(false);
+  const closeTasksContextMenu = () => setTasksContextMenu(null);
+  const openTasksContextMenu = useCallback(
+    (x, y, workingDir, label) => {
+      setTasksContextMenu({ x, y, workingDir, label });
+      setTasksMenuPrompts([]);
+      if (onFetchBeadsListPrompts && workingDir) {
+        setTasksMenuPromptsLoading(true);
+        onFetchBeadsListPrompts(workingDir)
+          .then((p) => setTasksMenuPrompts(p || []))
+          .finally(() => setTasksMenuPromptsLoading(false));
+      }
+    },
+    [onFetchBeadsListPrompts],
+  );
 
   // "New group…" dialog state: { workingDir, label } when open, else null.
   const [newGroupDialog, setNewGroupDialog] = useState(null);
@@ -991,8 +1021,9 @@ export function SessionList({
                          project. Opens the Beads view for this folder. Not a
                          conversation; excluded from nav. -->
                     <li>
-                      <button
-                        type="button"
+                      <div
+                        role="button"
+                        tabindex="0"
                         onClick=${(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -1007,14 +1038,53 @@ export function SessionList({
                           onBeadsOpen && onBeadsOpen(folder.workingDir);
                         }}
                         aria-current=${tasksActive ? "page" : undefined}
-                        class="gap-2 text-sm border-0! ${tasksActive
+                        class="flex items-center gap-2 text-sm border-0! ${tasksActive
                           ? "bg-mitto-accent text-mitto-accent-fg"
                           : "text-mitto-text-muted"}"
                         title="Beads issues: ${folder.workingDir}"
                       >
                         <${BeadsIcon} className="w-4 h-4 shrink-0" />
-                        <span class="truncate">${folder.tasksNode.label}</span>
-                      </button>
+                        <span class="truncate min-w-0"
+                          >${folder.tasksNode.label}</span
+                        >
+                        <span class="flex-1"></span>
+                        ${folder.workingDir &&
+                        html`
+                          <button
+                            type="button"
+                            onClick=${(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onBeadsCreate && onBeadsCreate(folder.workingDir);
+                            }}
+                            class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                            title="New issue"
+                            aria-label="New issue"
+                          >
+                            <${PlusIcon} className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick=${(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const rect =
+                                e.currentTarget.getBoundingClientRect();
+                              openTasksContextMenu(
+                                rect.left,
+                                rect.bottom,
+                                folder.workingDir,
+                                folder.tasksNode.label,
+                              );
+                            }}
+                            class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                            title="More actions"
+                            aria-label="More actions"
+                          >
+                            <${EllipsisIcon} className="w-3.5 h-3.5" />
+                          </button>
+                        `}
+                      </div>
                     </li>
                   `}
                   ${renderSessionNodes(folder.conversations)}
@@ -1177,6 +1247,64 @@ export function SessionList({
             }] : []),
           ]}
           onClose=${closeGroupContextMenu}
+        />
+      `}
+      ${tasksContextMenu &&
+      html`
+        <${ContextMenu}
+          x=${tasksContextMenu.x}
+          y=${tasksContextMenu.y}
+          items=${[
+            {
+              label: "New",
+              icon: html`<${PlusIcon} className="w-4 h-4" />`,
+              onClick: () =>
+                onBeadsCreate && onBeadsCreate(tasksContextMenu.workingDir),
+            },
+            {
+              label: "Tasks",
+              icon: html`<${LightningIcon} className="w-4 h-4" />`,
+              submenu: tasksMenuPromptsLoading
+                ? [
+                    {
+                      label: "Loading\u2026",
+                      disabled: true,
+                      onClick: () => {},
+                    },
+                  ]
+                : tasksMenuPrompts.length === 0
+                  ? [
+                      {
+                        label: "No task prompts",
+                        disabled: true,
+                        onClick: () => {},
+                      },
+                    ]
+                  : tasksMenuPrompts.map((p) => {
+                      const PromptIcon = getPromptIconOrDefault(p.icon);
+                      return {
+                        label: p.name,
+                        icon: html`<${PromptIcon} className="w-4 h-4" />`,
+                        onClick: () =>
+                          onRunBeadsListPrompt &&
+                          onRunBeadsListPrompt(p, tasksContextMenu.workingDir),
+                      };
+                    }),
+            },
+            {
+              label: "Refresh",
+              icon: html`<${RefreshIcon} className="w-4 h-4" />`,
+              onClick: () =>
+                onBeadsRefresh && onBeadsRefresh(tasksContextMenu.workingDir),
+            },
+            {
+              label: "Cleanup closed",
+              icon: html`<${BroomIcon} className="w-4 h-4" />`,
+              onClick: () =>
+                onBeadsCleanup && onBeadsCleanup(tasksContextMenu.workingDir),
+            },
+          ]}
+          onClose=${closeTasksContextMenu}
         />
       `}
       ${newGroupDialog &&
