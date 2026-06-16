@@ -34,6 +34,7 @@ export class CodeEditor {
    * @param {boolean} [options.darkMode=true]   - Use dark theme
    * @param {number}  [options.fontSize=13]     - Font size in pixels
    * @param {string}  [options.language=null]   - File extension for syntax highlighting (e.g., "js", "py")
+   * @param {boolean} [options.lineNumbers=true] - Show the line-number gutter (and fold/active-line gutter)
    * @param {Function} [options.onChange=null]  - Callback when content changes: (content: string) => void
    * @param {Function} [options.onBlur=null]    - Callback when the editor loses focus: (content: string) => void
    */
@@ -43,6 +44,7 @@ export class CodeEditor {
     this.darkMode = options.darkMode ?? true;
     this.fontSize = options.fontSize ?? 13;
     this.language = options.language ?? null;
+    this.lineNumbers = options.lineNumbers ?? true;
     this.onChange = options.onChange ?? null;
     this.onBlur = options.onBlur ?? null;
 
@@ -67,11 +69,14 @@ export class CodeEditor {
     this._themeCompartment    = new stateMod.Compartment();
     this._languageCompartment = new stateMod.Compartment();
 
-    // Build extensions list
+    // Build extensions list. The line-number, fold, and active-line gutters are
+    // grouped behind the `lineNumbers` option so callers can render a clean,
+    // gutterless editor (e.g. the beads description field).
     const extensions = [
-      viewMod.lineNumbers(),
+      ...(this.lineNumbers
+        ? [viewMod.lineNumbers(), viewMod.highlightActiveLineGutter(), langMod.foldGutter()]
+        : []),
       viewMod.highlightActiveLine(),
-      viewMod.highlightActiveLineGutter(),
       viewMod.highlightSpecialChars(),
       viewMod.drawSelection(),
       viewMod.rectangularSelection(),
@@ -81,7 +86,6 @@ export class CodeEditor {
       langMod.indentOnInput(),
       langMod.syntaxHighlighting(langMod.defaultHighlightStyle, { fallback: true }),
       langMod.bracketMatching(),
-      langMod.foldGutter(),
       searchMod.highlightSelectionMatches(),
       viewMod.keymap.of([
         ...cmdMod.defaultKeymap,

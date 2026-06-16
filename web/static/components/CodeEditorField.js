@@ -17,9 +17,10 @@ import { CodeEditor } from "../utils/code-editor.js";
  * @param {boolean}  [props.darkMode]   - Use dark theme
  * @param {number}   [props.minHeight]  - Minimum height in pixels for the container
  * @param {boolean}  [props.autoFocus]  - Focus the editor after init
+ * @param {boolean}  [props.lineNumbers=true] - Show the line-number gutter
  * @param {Object}   [props.editorApiRef] - Assigned { getValue, setValue, focus } after init
  */
-export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, minHeight, autoFocus, editorApiRef }) {
+export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, minHeight, autoFocus, lineNumbers, editorApiRef }) {
   const containerRef = useRef(null);
   const editorRef = useRef(null);
   const destroyedRef = useRef(false);
@@ -30,6 +31,7 @@ export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, m
       readOnly: !!disabled,
       darkMode: !!darkMode,
       language: "md",
+      lineNumbers: lineNumbers ?? true,
       onChange,
       onBlur,
     });

@@ -1059,6 +1059,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   onBlur=${(v) => setDescription(v)}
                   disabled=${submitting}
                   darkMode=${false}
+                  lineNumbers=${false}
                   minHeight=${160}
                   editorApiRef=${createEditorApiRef}
                 />
@@ -1158,6 +1159,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     onBlur=${handleDescBlur}
                     disabled=${savingDesc}
                     darkMode=${false}
+                    lineNumbers=${false}
                     minHeight=${descMinHeight || 0}
                     autoFocus=${true}
                     editorApiRef=${detailEditorApiRef}
