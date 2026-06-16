@@ -1509,28 +1509,27 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               placeholder=${getBasename(firstWs.working_dir)}
                               class="input input-sm w-full"
                             />
-                            <label class="label" for="ws-folder-group">Group</label>
-                            <input
-                              id="ws-folder-group"
-                              type="text"
-                              list="ws-folder-group-options"
-                              value=${editGroup}
-                              onInput=${(e) => setEditGroup(e.target.value)}
-                              placeholder="e.g., development, personal, operations..."
-                              class="input input-sm w-full"
-                            />
-                            <datalist id="ws-folder-group-options">
-                              ${folderGroupSuggestions.map(
-                                (g) => html`<option value=${g}></option>`,
-                              )}
-                            </datalist>
-                            <p class="text-xs text-mitto-text-muted">
-                              Organize folders into groups. Existing groups are suggested as you type.
-                            </p>
                           </fieldset>
                           <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Appearance</legend>
                             <div class="flex gap-4 items-end">
+                              <div class="flex-1 min-w-0">
+                                <label class="label" for="ws-folder-group">Group</label>
+                                <input
+                                  id="ws-folder-group"
+                                  type="text"
+                                  list="ws-folder-group-options"
+                                  value=${editGroup}
+                                  onInput=${(e) => setEditGroup(e.target.value)}
+                                  placeholder="e.g., development, personal..."
+                                  class="input input-sm w-full"
+                                />
+                                <datalist id="ws-folder-group-options">
+                                  ${folderGroupSuggestions.map(
+                                    (g) => html`<option value=${g}></option>`,
+                                  )}
+                                </datalist>
+                              </div>
                               <div class="flex-1 min-w-0">
                                 <label class="label" for="ws-badge-code">Badge Code</label>
                                 <input
@@ -1538,7 +1537,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   type="text"
                                   value=${editCode}
                                   onInput=${(e) => setEditCode(e.target.value.toUpperCase().slice(0, 3))}
-                                  placeholder="Auto (3 letters max)"
+                                  placeholder="Auto (3 max)"
                                   maxlength="3"
                                   class="input input-sm w-full font-mono uppercase"
                                 />
@@ -1558,6 +1557,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 </div>
                               </div>
                             </div>
+                            <p class="text-xs text-mitto-text-muted">
+                              Organize folders into groups. Existing groups are suggested as you type.
+                            </p>
                           </fieldset>
                         </div>
                       `}
