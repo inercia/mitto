@@ -1,5 +1,5 @@
 ---
-description: Frontend component structure, Preact/HTM, CDN configuration, lib.js utilities, markdown rendering, context menu positioning anti-patterns
+description: Frontend component structure, Preact/HTM, CDN configuration, lib.js utilities, markdown rendering, context menu positioning anti-patterns, daisyUI drawer compositing
 globs:
   - "web/static/app.js"
   - "web/static/index.html"
@@ -7,6 +7,7 @@ globs:
   - "web/static/lib.js"
   - "web/static/lib.test.js"
   - "web/static/components/*.js"
+  - "web/static/styles.css"
 keywords:
   - Preact
   - HTM
@@ -17,6 +18,9 @@ keywords:
   - lib.js
   - markdown rendering
   - renderUserMarkdown
+  - daisyUI drawer
+  - GPU compositing
+  - will-change
 ---
 
 # Web Frontend Core Patterns
@@ -162,6 +166,31 @@ useEffect(() => {
     return () => { clearTimeout(tid); document.removeEventListener("mousedown", handler); };
 }, [isOpen, onClose]);
 ```
+
+## daisyUI Drawer GPU Compositing Bug
+
+**Symptom**: When using daisyUI's `.drawer-side` (e.g., SessionPanel on the right) with a full-window overlay underneath, moving the mouse over the overlay shows a blank/ghost area.
+
+**Root cause**: daisyUI's base `.drawer-side` panel child carries `will-change: transform` + a `translate` transition. This permanently promotes the panel to its own GPU layer. With a fixed-position overlay, **two competing slide animations run on different GPU layers** → the stale layer fails to invalidate on pointer-move.
+
+**Anti-pattern** (ineffective): Adding `translateZ(0)` or scoped positioning. These have been reverted as they don't prevent the core issue.
+
+**Verified fix** (in `styles.css`): Add an unlayered CSS rule that neutralizes the redundant compositing on the panel child:
+
+```css
+.drawer-end > .drawer-toggle ~ .drawer-side > :not(.drawer-overlay) {
+  will-change: auto;
+  translate: none;
+  transition: none;
+}
+```
+
+This rule:
+- Targets only the `.-side` panel child (the one with compositing), not the overlay
+- Removes `will-change: transform`, breaking the forced GPU promotion
+- Neutralizes the competing `translate` transition
+- Does NOT affect keyframe animations (e.g., `.properties-panel` slide), which use `animation` not `transition`
+- Is safe to apply to any drawer except `.drawer-overlay`
 
 ## Adding New Session Capabilities to Frontend
 

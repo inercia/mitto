@@ -101,6 +101,7 @@ go test -v -tags integration ./tests/integration/inprocess/
 - **Image pipeline**: Upload → disk storage → base64 encode on prompt → ACP ContentBlock. Images are NOT stored in the WebSocket message — only `image_ids` are sent, backend loads from disk.
 - **Log rotation gaps**: Server logs rotate and can have gaps. When debugging historical issues, check `events.jsonl` in the session directory as the authoritative record.
 - **Build the mock ACP server**: Always run `make build-mock-acp` before integration tests. The binary at `tests/mocks/acp-server/mock-acp-server` must exist.
+- **daisyUI drawer GPU compositing bug**: daisyUI's base `.drawer-side` panel child carries `will-change: transform` + a `translate` transition, permanently promoting it to its own GPU layer. When a fixed-position overlay exists nearby, both layers compete for pointer events → stale layer fails to invalidate on pointer-move, causing blank/ghost artifacts. **Fix**: Add an unlayered CSS rule that neutralizes the redundant compositing (see `web/static/styles.css` for the verified pattern). Do NOT use `translateZ(0)` — it was reverted as ineffective.
 
 ## File Modification Checklist
 

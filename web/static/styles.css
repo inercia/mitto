@@ -1167,6 +1167,28 @@ a.mailto-link:hover {
   animation: propertiesBackdropFadeOut 0.15s ease-in forwards;
 }
 
+/* Fix (mitto-cdf): blank/ghost main content when a right (end) drawer is open
+   and the pointer moves over the window. Reproduces in WKWebView AND Chromium
+   (Edge); a regression from the daisyUI 5 migration.
+   Our end drawers are Preact-controlled — the slide-in/out is driven by our own
+   propertiesPanelSlideIn/Out keyframes (.properties-panel). But daisyUI's base
+   .drawer-side panel child ALSO carries will-change:transform plus a `translate`
+   transition (100% -> 0%). So the panel child is permanently promoted to its own
+   GPU layer AND runs a second, competing compositor slide — all on a
+   full-viewport (100vw x 100dvh) position:fixed z-50 layer. That stale composited
+   layer fails to invalidate on pointer-move, blanking/ghosting the content
+   beneath it.
+   Fix: neutralise daisyUI's redundant compositing on the panel child only (never
+   the .drawer-overlay backdrop). CSS `animation` is independent of `transition`,
+   so our keyframe slide still plays; the left sidebar is not .drawer-end so it is
+   untouched. These rules are unlayered, so they win over daisyUI's layered
+   defaults. */
+.drawer-end > .drawer-toggle ~ .drawer-side > :not(.drawer-overlay) {
+  will-change: auto;
+  translate: none;
+  transition: none;
+}
+
 /* Scoped (non-viewport) daisyUI drawer variant.
    daisyUI's .drawer-side is position:fixed/height:100dvh so it always fills the
    whole window. .drawer-scoped confines the drawer to its nearest positioned
