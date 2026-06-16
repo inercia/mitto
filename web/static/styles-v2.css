@@ -721,8 +721,10 @@ a:hover {
    per-conversation "..." button) opt back in to a subtle circular outline
    (paired with .btn-circle) so they read as discrete round buttons. The
    --size override shrinks them below daisyUI's btn-xs (1.5rem) to a compact,
-   uniform 1.25rem circle. */
-.menu button.sidebar-group-action {
+   uniform 1.25rem circle. Also applies to the per-row action buttons in the
+   beads issue list. */
+.menu button.sidebar-group-action,
+.beads-table-scroll button.sidebar-group-action {
   border: 1px solid var(--mitto-border-2) !important;
   --size: 1.25rem;
   width: 1.25rem;

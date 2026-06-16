@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, getPromptIconOrDefault } from "./Icons.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
@@ -159,7 +159,7 @@ function labelValue(label, value) {
  *    dim shows through the transparent layer on the panel's left.
  * Clicking anywhere outside the panel closes it.
  */
-export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue }) {
+export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -190,6 +190,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   const [priority, setPriority] = useState(2); // 2 = Medium
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Magic-wand "Improve description" state. Mirrors ChatInput's improve-prompt
+  // flow but targets the create-form description. `improvingDesc` gates the
+  // in-flight request and drives the spinner.
+  const [improvingDesc, setImprovingDesc] = useState(false);
 
   // View-mode "Prompts" dropup state. Prompts are loaded lazily the first time
   // the dropup is opened (per panel mount) via onFetchPrompts.
@@ -345,6 +350,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     try {
       const body = { working_dir: workingDir, type, priority, description: description.trim() };
       if (title.trim()) body.title = title.trim();
+      if (createParentId) body.parent = createParentId;
       const res = await secureFetch(apiUrl("/api/beads/create"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -363,7 +369,50 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     } finally {
       setSubmitting(false);
     }
-  }, [workingDir, title, type, priority, description, showToast, onCreated, onClose]);
+  }, [workingDir, title, type, priority, description, createParentId, showToast, onCreated, onClose]);
+
+  // AI-enhance a description text field via the same auxiliary endpoint the chat
+  // input's magic wand uses (/api/aux/improve-prompt). Works on any
+  // text/setText pair so it serves both the create-form description and the
+  // view-mode inline edit draft. Replaces the text with the improved version on
+  // success; surfaces errors as a toast. No-op when empty or already running.
+  const improveDescriptionText = useCallback(async (text, setText) => {
+    if (improvingDesc || !text || !text.trim()) return;
+    setImprovingDesc(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+    try {
+      const response = await secureFetch(apiUrl("/api/aux/improve-prompt"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: text,
+          workspace_uuid:
+            (typeof window !== "undefined" && window.mittoCurrentWorkspaceUUID) ||
+            (typeof sessionStorage !== "undefined" && sessionStorage.getItem("mittoCurrentWorkspaceUUID")) ||
+            "",
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Failed to improve description");
+      }
+      const respData = await response.json();
+      if (respData.improved_prompt) {
+        setText(respData.improved_prompt);
+      }
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const msg = err.name === "AbortError"
+        ? "Request timed out. Please try again."
+        : (err.message || "Failed to improve description");
+      showToast && showToast({ style: "error", title: msg });
+    } finally {
+      setImprovingDesc(false);
+    }
+  }, [improvingDesc, showToast]);
 
   // While closing, keep rendering whichever mode was last open.
   const creating = isOpen ? isCreating : lastCreatingRef.current;
@@ -452,6 +501,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // otherwise just leaves edit mode. Uses /api/beads/update and refreshes the
   // list via onUpdated so the panel re-renders with the saved value.
   const handleDescBlur = useCallback(async () => {
+    // While an AI "improve" request is in flight, ignore blur so a stray click
+    // elsewhere can't save the pre-improved draft and drop the incoming result.
+    // The user stays in edit mode; once the improvement lands they can blur to
+    // save normally. (Clicking the wand itself never blurs — its onMouseDown
+    // preventDefault keeps the textarea focused.)
+    if (improvingDesc) return;
     const original = (data && data.description) || "";
     const next = descDraft;
     if (next === original) {
@@ -478,7 +533,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       setSavingDesc(false);
       setEditingDesc(false);
     }
-  }, [data && data.id, data && data.description, descDraft, workingDir, showToast, onUpdated]);
+  }, [data && data.id, data && data.description, descDraft, workingDir, showToast, onUpdated, improvingDesc]);
 
   // Enter inline notes-edit mode, seeding the draft from the current notes.
   // Capture the rendered area's height first so the textarea opens at least as
@@ -835,6 +890,34 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // Block label with a small gap so it doesn't sit flush against its field.
   const labelClass = "label block mb-1";
 
+  // Toolbar row rendered directly above the description field. Currently holds
+  // the magic-wand "Improve description" button (same UX as the chat input's
+  // improve-prompt action); the flex row is structured to take future markdown
+  // formatting buttons (bold, italics, …). Always rendered — even in read-only
+  // (view) mode — but the controls are disabled/greyed unless an editable target
+  // is supplied: { text, setText } back the active field (create form or inline
+  // edit draft) and `disabled` force-greys the row regardless (read-only view).
+  const renderDescToolbar = ({ text, setText, disabled }) => html`
+    <div class="flex items-center gap-1 mb-1">
+      <button
+        type="button"
+        onClick=${() => improveDescriptionText(text, setText)}
+        onMouseDown=${(e) => e.preventDefault()}
+        disabled=${disabled || improvingDesc || !text || !text.trim()}
+        class="chat-input-action ${improvingDesc ? "loading" : ""}"
+        title="Improve description with AI"
+      >
+        ${improvingDesc
+          ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+          : html`
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+            </svg>
+          `}
+      </button>
+    </div>
+  `;
+
   return html`
     <${Fragment}>
       <!-- Full-window dimming backdrop (like SessionPanel) so the conversations
@@ -870,7 +953,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
-            ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>`
+            ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>
+                ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}`
             : html`
               <div class="font-mono text-xs text-mitto-text-secondary">${data.id}</div>
               ${editingTitle
@@ -964,6 +1048,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
               <div class="mt-3">
                 <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
+                ${renderDescToolbar({ text: description, setText: setDescription, disabled: submitting })}
                 <textarea
                   id="new-issue-desc"
                   class="${textareaClass} resize-none"
@@ -1052,6 +1137,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
             <div>
               <label class=${labelClass}>Description</label>
+              ${renderDescToolbar(
+                editingDesc
+                  ? { text: descDraft, setText: setDescDraft, disabled: savingDesc }
+                  : { text: "", setText: () => {}, disabled: true }
+              )}
               ${editingDesc
                 ? html`
                   <textarea
@@ -1485,6 +1575,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [error, setError] = useState(null);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
+  // When the create panel is opened via an epic's "+" button, this holds the
+  // epic's id so the new issue is created as that epic's child (parent).
+  const [createParent, setCreateParent] = useState(null);
 
   // The type and search filters are initialized from localStorage so that the
   // user's applied criteria are restored when they navigate away from the Beads
@@ -1710,6 +1803,15 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // Open the side panel in "create" mode for a brand-new issue.
   const openCreate = useCallback(() => {
     openedFromConversationRef.current = false;
+    setCreateParent(null);
+    setSelectedIssue(null);
+    setIsCreating(true);
+  }, []);
+
+  // Open the create panel pre-seeded to create a child of the given epic.
+  const openCreateInEpic = useCallback((epicId) => {
+    openedFromConversationRef.current = false;
+    setCreateParent(epicId);
     setSelectedIssue(null);
     setIsCreating(true);
   }, []);
@@ -1734,6 +1836,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     openedFromConversationRef.current = false;
     setSelectedIssue(null);
     setIsCreating(false);
+    setCreateParent(null);
     if (returnToConversation && onReturnToConversation) onReturnToConversation();
   }, [onReturnToConversation]);
 
@@ -1754,6 +1857,23 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   );
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // Open the per-issue context menu anchored to the row's "..." button (rather
+  // than at the cursor), then load the beadsIssues prompts like the right-click path.
+  const handleRowMenuButton = useCallback(
+    (e, issue) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setContextMenu({ x: rect.left, y: rect.bottom, issue });
+      if (onFetchBeadsPrompts) {
+        onFetchBeadsPrompts(workingDir).then((prompts) =>
+          setMenuPrompts(prompts || []),
+        );
+      }
+    },
+    [onFetchBeadsPrompts, workingDir],
+  );
 
   // Keep the open detail panel in sync when the list refreshes: replace it with
   // the fresh row if it still exists, otherwise close the panel.
@@ -2274,6 +2394,30 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         </div>
         <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
       </div>
+      <div class="flex items-center gap-1 shrink-0 self-center">
+        ${isEpic
+          ? html`<button
+              type="button"
+              onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openCreateInEpic(issue.id); }}
+              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+              title="New issue in epic"
+              aria-label="New issue in epic"
+              data-testid="beads-issue-add-child"
+            >
+              <${PlusIcon} className="w-3.5 h-3.5" />
+            </button>`
+          : null}
+        <button
+          type="button"
+          onClick=${(e) => handleRowMenuButton(e, issue)}
+          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+          title="More actions"
+          aria-label="More actions"
+          data-testid="beads-issue-menu"
+        >
+          <${EllipsisIcon} className="w-3.5 h-3.5" />
+        </button>
+      </div>
     `;
     return html`
       <${BeadsIssueRow}
@@ -2543,6 +2687,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       onToggleDefer=${handleToggleDefer}
       statusBusy=${statusBusy}
       onSelectIssue=${selectIssue}
+      createParentId=${createParent}
     />
     </div>
 
