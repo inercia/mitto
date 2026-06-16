@@ -112,6 +112,7 @@ type beadsCreateRequest struct {
 	Type        string `json:"type,omitempty"`
 	Priority    *int   `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
 	Description string `json:"description,omitempty"`
+	Parent      string `json:"parent,omitempty"`
 }
 
 // handleBeadsCreate handles POST /api/beads/create.
@@ -187,6 +188,7 @@ func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		Type:        req.Type,
 		Priority:    req.Priority,
 		Description: req.Description,
+		Parent:      strings.TrimSpace(req.Parent),
 	})
 	if err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})

@@ -38,6 +38,7 @@ type CreateParams struct {
 	Type        string
 	Priority    *int
 	Description string
+	Parent      string
 }
 
 // UpdateParams carries the fields for Client.Update. Pointer fields distinguish

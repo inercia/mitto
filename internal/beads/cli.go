@@ -107,6 +107,9 @@ func (c *cliClient) Create(ctx context.Context, dir string, p CreateParams) ([]b
 	if p.Description != "" {
 		args = append(args, "-d", p.Description)
 	}
+	if p.Parent != "" {
+		args = append(args, "--parent", p.Parent)
+	}
 	return c.runJSON(ctx, dir, args...)
 }
 
