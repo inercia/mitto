@@ -1512,7 +1512,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           </fieldset>
                           <fieldset class="fieldset pt-2">
                             <legend class="fieldset-legend">Appearance</legend>
-                            <div class="flex gap-4 items-end">
+                            <div class="flex gap-4 items-start">
                               <div class="flex-1 min-w-0">
                                 <label class="label" for="ws-folder-group">Group</label>
                                 <input
@@ -1529,6 +1529,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     (g) => html`<option value=${g}></option>`,
                                   )}
                                 </datalist>
+                                <p class="text-xs text-mitto-text-muted mt-1">
+                                  Organize folders into groups. Existing groups are suggested as you type.
+                                </p>
                               </div>
                               <div class="flex-1 min-w-0">
                                 <label class="label" for="ws-badge-code">Badge Code</label>
@@ -1557,9 +1560,6 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 </div>
                               </div>
                             </div>
-                            <p class="text-xs text-mitto-text-muted">
-                              Organize folders into groups. Existing groups are suggested as you type.
-                            </p>
                           </fieldset>
                         </div>
                       `}
