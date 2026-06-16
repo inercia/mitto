@@ -590,6 +590,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
 		onTitleGenerated:        config.OnTitleGenerated,
+		onSelfDestruct:          config.OnSelfDestruct,
 		acpCommand:              config.ACPCommand,          // Store for restart
 		acpCwd:                  config.ACPCwd,              // Store for restart
 		serverEnv:               config.Env,                 // Store for restart
