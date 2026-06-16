@@ -17,6 +17,7 @@ import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
+import { statusBadge as beadsStatusBadge } from "./BeadsView.js";
 import { formatTimeAgo, looksLikeFilePath } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { isNativeApp, getAPIPrefix } from "../utils/index.js";
@@ -254,6 +255,7 @@ export function SessionPanel({
   const [isLoadingFlags, setIsLoadingFlags] = useState(false);
   const [savingFlags, setSavingFlags] = useState({});
   const [flagsError, setFlagsError] = useState(null);
+  const [beadsStatus, setBeadsStatus] = useState(null);
   const [, setTimeNow] = useState(Date.now());
 
   const currentModelId = useMemo(() => {
@@ -331,6 +333,43 @@ export function SessionPanel({
 
     fetchData();
   }, [isOpen, sessionId]);
+
+  // --- Effects: fetch linked beads issue status when open ---
+  // The status badge mirrors the style used in the Beads view. The status
+  // comes from `bd show` via the existing /api/beads/show endpoint.
+  useEffect(() => {
+    if (!isOpen || !sessionInfo?.beads_issue || !sessionInfo?.working_dir) {
+      setBeadsStatus(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(
+          apiUrl("/api/beads/show") +
+            "?working_dir=" + encodeURIComponent(sessionInfo.working_dir) +
+            "&id=" + encodeURIComponent(sessionInfo.beads_issue),
+        );
+        if (!res.ok) {
+          if (!cancelled) setBeadsStatus(null);
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        const issueObj = Array.isArray(data) ? data[0] : data;
+        if (issueObj && !issueObj.error && issueObj.status) {
+          setBeadsStatus(issueObj.status);
+        } else {
+          setBeadsStatus(null);
+        }
+      } catch (_err) {
+        if (!cancelled) setBeadsStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, sessionInfo?.beads_issue, sessionInfo?.working_dir]);
 
   // --- Effects: fetch user data when open ---
   useEffect(() => {
@@ -993,6 +1032,7 @@ export function SessionPanel({
                     title="Open beads issue ${sessionInfo.beads_issue}"
                   >${sessionInfo.beads_issue}</button>`
                 : html`<span class="text-sm font-mono">${sessionInfo.beads_issue}</span>`}
+              ${beadsStatus && beadsStatusBadge(beadsStatus)}
             </div>
           </div>
         `}

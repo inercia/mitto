@@ -58,7 +58,7 @@ const PRIORITY_COLORS = {
   3: "badge-ghost",
 };
 
-const STATUS_COLORS = {
+export const STATUS_COLORS = {
   open: "bg-green-700 text-green-100",
   in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
   closed: "bg-mitto-surface-4 text-mitto-text-strong",
@@ -100,7 +100,7 @@ function priorityBadge(p) {
   return badge(PRIORITY_LABELS[n] ?? String(p), PRIORITY_COLORS[n] ?? PRIORITY_COLORS[3]);
 }
 
-function statusBadge(s) {
+export function statusBadge(s) {
   const label = (s || "open").replace(/_/g, " ");
   return badge(label, STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong");
 }
