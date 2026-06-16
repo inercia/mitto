@@ -1,0 +1,22 @@
+{
+  "scenario": "beads-issue-task",
+  "description": "Mock ACP response for the Beads Issue Task prompt with ISSUE_ID substitution. Pattern matches when the dispatched text references a specific issue ID (e.g. mitto-aaa).",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)mitto-aaa"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 100,
+          "chunks": [
+            "Issue mitto-aaa is currently open. ",
+            "Priority: high. No blockers identified."
+          ]
+        }
+      ]
+    }
+  ]
+}

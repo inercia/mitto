@@ -107,6 +107,18 @@ When disabling prompt X:
 
 When re-enabling: reverse (remove `enabled: false` from frontmatter or `.mittorc` entry).
 
+## Menu-Driven Prompt Sends (Named-Prompt Mechanism)
+
+All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, conversation seeding, beadsIssues, beadsList) use `prompt_name` — **never POST the full prompt body**:
+
+- **One shared frontend helper** (`web/static/hooks/useConversationSeeding.js`) builds every seed request:
+  - `seedConversationWithPrompt(sessionId, prompt, {arguments})` → POST `{prompt_name, arguments}` to existing session queue
+  - `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments})` → POST `{initial_prompt_name, arguments}` to `POST /api/sessions` (atomic create+seed)
+- **ChatInput**: `handlePredefinedPrompt` → `onSend("", [], [], { promptName })` — never sends the full prompt text
+- **Backend resolution**: name resolved to full text at dispatch via `resolvePromptByName()` in the **target conversation's** workspace context (not at enqueue time); `arguments` substitution (`${VAR}`/`${VAR:-default}`) applied at the same point
+- **Title generation**: skipped for named-prompt queue items (prompt name is used as the queue label)
+- **Anti-pattern**: Do NOT call `POST /api/sessions/{id}/queue` with a `message` containing the resolved prompt text; send `prompt_name` instead
+
 ## MCP Prompt Tools (`internal/mcpserver/prompts.go`)
 
 Three MCP tools for managing prompts programmatically:

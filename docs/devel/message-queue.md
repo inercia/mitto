@@ -61,13 +61,16 @@ conversations:
 ```go
 // QueuedMessage represents a message waiting to be sent to the agent.
 type QueuedMessage struct {
-    ID            string     `json:"id"`                      // Unique ID (q-{timestamp}-{random})
-    Message       string     `json:"message"`                 // Text content
-    ImageIDs      []string   `json:"image_ids,omitempty"`     // Attached images
-    QueuedAt      time.Time  `json:"queued_at"`               // When queued
-    ClientID      string     `json:"client_id,omitempty"`     // Source client
-    Title         string     `json:"title,omitempty"`         // Auto-generated title
-    ScheduledTime *time.Time `json:"scheduled_time,omitempty"` // Deliver after this time (nil = immediate)
+    ID            string            `json:"id"`                       // Unique ID (q-{timestamp}-{random})
+    Message       string            `json:"message"`                  // Text content (empty for named-prompt items)
+    ImageIDs      []string          `json:"image_ids,omitempty"`      // Attached images
+    FileIDs       []string          `json:"file_ids,omitempty"`       // Attached files
+    QueuedAt      time.Time         `json:"queued_at"`                // When queued
+    ClientID      string            `json:"client_id,omitempty"`      // Source client
+    Title         string            `json:"title,omitempty"`          // Auto-generated title (skipped for named-prompt items)
+    ScheduledTime *time.Time        `json:"scheduled_time,omitempty"` // Deliver after this time (nil = immediate)
+    Arguments     map[string]string `json:"arguments,omitempty"`      // ${VAR}/${VAR:-default} substitution values applied at dispatch
+    PromptName    string            `json:"prompt_name,omitempty"`    // Named-prompt: resolved to full text at dispatch (empty for ad-hoc messages)
 }
 
 // Queue manages the message queue for a single session.
@@ -77,9 +80,9 @@ type Queue struct { ... }
 
 ### Methods
 
-| Method                                                     | Description                                                           |
-| ---------------------------------------------------------- | --------------------------------------------------------------------- |
-| `Add(message, imageIDs, fileIDs, clientID, scheduled, sz)` | Add message, returns `ErrQueueFull` if at capacity                    |
+| Method                                                                          | Description                                                           |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `Add(message, imageIDs, fileIDs, clientID, scheduled, sz, arguments, promptName)` | Add message, returns `ErrQueueFull` if at capacity                 |
 | `List()`                                                   | Get all messages in FIFO order                                        |
 | `Get(id)`                                                  | Get specific message by ID                                            |
 | `Remove(id)`                                               | Remove specific message                                               |
@@ -188,6 +191,44 @@ worker.Close()
 - **30-second timeout**: Per-request timeout for title generation
 - **Graceful shutdown**: Waits for in-flight request to complete
 
+## Named-Prompt Queue Items
+
+Queue items can carry a **prompt name** (+ optional substitution arguments) instead of a full message body. The backend resolves the name to full text at dispatch — not at enqueue time — using the target conversation's workspace context (`resolvePromptByName` in `internal/web/server.go`).
+
+### Key properties
+
+| Property | Behavior |
+|----------|----------|
+| `prompt_name` | Name of the workspace prompt to send; resolved at dispatch |
+| `arguments` | `${VAR}`/`${VAR:-default}` substitutions applied when the prompt is resolved and sent |
+| `message` | Empty string for named-prompt items |
+| Title generation | **Skipped** — the prompt name itself serves as the label in the queue UI |
+
+### Why resolution happens at dispatch
+
+Resolution is deferred to the target conversation's context so that workspace-specific prompts, ACP-server-filtered lists, and `enabledWhen` conditions are evaluated in the right environment, even when the request came from a different workspace or was created atomically with the session.
+
+### Shared Frontend Seed Helper (`web/static/hooks/useConversationSeeding.js`)
+
+All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, beads-issue menus, beads-list menus) go through a **single shared helper** — never POST the full prompt body directly:
+
+| Export | Purpose |
+|--------|---------|
+| `buildSeedQueueBody(prompt, {arguments})` | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
+| `seedConversationWithPrompt(sessionId, prompt, {arguments})` | POST `{prompt_name}` to an existing session's queue |
+| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments})` | Atomic create+seed — POST `{initial_prompt_name, arguments}` to `POST /api/sessions` |
+
+```javascript
+// All menus call one of these — never the full prompt body
+const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+// Seed an existing conversation
+await seedConversationWithPrompt(sessionId, { name: "Review Code" }, { arguments: { ISSUE_ID: "mitto-42" } });
+
+// Create a new conversation and seed it atomically
+await startConversationWithPrompt({ workingDir, acpServer, prompt: { name: "Review Code" }, arguments: { ISSUE_ID: "mitto-42" } });
+```
+
 ## REST API
 
 ### Endpoints
@@ -200,9 +241,25 @@ worker.Close()
 | `DELETE` | `/api/sessions/{id}/queue/{msg_id}` | Delete specific message  |
 | `DELETE` | `/api/sessions/{id}/queue`          | Clear entire queue       |
 
+### `POST /api/sessions` — Atomic Create + Seed
+
+`SessionCreateRequest` supports `initial_prompt_name` (+ `arguments`) for atomically creating a conversation and seeding its queue in one request:
+
+```json
+// POST /api/sessions
+{
+  "working_dir": "/path/to/project",
+  "acp_server": "auggie",
+  "initial_prompt_name": "Review Code",
+  "arguments": { "ISSUE_ID": "mitto-42" }
+}
+```
+
+The backend calls `seedQueueWithNamedPrompt()` immediately after creating the session, using the same queue plumbing as `POST /api/sessions/{id}/queue`. Title generation is skipped for named-prompt items.
+
 ### Request/Response Examples
 
-**POST /api/sessions/{id}/queue**
+**POST /api/sessions/{id}/queue** — ad-hoc message
 
 ```json
 // Request
@@ -217,7 +274,25 @@ worker.Close()
 }
 ```
 
-**GET /api/sessions/{id}/queue** (after title generated)
+**POST /api/sessions/{id}/queue** — named-prompt item
+
+```json
+// Request (no "message" field — prompt name is resolved at dispatch)
+{
+  "prompt_name": "Review Code",
+  "arguments": { "ISSUE_ID": "mitto-42" }
+}
+
+// Response (201 Created)
+{
+  "id": "q-1738396800-def67890",
+  "prompt_name": "Review Code",
+  "queued_at": "2026-02-01T12:00:00Z"
+  // No "title" — skipped for named-prompt items; prompt name is used as label
+}
+```
+
+**GET /api/sessions/{id}/queue** (mixed queue)
 
 ```json
 {
@@ -227,9 +302,15 @@ worker.Close()
       "message": "Fix the login bug",
       "queued_at": "2026-02-01T12:00:00Z",
       "title": "Login Bug Fix"
+    },
+    {
+      "id": "q-1738396800-def67890",
+      "prompt_name": "Review Code",
+      "arguments": { "ISSUE_ID": "mitto-42" },
+      "queued_at": "2026-02-01T12:01:00Z"
     }
   ],
-  "count": 1
+  "count": 2
 }
 ```
 
@@ -345,11 +426,21 @@ sessions/
       "queued_at": "2026-02-01T12:00:00Z",
       "client_id": "web-client-1",
       "title": "Login Bug Fix"
+    },
+    {
+      "id": "q-1738396800-def67890",
+      "message": "",
+      "prompt_name": "Review Code",
+      "arguments": { "ISSUE_ID": "mitto-42" },
+      "queued_at": "2026-02-01T12:01:00Z",
+      "client_id": "web-client-1"
     }
   ],
-  "updated_at": "2026-02-01T12:00:05Z"
+  "updated_at": "2026-02-01T12:01:00Z"
 }
 ```
+
+Named-prompt items persist `prompt_name` and `arguments`; `message` is empty. The name is resolved to full text at dispatch — the persisted file never contains the resolved prompt body.
 
 ### Design Decisions
 
