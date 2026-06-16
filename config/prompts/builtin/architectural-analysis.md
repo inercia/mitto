@@ -1,0 +1,215 @@
+---
+icon: "layers"
+name: "Architectural Analysis"
+menus: prompts
+description: "Analyze the codebase architecture from a 10,000-ft view and file beads issues for structural improvements, design-pattern violations, separation-of-concerns problems, and cross-package dependencies — grouping related findings under epics"
+backgroundColor: "#C8E6C9"
+group: "Code Quality"
+tags: ["periodic"]
+enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
+# Architectural Analysis
+
+Take a **10,000-foot view** of this codebase and assess its overall structure — not line-level
+nits, but the shape of the system: how packages/modules are layered, where responsibilities live,
+which abstractions earn their keep, and where the design fights itself. Turn every finding worth
+acting on into a beads issue (`bd`), grouping related findings under epics so the work is coherent
+rather than a flat pile. Run it **on demand** in a regular conversation, or schedule it to run
+periodically — it adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
+
+## Interaction Mode
+
+This prompt runs in two modes. Check these variables to decide which applies:
+
+- `@mitto:periodic` = is this a scheduled periodic execution?
+- `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+
+**Interactive mode** — a regular conversation (`@mitto:periodic` = "false") **or** a force-triggered
+periodic run (`@mitto:periodic_forced` = "true"):
+- The user is present. Present findings for approval with `mitto_ui_form` and **wait for confirmation
+  before filing any bead**. You may also use `mitto_ui_options` / `mitto_ui_textbox` and `mitto_ui_notify`.
+
+**Silent mode** — a scheduled periodic run (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+- The user is not watching. Use **only** `mitto_ui_notify` — non-blocking notifications.
+- Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
+- File only **high-confidence, high-value** findings (skip anything speculative), then notify with a summary.
+
+## Step 1 — Understand the architecture
+
+Build an accurate mental model before judging anything. Read in parallel; do **not** speculate about
+code you have not opened. Prefer existing architecture docs over guessing.
+
+- Read top-level layout and any architecture docs (e.g. `README`, `docs/`, `AGENTS.md`, `CLAUDE.md`,
+  `.augment/rules/`, package-level doc comments).
+- Map the **module/package graph**: which packages exist, what each is responsible for, and which
+  depend on which. Note the intended layering (entry points → domain → infrastructure).
+- Identify the dominant patterns already in use (e.g. observer, repository, adapter) and the
+  established conventions the project documents for itself.
+
+For large codebases, delegate breadth-first reading to child conversations (see Delegation below) and
+synthesize their reports — but you own the final architectural judgement.
+
+## Step 2 — Analyze across architectural axes
+
+Evaluate the system from the top down. For each axis, look for concrete, evidenced problems —
+not stylistic preferences. Capture the **files/packages** involved for every finding.
+
+| Axis | What to look for |
+|------|------------------|
+| Structure & layering | Misplaced responsibilities, layering violations, entry-point code leaking into domain logic |
+| Separation of concerns | Modules doing too many unrelated things; business logic tangled with I/O, transport, or UI |
+| Design patterns | Pattern misuse, half-applied patterns, reinvented wheels, abstractions that don't earn their complexity |
+| Cross-package dependencies | Dependency cycles, wrong-direction deps, forbidden imports, packages that should not know about each other |
+| Unifications | Parallel/duplicated subsystems that should be merged behind one abstraction |
+| Splits | God packages / oversized modules that should be decomposed along clear seams |
+| Boundaries & cohesion | Leaky interfaces, anemic or god objects, low cohesion within a package |
+
+For each finding capture: a short **title**, a **description** (what it is, *why it matters*
+architecturally, where it lives, and a **proposed direction** if clear), and a suggested **type**
+(`task`/`chore`/`bug`/`feature`) and **priority** (P0 highest .. P4 lowest; default follow-ups to P2/P3).
+
+If you find **nothing** worth tracking, say so clearly and stop — do not invent work.
+
+## Step 3 — Learn the project's conventions
+
+So your beads match the project's style:
+
+```bash
+bd list --limit 20 --json   # recent beads: common labels, types, priorities
+bd types                    # valid issue types in this project
+```
+
+## Step 4 — Avoid duplicates and discover existing epics
+
+Check whether any finding is already tracked, and learn which epics already exist so you can slot
+work into them rather than duplicating structure:
+
+```bash
+bd list --json                            # all beads (scan titles/descriptions for overlap)
+bd list --type epic --status open --json  # open epics: candidate parents for new work
+```
+
+Drop or merge any finding that clearly duplicates an existing open bead. For each open epic, note its
+**ID**, **title**, and what it covers (`bd show <epic-id>` if the title is ambiguous) — you'll prefer
+attaching new findings to a fitting existing epic over inventing a new one.
+
+## Step 5 — Organize findings into a logical structure
+
+Group the surviving findings so related architectural work lives together. Prefer reusing existing
+structure over creating new structure:
+
+- **Attach to an existing epic first.** If an open epic from Step 4 already covers a finding's theme,
+  area, or component, make the finding a **child of that existing epic** (record the real epic ID).
+- **Create a new epic only when needed.** When two or more findings share a theme that **no existing
+  epic** covers, propose a **new epic** (parent bead) with a clear title and one-line purpose, and make
+  those findings its children. This is the natural home for umbrella efforts like
+  "decompose the X package" or "untangle the A↔B dependency".
+- **Keep genuinely standalone findings at the top level** — never invent an epic for a single finding,
+  and never force a finding into an epic that doesn't truly fit.
+- Note **ordering dependencies** between findings (e.g. a split must land before a unification) so you
+  can wire them as blocking edges later.
+
+Number every epic and finding so each maps to a checkbox in the next step.
+
+## Step 6 — Confirm before filing
+
+**Silent mode** (scheduled periodic, not forced): skip confirmation entirely. File only the
+high-confidence findings directly (Step 7), then notify with `mitto_ui_notify` summarizing what was
+created. Do not block.
+
+**Interactive mode** (regular conversation or forced periodic run): this is **read-only until you
+confirm**. First, **print the organized list as a regular message** — existing epics with their
+newly-attached children, then proposed new epics with their children, then standalone findings — each
+line as:
+
+> **[<type> · <priority>] <title>** — <one-line architectural rationale>
+
+Then present **every** epic and finding in a single `mitto_ui_form(self_id: "@mitto:session_id")` as
+checkboxes, **checked by default**, so the user just unchecks what to skip. Nest children under their epic:
+
+```html
+<p>Select what to file as beads. Unchecked items are skipped. Epics group their children.</p>
+
+<p><strong>[existing epic · bd-42] WebSocket layering</strong> — new items will be filed under this epic:</p>
+<label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_1" checked /> [task · P2] Move reconnection logic out of transport layer</label>
+
+<label><input type="checkbox" name="epic_1" checked /> [new epic · P2] Decompose the web package</label>
+<label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_2" checked /> [task · P2] Extract session lifecycle into its own package</label>
+<label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="bead_3" checked /> [chore · P3] Split oversized handler file</label>
+
+<label><input type="checkbox" name="bead_4" checked /> [task · P3] Remove cross-package dependency cycle A↔B</label>
+```
+
+Use stable names: `epic_<N>` for **proposed new** epics and `bead_<N>` for findings (matching Step 5).
+**Existing** epics are shown as plain headers (no checkbox); only their newly-attached children get
+checkboxes. Remember which `bead_<N>` belongs to which existing epic ID. Submit/Cancel added automatically.
+
+Interpreting the result:
+- An epic or finding is **approved** only if its key is **present** in the returned values.
+- If a **new epic is unchecked but some of its children are checked**, create those children as
+  **standalone top-level beads** so the work is not lost.
+- If a child of an **existing epic** is checked, create it under that existing epic.
+- If the user **cancels** or submits with everything unchecked, create nothing and report that.
+
+## Step 7 — Create the approved beads
+
+Create approved **new epics first** so their children can reference them; children of **existing**
+epics use the real epic IDs from Step 4. For each bead, compose a well-structured Markdown description
+(Summary, Why It Matters, Affected Files/Packages, Proposed Direction, Acceptance Criteria), write it
+to a temporary file, and pass it via `--body-file` to preserve formatting:
+
+```bash
+# New epic (parent)
+bd create "<epic title>" --type epic --priority <priority> --body-file /tmp/arch-epic.md
+# Child of a new epic (use the ID just returned) or of an existing epic (use its Step 4 ID)
+bd create "<title>" --parent <epic-id> --type <type> --priority <priority> --body-file /tmp/arch-item.md
+# Standalone finding (no epic)
+bd create "<title>" --type <type> --priority <priority> --body-file /tmp/arch-item.md
+```
+
+Capture each new bead ID from the output. Report any creation that fails and why.
+
+## Step 8 — Wire relationships
+
+For each ordering dependency from Step 5, add a blocking edge; link non-blocking relationships as `related`:
+
+```bash
+bd dep add <blocked-id> <blocker-id>          # blocker blocks blocked
+bd link <id> <other-id> --type related        # non-blocking relationship
+bd dep cycles                                 # verify integrity
+```
+
+For each epic that gained children — newly created or pre-existing — record a terse audit note:
+
+```bash
+bd update <epic-id> --append-notes "Grouped <N> architectural findings (<child-ids>): <one-line rationale>."
+```
+
+## Step 9 — Final summary
+
+Finish with a short summary listing each **epic** (ID + title) with its children indented beneath it
+— both newly created and existing epics that received children — then standalone beads; the dependency
+edges created; any findings **skipped** as duplicates (and which bead they matched); and any `bd`
+failures or warnings. In silent mode, deliver this summary via `mitto_ui_notify` instead of the chat.
+
+## Delegating breadth-first analysis to child conversations
+
+For large codebases, parallelize the **reading/mapping** in Step 1 across Mitto child conversations,
+then synthesize their reports yourself.
+
+- Match server tags to task: broad mechanical mapping → `"coding"`/`"fast"` servers; deep architectural
+  reasoning → `"reasoning"`/`"planning"` servers; no match → the `(current)` server, then first available.
+- If relevant children already exist (`@mitto:children`), reuse them via `mitto_conversation_send_prompt`
+  instead of creating new ones.
+- `mitto_conversation_new(self_id: "@mitto:session_id")` with a scoped package/area and a directive to
+  **report findings only — not to file beads or make changes**.
+- `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<area>", timeout_seconds: 600)`.
+- Review and integrate reports, then proceed with Steps 2–9 yourself. `mitto_conversation_delete` finished children.
+- Max 4 parallel child conversations. **Without Mitto tools**: do the analysis directly.
