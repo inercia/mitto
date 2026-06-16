@@ -63,6 +63,43 @@ func (s *Server) handleBeadsList(w http.ResponseWriter, r *http.Request) {
 	w.Write(out) //nolint:errcheck
 }
 
+// handleBeadsStats handles GET /api/beads/stats?working_dir=...
+// Runs "bd status --json --no-activity" in the workspace directory, returning an
+// aggregate summary of issue counts by state (open, in_progress, ready, blocked,
+// closed, ...). Used by the sidebar to render a per-folder Tasks stats line.
+// Requires authentication via the standard auth middleware (same as other API endpoints).
+func (s *Server) handleBeadsStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		return
+	}
+	if !s.isKnownWorkspaceDir(workingDir) {
+		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		return
+	}
+
+	out, err := s.beadsClient().Status(r.Context(), workingDir)
+	if err != nil {
+		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	w.Write(out) //nolint:errcheck
+}
+
 // handleBeadsShow handles GET /api/beads/show?working_dir=...&id=...
 // Runs "bd show <id> --json --include-comments" in the workspace directory,
 // returning the full issue including its comments and dependencies.

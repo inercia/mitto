@@ -26,6 +26,9 @@ type stubBeadsClient struct {
 func (c *stubBeadsClient) List(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`[]`), nil
 }
+func (c *stubBeadsClient) Status(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{"summary":{}}`), nil
+}
 func (c *stubBeadsClient) Show(_ context.Context, _, _ string) ([]byte, error) {
 	return []byte(`{}`), nil
 }

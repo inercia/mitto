@@ -738,6 +738,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
 	mux.HandleFunc(apiPrefix+"/api/beads/list", s.handleBeadsList)
+	mux.HandleFunc(apiPrefix+"/api/beads/stats", s.handleBeadsStats)
 	mux.HandleFunc(apiPrefix+"/api/beads/show", s.handleBeadsShow)
 	mux.HandleFunc(apiPrefix+"/api/beads/create", s.handleBeadsCreate)
 	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.handleBeadsCleanup)

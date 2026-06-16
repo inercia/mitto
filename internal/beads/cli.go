@@ -86,6 +86,16 @@ func (c *cliClient) List(ctx context.Context, dir string) ([]byte, error) {
 	return c.runJSON(ctx, dir, "list", "--json", "--all", "-n", "0")
 }
 
+func (c *cliClient) Status(ctx context.Context, dir string) ([]byte, error) {
+	// An uninitialized folder has no issue database. Return an empty summary
+	// rather than letting bd fail, so the sidebar stats line renders nothing
+	// (and viewing does not create a .beads database just by querying).
+	if !isInitialized(dir) {
+		return []byte(`{"summary":{}}`), nil
+	}
+	return c.runJSON(ctx, dir, "status", "--json", "--no-activity")
+}
+
 func (c *cliClient) Show(ctx context.Context, dir, id string) ([]byte, error) {
 	return c.runJSON(ctx, dir, "show", id, "--json", "--include-comments")
 }

@@ -36,10 +36,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 type SessionCreateRequest struct {
 	Name              string            `json:"name,omitempty"`
 	WorkingDir        string            `json:"working_dir,omitempty"`
-	ACPServer         string            `json:"acp_server,omitempty"`           // Optional: specify ACP server for the session
-	BeadsIssue        string            `json:"beads_issue,omitempty"`          // Optional: link conversation to a beads issue ID at creation
-	InitialPromptName string            `json:"initial_prompt_name,omitempty"`  // Optional: seed the queue with a named prompt atomically on creation
-	Arguments         map[string]string `json:"arguments,omitempty"`            // Optional: ${VAR} substitution arguments for the initial prompt
+	ACPServer         string            `json:"acp_server,omitempty"`          // Optional: specify ACP server for the session
+	BeadsIssue        string            `json:"beads_issue,omitempty"`         // Optional: link conversation to a beads issue ID at creation
+	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
+	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: ${VAR} substitution arguments for the initial prompt
 }
 
 // handleCreateSession handles POST /api/sessions
