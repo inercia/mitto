@@ -911,19 +911,22 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Add a message to the queue
   const addToQueue = useCallback(
-    async (message, imageIds = [], fileIds = []) => {
-      if (!activeSessionId || !message?.trim()) return { success: false };
+    async (message, imageIds = [], fileIds = [], opts = {}) => {
+      const { promptName } = opts;
+      if (!activeSessionId || (!message?.trim() && !promptName)) return { success: false };
       try {
+        const body = {
+          message: message?.trim() || "",
+          image_ids: imageIds,
+          file_ids: fileIds,
+        };
+        if (promptName) body.prompt_name = promptName;
         const response = await secureFetch(
           apiUrl(`/api/sessions/${activeSessionId}/queue`),
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              message: message.trim(),
-              image_ids: imageIds,
-              file_ids: fileIds,
-            }),
+            body: JSON.stringify(body),
           },
         );
         if (response.ok || response.status === 201) {

@@ -14,7 +14,7 @@ const { useState, useRef, useEffect, useCallback } = window.preact;
  * @param {Function} deps.showToast - Toast dispatcher.
  * @param {Function} deps.updateDraft - Clears/sets a session's draft text.
  * @param {Function} deps.fetchQueueMessages - Refreshes queue contents.
- * @param {Function} deps.addToQueue - Enqueues a message (text/images/files).
+ * @param {Function} deps.addToQueue - Enqueues a message (text/images/files/promptName).
  * @param {Function} deps.deleteQueueMessage - Removes a queued message by id.
  * @param {Function} deps.moveQueueMessage - Reorders a queued message.
  * @param {boolean} deps.settingsDialogOpen - Whether the settings dialog is open.
@@ -89,13 +89,13 @@ export function useQueueActions({
     [moveQueueMessage],
   );
 
-  // Handle adding message to queue (with optional images and files)
-  // Called from ChatInput with message text, images, and files
+  // Handle adding message to queue (with optional images, files, and opts)
+  // Called from ChatInput with message text, images, files, and optional opts (e.g. { promptName })
   const handleAddToQueue = useCallback(
-    async (message, images = [], files = []) => {
-      // Allow queueing if there's text OR images OR files (or any combination)
+    async (message, images = [], files = [], opts = {}) => {
+      // Allow queueing if there's text OR images OR files OR a named prompt
       const hasContent =
-        message?.trim() || images.length > 0 || files.length > 0;
+        message?.trim() || images.length > 0 || files.length > 0 || opts?.promptName;
       if (!hasContent || isAddingToQueue) return { success: false };
 
       setIsAddingToQueue(true);
@@ -103,7 +103,7 @@ export function useQueueActions({
         // Extract image and file IDs from the objects
         const imageIds = images.map((img) => img.id).filter(Boolean);
         const fileIds = files.map((f) => f.id).filter(Boolean);
-        const result = await addToQueue(message, imageIds, fileIds);
+        const result = await addToQueue(message, imageIds, fileIds, opts);
         if (result.success) {
           // Clear the draft after successful addition
           // Note: Images are cleared by ChatInput on success
