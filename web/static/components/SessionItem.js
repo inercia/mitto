@@ -528,7 +528,7 @@ export function SessionItem({
                   clickable=${badgeClickEnabled}
                   onBadgeClick=${onBadgeClick}
                   hideAbbreviation=${badgeHideAbbreviation}
-                  hideAcpServer=${badgeHideAcpServer}
+                  hideAcpServer=${true}
                   className="shrink-0"
                 />
               `}
@@ -561,6 +561,9 @@ export function SessionItem({
                 <${EllipsisIcon} className="w-3.5 h-3.5" />
               </button>
             </div>
+            ${density === "comfortable" && acpServer
+              ? html`<div class="text-[0.5625rem] text-mitto-text-muted italic font-normal truncate mt-0.5 pl-6">${acpServer}</div>`
+              : null}
           </div>
         </div>
       </div>

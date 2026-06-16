@@ -1,6 +1,9 @@
 // Mitto Web Interface - Session List Component
 const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = window.preact;
 
+import { apiUrl } from "../utils/api.js";
+import { authFetch } from "../utils/csrf.js";
+
 import {
   computeUnifiedTree,
   filterUnifiedTree,
@@ -51,6 +54,57 @@ import {
   LightningIcon,
   getPromptIconOrDefault,
 } from "./Icons.js";
+
+// Module-level cache for git changes: keyed by workingDir.
+// Each entry: { data, ts } where ts is Date.now() of the last fetch.
+const GIT_CHANGES_CACHE = {};
+const GIT_CHANGES_TTL_MS = 30_000;
+// In-flight fetch promises keyed by workingDir to avoid duplicate concurrent requests.
+const GIT_CHANGES_IN_FLIGHT = {};
+
+// Fetch git changes for a session's workingDir, with caching and in-flight dedup.
+// Returns { files, is_git_repo, branch } or null on error.
+async function fetchGitChanges(sessionId) {
+  try {
+    const response = await authFetch(apiUrl(`/api/sessions/${sessionId}/changes`));
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+// Get git changes for a workingDir: cache-first, then fetch via representative sessionId.
+// Returns a promise resolving to the data or null.
+function getGitChanges(workingDir, sessionId) {
+  const now = Date.now();
+  const cached = GIT_CHANGES_CACHE[workingDir];
+  if (cached && now - cached.ts < GIT_CHANGES_TTL_MS) {
+    return Promise.resolve(cached.data);
+  }
+  if (GIT_CHANGES_IN_FLIGHT[workingDir]) {
+    return GIT_CHANGES_IN_FLIGHT[workingDir];
+  }
+  const promise = fetchGitChanges(sessionId).then((data) => {
+    GIT_CHANGES_CACHE[workingDir] = { data, ts: Date.now() };
+    delete GIT_CHANGES_IN_FLIGHT[workingDir];
+    return data;
+  });
+  GIT_CHANGES_IN_FLIGHT[workingDir] = promise;
+  return promise;
+}
+
+// Find the first session_id in a folder's conversations tree (recurse into children).
+function findRepresentativeSessionId(nodes) {
+  for (const node of nodes) {
+    if (node.session_id) return node.session_id;
+    if (node.children) {
+      const found = findRepresentativeSessionId(node.children);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
 // The Archived subgroup expansion is intentionally NOT memorized: it always
 // resets to collapsed when a group is (re)opened. Strip any persisted
@@ -161,6 +215,9 @@ export function SessionList({
     setDensity(mode);
     setOpenToolbarMenu(null);
   }, []);
+
+  // Git changes data keyed by workingDir, populated on demand in comfortable density.
+  const [gitChangesMap, setGitChangesMap] = useState({});
 
   // Which side-panel toolbar dropdown is open ("filter" | "density" | null).
   // Controlled so the menus are mutually exclusive — opening one closes the other.
@@ -478,6 +535,24 @@ export function SessionList({
     () => filterUnifiedTree(unifiedTree, categoryFilter),
     [unifiedTree, categoryFilter],
   );
+
+  // Fetch git changes for all visible folders when in comfortable density.
+  // Re-runs when density changes or the folder list changes.
+  useEffect(() => {
+    if (density !== "comfortable") return;
+    const folders = filteredTree.folders || [];
+    folders.forEach((folder) => {
+      if (!folder.workingDir) return;
+      const sessionId = findRepresentativeSessionId(folder.conversations);
+      if (!sessionId) return;
+      getGitChanges(folder.workingDir, sessionId).then((data) => {
+        setGitChangesMap((prev) => {
+          if (prev[folder.workingDir] === data) return prev;
+          return { ...prev, [folder.workingDir]: data };
+        });
+      });
+    });
+  }, [density, filteredTree.folders]);
 
   // Build a map from session ID → its family's parent group key ("parent:<id>").
   // Covers both the parent session itself and all its children.
@@ -938,7 +1013,7 @@ export function SessionList({
                 }}
               >
                 <summary
-                  class="flex items-center gap-2 text-sm font-medium text-mitto-text-muted after:hidden"
+                  class="block text-sm font-medium text-mitto-text-muted after:hidden"
                   onContextMenu=${(e) => {
                     if (folder.workingDir) {
                       e.preventDefault();
@@ -955,64 +1030,92 @@ export function SessionList({
                     ? "true"
                     : undefined}
                 >
-                  ${hasFolderStreaming
-                    ? html`
-                        <span
-                          class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
-                          title="Agent responding in this folder"
-                        ></span>
-                      `
-                    : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
-                  <span class="truncate min-w-0" title=${folder.workingDir}>
-                    ${folder.label}
-                  </span>
-                  <span class="flex-1"></span>
-                  <span
-                    class="badge badge-sm badge-ghost shrink-0 tabular-nums"
-                    >${totalSessions}</span
-                  >
-                  <button
-                    type="button"
-                    onClick=${(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      if (!isCreatingSession)
-                        handleNewSessionInFolder(folder.workingDir, e);
-                    }}
-                    class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
-                      ? "cursor-wait opacity-60"
-                      : ""}"
-                    title=${isCreatingSession
-                      ? "Creating conversation\u2026"
-                      : `New conversation in ${folder.label}`}
-                    disabled=${isCreatingSession}
-                  >
-                    ${isCreatingSession
-                      ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
-                      : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                  </button>
-                  ${folder.workingDir &&
-                  html`
+                  <div class="flex items-center gap-2">
+                    ${hasFolderStreaming
+                      ? html`
+                          <span
+                            class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                            title="Agent responding in this folder"
+                          ></span>
+                        `
+                      : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
+                    <span class="truncate min-w-0" title=${folder.workingDir}>
+                      ${folder.label}
+                    </span>
+                    <span class="flex-1"></span>
+                    <span
+                      class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                      >${totalSessions}</span
+                    >
                     <button
                       type="button"
                       onClick=${(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setGroupContextMenu({
-                          x: rect.left,
-                          y: rect.bottom,
-                          workingDir: folder.workingDir,
-                          label: folder.label,
-                        });
+                        if (!isCreatingSession)
+                          handleNewSessionInFolder(folder.workingDir, e);
                       }}
-                      class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                      title="More actions"
-                      aria-label="More actions"
+                      class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
+                        ? "cursor-wait opacity-60"
+                        : ""}"
+                      title=${isCreatingSession
+                        ? "Creating conversation\u2026"
+                        : `New conversation in ${folder.label}`}
+                      disabled=${isCreatingSession}
                     >
-                      <${EllipsisIcon} className="w-3.5 h-3.5" />
+                      ${isCreatingSession
+                        ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                        : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
                     </button>
-                  `}
+                    ${folder.workingDir &&
+                    html`
+                      <button
+                        type="button"
+                        onClick=${(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          setGroupContextMenu({
+                            x: rect.left,
+                            y: rect.bottom,
+                            workingDir: folder.workingDir,
+                            label: folder.label,
+                          });
+                        }}
+                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                        title="More actions"
+                        aria-label="More actions"
+                      >
+                        <${EllipsisIcon} className="w-3.5 h-3.5" />
+                      </button>
+                    `}
+                  </div>
+                  ${density === "comfortable" && folder.workingDir && (() => {
+                    const gitData = gitChangesMap[folder.workingDir];
+                    if (!gitData || !gitData.is_git_repo) return null;
+                    const files = gitData.files || [];
+                    const modified = files.filter((f) => f.status === "M" || f.status === "R" || f.status === "C").length;
+                    const added = files.filter((f) => f.status === "A").length;
+                    const deleted = files.filter((f) => f.status === "D").length;
+                    const untracked = files.filter((f) => f.status === "?").length;
+                    if (!modified && !added && !deleted && !untracked) return null;
+                    const MAX_BRANCH_LEN = 18;
+                    const branchDisplay =
+                      gitData.branch && gitData.branch.length > MAX_BRANCH_LEN
+                        ? "…" + gitData.branch.slice(-MAX_BRANCH_LEN)
+                        : gitData.branch;
+                    const parts = [];
+                    if (modified) parts.push(html`<span class="text-amber-400">✎${modified}</span>`);
+                    if (added) parts.push(html`<span class="text-green-400">+${added}</span>`);
+                    if (deleted) parts.push(html`<span class="text-red-400">−${deleted}</span>`);
+                    if (untracked) parts.push(html`<span class="text-mitto-text-muted">?${untracked}</span>`);
+                    return html`
+                      <div class="text-[0.5625rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
+                        ${gitData.branch ? html`<${Fragment}><span title=${gitData.branch}>⎇ ${branchDisplay}</span><span>·</span></${Fragment}>` : null}
+                        ${parts}
+                      </div>
+                    `;
+                  })()}
                 </summary>
                 <ul>
                   ${folder.showTasks &&
