@@ -1080,7 +1080,7 @@ echo '{"text": "PREFIX: "}'
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := "PREFIX: original"
+	expected := "PREFIX: " + wrapUserRequest("original")
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1119,7 +1119,7 @@ echo '{"text": " :SUFFIX"}'
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := "original :SUFFIX"
+	expected := wrapUserRequest("original") + " :SUFFIX"
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1159,9 +1159,9 @@ echo '{"message": "this should be ignored"}'
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	// Message should remain unchanged
-	if result.Message != "original" {
-		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "original")
+	// Discard processors don't transform the message; the first-message wrapping still applies.
+	if result.Message != wrapUserRequest("original") {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("original"))
 	}
 }
 
@@ -1238,9 +1238,9 @@ exit 1
 	if err != nil {
 		t.Fatalf("ApplyProcessors() should not error with ErrorSkip, got: %v", err)
 	}
-	// Message should remain unchanged
-	if result.Message != "original" {
-		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "original")
+	// Failed processor is skipped; first-message wrapping is still applied.
+	if result.Message != wrapUserRequest("original") {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("original"))
 	}
 }
 
@@ -1299,8 +1299,8 @@ func TestApplyProcessorsTextModePrepend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	if result.Message != "PREFIX: hello world" {
-		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "PREFIX: hello world")
+	if result.Message != "PREFIX: "+wrapUserRequest("hello world") {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "PREFIX: "+wrapUserRequest("hello world"))
 	}
 }
 
@@ -1324,8 +1324,8 @@ func TestApplyProcessorsTextModeAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	if result.Message != "hello world SUFFIX" {
-		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "hello world SUFFIX")
+	if result.Message != wrapUserRequest("hello world")+" SUFFIX" {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("hello world")+" SUFFIX")
 	}
 }
 
@@ -1356,7 +1356,7 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := "Context: user message\n---\nEnd"
+	expected := "Context: " + wrapUserRequest("user message") + "\n---\nEnd"
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1380,8 +1380,8 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	if result.Message != "FIRST: msg" {
-		t.Errorf("first message: got %q, want %q", result.Message, "FIRST: msg")
+	if result.Message != "FIRST: "+wrapUserRequest("msg") {
+		t.Errorf("first message: got %q, want %q", result.Message, "FIRST: "+wrapUserRequest("msg"))
 	}
 
 	// Subsequent message — should NOT apply
@@ -1392,6 +1392,69 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 	}
 	if result2.Message != "msg" {
 		t.Errorf("subsequent message: got %q, want %q", result2.Message, "msg")
+	}
+}
+
+// TestApplyProcessors_FirstMessageWrapsUserRequest is a regression test for the
+// "first user prompt misclassified as setup context" bug. When processors prepend
+// session-context and append reminder instructions, a short user message was
+// getting buried between the walls of injected text and the agent classified it
+// as boilerplate rather than an actionable request.
+//
+// The fix: on IsFirstMessage=true, ApplyProcessors wraps the original user text
+// in <user_request>…</user_request> so the boundary is unambiguous regardless
+// of how much text processors inject before and after it.
+func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
+	msg := "Remove the line numbers in the beads description editor"
+
+	procs := []*Processor{
+		{
+			Name:   "session-context-like",
+			Text:   "[Session Context]\nSession: test-session\nWorking directory: /tmp/project\n---\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
+		},
+		{
+			Name:   "reminder",
+			Text:   "\n---\n[Reminder]\nDo not forget to close issues when done.",
+			Mutate: config.ProcessorMutateAppend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
+		},
+	}
+
+	ctx := context.Background()
+
+	// First message: user request should be delimited.
+	input := &ProcessorInput{Message: msg, IsFirstMessage: true}
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	wrapped := wrapUserRequest(msg)
+	if !strings.Contains(result.Message, wrapped) {
+		t.Errorf("expected result to contain wrapped user request %q, got %q", wrapped, result.Message)
+	}
+
+	// Ordering: [Session Context] < <user_request> < [Reminder]
+	idxCtx := strings.Index(result.Message, "[Session Context]")
+	idxReq := strings.Index(result.Message, "<user_request>")
+	idxRem := strings.Index(result.Message, "[Reminder]")
+	if idxCtx < 0 || idxReq < 0 || idxRem < 0 {
+		t.Fatalf("expected all three sections present; ctx=%d req=%d rem=%d in %q", idxCtx, idxReq, idxRem, result.Message)
+	}
+	if idxCtx >= idxReq || idxReq >= idxRem {
+		t.Errorf("ordering wrong: [Session Context] at %d, <user_request> at %d, [Reminder] at %d", idxCtx, idxReq, idxRem)
+	}
+
+	// Negative case: non-first message must NOT be wrapped.
+	input2 := &ProcessorInput{Message: msg, IsFirstMessage: false}
+	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() (non-first) error = %v", err)
+	}
+	if strings.Contains(result2.Message, "<user_request>") {
+		t.Errorf("non-first message should NOT contain <user_request> wrapper, got %q", result2.Message)
 	}
 }
 
@@ -1429,8 +1492,10 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 
-	// At this point, @mitto: variables are still unresolved
-	expectedBeforeSubst := "Session: @mitto:session_id\nProject: @mitto:working_dir\n\nFix the login bug\n[agent: @mitto:acp_server]"
+	// At this point, @mitto: variables are still unresolved.
+	// The user request is wrapped in <user_request> delimiters (first-message protection).
+	expectedBeforeSubst := "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n" +
+		wrapUserRequest("Fix the login bug") + "\n[agent: @mitto:acp_server]"
 	if result.Message != expectedBeforeSubst {
 		t.Errorf("before substitution: got %q, want %q", result.Message, expectedBeforeSubst)
 	}
@@ -1438,7 +1503,8 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 	// Step 2: Substitute variables (as BackgroundSession does)
 	finalMessage := SubstituteVariables(result.Message, input)
 
-	expectedAfterSubst := "Session: sess-001\nProject: /home/user/myproject\n\nFix the login bug\n[agent: claude-code]"
+	expectedAfterSubst := "Session: sess-001\nProject: /home/user/myproject\n\n" +
+		wrapUserRequest("Fix the login bug") + "\n[agent: claude-code]"
 	if finalMessage != expectedAfterSubst {
 		t.Errorf("after substitution: got %q, want %q", finalMessage, expectedAfterSubst)
 	}
@@ -1497,8 +1563,9 @@ func TestApplyProcessorsVariablesEmptyValues(t *testing.T) {
 
 	finalMessage := SubstituteVariables(result.Message, input)
 
-	// Empty parent_session_id should substitute to empty string
-	expected := "Parent: \nhello"
+	// Empty parent_session_id should substitute to empty string.
+	// The user request is wrapped in <user_request> delimiters (first-message protection).
+	expected := "Parent: \n" + wrapUserRequest("hello")
 	if finalMessage != expected {
 		t.Errorf("got %q, want %q", finalMessage, expected)
 	}
@@ -1533,7 +1600,8 @@ func TestApplyProcessorsVariablesWithAvailableServers(t *testing.T) {
 
 	finalMessage := SubstituteVariables(result.Message, input)
 
-	expected := "Available: auggie [coding] (current), claude-code [fast]\n\ndo something"
+	// The user request is wrapped in <user_request> delimiters (first-message protection).
+	expected := "Available: auggie [coding] (current), claude-code [fast]\n\n" + wrapUserRequest("do something")
 	if finalMessage != expected {
 		t.Errorf("got %q, want %q", finalMessage, expected)
 	}
@@ -2150,9 +2218,9 @@ func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	// Prompt-mode doesn't modify the message (fire-and-forget)
-	if result.Message != "hello" {
-		t.Errorf("expected message unchanged, got %q", result.Message)
+	// Prompt-mode doesn't transform the message, but first-message wrapping applies.
+	if result.Message != wrapUserRequest("hello") {
+		t.Errorf("expected first-message-wrapped message, got %q", result.Message)
 	}
 
 	// Wait for async dispatch

@@ -597,3 +597,36 @@ The CLI (`internal/cmd/cli.go`) follows the same pattern in both `runOnceMode()`
 - **Resumed sessions**: `isFirstPrompt = true` (context re-injected after restart/unarchive since agent process is fresh)
 - **CLI once mode**: Always `isFirst = true` (single message)
 - **CLI interactive**: Tracks `isFirstMessage` boolean, flipped after first send
+
+### First-Message User-Request Delimiting
+
+On the first message of a conversation (`IsFirstMessage=true`), both `ApplyProcessors` and
+`applyWithRerun` wrap the original user text in an explicit XML delimiter before any processor
+runs:
+
+```
+<user_request>
+{original user message}
+</user_request>
+```
+
+**Rationale:** The always-on `session-context` processor prepends a block of session metadata
+ending with `---`, and several first-message-only processors (beads tracking, delegation rules,
+tool checks, etc.) append instruction walls after the user text. On a short first message the
+model would sometimes classify the real request as setup boilerplate and reply "no task — just
+setup context". The delimiter makes the boundary unambiguous regardless of how much text
+processors inject before or after.
+
+**Scope:** The wrapping is applied only to the ACP-bound assembled text. The original message
+stored in `events.jsonl` and shown in the UI transcript is never modified — only the outgoing
+ACP payload receives the wrapper.
+
+**Rerun case:** The wrapping also applies in `applyWithRerun` when `origIsFirst` is true OR
+when any rerun override is active. This covers later messages where session-context and
+append-mode processors re-fire (e.g. after a long context window gap) and would otherwise
+bury the current user message again.
+
+**Command-mode stdin tradeoff:** Command-mode processors receive `result.Message` as stdin,
+so on a first message they see the wrapped text. This is an accepted minor tradeoff; the
+impactful built-in processors (session-context, delegation rules, reminders) are all text-mode
+or prompt-mode and are not affected.

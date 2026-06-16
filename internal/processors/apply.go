@@ -12,6 +12,22 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
+const (
+	userRequestOpenTag  = "<user_request>\n"
+	userRequestCloseTag = "\n</user_request>"
+)
+
+// wrapUserRequest wraps the user's original message in an explicit delimiter so
+// that processor-injected prepend/append text (e.g. session-context, reminders)
+// cannot cause the agent to misclassify the real request as boilerplate setup
+// context. Whitespace-only messages are returned unchanged.
+func wrapUserRequest(message string) string {
+	if strings.TrimSpace(message) == "" {
+		return message
+	}
+	return userRequestOpenTag + message + userRequestCloseTag
+}
+
 // pendingPromptDispatch holds a prompt-mode processor ready for dispatch.
 type pendingPromptDispatch struct {
 	name    string
@@ -60,6 +76,9 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 
 	executor := NewExecutor(processorsDir, logger)
 	result := &ProcessorResult{Message: input.Message}
+	if input.IsFirstMessage {
+		result.Message = wrapUserRequest(input.Message)
+	}
 	applied := 0
 	skipped := 0
 
@@ -603,6 +622,9 @@ func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]RerunR
 // processors that are due for re-run.
 func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, origIsFirst bool, rerunOverrides map[string]RerunReason) (*ProcessorResult, error) {
 	result := &ProcessorResult{Message: input.Message}
+	if origIsFirst || len(rerunOverrides) > 0 {
+		result.Message = wrapUserRequest(input.Message)
+	}
 
 	m.logger.Info("processor pipeline starting (with rerun)",
 		"total_processors", len(m.processors),
