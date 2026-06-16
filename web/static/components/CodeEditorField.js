@@ -18,9 +18,12 @@ import { CodeEditor } from "../utils/code-editor.js";
  * @param {number}   [props.minHeight]  - Minimum height in pixels for the container
  * @param {boolean}  [props.autoFocus]  - Focus the editor after init
  * @param {boolean}  [props.lineNumbers=true] - Show the line-number gutter
+ * @param {boolean}  [props.lineWrapping=false] - Wrap long lines instead of scrolling horizontally
+ * @param {boolean}  [props.highlightActiveLine=true] - Tint the current line's background
+ * @param {string}   [props.className]  - Extra classes appended to the editor container
  * @param {Object}   [props.editorApiRef] - Assigned { getValue, setValue, focus } after init
  */
-export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, minHeight, autoFocus, lineNumbers, editorApiRef }) {
+export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, minHeight, autoFocus, lineNumbers, lineWrapping, highlightActiveLine, className, editorApiRef }) {
   const containerRef = useRef(null);
   const editorRef = useRef(null);
   const destroyedRef = useRef(false);
@@ -32,6 +35,8 @@ export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, m
       darkMode: !!darkMode,
       language: "md",
       lineNumbers: lineNumbers ?? true,
+      lineWrapping: lineWrapping ?? false,
+      highlightActiveLine: highlightActiveLine ?? true,
       onChange,
       onBlur,
     });
@@ -66,9 +71,10 @@ export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, m
   }, [disabled]);
 
   const containerStyle = [
-    "w-full border border-mitto-border rounded bg-mitto-input-box text-sm text-mitto-text overflow-auto",
+    "w-full min-w-0 max-w-full border border-mitto-border rounded bg-mitto-input-box text-sm text-mitto-text overflow-auto",
     "focus-within:border-mitto-text-secondary transition-colors",
-  ].join(" ");
+    className || "",
+  ].join(" ").trim();
 
   const style = minHeight ? `min-height:${minHeight}px` : undefined;
 

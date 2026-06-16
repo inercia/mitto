@@ -853,51 +853,65 @@ a.mailto-link:hover {
    Input Font Family Classes (applied to compose/input textarea)
    ============================================================================= */
 
-/* Font family stacks for each option */
-.input-font-system textarea.chat-input-textarea {
+/* Font family stacks for each option.
+   The second selector (.input-font-target .cm-content) lets CodeMirror fields
+   opted in via `.input-font-target` (e.g. the beads description editor) share
+   the exact same font as the compose box, kept in sync from a single source. */
+.input-font-system textarea.chat-input-textarea,
+.input-font-system .input-font-target .cm-content {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 }
 
-.input-font-sans-serif textarea.chat-input-textarea {
+.input-font-sans-serif textarea.chat-input-textarea,
+.input-font-sans-serif .input-font-target .cm-content {
   font-family: sans-serif;
 }
 
-.input-font-serif textarea.chat-input-textarea {
+.input-font-serif textarea.chat-input-textarea,
+.input-font-serif .input-font-target .cm-content {
   font-family: Georgia, "Times New Roman", Times, serif;
 }
 
-.input-font-monospace textarea.chat-input-textarea {
+.input-font-monospace textarea.chat-input-textarea,
+.input-font-monospace .input-font-target .cm-content {
   font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
 }
 
-.input-font-menlo textarea.chat-input-textarea {
+.input-font-menlo textarea.chat-input-textarea,
+.input-font-menlo .input-font-target .cm-content {
   font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     monospace;
 }
 
-.input-font-monaco textarea.chat-input-textarea {
+.input-font-monaco textarea.chat-input-textarea,
+.input-font-monaco .input-font-target .cm-content {
   font-family: Monaco, Menlo, Consolas, "Courier New", monospace;
 }
 
-.input-font-consolas textarea.chat-input-textarea {
+.input-font-consolas textarea.chat-input-textarea,
+.input-font-consolas .input-font-target .cm-content {
   font-family: Consolas, Monaco, Menlo, "Courier New", monospace;
 }
 
-.input-font-courier-new textarea.chat-input-textarea {
+.input-font-courier-new textarea.chat-input-textarea,
+.input-font-courier-new .input-font-target .cm-content {
   font-family: "Courier New", Courier, monospace;
 }
 
-.input-font-jetbrains-mono textarea.chat-input-textarea {
+.input-font-jetbrains-mono textarea.chat-input-textarea,
+.input-font-jetbrains-mono .input-font-target .cm-content {
   font-family: "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
 
-.input-font-sf-mono textarea.chat-input-textarea {
+.input-font-sf-mono textarea.chat-input-textarea,
+.input-font-sf-mono .input-font-target .cm-content {
   font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
 }
 
-.input-font-cascadia-code textarea.chat-input-textarea {
+.input-font-cascadia-code textarea.chat-input-textarea,
+.input-font-cascadia-code .input-font-target .cm-content {
   font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New",
     monospace;
 }
@@ -906,24 +920,38 @@ a.mailto-link:hover {
    Input Font Size Classes (applied to compose/input textarea)
    ============================================================================= */
 
-.input-fontsize-small textarea.chat-input-textarea {
+.input-fontsize-small textarea.chat-input-textarea,
+.input-fontsize-small .input-font-target .cm-content {
   font-size: 12px;
 }
 
-.input-fontsize-default textarea.chat-input-textarea {
+.input-fontsize-default textarea.chat-input-textarea,
+.input-fontsize-default .input-font-target .cm-content {
   font-size: 14px;
 }
 
-.input-fontsize-medium textarea.chat-input-textarea {
+.input-fontsize-medium textarea.chat-input-textarea,
+.input-fontsize-medium .input-font-target .cm-content {
   font-size: 16px;
 }
 
-.input-fontsize-large textarea.chat-input-textarea {
+.input-fontsize-large textarea.chat-input-textarea,
+.input-fontsize-large .input-font-target .cm-content {
   font-size: 18px;
 }
 
-.input-fontsize-xl textarea.chat-input-textarea {
+.input-fontsize-xl textarea.chat-input-textarea,
+.input-fontsize-xl .input-font-target .cm-content {
   font-size: 20px;
+}
+
+/* The CodeMirror description editor runs in light mode but sits on a themed
+   background that can be dark, where drawSelection's hard-coded near-black caret
+   is invisible. Tie the caret to the editor's text color so it shows in any
+   theme. (Higher specificity than CodeMirror's own .cm-cursor base rule.) */
+.input-font-target .cm-cursor,
+.input-font-target .cm-dropCursor {
+  border-left-color: currentColor;
 }
 
 /* =============================================================================

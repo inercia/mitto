@@ -35,6 +35,8 @@ export class CodeEditor {
    * @param {number}  [options.fontSize=13]     - Font size in pixels
    * @param {string}  [options.language=null]   - File extension for syntax highlighting (e.g., "js", "py")
    * @param {boolean} [options.lineNumbers=true] - Show the line-number gutter (and fold/active-line gutter)
+   * @param {boolean} [options.lineWrapping=false] - Wrap long lines instead of scrolling horizontally
+   * @param {boolean} [options.highlightActiveLine=true] - Tint the current line's background
    * @param {Function} [options.onChange=null]  - Callback when content changes: (content: string) => void
    * @param {Function} [options.onBlur=null]    - Callback when the editor loses focus: (content: string) => void
    */
@@ -45,6 +47,8 @@ export class CodeEditor {
     this.fontSize = options.fontSize ?? 13;
     this.language = options.language ?? null;
     this.lineNumbers = options.lineNumbers ?? true;
+    this.lineWrapping = options.lineWrapping ?? false;
+    this.highlightActiveLine = options.highlightActiveLine ?? true;
     this.onChange = options.onChange ?? null;
     this.onBlur = options.onBlur ?? null;
 
@@ -76,7 +80,8 @@ export class CodeEditor {
       ...(this.lineNumbers
         ? [viewMod.lineNumbers(), viewMod.highlightActiveLineGutter(), langMod.foldGutter()]
         : []),
-      viewMod.highlightActiveLine(),
+      ...(this.lineWrapping ? [viewMod.EditorView.lineWrapping] : []),
+      ...(this.highlightActiveLine ? [viewMod.highlightActiveLine()] : []),
       viewMod.highlightSpecialChars(),
       viewMod.drawSelection(),
       viewMod.rectangularSelection(),

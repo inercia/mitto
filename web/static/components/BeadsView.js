@@ -1060,6 +1060,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   disabled=${submitting}
                   darkMode=${false}
                   lineNumbers=${false}
+                  lineWrapping=${true}
+                  highlightActiveLine=${false}
+                  className="input-font-target"
                   minHeight=${160}
                   editorApiRef=${createEditorApiRef}
                 />
@@ -1160,6 +1163,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                     disabled=${savingDesc}
                     darkMode=${false}
                     lineNumbers=${false}
+                    lineWrapping=${true}
+                    highlightActiveLine=${false}
+                    className="input-font-target"
                     minHeight=${descMinHeight || 0}
                     autoFocus=${true}
                     editorApiRef=${detailEditorApiRef}
