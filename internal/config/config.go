@@ -117,6 +117,10 @@ type WebPrompt struct {
 	// A nil value means enabled (default true). Only explicit false disables.
 	// This is used during merge to allow higher-priority sources to disable prompts.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Periodic, if non-nil, declares that selecting this prompt in a menu creates
+	// a periodic (recurring) conversation instead of a one-time seed. The fields
+	// provide default schedule values for the schedule dialog.
+	Periodic *PromptPeriodic `json:"periodic,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -1111,16 +1115,17 @@ type rawACPServerConfig struct {
 	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Tags    []string          `yaml:"tags"` // Optional categorization tags
 	Prompts []struct {
-		Name            string `yaml:"name"`
-		Prompt          string `yaml:"prompt"`
-		BackgroundColor string `yaml:"backgroundColor"`
-		Icon            string `yaml:"icon"`
-		Description     string `yaml:"description"`
-		Group           string `yaml:"group"`
-		Menus           string `yaml:"menus"`
-		Requires        string `yaml:"requires"`
-		Enabled         *bool  `yaml:"enabled"`
-		EnabledWhen     string `yaml:"enabledWhen"`
+		Name            string          `yaml:"name"`
+		Prompt          string          `yaml:"prompt"`
+		BackgroundColor string          `yaml:"backgroundColor"`
+		Icon            string          `yaml:"icon"`
+		Description     string          `yaml:"description"`
+		Group           string          `yaml:"group"`
+		Menus           string          `yaml:"menus"`
+		Requires        string          `yaml:"requires"`
+		Enabled         *bool           `yaml:"enabled"`
+		EnabledWhen     string          `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic `yaml:"periodic,omitempty"`
 	} `yaml:"prompts"`
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
@@ -1130,16 +1135,17 @@ type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
-		Name            string `yaml:"name"`
-		Prompt          string `yaml:"prompt"`
-		BackgroundColor string `yaml:"backgroundColor"`
-		Icon            string `yaml:"icon"`
-		Description     string `yaml:"description"`
-		Group           string `yaml:"group"`
-		Menus           string `yaml:"menus"`
-		Requires        string `yaml:"requires"`
-		Enabled         *bool  `yaml:"enabled"`
-		EnabledWhen     string `yaml:"enabledWhen"`
+		Name            string          `yaml:"name"`
+		Prompt          string          `yaml:"prompt"`
+		BackgroundColor string          `yaml:"backgroundColor"`
+		Icon            string          `yaml:"icon"`
+		Description     string          `yaml:"description"`
+		Group           string          `yaml:"group"`
+		Menus           string          `yaml:"menus"`
+		Requires        string          `yaml:"requires"`
+		Enabled         *bool           `yaml:"enabled"`
+		EnabledWhen     string          `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic `yaml:"periodic,omitempty"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1341,6 +1347,7 @@ func Parse(data []byte) (*Config, error) {
 					Menus:           p.Menus,
 					Requires:        p.Requires,
 					EnabledWhen:     p.EnabledWhen,
+					Periodic:        p.Periodic,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
 			}
@@ -1370,6 +1377,7 @@ func Parse(data []byte) (*Config, error) {
 			Requires:        p.Requires,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
+			Periodic:        p.Periodic,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
 	}

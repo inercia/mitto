@@ -178,6 +178,7 @@ import { WorkspaceBadge, WorkspacePill } from "./components/WorkspaceBadge.js";
 import { DeleteDialog } from "./components/DeleteDialog.js";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog.js";
 import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialog.js";
+import { PeriodicScheduleDialog } from "./components/PeriodicScheduleDialog.js";
 
 // SettingsDialog, WorkspacesDialog, etc. are all imported from ./components/
 
@@ -360,6 +361,9 @@ function App() {
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
+  // Periodic schedule dialog: opened when a periodic prompt is selected from any menu.
+  // Shape: null | { prompt, onSchedule: async ({ value, unit, at? }) => void }
+  const [periodicScheduleDialog, setPeriodicScheduleDialog] = useState(null);
   // Workspace prompts: fetch/cache, predefined (dropup) subset, and per-session helpers.
   // (Extracted to hooks/useWorkspacePrompts.js)
   const {
@@ -428,10 +432,12 @@ function App() {
     setShowSidebar,
     setShowSidePanel,
     setSidePanelTab,
+    onOpenPeriodicDialog: (prompt, onSchedule) => setPeriodicScheduleDialog({ prompt, onSchedule }),
   });
 
-  // Conversation seeding: send a named prompt to an existing conversation via queue.
-  const { seedConversationWithPrompt } = useConversationSeeding({ newSession });
+  // Conversation seeding: send a named prompt to an existing conversation via queue,
+  // or create a new (optionally periodic) conversation seeded with a named prompt.
+  const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
@@ -1636,10 +1642,45 @@ function App() {
   // Send a context-menu prompt to a specific conversation by enqueueing its full
   // text. The queue delivers it to the agent when the conversation is idle, so
   // this works for any conversation (not just the active one).
+  //
+  // When the chosen prompt declares `periodic`, the handler ALWAYS creates a NEW
+  // periodic conversation (not a one-time seed of the existing one), even from
+  // the per-conversation context menu. Periodic is not offered for child
+  // conversations (their parent_session_id is set).
   const handleSendPromptToConversation = useCallback(
     async (session, prompt) => {
+      if (!prompt?.name) return;
+
+      // Periodic prompts: open schedule dialog → create new periodic conversation.
+      if (prompt.periodic) {
+        // Guard: never offer periodic for child conversations.
+        if (session?.parent_session_id) return;
+        setPeriodicScheduleDialog({
+          prompt,
+          onSchedule: async (schedule) => {
+            setPeriodicScheduleDialog(null);
+            const workingDir = session?.working_dir;
+            const acpServer = session?.acp_server;
+            const result = await startConversationWithPrompt({
+              workingDir,
+              acpServer,
+              prompt,
+              periodic: schedule,
+            });
+            if (result?.sessionId) {
+              focusSession(result.sessionId);
+              showToast({ style: "success", title: `Started periodic "${prompt.name}"`, duration: 3000 });
+            } else {
+              showToast({ style: "warning", title: "Failed to start periodic conversation", duration: 4000 });
+            }
+          },
+        });
+        return;
+      }
+
+      // One-time seed path: enqueue the named prompt to the existing conversation.
       const sessionId = session?.session_id;
-      if (!sessionId || !prompt?.name) return;
+      if (!sessionId) return;
       const result = await seedConversationWithPrompt(sessionId, prompt);
       if (result.success) {
         showToast({
@@ -1655,7 +1696,7 @@ function App() {
         });
       }
     },
-    [seedConversationWithPrompt, showToast],
+    [seedConversationWithPrompt, startConversationWithPrompt, showToast, focusSession],
   );
 
   // ----- Chat header conversation menu -----
@@ -1859,6 +1900,18 @@ function App() {
       <${KeyboardShortcutsDialog}
         isOpen=${keyboardShortcutsDialog.isOpen}
         onClose=${() => setKeyboardShortcutsDialog({ isOpen: false })}
+      />
+
+      <!-- Periodic Schedule Dialog: opened when a periodic-declaring prompt is selected -->
+      <${PeriodicScheduleDialog}
+        isOpen=${periodicScheduleDialog !== null}
+        prompt=${periodicScheduleDialog?.prompt}
+        onConfirm=${(schedule) => {
+          const { onSchedule } = periodicScheduleDialog || {};
+          setPeriodicScheduleDialog(null);
+          onSchedule?.(schedule);
+        }}
+        onCancel=${() => setPeriodicScheduleDialog(null)}
       />
 
       <!-- Unified toast container -->

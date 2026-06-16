@@ -14,15 +14,18 @@ import { useConversationSeeding } from "./useConversationSeeding.js";
  * Beads-view integration hook.
  *
  * @param {Object} deps
- * @param {Array}    deps.allSessions      - All sessions (active + stored); drives beadsIssueSessionMap.
- * @param {Array}    deps.workspaces       - All configured workspaces; used to pick is_default on run.
- * @param {Function} deps.newSession       - Creates a new conversation (from useWebSocket).
- * @param {Function} deps.showToast        - Toast dispatcher.
- * @param {Function} deps.switchSession    - Activates a conversation by id (from useWebSocket).
- * @param {Function} deps.setMainView      - Switches main view to "beads" / "conversation".
- * @param {Function} deps.setShowSidebar   - Closes sidebar overlay (mobile).
- * @param {Function} deps.setShowSidePanel - Closes/opens the side panel (used in handleOpenBeadsIssue / return).
- * @param {Function} deps.setSidePanelTab  - Selects the side panel tab (used when returning to a conversation).
+ * @param {Array}    deps.allSessions           - All sessions (active + stored); drives beadsIssueSessionMap.
+ * @param {Array}    deps.workspaces            - All configured workspaces; used to pick is_default on run.
+ * @param {Function} deps.newSession            - Creates a new conversation (from useWebSocket).
+ * @param {Function} deps.showToast             - Toast dispatcher.
+ * @param {Function} deps.switchSession         - Activates a conversation by id (from useWebSocket).
+ * @param {Function} deps.setMainView           - Switches main view to "beads" / "conversation".
+ * @param {Function} deps.setShowSidebar        - Closes sidebar overlay (mobile).
+ * @param {Function} deps.setShowSidePanel      - Closes/opens the side panel (used in handleOpenBeadsIssue / return).
+ * @param {Function} deps.setSidePanelTab       - Selects the side panel tab (used when returning to a conversation).
+ * @param {Function} [deps.onOpenPeriodicDialog] - Opens the periodic schedule dialog.
+ *   Signature: (prompt, onSchedule: ({ value, unit, at? }) => void) => void.
+ *   When absent, periodic prompts fall back to the one-time named-prompt path.
  */
 export function useBeadsIntegration({
   allSessions,
@@ -34,6 +37,7 @@ export function useBeadsIntegration({
   setShowSidebar,
   setShowSidePanel,
   setSidePanelTab,
+  onOpenPeriodicDialog,
 }) {
   const { startConversationWithPrompt } = useConversationSeeding({ newSession });
   const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
@@ -171,6 +175,28 @@ export function useBeadsIntegration({
       // on user input. Setting an explicit name fixes the title right away and
       // also suppresses auto-title generation (it only runs when the name is empty).
       const convName = issue.title ? `${issue.id} · ${issue.title}` : issue.id;
+
+      // Periodic prompts create a recurring conversation instead of a one-time seed.
+      if (prompt.periodic && onOpenPeriodicDialog) {
+        onOpenPeriodicDialog(prompt, async (schedule) => {
+          const result = await startConversationWithPrompt({
+            workingDir: beadsWorkingDir,
+            acpServer: ws?.acp_server,
+            name: convName,
+            beadsIssue: issue.id,
+            prompt,
+            periodic: schedule,
+          });
+          if (!result?.sessionId) {
+            showToast({ style: "error", title: result?.error || "Failed to create periodic conversation", duration: 4000 });
+            return;
+          }
+          setMainView("conversation");
+          showToast({ style: "success", title: `Started periodic "${prompt.name}" for ${issue.id}`, duration: 3000 });
+        });
+        return;
+      }
+
       const result = await startConversationWithPrompt({
         workingDir: beadsWorkingDir,
         acpServer: ws?.acp_server,
@@ -197,7 +223,7 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast],
+    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast, onOpenPeriodicDialog],
   );
 
   // Run a beads-list prompt: create a new conversation in the beads workspace,
@@ -216,6 +242,27 @@ export function useBeadsIntegration({
       // Prefer the folder's default workspace when several share this directory.
       const beadsMatches = workspaces.filter((w) => w.working_dir === wd);
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
+
+      // Periodic prompts create a recurring conversation instead of a one-time seed.
+      if (prompt.periodic && onOpenPeriodicDialog) {
+        onOpenPeriodicDialog(prompt, async (schedule) => {
+          const result = await startConversationWithPrompt({
+            workingDir: wd,
+            acpServer: ws?.acp_server,
+            name: prompt.name,
+            prompt,
+            periodic: schedule,
+          });
+          if (!result?.sessionId) {
+            showToast({ style: "error", title: result?.error || "Failed to create periodic conversation", duration: 4000 });
+            return;
+          }
+          setMainView("conversation");
+          showToast({ style: "success", title: `Started periodic "${prompt.name}"`, duration: 3000 });
+        });
+        return;
+      }
+
       const result = await startConversationWithPrompt({
         workingDir: wd,
         acpServer: ws?.acp_server,
@@ -240,7 +287,7 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast],
+    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast, onOpenPeriodicDialog],
   );
 
   // Handle Beads button — switch main view to the beads panel for the given workspace.

@@ -267,6 +267,7 @@ Provide specific suggestions with code examples where applicable.
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
+| `periodic`        | No       | mapping  | Opt-in periodic mode — presence means selecting this prompt from a menu creates a **new recurring conversation** instead of a one-time seed. See [below](#periodic-prompts). |
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.md` →
 "code-review").
@@ -493,6 +494,63 @@ group: "Beads"
 menus: beadsList
 ---
 ```
+
+## Periodic Prompts
+
+A prompt can declare that selecting it from a menu should **create a new recurring (periodic) conversation** instead of a one-time seed. This is opt-in: presence of the `periodic:` mapping in the frontmatter enables the behavior.
+
+### Frontmatter
+
+```yaml
+periodic:
+  value: 1           # number of time units between runs (integer ≥ 1)
+  unit: hours        # minutes | hours | days
+  at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
+```
+
+| Field   | Required | Description |
+| ------- | -------- | ----------- |
+| `value` | Yes      | Number of time units between runs (integer ≥ 1, max 999) |
+| `unit`  | Yes      | `minutes`, `hours`, or `days` |
+| `at`    | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
+
+**Presence implies opt-in** — omitting the `periodic:` block entirely keeps the prompt as a regular one-time prompt.
+
+### Behavior
+
+When a user selects a periodic-declaring prompt from any menu:
+
+1. A **frequency dialog** (`PeriodicScheduleDialog`) opens, pre-filled from the prompt's `periodic` defaults. The user can adjust `value`, `unit`, and — for daily schedules — the `at` time.
+2. On confirm, the frontend:
+   - Creates a **new conversation** (no queue seed, no `initial_prompt_name`).
+   - PUTs `/api/sessions/{id}/periodic` with `{ prompt_name, frequency: { value, unit, at? }, enabled: true }`.
+3. The new conversation is periodic from the start — the scheduler fires the named prompt on the declared schedule.
+
+**Restrictions:**
+- Periodic conversations can only be **top-level** (not child) conversations. The UI silently skips periodic prompts on child conversations; the backend also returns HTTP 400 for periodic-on-child.
+- The `at` field is only sent for `unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
+
+### Example
+
+```markdown
+---
+name: "Daily Standup"
+description: "Run the daily team standup"
+group: "Workflow"
+menus: conversation, beadsIssues
+periodic:
+  value: 1
+  unit: days
+  at: "09:00"
+---
+
+You are running the daily standup. Check progress, surface blockers, and
+summarize what the team completed yesterday and plans for today.
+```
+
+Selecting **Daily Standup** from a conversation's context menu opens a dialog
+pre-filled with "every 1 day at 09:00". Confirming creates a periodic conversation
+that runs this prompt daily at 09:00 UTC.
 
 ## Prompt Arguments
 

@@ -65,15 +65,23 @@ Please review the following code for quality, readability, and potential bugs.
 
 ```go
 type WebPrompt struct {
-    Name            string       `json:"name"`
-    Prompt          string       `json:"prompt"`
-    Description     string       `json:"description,omitempty"`
-    Group           string       `json:"group,omitempty"`
-    BackgroundColor string       `json:"backgroundColor,omitempty"`
-    Icon            string       `json:"icon,omitempty"`      // name in frontend PROMPT_ICONS registry (Icons.js)
-    Source          PromptSource `json:"source,omitempty"`    // "builtin", "file", "settings", "workspace"
-    Enabled         *bool        `json:"enabled,omitempty"`   // nil = enabled, false = disabled
-    EnabledWhen     string       `json:"-"`                   // CEL expression (server-side filtering only)
+    Name            string          `json:"name"`
+    Prompt          string          `json:"prompt"`
+    Description     string          `json:"description,omitempty"`
+    Group           string          `json:"group,omitempty"`
+    BackgroundColor string          `json:"backgroundColor,omitempty"`
+    Icon            string          `json:"icon,omitempty"`      // name in frontend PROMPT_ICONS registry (Icons.js)
+    Source          PromptSource    `json:"source,omitempty"`    // "builtin", "file", "settings", "workspace"
+    Enabled         *bool           `json:"enabled,omitempty"`   // nil = enabled, false = disabled
+    EnabledWhen     string          `json:"-"`                   // CEL expression (server-side filtering only)
+    Periodic        *PromptPeriodic `json:"periodic,omitempty"`  // non-nil = prompt creates a periodic conversation
+}
+
+// PromptPeriodic is the frontmatter periodic: mapping. Presence = opt-in.
+type PromptPeriodic struct {
+    Value int    `yaml:"value" json:"value"`          // number of time units ≥ 1
+    Unit  string `yaml:"unit"  json:"unit"`           // "minutes" | "hours" | "days"
+    At    string `yaml:"at,omitempty" json:"at,omitempty"` // HH:MM UTC; only valid for "days"
 }
 ```
 
@@ -113,7 +121,11 @@ All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, conversation see
 
 - **One shared frontend helper** (`web/static/hooks/useConversationSeeding.js`) builds every seed request:
   - `seedConversationWithPrompt(sessionId, prompt, {arguments})` → POST `{prompt_name, arguments}` to existing session queue
-  - `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments})` → POST `{initial_prompt_name, arguments}` to `POST /api/sessions` (atomic create+seed)
+  - `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic?})` — two paths:
+    - **No `periodic`**: POST `{initial_prompt_name, arguments}` to `POST /api/sessions` (atomic create+seed, existing behavior)
+    - **With `periodic: { value, unit, at? }`**: POST `POST /api/sessions` without `initial_prompt_name`, then PUT `/api/sessions/{id}/periodic` with `{ prompt_name, frequency, enabled: true }`. `at` (UTC HH:MM) included only for `unit === "days"`.
+  - `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl?})` — standalone PUT helper (also exported for testing)
+- **Periodic menu branching**: menus check `prompt.periodic` (non-null). If set and session is not a child → open `PeriodicScheduleDialog` (pre-filled from defaults) → on confirm call `startConversationWithPrompt` with `periodic`. Child conversations: silently skip (backend 400s too).
 - **ChatInput**: `handlePredefinedPrompt` → `onSend("", [], [], { promptName })` — never sends the full prompt text
 - **Backend resolution**: name resolved to full text at dispatch via `resolvePromptByName()` in the **target conversation's** workspace context (not at enqueue time); `arguments` substitution (`${VAR}`/`${VAR:-default}`) applied at the same point
 - **Title generation**: skipped for named-prompt queue items (prompt name is used as the queue label)

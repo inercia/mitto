@@ -216,18 +216,54 @@ All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, beads-issue menu
 |--------|---------|
 | `buildSeedQueueBody(prompt, {arguments})` | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
 | `seedConversationWithPrompt(sessionId, prompt, {arguments})` | POST `{prompt_name}` to an existing session's queue |
-| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments})` | Atomic create+seed — POST `{initial_prompt_name, arguments}` to `POST /api/sessions` |
+| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic})` | Create a new conversation (one-time or periodic — see below) |
+| `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl})` | PUT periodic config onto an already-created session |
+
+#### One-time path (no `periodic`)
+
+When `periodic` is absent, `startConversationWithPrompt` posts `initial_prompt_name` + `arguments` to `POST /api/sessions` — the backend seeds the queue atomically:
 
 ```javascript
-// All menus call one of these — never the full prompt body
 const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
 
 // Seed an existing conversation
 await seedConversationWithPrompt(sessionId, { name: "Review Code" }, { arguments: { ISSUE_ID: "mitto-42" } });
 
-// Create a new conversation and seed it atomically
+// Create a new conversation and seed it atomically (one-time)
 await startConversationWithPrompt({ workingDir, acpServer, prompt: { name: "Review Code" }, arguments: { ISSUE_ID: "mitto-42" } });
 ```
+
+#### Periodic path (`periodic` present)
+
+When `periodic: { value, unit, at? }` is provided, `startConversationWithPrompt`:
+
+1. Creates the session via `POST /api/sessions` **without** `initial_prompt_name` (no one-time queue seed).
+2. Calls `configurePeriodicSchedule` which PUTs `/api/sessions/{id}/periodic` with:
+   ```json
+   { "prompt_name": "...", "frequency": { "value": 1, "unit": "hours" }, "enabled": true }
+   ```
+   The `at` field (HH:MM UTC) is included only when `unit === "days"`.
+3. Returns `{ sessionId }` on success, or `{ error }` if the PUT fails (session already created — error is surfaced to the caller).
+
+```javascript
+// Create a new PERIODIC conversation driven by a named prompt
+await startConversationWithPrompt({
+  workingDir,
+  acpServer,
+  prompt: { name: "Daily Standup" },
+  periodic: { value: 1, unit: "days", at: "09:00" }, // at is UTC HH:MM
+});
+```
+
+The `at` value in the `periodic` object must already be in **UTC** when passed to `startConversationWithPrompt`. The `PeriodicScheduleDialog` component handles the local→UTC conversion before calling the helper.
+
+#### Menu-branching rules
+
+Menus branch on `prompt.periodic` (non-null = periodic prompt):
+
+- **`handleSendPromptToConversation`** (per-conversation context menu): if `prompt.periodic` is set and the session is **not a child** (`parent_session_id` is empty), opens `PeriodicScheduleDialog` then creates a NEW periodic conversation — it does not seed the existing one. Child conversations are silently skipped (the backend also 400s on periodic-for-child).
+- **`handleRunBeadsPrompt`** / **`handleRunBeadsListPrompt`** (beads menus): same branching via the `onOpenPeriodicDialog` callback passed from `app.js` into `useBeadsIntegration`.
+- Non-periodic prompts are completely unaffected.
 
 ## REST API
 

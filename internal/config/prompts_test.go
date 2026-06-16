@@ -173,6 +173,139 @@ func TestToWebPrompt(t *testing.T) {
 	}
 }
 
+func TestParsePromptFile_WithPeriodic(t *testing.T) {
+	data := []byte(`---
+name: "Daily Standup"
+description: "Run daily standup"
+periodic:
+  value: 1
+  unit: days
+  at: "09:00"
+---
+
+Run the daily standup.
+`)
+
+	prompt, err := ParsePromptFile("daily-standup.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Name != "Daily Standup" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "Daily Standup")
+	}
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Value != 1 {
+		t.Errorf("Periodic.Value = %d, want 1", prompt.Periodic.Value)
+	}
+	if prompt.Periodic.Unit != "days" {
+		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "days")
+	}
+	if prompt.Periodic.At != "09:00" {
+		t.Errorf("Periodic.At = %q, want %q", prompt.Periodic.At, "09:00")
+	}
+
+	// Verify ToWebPrompt carries the Periodic field.
+	wp := prompt.ToWebPrompt()
+	if wp.Periodic == nil {
+		t.Fatal("WebPrompt.Periodic = nil, want non-nil after ToWebPrompt()")
+	}
+	if wp.Periodic.Value != 1 {
+		t.Errorf("WebPrompt.Periodic.Value = %d, want 1", wp.Periodic.Value)
+	}
+	if wp.Periodic.Unit != "days" {
+		t.Errorf("WebPrompt.Periodic.Unit = %q, want %q", wp.Periodic.Unit, "days")
+	}
+	if wp.Periodic.At != "09:00" {
+		t.Errorf("WebPrompt.Periodic.At = %q, want %q", wp.Periodic.At, "09:00")
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_NoAt(t *testing.T) {
+	data := []byte(`---
+name: "Hourly Check"
+periodic:
+  value: 2
+  unit: hours
+---
+
+Check every 2 hours.
+`)
+
+	prompt, err := ParsePromptFile("hourly.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Value != 2 {
+		t.Errorf("Periodic.Value = %d, want 2", prompt.Periodic.Value)
+	}
+	if prompt.Periodic.Unit != "hours" {
+		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "hours")
+	}
+	if prompt.Periodic.At != "" {
+		t.Errorf("Periodic.At = %q, want empty (no at for hours)", prompt.Periodic.At)
+	}
+}
+
+func TestParsePromptFile_NoPeriodic(t *testing.T) {
+	data := []byte(`---
+name: "One-time Prompt"
+---
+
+Just a regular prompt.
+`)
+
+	prompt, err := ParsePromptFile("one-time.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Periodic != nil {
+		t.Errorf("Periodic = %+v, want nil for prompt without periodic field", prompt.Periodic)
+	}
+
+	wp := prompt.ToWebPrompt()
+	if wp.Periodic != nil {
+		t.Errorf("WebPrompt.Periodic = %+v, want nil", wp.Periodic)
+	}
+}
+
+func TestMergePrompts_PreservesPeriodicField(t *testing.T) {
+	periodic := &PromptPeriodic{Value: 3, Unit: "hours"}
+	globalPrompts := []WebPrompt{
+		{Name: "Periodic Prompt", Prompt: "do it", Periodic: periodic, Source: PromptSourceFile},
+		{Name: "Regular Prompt", Prompt: "also do it", Source: PromptSourceFile},
+	}
+
+	// MergePrompts should carry the Periodic field through.
+	merged := MergePrompts(globalPrompts, nil, nil)
+
+	var found *WebPrompt
+	for i := range merged {
+		if merged[i].Name == "Periodic Prompt" {
+			found = &merged[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("Periodic Prompt not found in merged result")
+	}
+	if found.Periodic == nil {
+		t.Fatal("merged Periodic Prompt has nil Periodic field, want non-nil")
+	}
+	if found.Periodic.Value != 3 {
+		t.Errorf("merged Periodic.Value = %d, want 3", found.Periodic.Value)
+	}
+	if found.Periodic.Unit != "hours" {
+		t.Errorf("merged Periodic.Unit = %q, want hours", found.Periodic.Unit)
+	}
+}
+
 func TestLoadPromptsFromDir(t *testing.T) {
 	// Create temp directory structure
 	tmpDir := t.TempDir()

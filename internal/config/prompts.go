@@ -15,6 +15,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PromptPeriodic declares that selecting this prompt should start a periodic
+// (recurring) conversation instead of a one-time one. Presence implies opt-in;
+// the fields provide sensible defaults for the schedule dialog.
+//
+// Example frontmatter:
+//
+//	periodic:
+//	  value: 1
+//	  unit: hours   # minutes | hours | days
+//	  at: "09:00"   # optional, only for days (UTC)
+type PromptPeriodic struct {
+	// Value is the number of time units between runs (min 1).
+	Value int `yaml:"value" json:"value"`
+	// Unit is the time unit: "minutes", "hours", or "days".
+	Unit string `yaml:"unit" json:"unit"`
+	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
+	At string `yaml:"at,omitempty" json:"at,omitempty"`
+}
+
 // PromptFile represents a parsed markdown prompt file with YAML front-matter.
 // Files are stored in MITTO_DIR/prompts/ and can be organized in subdirectories.
 type PromptFile struct {
@@ -62,6 +81,12 @@ type PromptFile struct {
 	// Available context: acp.*, workspace.*, session.*, parent.*, children.*, tools.*
 	// Example: "!session.isChild" hides the prompt in child conversations.
 	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"-"`
+
+	// Periodic, if set, declares that selecting this prompt in a menu creates a
+	// periodic (recurring) conversation instead of a one-time seed.
+	// Presence implies opt-in; the fields provide default values for the schedule
+	// dialog. The "at" field is in HH:MM UTC and is only valid for the "days" unit.
+	Periodic *PromptPeriodic `yaml:"periodic,omitempty" json:"periodic,omitempty"`
 
 	// Content is the markdown body after the front-matter.
 	Content string `json:"prompt"`
@@ -111,6 +136,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
+		Periodic:        p.Periodic,
 	}
 }
 

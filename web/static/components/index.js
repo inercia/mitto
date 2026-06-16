@@ -14,6 +14,7 @@ export { Modal } from "./Modal.js";
 export { DeleteDialog } from "./DeleteDialog.js";
 export { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog.js";
 export { NewSessionWorkspaceDialog } from "./NewSessionWorkspaceDialog.js";
+export { PeriodicScheduleDialog } from "./PeriodicScheduleDialog.js";
 export { SessionItem } from "./SessionItem.js";
 export { SessionList } from "./SessionList.js";
 
