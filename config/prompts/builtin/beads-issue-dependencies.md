@@ -72,7 +72,7 @@ allow_free_text: true)`, e.g. "Apply these dependency changes to `${ISSUE_ID}`?"
 - (free text) — to adjust, drop, or add specific edges first.
 
 Honour the choice exactly; do not create or remove any edge the user did not approve. If nothing
-needs changing, say so, then skip to the final **Clean up this conversation** step.
+needs changing, say so, then skip to the final **Offer to delete this conversation** step.
 
 ## Step 5 — Apply the approved relationships
 
@@ -127,21 +127,27 @@ Summarise what changed (edges added/removed, reparenting) and state whether `${I
 **ready** (unblocked) or still **blocked**, and by which beads. If it is now ready, suggest the
 **"Start work"** prompt.
 
-## Step 7 — Clean up this conversation
+## Final step — Offer to delete this conversation
 
-This conversation was spawned solely to wire up `${ISSUE_ID}`'s relationships, and that work is now
-complete (the durable record lives in the bead and its dependency graph). Tidy up so the
-conversation list does not accumulate finished one-off tasks:
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
-1. Notify the user of the outcome so they still get feedback after the conversation disappears:
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
 
-   `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Dependencies: ${ISSUE_ID}", message: "<edges added/removed and whether the bead is now ready or still blocked>", style: "success")`
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
 
-2. Self-destruct this conversation:
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
 
-   `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
-
-Run this on **every** completion path — whether edges were changed or nothing needed changing —
-because the conversation has served its single purpose. The deletion is deferred until your turn
-finishes, so the notification is delivered first. If the delete tool is unavailable, skip this step
-silently.
+If the `mitto_*` tools are unavailable, skip this step silently.

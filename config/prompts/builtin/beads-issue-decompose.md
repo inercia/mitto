@@ -47,7 +47,7 @@ Before proposing child beads, reason carefully:
 - The bead is large enough that a single PR would be difficult to review
 - Multiple distinct acceptance criteria map cleanly to separate deliverables
 
-If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, skip to the final **Clean up this conversation** step.
+If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, skip to the final **Offer to delete this conversation** step.
 
 ## Step 3 — Produce a decomposition plan
 
@@ -117,21 +117,27 @@ bd update ${ISSUE_ID} --append-notes "Decomposed into <N> sub-issues (<child-ids
 
 Run `bd dep tree ${ISSUE_ID}` to display the final structure.
 
-## Step 8 — Clean up this conversation
+## Final step — Offer to delete this conversation
 
-This conversation was spawned solely to decompose `${ISSUE_ID}`, and that work is now complete (the
-durable record — child beads, dependency edges, and the decomposition comment — already lives in the
-tracker). Tidy up so the conversation list does not accumulate finished one-off tasks:
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
-1. Notify the user of the outcome so they still get feedback after the conversation disappears:
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
 
-   `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Decomposed: ${ISSUE_ID}", message: "<N sub-issues created, or 'not decomposed' if declined>", style: "success")`
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
 
-2. Self-destruct this conversation:
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
 
-   `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
-
-Run this on **every** completion path — whether children were created or the user declined to
-decompose — because the conversation has served its single purpose. The deletion is deferred until
-your turn finishes, so the notification is delivered first. If the delete tool is unavailable, skip
-this step silently.
+If the `mitto_*` tools are unavailable, skip this step silently.

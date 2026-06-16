@@ -113,3 +113,28 @@ updates to `${ISSUE_ID}`?" with options like **"Apply all"**, **"Apply some"** (
 Summarise the discussion: the decisions resolved (with rationale) or the topic explored, which bead
 fields / labels / status changed, and any sub-issues created (IDs + titles). Reiterate that **no
 implementation was done** — point the user to the **"Start work"** prompt when the bead is ready.
+
+## Final step — Offer to delete this conversation
+
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
+
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
+
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
+
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
+
+If the `mitto_*` tools are unavailable, skip this step silently.

@@ -79,7 +79,7 @@ duplicate.
 ## Step 4 — Decide with the user
 
 If the verdict is **Still relevant**, say so — this is read-only; do not modify the bead — then go
-straight to the final **Clean up this conversation** step (skip the modification steps below).
+straight to the final **Offer to delete this conversation** step (skip the modification steps below).
 Otherwise the investigation stays **read-only until you confirm**: closing is **never**
 done without explicit approval. Present your verdict and the summary, then confirm the next action
 via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g. "This bead
@@ -137,21 +137,27 @@ Finish with a short summary stating the final verdict, what action was taken (be
 its reason, **kept open**, and/or **follow-up beads created** with their IDs and titles), and any
 remaining work worth flagging.
 
-## Step 7 — Clean up this conversation
+## Final step — Offer to delete this conversation
 
-This conversation was spawned solely to check whether `${ISSUE_ID}` should be closed, and that
-determination is now complete (any durable outcome already lives in the bead). Tidy up so the
-conversation list does not accumulate finished one-off checks:
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
-1. Notify the user of the outcome so they still get feedback after the conversation disappears:
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
 
-   `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Resolved-check: ${ISSUE_ID}", message: "<verdict and action taken, e.g. 'Closed as duplicate of bd-5' / 'Still relevant — kept open'>", style: "success")`
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
 
-2. Self-destruct this conversation:
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
 
-   `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
-
-Run this on **every** completion path — whether the bead was closed, kept open, given follow-ups, or
-judged still relevant — because the conversation has served its single purpose. The deletion is
-deferred until your turn finishes, so the notification is delivered first. If the delete tool is
-unavailable, skip this step silently.
+If the `mitto_*` tools are unavailable, skip this step silently.

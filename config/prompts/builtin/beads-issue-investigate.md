@@ -144,21 +144,27 @@ Summarise what was learned, which fields were enriched, and any sub-issues creat
 and titles). If the bead is now ready to implement, suggest the **"Start work"**
 prompt.
 
-## Step 10 — Clean up this conversation
+## Final step — Offer to delete this conversation
 
-This conversation was spawned solely to investigate and enrich `${ISSUE_ID}`, and that work is now
-complete (the durable findings already live in the bead's fields, comment, and notes). Tidy up so
-the conversation list does not accumulate finished one-off investigations:
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
-1. Notify the user of the outcome so they still get feedback after the conversation disappears:
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
 
-   `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Investigated: ${ISSUE_ID}", message: "<what was enriched and any sub-issues created>", style: "success")`
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
 
-2. Self-destruct this conversation:
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
 
-   `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
-
-Run this on **every** completion path — whether the bead was enriched, split into sub-issues, or
-left unchanged (report only) — because the conversation has served its single purpose. The deletion
-is deferred until your turn finishes, so the notification is delivered first. If the delete tool is
-unavailable, skip this step silently.
+If the `mitto_*` tools are unavailable, skip this step silently.
