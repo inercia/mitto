@@ -1,15 +1,14 @@
 // Preact loader for Mitto
-// Loads Preact and HTM from CDN (external access) or local vendor files (native app)
+// Loads Preact, HTM, marked and DOMPurify from locally bundled vendor files.
 //
-// For external connections (Tailscale, etc.), libraries are loaded from jsdelivr CDN:
-// - Faster initial load (CDN edge caching, browser cross-site caching)
-// - Pre-compressed (gzip/brotli)
-// - Reduces bandwidth through Tailscale tunnel
-//
-// For local/native connections, libraries are loaded from bundled vendor files:
+// Libraries are always loaded from the bundled vendor files (web/static/vendor/),
+// for every connection type (native app, local browser, external/Tailscale):
 // - Zero network dependency
-// - Instant load (localhost)
+// - Instant load
 // - Works offline
+//
+// Note: CDN_URLS is still imported below because Mermaid (loaded on demand for
+// diagram rendering) is fetched from the CDN via a classic <script> tag.
 
 import { CDN_URLS } from "./vendor/config.js";
 
@@ -36,63 +35,6 @@ async function loadModuleFromUrl(url) {
   return await import(url);
 }
 
-// Timeout for CDN loading — if CDN is slow rather than failing fast, we fall back to local.
-const CDN_TIMEOUT_MS = 3000;
-
-/**
- * Race a promise against a timeout.
- * @param {Promise<any>} promise - The promise to race
- * @param {number} ms - Timeout in milliseconds
- * @returns {Promise<any>} Resolves/rejects with the promise result, or rejects on timeout
- */
-function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`CDN loading timed out after ${ms}ms`)), ms)
-    ),
-  ]);
-}
-
-/**
- * Try to load all vendor libraries from CDN.
- * Returns null if any library fails or times out (all-or-nothing approach to avoid mismatches).
- * @returns {Promise<object|null>} Object with all modules, or null if any failed
- */
-async function tryLoadFromCDN() {
-  try {
-    // Note: preact-hooks from CDN has bare module specifiers that browsers can't resolve.
-    // We need to use local hooks that are browser-compatible.
-    // So we'll load Preact + hooks from local, but other libs from CDN.
-    //
-    // Actually, for consistency and to avoid version mismatches, we'll load
-    // preact and preact-hooks from local (they're tightly coupled), but
-    // independent libraries (htm, marked, dompurify) can come from CDN.
-
-    const [preactModule, hooksModule, htmModule, markedModule, dompurifyModule] = await withTimeout(
-      Promise.all([
-        // Preact and hooks MUST be from the same source (local) to avoid __H mismatch
-        loadModuleFromUrl(LOCAL_URLS.preact),
-        loadModuleFromUrl(LOCAL_URLS.preactHooks),
-        // Independent libraries can come from CDN
-        loadModuleFromUrl(CDN_URLS.htm),
-        loadModuleFromUrl(CDN_URLS.marked),
-        loadModuleFromUrl(CDN_URLS.dompurify),
-      ]),
-      CDN_TIMEOUT_MS
-    );
-
-    return { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source: "mixed (preact local, others CDN)" };
-  } catch (err) {
-    if (err.message.includes("timed out")) {
-      console.warn(`CDN loading timed out after ${CDN_TIMEOUT_MS / 1000}s, falling back to local`);
-    } else {
-      console.warn("CDN loading failed, will use all local:", err.message);
-    }
-    return null;
-  }
-}
-
 /**
  * Load all vendor libraries from local files.
  * @returns {Promise<object>} Object with all modules
@@ -110,52 +52,16 @@ async function loadAllFromLocal() {
 }
 
 /**
- * Detect if we're running in the native macOS app.
- * The native app binds functions like mittoOpenExternalURL to the window object.
- * @returns {boolean} True if running in native macOS app
- */
-function isNativeApp() {
-  return typeof window.mittoOpenExternalURL === "function" ||
-         typeof window.mittoPickFolder === "function";
-}
-
-/**
- * Initialize all vendor libraries.
+ * Initialize all vendor libraries from locally bundled files.
  *
- * Loading strategy:
- * - Native macOS app: ALWAYS use local files (fastest, works offline)
- * - Local browser (127.0.0.1): Use local files (no network benefit from CDN)
- * - External access (Tailscale): Use CDN for independent libs (htm, marked, dompurify),
- *   but keep preact+hooks local to avoid version mismatch issues
- *
- * Note: Preact and preact-hooks are tightly coupled - the hooks library accesses
- * Preact's internal __H property. CDN ESM modules have bare specifiers that browsers
- * can't resolve, so we keep preact+hooks local for compatibility.
+ * All vendor libraries (preact, preact-hooks, htm, marked, dompurify) are loaded
+ * from the bundled vendor files for every connection type (native app, local
+ * browser, and external/Tailscale). This guarantees zero network dependency,
+ * instant load, and offline support, and avoids preact/hooks version-mismatch
+ * issues (the hooks library accesses Preact's internal __H property).
  */
 async function initializeVendorLibraries() {
-  // Native app ALWAYS uses local files for maximum performance and offline support
-  const isNative = isNativeApp();
-
-  // Use CDN only for external browser connections (not native app, not localhost)
-  // window.mittoIsExternal is set by the server based on which listener received the request
-  const shouldTryCDN = !isNative && window.mittoIsExternal === true;
-
-  let result;
-
-  if (isNative) {
-    console.log("Loading vendor libraries from local files (native macOS app)");
-    result = await loadAllFromLocal();
-  } else if (shouldTryCDN) {
-    console.log("Loading vendor libraries (preact local + others from CDN) for external connection");
-    result = await tryLoadFromCDN();
-    if (!result) {
-      console.log("CDN loading failed, falling back to all local");
-      result = await loadAllFromLocal();
-    }
-  } else {
-    console.log("Loading vendor libraries from local files (local browser connection)");
-    result = await loadAllFromLocal();
-  }
+  const result = await loadAllFromLocal();
 
   const { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source } = result;
 
