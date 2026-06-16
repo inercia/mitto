@@ -78,18 +78,43 @@ duplicate.
 
 ## Step 4 — Decide with the user
 
-If the verdict is **Still relevant**, say so — this is read-only; do not modify the bead — then go
-straight to the final **Offer to delete this conversation** step (skip the modification steps below).
-Otherwise the investigation stays **read-only until you confirm**: closing is **never**
-done without explicit approval. Present your verdict and the summary, then confirm the next action
-via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g. "This bead
-looks `<verdict>`. What should I do?" with options:
+The investigation stays **read-only until you confirm**: nothing is modified — and no work is
+started — without explicit approval. Present your verdict and the summary, then confirm the next
+action via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g.
+"This bead looks `<verdict>`. What should I do?". Tailor the options to the verdict:
 
-- **"Close it"** — done / obsolete / duplicate; no remaining work to track.
-- **"Keep it open"** — work still remains on this bead.
-- **"Create follow-up tickets"** — the core is done but additional/edge-case work was discovered.
+- If the bead is **not resolved** (verdict **Still relevant**, or **Partially resolved** with real
+  work remaining), lead with an offer to **start working on it**:
+  - **"Start working on it"** — begin tackling the remaining work now.
+  - **"Keep it open"** — leave it for later; record what the investigation found.
+- If the bead is **done / obsolete / duplicate** (verdict **Fully resolved**, **Obsolete**, or
+  **Duplicate**), offer to wrap it up:
+  - **"Close it"** — done / obsolete / duplicate; no remaining work to track.
+  - **"Keep it open"** — work still remains on this bead.
+  - **"Create follow-up tickets"** — the core is done but additional/edge-case work was discovered.
+
+When the core is done but edge cases remain, you may include both **"Create follow-up tickets"** and
+**"Start working on it"** so the user can choose to track or tackle the leftover work.
 
 Honour the user's choice exactly. Do not modify anything they did not approve.
+
+### If "Start working on it"
+
+The user wants to tackle the remaining work now — so this conversation continues into the work
+rather than wrapping up:
+
+1. Claim the bead so others know it is being worked on:
+
+   ```bash
+   bd update ${ISSUE_ID} --claim
+   ```
+
+2. Draft a short plan for the remaining work (drawn from **What remains** in your Resolution
+   Report), confirm it with the user, then proceed to implement it. For deeper coordination or
+   parallel workers, follow the "Start work" prompt's flow (claim → plan → dispatch → verify).
+
+Because work is now underway, **skip the close-out in Step 5 and the final "Offer to delete this
+conversation" step** — keep the conversation open while the work continues.
 
 ### If "Create follow-up tickets"
 
@@ -138,6 +163,9 @@ its reason, **kept open**, and/or **follow-up beads created** with their IDs and
 remaining work worth flagging.
 
 ## Final step — Offer to delete this conversation
+
+> **Skip this step entirely** if the user chose **"Start working on it"** — work is now underway, so
+> the conversation must stay open.
 
 The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
