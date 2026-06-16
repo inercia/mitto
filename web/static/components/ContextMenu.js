@@ -173,7 +173,10 @@ function ContextMenuItem({ item, onClose }) {
   }
 
   return html`
-    <li class="${item.disabled ? "menu-disabled" : ""}">
+    <li
+      class="${item.disabled ? "menu-disabled" : ""}"
+      title=${item.title || undefined}
+    >
       <button
         onClick=${(e) => {
           e.stopPropagation();

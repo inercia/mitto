@@ -144,11 +144,7 @@ export function useConversationMenu({
         ? []
         : [
             {
-              label: !canArchive
-                ? archiveBlockedReason
-                : isArchived
-                  ? "Unarchive"
-                  : "Archive",
+              label: isArchived ? "Unarchive" : "Archive",
               icon: isArchived
                 ? html`<${ArchiveFilledIcon} />`
                 : html`<${ArchiveIcon} />`,
@@ -156,6 +152,10 @@ export function useConversationMenu({
                 ? () => onArchive && onArchive(session, !isArchived)
                 : undefined,
               disabled: !canArchive,
+              // When archiving is blocked (agent responding or queued
+              // messages) keep the plain "Archive" label greyed out and
+              // surface the reason on hover instead of replacing the label.
+              title: !canArchive ? archiveBlockedReason : undefined,
             },
           ]),
       {
