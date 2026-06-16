@@ -6,6 +6,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping } from "../utils/index.js";
 import { getBasename } from "../lib.js";
 import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, getPromptIconOrDefault } from "./Icons.js";
+import { CodeEditorField } from "./CodeEditorField.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
@@ -204,17 +205,20 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   const promptsRef = useRef(null);
 
   // View-mode inline description editing. Clicking the rendered description
-  // switches it to a textarea; blur saves via /api/beads/update when the text
-  // changed. `descDraft` holds the in-progress text; `savingDesc` gates the
-  // in-flight request.
+  // switches it to a CodeMirror editor; blur saves via /api/beads/update when
+  // the text changed. `descDraft` holds the in-progress text (kept in sync with
+  // the editor via onChange so the magic-wand disabled check stays accurate);
+  // `savingDesc` gates the in-flight request.
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState("");
   const [savingDesc, setSavingDesc] = useState(false);
-  // Min height (px) applied to the edit textarea so it does not shrink relative
-  // to the rendered description it replaces. Measured from descViewRef on entry.
+  // Min height (px) applied to the editor so it does not shrink relative to
+  // the rendered description it replaces. Measured from descViewRef on entry.
   const [descMinHeight, setDescMinHeight] = useState(0);
-  const descRef = useRef(null);
+  const detailEditorApiRef = useRef(null);
   const descViewRef = useRef(null);
+  // Imperative handle for the create-form's description CodeMirror editor.
+  const createEditorApiRef = useRef(null);
 
   // View-mode inline title editing. Clicking the rendered title in the header
   // switches it to a text input; blur saves via /api/beads/update when the text
@@ -444,14 +448,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     setCommentDraft("");
   }, [data && data.id]);
 
-  // Focus the textarea (cursor at end) when entering edit mode.
-  useEffect(() => {
-    if (editingDesc && descRef.current) {
-      const el = descRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingDesc]);
+  // The description CodeMirror editor auto-focuses on mount (autoFocus prop)
+  // so no separate useEffect is needed here.
 
   // Focus the notes textarea (cursor at end) when entering notes-edit mode.
   useEffect(() => {
@@ -500,15 +498,17 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // Persist the edited description on blur. Saves only when the text changed;
   // otherwise just leaves edit mode. Uses /api/beads/update and refreshes the
   // list via onUpdated so the panel re-renders with the saved value.
-  const handleDescBlur = useCallback(async () => {
+  // `text` is the current editor value passed directly from CodeEditorField's
+  // onBlur callback (not read from descDraft state).
+  const handleDescBlur = useCallback(async (text) => {
     // While an AI "improve" request is in flight, ignore blur so a stray click
     // elsewhere can't save the pre-improved draft and drop the incoming result.
     // The user stays in edit mode; once the improvement lands they can blur to
     // save normally. (Clicking the wand itself never blurs — its onMouseDown
-    // preventDefault keeps the textarea focused.)
+    // preventDefault keeps the CodeMirror editor focused.)
     if (improvingDesc) return;
     const original = (data && data.description) || "";
-    const next = descDraft;
+    const next = text;
     if (next === original) {
       setEditingDesc(false);
       return;
@@ -533,7 +533,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       setSavingDesc(false);
       setEditingDesc(false);
     }
-  }, [data && data.id, data && data.description, descDraft, workingDir, showToast, onUpdated, improvingDesc]);
+  }, [data && data.id, data && data.description, workingDir, showToast, onUpdated, improvingDesc]);
 
   // Enter inline notes-edit mode, seeding the draft from the current notes.
   // Capture the rendered area's height first so the textarea opens at least as
@@ -1048,16 +1048,20 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
               <div class="mt-3">
                 <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
-                ${renderDescToolbar({ text: description, setText: setDescription, disabled: submitting })}
-                <textarea
-                  id="new-issue-desc"
-                  class="${textareaClass} resize-none"
-                  rows="6"
-                  placeholder="Description (required)"
+                ${renderDescToolbar({
+                  text: description,
+                  setText: (v) => { setDescription(v); createEditorApiRef.current?.setValue(v); },
+                  disabled: submitting,
+                })}
+                <${CodeEditorField}
                   value=${description}
-                  onInput=${e => setDescription(e.target.value)}
+                  onChange=${(v) => setDescription(v)}
+                  onBlur=${(v) => setDescription(v)}
                   disabled=${submitting}
-                ></textarea>
+                  darkMode=${false}
+                  minHeight=${160}
+                  editorApiRef=${createEditorApiRef}
+                />
               </div>
             </fieldset>
           `
@@ -1139,22 +1143,25 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               <label class=${labelClass}>Description</label>
               ${renderDescToolbar(
                 editingDesc
-                  ? { text: descDraft, setText: setDescDraft, disabled: savingDesc }
+                  ? {
+                      text: descDraft,
+                      setText: (v) => { setDescDraft(v); detailEditorApiRef.current?.setValue(v); },
+                      disabled: savingDesc,
+                    }
                   : { text: "", setText: () => {}, disabled: true }
               )}
               ${editingDesc
                 ? html`
-                  <textarea
-                    ref=${descRef}
-                    class="w-full resize-y border border-mitto-border rounded p-3 bg-mitto-input-box text-sm text-mitto-text transition-colors focus:outline-none focus:border-mitto-text-secondary"
-                    rows="6"
-                    style=${descMinHeight ? `min-height:${descMinHeight}px` : null}
-                    placeholder="Add a description…"
+                  <${CodeEditorField}
                     value=${descDraft}
-                    onInput=${e => setDescDraft(e.target.value)}
+                    onChange=${(v) => setDescDraft(v)}
                     onBlur=${handleDescBlur}
                     disabled=${savingDesc}
-                  ></textarea>
+                    darkMode=${false}
+                    minHeight=${descMinHeight || 0}
+                    autoFocus=${true}
+                    editorApiRef=${detailEditorApiRef}
+                  />
                 `
                 : html`
                   <div

@@ -35,6 +35,7 @@ export class CodeEditor {
    * @param {number}  [options.fontSize=13]     - Font size in pixels
    * @param {string}  [options.language=null]   - File extension for syntax highlighting (e.g., "js", "py")
    * @param {Function} [options.onChange=null]  - Callback when content changes: (content: string) => void
+   * @param {Function} [options.onBlur=null]    - Callback when the editor loses focus: (content: string) => void
    */
   constructor(container, options = {}) {
     this.container = container;
@@ -43,6 +44,7 @@ export class CodeEditor {
     this.fontSize = options.fontSize ?? 13;
     this.language = options.language ?? null;
     this.onChange = options.onChange ?? null;
+    this.onBlur = options.onBlur ?? null;
 
     // CodeMirror internals (set during init)
     this.view = null;
@@ -102,6 +104,13 @@ export class CodeEditor {
         if (update.docChanged) {
           this.onChange(update.state.doc.toString());
         }
+      }));
+    }
+
+    // Blur listener
+    if (this.onBlur) {
+      extensions.push(viewMod.EditorView.domEventHandlers({
+        blur: () => { this.onBlur(this.getValue()); },
       }));
     }
 
