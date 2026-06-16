@@ -1045,7 +1045,7 @@ export function ChatInput({
     }
   };
 
-  const handlePredefinedPrompt = (prompt, event) => {
+  const handlePredefinedPrompt = async (prompt, event) => {
     setShowDropup(false);
 
     // Shift+click/Enter = insert into composition area (legacy behavior)
@@ -1070,6 +1070,25 @@ export function ChatInput({
           textarea.style.height =
             Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
         });
+      }
+      return;
+    }
+
+    // When agent is streaming, queue the prompt instead of sending immediately
+    if (isStreaming && onAddToQueue && prompt.name) {
+      if (isQueueFull) {
+        setSendError(
+          `Queue is full (${queueConfig.max_size}/${queueConfig.max_size}). Wait for the agent to finish or clear the queue.`,
+        );
+        setTimeout(() => setSendError(null), 10000);
+        return;
+      }
+      try {
+        await onAddToQueue("", [], [], { promptName: prompt.name });
+      } catch (err) {
+        console.error("Failed to add to queue:", err);
+        setSendError(err.message || "Failed to add to queue");
+        setTimeout(() => setSendError(null), 10000);
       }
       return;
     }
