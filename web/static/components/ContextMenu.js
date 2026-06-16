@@ -43,50 +43,49 @@ function Portal({ children }) {
 // left or shifting up when it would overflow the viewport).
 function ContextMenuItem({ item, onClose }) {
   const hasSubmenu = !!(item.submenu && item.submenu.length > 0);
+  const submenuCount = hasSubmenu ? item.submenu.length : 0;
   const [submenuOpen, setSubmenuOpen] = useState(false);
   const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
   const itemRef = useRef(null);
   const submenuRef = useRef(null);
   const closeTimerRef = useRef(null);
 
+  // Open the flyout. When it is ALREADY open (e.g. the pointer briefly grazed a
+  // sibling row or the gap and re-entered this item) only cancel the pending
+  // close — do NOT reset the position. Re-setting submenuOpen to true here is a
+  // no-op, so the reposition effect below would not re-run and the flyout would
+  // stay parked at the unmeasured left edge, jumping away from the cursor and
+  // becoming impossible to click. The reposition effect handles all placement.
   const openSubmenu = () => {
     if (!hasSubmenu) return;
     clearTimeout(closeTimerRef.current);
-    if (itemRef.current) {
-      const rect = itemRef.current.getBoundingClientRect();
-      // Provisional placement only: anchor the left near the viewport's left
-      // edge so the submenu is laid out with ample horizontal room and can be
-      // measured at its true (max-width-capped) width. The real viewport-aware
-      // flip/clamp happens in the useLayoutEffect below, which runs before paint
-      // so this provisional position is never visible. This matters because the
-      // submenu is shrink-to-fit (position:fixed with no explicit width), so its
-      // width depends on the room to its right — measuring it where it will
-      // finally sit can under-report the width and break the flip math.
-      setSubmenuPos({ left: 8, top: rect.top });
-    }
     setSubmenuOpen(true);
   };
 
+  // Close after a short grace period so the pointer can cross the diagonal gap
+  // between this row and a lower flyout row without the flyout vanishing.
   const scheduleClose = () => {
     clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = setTimeout(() => setSubmenuOpen(false), 150);
+    closeTimerRef.current = setTimeout(() => setSubmenuOpen(false), 250);
   };
 
   useEffect(() => () => clearTimeout(closeTimerRef.current), []);
 
-  // Once the submenu has rendered (provisionally near the left edge with full
-  // room), measure its ACTUAL, max-width-capped size and clamp/flip it into the
-  // viewport. Measuring where it has ample room avoids the shrink-to-fit trap:
-  // a position:fixed element with no explicit width sizes to the room on its
-  // right, so measuring it at its final spot near the right edge under-reports
-  // the width and the flip lands the flyout on top of the parent menu.
-  // useLayoutEffect runs before paint, so the correction is invisible (mirrors
-  // the main menu's clamp).
+  // Position the flyout once it (and its current items) are laid out. Re-runs
+  // when it opens AND when its item count changes — e.g. Tasks/prompt entries
+  // that load asynchronously and grow the flyout after it has already opened,
+  // mirroring the main menu's clamp keyed on items.length. Parking the flyout
+  // near the left edge before measuring lets this shrink-to-fit (position:fixed
+  // with no explicit width) element report its true, max-width-capped width;
+  // measuring it at its final spot near the right edge under-reports the width
+  // and flips it on top of the parent menu. Mutating the style and reading
+  // layout here both run before paint, so the parked position is never visible.
   useLayoutEffect(() => {
     if (!submenuOpen) return;
     const el = submenuRef.current;
     const anchor = itemRef.current;
     if (!el || !anchor) return;
+    el.style.left = "8px";
     const rect = anchor.getBoundingClientRect();
     const sub = el.getBoundingClientRect();
     const margin = 8;
@@ -103,8 +102,18 @@ function ContextMenuItem({ item, onClose }) {
     if (top + sub.height > window.innerHeight - margin) {
       top = Math.max(margin, window.innerHeight - sub.height - margin);
     }
+    // Apply the computed position imperatively, not only via state. The parking
+    // step above mutated el.style.left directly, so the DOM no longer matches the
+    // declarative style. When the flyout is reopened on the same anchor, the
+    // freshly computed position equals the value persisted in submenuPos from the
+    // previous open, so setSubmenuPos is a no-op and Preact bails out of
+    // re-rendering — leaving the DOM stuck at the parked left edge. Writing the
+    // final coordinates here guarantees the DOM is correct regardless, and
+    // setSubmenuPos keeps state consistent for subsequent renders.
+    el.style.left = left + "px";
+    el.style.top = top + "px";
     setSubmenuPos({ left, top });
-  }, [submenuOpen]);
+  }, [submenuOpen, submenuCount]);
 
   if (hasSubmenu) {
     return html`

@@ -182,6 +182,63 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
   );
 
   testWithCleanup(
+    "keeps the 'Move to group' flyout anchored to the right when reopened",
+    async ({ page, timeouts }) => {
+      // Regression: reopening the flyout on the same anchor used to leave it
+      // parked at the viewport's left edge. The reposition effect parks the
+      // flyout at left:8px to measure its true width, then computes the final
+      // position. On the second open the computed value equalled the value
+      // persisted from the first open, so the setState was a no-op, Preact
+      // bailed out of re-rendering, and the imperatively-parked left:8px was
+      // never overwritten — stranding the flyout far from its parent item.
+      await openGroupMenu(page, timeouts);
+
+      const menuButtons = page.locator(`${MENU} button`);
+      const moveItem = menuButtons.filter({ hasText: "Move to group" });
+      await expect(moveItem).toBeVisible({ timeout: timeouts.shortAction });
+      const newGroupItem = menuButtons.filter({ hasText: "New group" });
+
+      // Reads the open flyout <ul> and its parent <li.relative> anchor geometry.
+      const readGeom = () =>
+        page.evaluate(() => {
+          const menus = Array.from(
+            document.querySelectorAll(".menu.fixed.z-50.shadow-xl"),
+          );
+          const sub = menus.find((m) => m.closest("li.relative"));
+          const li = sub ? sub.closest("li.relative") : null;
+          if (!sub || !li) return null;
+          const s = sub.getBoundingClientRect();
+          const a = li.getBoundingClientRect();
+          return { subLeft: s.left, subRight: s.right, anchorLeft: a.left };
+        });
+
+      // First hover: the flyout should open to the RIGHT of its anchor item,
+      // not collapse toward the left edge.
+      await moveItem.hover();
+      await expect(newGroupItem).toBeVisible({ timeout: timeouts.shortAction });
+      await page.waitForTimeout(150);
+      const first = await readGeom();
+      expect(first).not.toBeNull();
+      expect(first.subLeft).toBeGreaterThan(first.anchorLeft);
+
+      // Move away so the flyout closes, then reopen on the SAME anchor.
+      await page.mouse.move(5, 5);
+      await expect(newGroupItem).toBeHidden({ timeout: timeouts.shortAction });
+      await page.waitForTimeout(100);
+
+      await moveItem.hover();
+      await expect(newGroupItem).toBeVisible({ timeout: timeouts.shortAction });
+      await page.waitForTimeout(150);
+      const second = await readGeom();
+      expect(second).not.toBeNull();
+      // The flyout must re-anchor to the right exactly like the first open and
+      // must NOT be stranded at the parked left edge (~8px).
+      expect(second.subLeft).toBeGreaterThan(second.anchorLeft);
+      expect(Math.abs(second.subLeft - first.subLeft)).toBeLessThan(2);
+    },
+  );
+
+  testWithCleanup(
     "keeps 'Move to group' available on external connections while gating Configure Workspace",
     async ({ page, helpers, timeouts }) => {
       // Simulate an external (e.g. iPhone over the network) connection. The
