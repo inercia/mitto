@@ -1110,7 +1110,7 @@ export function SessionList({
                     if (deleted) parts.push(html`<span class="text-red-400">−${deleted}</span>`);
                     if (untracked) parts.push(html`<span class="text-mitto-text-muted">?${untracked}</span>`);
                     return html`
-                      <div class="text-[0.5625rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
+                      <div class="text-[0.5rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
                         ${gitData.branch ? html`<${Fragment}><span title=${gitData.branch}>⎇ ${branchDisplay}</span><span>·</span></${Fragment}>` : null}
                         ${parts}
                       </div>

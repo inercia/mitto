@@ -562,7 +562,7 @@ export function SessionItem({
               </button>
             </div>
             ${density === "comfortable" && acpServer
-              ? html`<div class="text-[0.5625rem] text-mitto-text-muted italic font-normal truncate mt-0.5 pl-6">${acpServer}</div>`
+              ? html`<div class="text-[0.5rem] text-mitto-text-muted italic font-normal truncate mt-0.5 pl-6">${acpServer}</div>`
               : null}
           </div>
         </div>
