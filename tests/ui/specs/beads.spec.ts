@@ -978,3 +978,107 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
     },
   );
 });
+
+/**
+ * Beads view — context-menu submenu positioning (desktop).
+ *
+ * Regression guard for the submenu overlap bug: when the per-row "..." action
+ * button is near the RIGHT edge of the screen, the context menu is clamped to
+ * the right edge, so a hover-submenu (e.g. "Depends On", which lists every other
+ * issue) must flip to the LEFT instead of opening off-screen on top of the
+ * parent menu. The submenu width is measured at render time (useLayoutEffect in
+ * ContextMenu.js), so wide entries (long "mitto-xxx · title" labels) can't defeat
+ * the flip math. The issues carry deliberately long titles to make the submenu
+ * wide — the exact condition that broke the old hard-coded 180px estimate.
+ *
+ * This can only be exercised in a real browser: node --check / Jest don't run
+ * the htm render path or the layout engine.
+ */
+const SUBMENU_LONG = (n: number) =>
+  `Issue ${n} with an intentionally long title used to widen the dependency submenu well beyond the old estimate`;
+const SUBMENU_ISSUES = [0, 1, 2].map((n) => ({
+  id: `mitto-s${n}`,
+  title: SUBMENU_LONG(n),
+  description: "",
+  status: "open",
+  priority: 2,
+  issue_type: "task",
+  created_at: "2026-06-01T10:00:00Z",
+  updated_at: "2026-06-01T10:00:00Z",
+}));
+
+// Both the parent menu and any open submenu render as a fixed daisyUI menu.
+const CTX_MENU = ".menu.fixed.z-50.shadow-xl";
+
+testWithCleanup.describe("Beads view - submenu positioning", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+    await page.route("**/api/beads/list**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(SUBMENU_ISSUES),
+      });
+    });
+
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+    const createResp = await request.post(apiUrl("/api/sessions"), {
+      data: { name: `Beads Seed ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    await helpers.navigateAndWait(page);
+  });
+
+  testWithCleanup(
+    "the 'Depends On' submenu flips left and stays on-screen from the right-aligned menu button",
+    async ({ page, timeouts }) => {
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(SUBMENU_LONG(0)).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+
+      // Open the context menu from the row's right-aligned "..." button (this
+      // anchors the menu at the right edge — the condition that broke flipping).
+      await page.locator('[data-testid="beads-issue-menu"]').first().click();
+      const parentMenu = page.locator(CTX_MENU).first();
+      await expect(parentMenu).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Open the "Depends On" submenu. Use dispatchEvent(mouseenter) instead of
+      // hover() so the act of opening isn't blocked by the (buggy) submenu
+      // intercepting pointer events over the parent item.
+      const dependsItem = page
+        .locator(`${CTX_MENU} button`)
+        .filter({ hasText: "Depends On" })
+        .first();
+      await dependsItem.dispatchEvent("mouseenter");
+
+      // The submenu is the second fixed menu now on screen.
+      const submenu = page.locator(CTX_MENU).nth(1);
+      await expect(submenu).toBeVisible({ timeout: timeouts.shortAction });
+
+      const parentBox = await parentMenu.boundingBox();
+      const subBox = await submenu.boundingBox();
+      expect(parentBox).not.toBeNull();
+      expect(subBox).not.toBeNull();
+      const vw = page.viewportSize()!.width;
+
+      // 1) The submenu stays fully within the viewport (allow 1px rounding).
+      expect(subBox!.x).toBeGreaterThanOrEqual(-1);
+      expect(subBox!.x + subBox!.width).toBeLessThanOrEqual(vw + 1);
+
+      // 2) It does not cover the parent menu: the horizontal overlap is at most a
+      //    small connecting bridge (the old bug overlapped by the full ~150px
+      //    parent-menu width).
+      const overlap =
+        Math.min(subBox!.x + subBox!.width, parentBox!.x + parentBox!.width) -
+        Math.max(subBox!.x, parentBox!.x);
+      expect(overlap).toBeLessThanOrEqual(24);
+
+      // 3) Since the parent menu sits at the right edge, the submenu opened to its
+      //    left (its left edge is left of the parent menu's left edge).
+      expect(subBox!.x).toBeLessThan(parentBox!.x);
+    },
+  );
+});

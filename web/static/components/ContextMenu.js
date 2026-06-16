@@ -46,6 +46,7 @@ function ContextMenuItem({ item, onClose }) {
   const [submenuOpen, setSubmenuOpen] = useState(false);
   const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
   const itemRef = useRef(null);
+  const submenuRef = useRef(null);
   const closeTimerRef = useRef(null);
 
   const openSubmenu = () => {
@@ -53,24 +54,15 @@ function ContextMenuItem({ item, onClose }) {
     clearTimeout(closeTimerRef.current);
     if (itemRef.current) {
       const rect = itemRef.current.getBoundingClientRect();
-      const submenuWidth = 180;
-      // Cap the estimate so long submenus (e.g. the full issue list) pin to the
-      // top of the viewport and scroll instead of overflowing off-screen.
-      const submenuHeight = Math.min(
-        item.submenu.length * 38 + 8,
-        window.innerHeight * 0.6,
-      );
-      // Prefer opening to the right; flip to the left if it would overflow
-      let left = rect.right - 4;
-      if (left + submenuWidth > window.innerWidth) {
-        left = rect.left - submenuWidth + 4;
-      }
-      // Shift up if it would overflow the bottom of the viewport
-      let top = rect.top;
-      if (top + submenuHeight > window.innerHeight) {
-        top = Math.max(8, window.innerHeight - submenuHeight - 8);
-      }
-      setSubmenuPos({ left, top });
+      // Provisional placement only: anchor the left near the viewport's left
+      // edge so the submenu is laid out with ample horizontal room and can be
+      // measured at its true (max-width-capped) width. The real viewport-aware
+      // flip/clamp happens in the useLayoutEffect below, which runs before paint
+      // so this provisional position is never visible. This matters because the
+      // submenu is shrink-to-fit (position:fixed with no explicit width), so its
+      // width depends on the room to its right — measuring it where it will
+      // finally sit can under-report the width and break the flip math.
+      setSubmenuPos({ left: 8, top: rect.top });
     }
     setSubmenuOpen(true);
   };
@@ -81,6 +73,38 @@ function ContextMenuItem({ item, onClose }) {
   };
 
   useEffect(() => () => clearTimeout(closeTimerRef.current), []);
+
+  // Once the submenu has rendered (provisionally near the left edge with full
+  // room), measure its ACTUAL, max-width-capped size and clamp/flip it into the
+  // viewport. Measuring where it has ample room avoids the shrink-to-fit trap:
+  // a position:fixed element with no explicit width sizes to the room on its
+  // right, so measuring it at its final spot near the right edge under-reports
+  // the width and the flip lands the flyout on top of the parent menu.
+  // useLayoutEffect runs before paint, so the correction is invisible (mirrors
+  // the main menu's clamp).
+  useLayoutEffect(() => {
+    if (!submenuOpen) return;
+    const el = submenuRef.current;
+    const anchor = itemRef.current;
+    if (!el || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const sub = el.getBoundingClientRect();
+    const margin = 8;
+    // Prefer opening to the right of the parent item; flip to the left when the
+    // flyout would overflow the right edge of the viewport.
+    let left = rect.right - 4;
+    if (left + sub.width > window.innerWidth - margin) {
+      left = rect.left - sub.width + 4;
+    }
+    // If flipping left pushed it past the left edge, pin it back inside.
+    if (left < margin) left = margin;
+    // Shift up if it would overflow the bottom of the viewport.
+    let top = rect.top;
+    if (top + sub.height > window.innerHeight - margin) {
+      top = Math.max(margin, window.innerHeight - sub.height - margin);
+    }
+    setSubmenuPos({ left, top });
+  }, [submenuOpen]);
 
   if (hasSubmenu) {
     return html`
@@ -103,8 +127,9 @@ function ContextMenuItem({ item, onClose }) {
         ${submenuOpen &&
         html`
           <ul
+            ref=${submenuRef}
             class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px] max-h-[60vh] overflow-y-auto"
-            style="left: ${submenuPos.left}px; top: ${submenuPos.top}px;"
+            style="left: ${submenuPos.left}px; top: ${submenuPos.top}px; max-width: min(20rem, 92vw);"
             onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
             onMouseLeave=${scheduleClose}
           >
