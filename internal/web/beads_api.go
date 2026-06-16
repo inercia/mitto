@@ -142,14 +142,23 @@ func (s *Server) handleBeadsShow(w http.ResponseWriter, r *http.Request) {
 	w.Write(out) //nolint:errcheck
 }
 
+// beadsCreateDep is a single dependency entry in a beadsCreateRequest.
+type beadsCreateDep struct {
+	ID   string `json:"id"`
+	Type string `json:"type,omitempty"`
+}
+
 // beadsCreateRequest is the JSON body for POST /api/beads/create.
 type beadsCreateRequest struct {
-	WorkingDir  string `json:"working_dir"`
-	Title       string `json:"title"`
-	Type        string `json:"type,omitempty"`
-	Priority    *int   `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
-	Description string `json:"description,omitempty"`
-	Parent      string `json:"parent,omitempty"`
+	WorkingDir   string           `json:"working_dir"`
+	Title        string           `json:"title"`
+	Type         string           `json:"type,omitempty"`
+	Priority     *int             `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
+	Description  string           `json:"description,omitempty"`
+	Parent       string           `json:"parent,omitempty"`
+	Assignee     string           `json:"assignee,omitempty"`
+	Notes        string           `json:"notes,omitempty"`
+	Dependencies []beadsCreateDep `json:"dependencies,omitempty"`
 }
 
 // handleBeadsCreate handles POST /api/beads/create.
@@ -220,12 +229,33 @@ func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build dependency slice: validate each entry and resolve the edge type.
+	var deps []string
+	for _, dep := range req.Dependencies {
+		if !isValidBeadsIssueRef(dep.ID) {
+			http.Error(w, "invalid dependency id", http.StatusBadRequest)
+			return
+		}
+		t := strings.TrimSpace(dep.Type)
+		if t == "" {
+			t = "blocks"
+		}
+		if !beads.IsValidDepType(t) {
+			http.Error(w, "invalid dependency type", http.StatusBadRequest)
+			return
+		}
+		deps = append(deps, t+":"+dep.ID)
+	}
+
 	out, err := s.beadsClient().Create(r.Context(), req.WorkingDir, beads.CreateParams{
 		Title:       title,
 		Type:        req.Type,
 		Priority:    req.Priority,
 		Description: req.Description,
 		Parent:      strings.TrimSpace(req.Parent),
+		Deps:        deps,
+		Assignee:    strings.TrimSpace(req.Assignee),
+		Notes:       strings.TrimSpace(req.Notes),
 	})
 	if err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})

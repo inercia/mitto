@@ -169,6 +169,36 @@ func TestClient_Create_ArgsWithTypeAndPriority(t *testing.T) {
 	}
 }
 
+func TestClient_Create_ArgsWithDepsAssigneeNotes(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(`{}`)}}}
+	c := newClient(r)
+	_, _ = c.Create(context.Background(), initializedDir(t), CreateParams{
+		Title:    "T",
+		Deps:     []string{"blocks:mitto-1", "related:mitto-2"},
+		Assignee: "alice",
+		Notes:    "some notes",
+	})
+	args := r.calls[0].args
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--deps blocks:mitto-1,related:mitto-2", "-a alice", "--notes some notes"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args %v missing %q", args, want)
+		}
+	}
+}
+
+func TestClient_Create_NoDepsArgsWhenEmpty(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(`{}`)}}}
+	c := newClient(r)
+	_, _ = c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	joined := strings.Join(r.calls[0].args, " ")
+	for _, flag := range []string{"--deps", "-a", "--notes"} {
+		if strings.Contains(joined, flag) {
+			t.Errorf("args should not contain %q when fields are empty: %v", flag, r.calls[0].args)
+		}
+	}
+}
+
 // TestClient_List_NotInitialized_ReturnsEmpty verifies that listing an
 // uninitialized folder returns an empty JSON array without invoking bd (so the
 // Tasks view shows "No issues found" instead of an error, and viewing does not

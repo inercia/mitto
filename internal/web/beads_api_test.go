@@ -143,6 +143,70 @@ func TestHandleBeadsList_BdMissingReturnsJSONError(t *testing.T) {
 	}
 }
 
+// --- handleBeadsStats --------------------------------------------------------
+
+func TestHandleBeadsStats_MethodNotAllowed(t *testing.T) {
+	s := newBeadsTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/stats", nil)
+	req.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	s.handleBeadsStats(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleBeadsStats_MissingWorkingDir(t *testing.T) {
+	s := newBeadsTestServer()
+	req := localhostRequest("/api/beads/stats")
+	w := httptest.NewRecorder()
+	s.handleBeadsStats(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleBeadsStats_RelativeWorkingDir(t *testing.T) {
+	s := newBeadsTestServer()
+	req := localhostRequest("/api/beads/stats?working_dir=relative/path")
+	w := httptest.NewRecorder()
+	s.handleBeadsStats(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleBeadsStats_UnknownWorkspace(t *testing.T) {
+	s := newBeadsTestServer()
+	req := localhostRequest("/api/beads/stats?working_dir=/unknown/dir")
+	w := httptest.NewRecorder()
+	s.handleBeadsStats(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestHandleBeadsStats_StubReturnsSummary injects a stub client so the success
+// path is deterministic: a known workspace returns 200 with the summary JSON.
+func TestHandleBeadsStats_StubReturnsSummary(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
+	})
+	s := &Server{sessionManager: sm, beads: &stubBeadsClient{}}
+
+	req := localhostRequest("/api/beads/stats?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsStats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if body := w.Body.String(); !strings.Contains(body, `"summary"`) {
+		t.Errorf("body = %q, want it to contain %q", body, `"summary"`)
+	}
+}
+
 // --- handleBeadsShow ---------------------------------------------------------
 
 func TestHandleBeadsShow_MethodNotAllowed(t *testing.T) {

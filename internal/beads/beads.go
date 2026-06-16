@@ -39,6 +39,9 @@ type CreateParams struct {
 	Priority    *int
 	Description string
 	Parent      string
+	Deps        []string // each entry is "type:id" or bare "id"
+	Assignee    string
+	Notes       string
 }
 
 // UpdateParams carries the fields for Client.Update. Pointer fields distinguish

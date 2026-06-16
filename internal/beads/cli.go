@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -119,6 +120,15 @@ func (c *cliClient) Create(ctx context.Context, dir string, p CreateParams) ([]b
 	}
 	if p.Parent != "" {
 		args = append(args, "--parent", p.Parent)
+	}
+	if len(p.Deps) > 0 {
+		args = append(args, "--deps", strings.Join(p.Deps, ","))
+	}
+	if p.Assignee != "" {
+		args = append(args, "-a", p.Assignee)
+	}
+	if p.Notes != "" {
+		args = append(args, "--notes", p.Notes)
 	}
 	return c.runJSON(ctx, dir, args...)
 }
