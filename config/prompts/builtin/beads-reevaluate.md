@@ -2,7 +2,7 @@
 icon: "beads"
 name: "Reevaluate all issues"
 menus: prompts, beadsList
-description: "Reevaluate priority, dependencies, and importance of all beads — delegating deeper evaluation to child conversations when needed — then propose changes and surface what to do now"
+description: "Reevaluate priority, dependencies, and importance of all beads — close any already-completed ones, delegate deeper evaluation to child conversations when needed — then propose changes and surface what to do now"
 backgroundColor: "#FFCC80"
 group: "Tasks"
 enabledWhen: 'commandExists("bd") && dirExists(".beads")'
@@ -19,8 +19,9 @@ Existing children: `@mitto:children`
 Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
 Your job is to take a fresh, critical look at **every** open bead in this repo and reassess
-its **priority**, **dependencies**, and **importance** — then propose corrections where the
-current state no longer reflects reality.
+its **priority**, **dependencies**, and **importance** — and check whether any open or
+in-progress beads are **already completed** and can be closed — then propose corrections where
+the current state no longer reflects reality.
 
 ## Step 1 — Gather the full picture
 
@@ -49,7 +50,7 @@ git branch -a
 
 ## Step 2 — Reevaluate every open bead
 
-For each non-closed bead, reason carefully across three axes:
+For each non-closed bead, reason carefully across four axes:
 
 - **Priority (P0–P4)**: Does the assigned priority still match the bead's real impact and
   urgency? Look for under-prioritised work (high user/blocking impact at low priority) and
@@ -60,6 +61,11 @@ For each non-closed bead, reason carefully across three axes:
 - **Importance**: How much does this bead matter relative to the others *right now*?
   Consider user impact, how many other beads it unblocks, staleness, and whether it is a
   duplicate or no longer relevant.
+- **Completion**: Is the work already done? Cross-check `open` and `in_progress` beads against
+  the current codebase, recent commits, and merged branches. A bead whose acceptance criteria
+  are already satisfied should be **closed** rather than left lingering. Be conservative — only
+  treat a bead as complete when there is concrete evidence the work is actually finished, and do
+  not close an `in_progress` bead with active work unless it is a clear duplicate.
 
 ## Step 3 — Delegate deep evaluation where needed
 
@@ -109,6 +115,8 @@ Explicitly look for and flag:
 - **Blocked-by-closed** — beads still listing blockers that are already done.
 - **Dependency cycles** — from `bd dep cycles`.
 - **Stale claims** — `in_progress` beads with no evidence of work.
+- **Already completed** — `open`/`in_progress` beads whose work is already implemented (per the
+  codebase, commits, or merged branches) and can now be closed.
 - **Orphans / duplicates** — beads that overlap heavily or appear abandoned.
 
 ## Step 5 — Compose a proposal
@@ -120,15 +128,17 @@ Produce a concise **Reevaluation Report** with a table of every change you recom
 | `bd-1` | `<title>` | Priority | P3 → P1 | Blocks 3 other beads |
 | `bd-2` | `<title>` | Add dep | — → blocked by `bd-9` | Needs schema first |
 | `bd-3` | `<title>` | Remove dep | blocked by `bd-7` (closed) | Blocker already done |
+| `bd-4` | `<title>` | Close | open → closed | Already implemented in `abc1234` / `path/to/file` |
 
 If, after analysis, **no changes are warranted**, say so clearly and skip Steps 6–7 — but
 still produce the final summary in Step 8.
 
 ## Step 6 — Confirm before changing anything
 
-This reevaluation is **read-only until you confirm**. Present your single best proposal and
-confirm via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`,
-e.g. "Apply these N proposed changes to the beads tracker?" with options:
+This reevaluation is **read-only until you confirm** — including closing any already-completed
+beads. Present your single best proposal and confirm via
+`mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`,
+e.g. "Apply these N proposed changes (including closures) to the beads tracker?" with options:
 
 - **"Apply all proposed changes"**
 - **"Apply only some"** (let the user specify which via free text)
@@ -144,9 +154,11 @@ For each approved change, run the appropriate command:
 bd update <bead-id> --priority <0-4>          # reprioritise
 bd dep add <blocked-id> <blocker-id>          # add a blocking dependency
 bd dep remove <blocked-id> <blocker-id>       # remove a stale dependency
+bd close <bead-id> --reason "<why, e.g. 'Already implemented in abc1234; acceptance criteria met'>"   # close an already-completed bead
 ```
 
-For each bead you change, append an audit note recording what changed and why:
+For each bead you change but do **not** close, append an audit note recording what changed and
+why (closed beads already carry their rationale in the `--reason` above):
 
 ```bash
 bd update <bead-id> --append-notes "Reevaluation: <what changed — e.g. priority P2→P1, added blocker bd-12> — <why, from the assessment above>."
@@ -166,9 +178,35 @@ Always finish with two clearly separated sections:
 
 ### Changes
 A bullet summary of what was **actually changed** (or, if the user declined, what was
-**proposed** but not applied). Group by type: priority changes, dependency changes, other.
+**proposed** but not applied). Group by type: priority changes, dependency changes, beads closed
+as already-completed, other.
 
 ### Most important things to do now
 A short, ranked list (top ~3–5) of the beads that matter most to tackle next, based on your
 reevaluation — favouring high-priority, ready (unblocked) work that unblocks the most other
 beads. For each, give the bead ID, title, and a one-line justification.
+
+## Final step — Offer to delete this conversation
+
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
+
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
+
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
+
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
+
+If the `mitto_*` tools are unavailable, skip this step silently.
