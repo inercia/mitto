@@ -337,8 +337,10 @@ export function PeriodicFrequencyPanel({
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
   }`;
 
-  // Auto height when open (two rows: frequency + fresh context)
-  const panelStyle = isOpen ? "" : "height: 0px;";
+  // Open height: when locked (single row) match the prompt selector's fixed 44px
+  // so both side-by-side boxes have identical height. When editing (fresh-context
+  // row is shown) the panel grows to fit both rows.
+  const panelStyle = isOpen ? (disabled ? "height: 44px;" : "") : "height: 0px;";
 
   // Format next scheduled time for display (uses local state for immediate feedback)
   const nextTimeDisplay = localNextScheduledAt
@@ -391,7 +393,9 @@ export function PeriodicFrequencyPanel({
       style="${panelStyle}"
       data-testid="periodic-frequency-panel"
     >
-      <div class="px-4 py-2 flex items-center gap-3 text-sm">
+      <div
+        class="${disabled ? "h-full" : "h-11"} px-4 flex items-center gap-3 text-sm"
+      >
         <!-- Periodic icon - clickable when locked to trigger immediate delivery -->
         <!-- Disabled when agent is streaming (isStreaming) or already triggering -->
         ${disabled
@@ -434,7 +438,7 @@ export function PeriodicFrequencyPanel({
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
           disabled=${isSaving}
-          class="input input-xs w-16 shrink-0 text-center"
+          class="input input-sm w-16 shrink-0 text-center"
         />
 
         <!-- Unit dropdown -->
@@ -444,7 +448,7 @@ export function PeriodicFrequencyPanel({
           value=${localUnit}
           onChange=${handleUnitChange}
           disabled=${isSaving}
-          class="select select-xs shrink-0 w-28"
+          class="select select-sm shrink-0 w-24"
         >
           <option value="minutes">minutes</option>
           <option value="hours">hours</option>
@@ -463,7 +467,7 @@ export function PeriodicFrequencyPanel({
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
             disabled=${isSaving}
-            class="h-8 px-2 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
+            class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
               ? "opacity-50 cursor-not-allowed"
               : ""}"
             placeholder="HH:MM"

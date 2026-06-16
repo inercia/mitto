@@ -2109,7 +2109,9 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
 
         <!-- Periodic Frequency Panel (editable when unlocked, read-only when locked) -->
-        <div class="lg:flex-1 lg:min-w-0">
+        <!-- Size to content (flex-none) so the full "Run every … Next: …" row stays -->
+        <!-- visible; the prompt selector (flex-1) absorbs the remaining width. -->
+        <div class="lg:flex-none">
           <${PeriodicFrequencyPanel}
             isOpen=${periodicEnabled}
             disabled=${isPeriodicLocked}
