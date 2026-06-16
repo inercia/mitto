@@ -94,6 +94,48 @@ function getGitChanges(workingDir, sessionId) {
   return promise;
 }
 
+const BEADS_STATS_CACHE = {};
+const BEADS_STATS_TTL_MS = 30_000;
+// In-flight fetch promises keyed by workingDir to avoid duplicate concurrent requests.
+const BEADS_STATS_IN_FLIGHT = {};
+
+// Fetch beads issue stats (counts by status) for a workingDir.
+// Returns the summary object { open_issues, in_progress_issues, ready_issues,
+// blocked_issues, total_issues, ... } or null on error / empty database.
+async function fetchBeadsStats(workingDir) {
+  try {
+    const response = await authFetch(
+      apiUrl(`/api/beads/stats?working_dir=${encodeURIComponent(workingDir)}`),
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!data || data.error) return null;
+    return data.summary || null;
+  } catch {
+    return null;
+  }
+}
+
+// Get beads stats for a workingDir: cache-first, then fetch, with in-flight dedup.
+// Returns a promise resolving to the summary object or null.
+function getBeadsStats(workingDir) {
+  const now = Date.now();
+  const cached = BEADS_STATS_CACHE[workingDir];
+  if (cached && now - cached.ts < BEADS_STATS_TTL_MS) {
+    return Promise.resolve(cached.data);
+  }
+  if (BEADS_STATS_IN_FLIGHT[workingDir]) {
+    return BEADS_STATS_IN_FLIGHT[workingDir];
+  }
+  const promise = fetchBeadsStats(workingDir).then((data) => {
+    BEADS_STATS_CACHE[workingDir] = { data, ts: Date.now() };
+    delete BEADS_STATS_IN_FLIGHT[workingDir];
+    return data;
+  });
+  BEADS_STATS_IN_FLIGHT[workingDir] = promise;
+  return promise;
+}
+
 // Find the first session_id in a folder's conversations tree (recurse into children).
 function findRepresentativeSessionId(nodes) {
   for (const node of nodes) {
@@ -218,6 +260,10 @@ export function SessionList({
 
   // Git changes data keyed by workingDir, populated on demand in comfortable density.
   const [gitChangesMap, setGitChangesMap] = useState({});
+
+  // Beads issue stats (counts by status) keyed by workingDir, populated on
+  // demand for the open folder's Tasks line in comfortable density.
+  const [beadsStatsMap, setBeadsStatsMap] = useState({});
 
   // Which side-panel toolbar dropdown is open ("filter" | "density" | null).
   // Controlled so the menus are mutually exclusive — opening one closes the other.
@@ -536,13 +582,26 @@ export function SessionList({
     [unifiedTree, categoryFilter],
   );
 
-  // Fetch git changes for all visible folders when in comfortable density.
-  // Re-runs when density changes or the folder list changes.
+  // Fetch git changes and beads stats for expanded folders in comfortable
+  // density. Both summary lines only render for the currently open folder, so
+  // only fetch for those. Re-runs when density, the folder list, or the
+  // expansion state changes.
   useEffect(() => {
     if (density !== "comfortable") return;
     const folders = filteredTree.folders || [];
     folders.forEach((folder) => {
       if (!folder.workingDir) return;
+      if (!isUnifiedFolderExpanded(folder.key)) return;
+      // Beads issue stats for the folder's Tasks line (no session needed).
+      if (folder.showTasks) {
+        getBeadsStats(folder.workingDir).then((data) => {
+          setBeadsStatsMap((prev) => {
+            if (prev[folder.workingDir] === data) return prev;
+            return { ...prev, [folder.workingDir]: data };
+          });
+        });
+      }
+      // Git changes for the folder header line (needs a representative session).
       const sessionId = findRepresentativeSessionId(folder.conversations);
       if (!sessionId) return;
       getGitChanges(folder.workingDir, sessionId).then((data) => {
@@ -552,7 +611,7 @@ export function SessionList({
         });
       });
     });
-  }, [density, filteredTree.folders]);
+  }, [density, filteredTree.folders, sidebarExpandedGroups]);
 
   // Build a map from session ID → its family's parent group key ("parent:<id>").
   // Covers both the parent session itself and all its children.
@@ -1090,7 +1149,7 @@ export function SessionList({
                       </button>
                     `}
                   </div>
-                  ${density === "comfortable" && folder.workingDir && (() => {
+                  ${density === "comfortable" && folderExpanded && folder.workingDir && (() => {
                     const gitData = gitChangesMap[folder.workingDir];
                     if (!gitData || !gitData.is_git_repo) return null;
                     const files = gitData.files || [];
@@ -1188,6 +1247,24 @@ export function SessionList({
                           </button>
                         `}
                       </div>
+                      ${density === "comfortable" && folderExpanded && (() => {
+                        const stats = beadsStatsMap[folder.workingDir];
+                        if (!stats) return null;
+                        const open = stats.open_issues || 0;
+                        const inProgress = stats.in_progress_issues || 0;
+                        const ready = stats.ready_issues || 0;
+                        const blocked = stats.blocked_issues || 0;
+                        const total = stats.total_issues || 0;
+                        if (!total) return null;
+                        return html`
+                          <div class="text-[0.5rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
+                            <span class="text-mitto-text-muted" title="${open} open">○ ${open}</span>
+                            <span class="text-amber-400" title="${inProgress} in progress">◐ ${inProgress}</span>
+                            <span class="text-green-400" title="${ready} ready">● ${ready}</span>
+                            ${blocked ? html`<span class="text-red-400" title="${blocked} blocked">⊘ ${blocked}</span>` : null}
+                          </div>
+                        `;
+                      })()}
                     </li>
                   `}
                   ${renderSessionNodes(folder.conversations)}
