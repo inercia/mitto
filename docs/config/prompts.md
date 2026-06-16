@@ -259,7 +259,7 @@ Provide specific suggestions with code examples where applicable.
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
-| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
+| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsPeriodic` (periodic prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
 | `requires`        | No       | string   | Comma-separated list of capabilities the menu must provide for this prompt to appear. See [below](#requires-capability-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
@@ -353,12 +353,13 @@ Please analyze the code with the following criteria:
 The `menus` attribute is a **comma-separated list** that controls which UI menus a
 prompt appears in. The available menu values are:
 
-| Menu           | Where it appears                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------- |
-| `prompts`      | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
-| `conversation` | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
-| `beadsIssues`  | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
-| `beadsList`    | The **list-level prompts button** — the dropdown next to the `+` button in the Beads list footer.   |
+| Menu              | Where it appears                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| `prompts`         | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
+| `promptsPeriodic` | The **periodic prompt selector** — the prompt dropdown shown in the inline editor of a periodic conversation. |
+| `conversation`    | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
+| `beadsIssues`     | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
+| `beadsList`       | The **list-level prompts button** — the dropdown next to the `+` button in the Beads list footer.   |
 
 If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
 dropup only). To make a prompt appear in both menus, list both values:
@@ -377,6 +378,33 @@ Summarize everything we've accomplished in this conversation so far.
 Whitespace around each entry is ignored. Because `menus` is an explicit list, a
 prompt with `menus: conversation` (without `prompts`) appears **only** in the
 conversation context menu and is **excluded** from the ChatInput dropup.
+
+### Periodic Prompt Selector Menu
+
+Prompts whose `menus` list includes `promptsPeriodic` appear in the **periodic
+prompt selector** — the prompt dropdown shown in the inline editor of a periodic
+conversation, where you pick which prompt the scheduler runs on each tick.
+
+The periodic selector shows the **union** of `prompts` and `promptsPeriodic`: any
+prompt available in the ChatInput dropup also appears in the selector, so existing
+prompts keep working without changes. To make a prompt appear **only** in the
+periodic selector (and hide it from the regular dropup), set `menus:
+promptsPeriodic` without `prompts`:
+
+```markdown
+---
+name: "Babysit PRs"
+description: "Check for pending reviews and stale branches"
+group: "GitHub"
+menus: promptsPeriodic
+---
+
+Check the repository for pending review requests and stale branches.
+```
+
+Pair this with the `session.isPeriodicConversation` CEL variable (see
+[enabledWhen](#enabledwhen-conditional-enablement)) if you also want the prompt
+hidden everywhere outside periodic conversations.
 
 ### Conversation Context Menu
 
@@ -561,6 +589,7 @@ and the prompt appears in any menu it targets via `menus`.
 | Menu | Provided capabilities |
 | ---- | --------------------- |
 | `prompts` (ChatInput dropup) | *(none)* |
+| `promptsPeriodic` (periodic prompt selector) | *(none)* |
 | `conversation` (per-conversation context menu) | *(none)* |
 | `beadsIssues` (Beads issue context menu) | `parameters` |
 | `beadsList` (Beads list-level prompts button) | *(none)* |

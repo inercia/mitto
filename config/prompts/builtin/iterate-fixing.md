@@ -1,7 +1,7 @@
 ---
 icon: "refresh"
 name: "Iterate fixing"
-menus: prompts
+menus: promptsPeriodic
 description: "Continue iterating to fix the problem we have been working on"
 group: "Development"
 backgroundColor: "#BBDEFB"
