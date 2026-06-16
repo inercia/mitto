@@ -6,8 +6,9 @@
 // and navigating from a conversation's linked-issue link into the beads view.
 const { useState, useCallback, useMemo, useRef } = window.preact;
 
-import { apiUrl, authFetch, secureFetch } from "../utils/index.js";
+import { apiUrl, authFetch } from "../utils/index.js";
 import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
+import { useConversationSeeding } from "./useConversationSeeding.js";
 
 /**
  * Beads-view integration hook.
@@ -34,6 +35,7 @@ export function useBeadsIntegration({
   setShowSidePanel,
   setSidePanelTab,
 }) {
+  const { startConversationWithPrompt } = useConversationSeeding({ newSession });
   const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
   // When the beads view is opened from a linked conversation (e.g. the
   // properties panel's "Linked beads issue" link), these drive auto-selecting
@@ -156,8 +158,7 @@ export function useBeadsIntegration({
   // queue delivery (the queue runs the message once the new conversation is idle).
   const handleRunBeadsPrompt = useCallback(
     async (prompt, issue) => {
-      const text = prompt?.prompt;
-      if (!text || !issue || !beadsWorkingDir) return;
+      if (!prompt?.name || !issue || !beadsWorkingDir) return;
 
       // When a folder has several workspaces (e.g. Opus and Sonnet variants),
       // prefer the one marked is_default so beads launches use the intended agent.
@@ -170,11 +171,13 @@ export function useBeadsIntegration({
       // on user input. Setting an explicit name fixes the title right away and
       // also suppresses auto-title generation (it only runs when the name is empty).
       const convName = issue.title ? `${issue.id} · ${issue.title}` : issue.id;
-      const result = await newSession({
+      const result = await startConversationWithPrompt({
         workingDir: beadsWorkingDir,
         acpServer: ws?.acp_server,
         name: convName,
         beadsIssue: issue.id,
+        prompt,
+        arguments: { ISSUE_ID: issue.id },
       });
       if (!result?.sessionId) {
         showToast({
@@ -185,25 +188,8 @@ export function useBeadsIntegration({
         return;
       }
 
-      // Seed the new conversation with the prompt text and a single `ISSUE_ID`
-      // argument. The backend substitutes `${ISSUE_ID}` into the prompt body
-      // when the message is sent; the prompt loads any further detail itself
-      // via `bd show ${ISSUE_ID}`.
-      try {
-        await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            arguments: { ISSUE_ID: issue.id },
-          }),
-        });
-      } catch (err) {
-        console.error("Failed to seed beads conversation:", err);
-      }
-
-      // newSession already activates the new conversation; switch the main view
-      // back from the beads panel so the new conversation is shown.
+      // startConversationWithPrompt creates + activates the new conversation;
+      // switch the main view back from the beads panel so it is shown.
       setMainView("conversation");
       showToast({
         style: "success",
@@ -211,7 +197,7 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, newSession, showToast],
+    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast],
   );
 
   // Run a beads-list prompt: create a new conversation in the beads workspace,
@@ -221,20 +207,20 @@ export function useBeadsIntegration({
   // doesn't linger as "New conversation" (this also suppresses auto-title gen).
   const handleRunBeadsListPrompt = useCallback(
     async (prompt, workingDirOverride) => {
-      const text = prompt?.prompt;
       // Allow an explicit working dir (e.g. the sidebar Tasks menu, which runs a
       // list prompt for a folder that may not be the one currently open in the
       // beads view). Falls back to the open beads working dir for in-view use.
       const wd = workingDirOverride || beadsWorkingDir;
-      if (!text || !wd) return;
+      if (!prompt?.name || !wd) return;
 
       // Prefer the folder's default workspace when several share this directory.
       const beadsMatches = workspaces.filter((w) => w.working_dir === wd);
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
-      const result = await newSession({
+      const result = await startConversationWithPrompt({
         workingDir: wd,
         acpServer: ws?.acp_server,
         name: prompt.name,
+        prompt,
       });
       if (!result?.sessionId) {
         showToast({
@@ -245,18 +231,8 @@ export function useBeadsIntegration({
         return;
       }
 
-      try {
-        await secureFetch(apiUrl(`/api/sessions/${result.sessionId}/queue`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text }),
-        });
-      } catch (err) {
-        console.error("Failed to seed beads list conversation:", err);
-      }
-
-      // newSession already activates the new conversation; switch the main view
-      // back from the beads panel so the new conversation is shown.
+      // startConversationWithPrompt creates + activates the new conversation;
+      // switch the main view back from the beads panel so it is shown.
       setMainView("conversation");
       showToast({
         style: "success",
@@ -264,7 +240,7 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, newSession, showToast],
+    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast],
   );
 
   // Handle Beads button — switch main view to the beads panel for the given workspace.

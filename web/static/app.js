@@ -86,6 +86,7 @@ import {
   useBeadsIntegration,
   useSessionNavigation,
   useConversationMenu,
+  useConversationSeeding,
 } from "./hooks/index.js";
 
 // Import components
@@ -428,6 +429,9 @@ function App() {
     setShowSidePanel,
     setSidePanelTab,
   });
+
+  // Conversation seeding: send a named prompt to an existing conversation via queue.
+  const { seedConversationWithPrompt } = useConversationSeeding({ newSession });
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
@@ -1635,41 +1639,23 @@ function App() {
   const handleSendPromptToConversation = useCallback(
     async (session, prompt) => {
       const sessionId = session?.session_id;
-      const text = prompt?.prompt;
-      if (!sessionId || !text) return;
-      try {
-        const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/queue`),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text }),
-          },
-        );
-        if (res.ok || res.status === 201) {
-          showToast({
-            style: "success",
-            title: `Sent "${prompt.name}" to conversation`,
-            duration: 3000,
-          });
-        } else {
-          const data = await res.json().catch(() => ({}));
-          showToast({
-            style: "warning",
-            title: data.message || "Failed to send prompt",
-            duration: 4000,
-          });
-        }
-      } catch (err) {
-        console.error("Failed to send prompt to conversation:", err);
+      if (!sessionId || !prompt?.name) return;
+      const result = await seedConversationWithPrompt(sessionId, prompt);
+      if (result.success) {
         showToast({
-          style: "error",
+          style: "success",
+          title: `Sent "${prompt.name}" to conversation`,
+          duration: 3000,
+        });
+      } else {
+        showToast({
+          style: "warning",
           title: "Failed to send prompt",
           duration: 4000,
         });
       }
     },
-    [showToast],
+    [seedConversationWithPrompt, showToast],
   );
 
   // ----- Chat header conversation menu -----
