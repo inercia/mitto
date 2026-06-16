@@ -108,7 +108,8 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
  * @param {boolean} props.isReadOnly - Whether session is read-only
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
- * @param {Array} props.predefinedPrompts - Array of predefined prompts
+ * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
+ * @param {Array} props.periodicPrompts - Array of prompts for the periodic prompt selector
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
  * @param {string} props.sessionId - Current session ID
@@ -138,6 +139,7 @@ export function ChatInput({
   isArchived = false,
   isArchivePending = false,
   predefinedPrompts = [],
+  periodicPrompts = [],
   inputRef,
   noSession = false,
   sessionId,
@@ -2099,7 +2101,7 @@ ${activeUIPrompt.text || ""}</textarea
         <div class="lg:flex-1 lg:min-w-0">
           <${PeriodicPromptSelector}
             isOpen=${periodicEnabled}
-            prompts=${predefinedPrompts}
+            prompts=${periodicPrompts}
             selectedPromptName=${periodicPromptName}
             disabled=${false}
             onSelect=${handlePeriodicPromptSelect}

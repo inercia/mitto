@@ -138,6 +138,10 @@ describe("MENU_CAPABILITIES", () => {
     expect(MENU_CAPABILITIES.prompts).toEqual([]);
   });
 
+  test("promptsPeriodic menu has no capabilities", () => {
+    expect(MENU_CAPABILITIES.promptsPeriodic).toEqual([]);
+  });
+
   test("conversation menu has no capabilities", () => {
     expect(MENU_CAPABILITIES.conversation).toEqual([]);
   });

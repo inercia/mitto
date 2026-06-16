@@ -24,6 +24,7 @@ export function promptMenus(prompt) {
  */
 export const MENU_CAPABILITIES = {
   prompts: [],
+  promptsPeriodic: [],
   conversation: [],
   beadsIssues: ["parameters"],
   beadsList: [],

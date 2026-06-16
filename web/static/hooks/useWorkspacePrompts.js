@@ -3,7 +3,8 @@
 // App. Handles initial fetch on workspace change, re-fetch on session switch,
 // periodic 30-second refresh, visibility-based refresh, and file-watcher events
 // (mitto:prompts_changed). Exposes the full prompt list, the "prompts" dropup
-// subset, and per-session / per-beads-issue fetch helpers.
+// subset, the periodic-selector subset, and per-session / per-beads-issue fetch
+// helpers.
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
 import { apiUrl, authFetch } from "../utils/index.js";
@@ -18,7 +19,8 @@ import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
  * @param {string|null|undefined} deps.activeSessionId - Active session id.
  *   Drives per-session re-fetches (CEL expressions vary per session).
  * @returns {{ workspacePrompts: Array, predefinedPrompts: Array,
- *   fetchWorkspacePrompts: Function, fetchConversationPromptsForSession: Function }}
+ *   periodicPrompts: Array, fetchWorkspacePrompts: Function,
+ *   fetchConversationPromptsForSession: Function }}
  */
 export function useWorkspacePrompts({ workingDir, activeSessionId }) {
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
@@ -34,6 +36,24 @@ export function useWorkspacePrompts({ workingDir, activeSessionId }) {
           promptMenus(p).includes("prompts") &&
           menuSatisfiesRequires(p, "prompts"),
       ),
+    [workspacePrompts],
+  );
+
+  // Periodic prompts: prompts shown in the PeriodicPromptSelector dropdown. A
+  // prompt appears here if it opts into "prompts" (default dropup) OR
+  // "promptsPeriodic" (periodic-selector-specific). The union keeps existing
+  // prompts available in the selector while letting authors target a prompt
+  // ONLY at the periodic selector via `menus: promptsPeriodic`.
+  const periodicPrompts = useMemo(
+    () =>
+      workspacePrompts.filter((p) => {
+        const menus = promptMenus(p);
+        return (
+          (menus.includes("prompts") && menuSatisfiesRequires(p, "prompts")) ||
+          (menus.includes("promptsPeriodic") &&
+            menuSatisfiesRequires(p, "promptsPeriodic"))
+        );
+      }),
     [workspacePrompts],
   );
 
@@ -207,6 +227,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId }) {
   return {
     workspacePrompts,
     predefinedPrompts,
+    periodicPrompts,
     fetchWorkspacePrompts,
     fetchConversationPromptsForSession,
   };

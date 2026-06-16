@@ -364,6 +364,7 @@ function App() {
   const {
     workspacePrompts,
     predefinedPrompts,
+    periodicPrompts,
     fetchWorkspacePrompts,
     fetchConversationPromptsForSession,
   } = useWorkspacePrompts({
@@ -2086,6 +2087,7 @@ function App() {
             isReadOnly=${sessionInfo?.isReadOnly}
             isArchived=${sessionInfo?.archived || false}
             predefinedPrompts=${predefinedPrompts}
+            periodicPrompts=${periodicPrompts}
             inputRef=${chatInputRef}
             noSession=${!activeSessionId}
             sessionId=${activeSessionId}
