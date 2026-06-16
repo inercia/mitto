@@ -191,6 +191,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   const [priority, setPriority] = useState(2); // 2 = Medium
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [createDeps, setCreateDeps] = useState([]);
+  const [createNewDepType, setCreateNewDepType] = useState("blocks");
+  const [createNewDepId, setCreateNewDepId] = useState("");
+  const [createAssignee, setCreateAssignee] = useState("");
+  const [createNotes, setCreateNotes] = useState("");
 
   // Magic-wand "Improve description" state. Mirrors ChatInput's improve-prompt
   // flow but targets the create-form description. `improvingDesc` gates the
@@ -288,6 +293,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       setPriority(2);
       setDescription("");
       setSubmitting(false);
+      setCreateDeps([]);
+      setCreateNewDepType("blocks");
+      setCreateNewDepId("");
+      setCreateAssignee("");
+      setCreateNotes("");
     }
   }, [isCreating]);
 
@@ -355,6 +365,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       const body = { working_dir: workingDir, type, priority, description: description.trim() };
       if (title.trim()) body.title = title.trim();
       if (createParentId) body.parent = createParentId;
+      if (createAssignee.trim()) body.assignee = createAssignee.trim();
+      if (createNotes.trim()) body.notes = createNotes.trim();
+      if (createDeps.length) body.dependencies = createDeps.map(d => ({ id: d.id, type: d.type || "blocks" }));
       const res = await secureFetch(apiUrl("/api/beads/create"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -373,7 +386,19 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     } finally {
       setSubmitting(false);
     }
-  }, [workingDir, title, type, priority, description, createParentId, showToast, onCreated, onClose]);
+  }, [workingDir, title, type, priority, description, createParentId, createAssignee, createNotes, createDeps, showToast, onCreated, onClose]);
+
+  const addCreateDep = useCallback(() => {
+    const id = createNewDepId.trim();
+    if (!id) return;
+    if (createDeps.some(d => d.id === id)) return;
+    setCreateDeps(prev => [...prev, { id, type: createNewDepType }]);
+    setCreateNewDepId("");
+  }, [createNewDepId, createNewDepType, createDeps]);
+
+  const removeCreateDep = useCallback((id) => {
+    setCreateDeps(prev => prev.filter(d => d.id !== id));
+  }, []);
 
   // AI-enhance a description text field via the same auxiliary endpoint the chat
   // input's magic wand uses (/api/aux/improve-prompt). Works on any
@@ -1066,6 +1091,93 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                   minHeight=${160}
                   editorApiRef=${createEditorApiRef}
                 />
+              </div>
+
+              <div class="mt-3">
+                <label class=${labelClass}>Dependencies</label>
+                <datalist id="beads-create-dep-options">
+                  ${(allIssues || [])
+                    .filter(i => !createDeps.some(d => d.id === i.id))
+                    .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
+                </datalist>
+                <div class="space-y-1 mt-1">
+                  ${createDeps.map(d => html`
+                    <div key=${d.id} class="flex items-center gap-1.5">
+                      <select
+                        class="select select-xs"
+                        value=${d.type || "blocks"}
+                        disabled=${submitting}
+                        onInput=${e => setCreateDeps(prev => prev.map(x => x.id === d.id ? { ...x, type: e.target.value } : x))}
+                      >
+                        ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                      </select>
+                      <span class="font-mono text-xs flex-1 min-w-0 truncate">${d.id}</span>
+                      <button
+                        type="button"
+                        onClick=${() => removeCreateDep(d.id)}
+                        disabled=${submitting}
+                        class="btn btn-ghost btn-square btn-xs shrink-0"
+                        title="Remove dependency"
+                      >
+                        <${CloseIcon} className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  `)}
+                  <div class="flex items-center gap-1.5 pt-1">
+                    <select
+                      class="select select-xs"
+                      value=${createNewDepType}
+                      disabled=${submitting}
+                      onInput=${e => setCreateNewDepType(e.target.value)}
+                    >
+                      ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                    </select>
+                    <input
+                      type="text"
+                      list="beads-create-dep-options"
+                      placeholder="issue id…"
+                      value=${createNewDepId}
+                      disabled=${submitting}
+                      onInput=${e => setCreateNewDepId(e.target.value)}
+                      onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addCreateDep(); } }}
+                      class="input input-xs flex-1 min-w-0"
+                    />
+                    <button
+                      type="button"
+                      onClick=${addCreateDep}
+                      aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
+                      class="btn btn-ghost btn-square btn-xs shrink-0 ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
+                      title="Add dependency"
+                    >
+                      <${PlusIcon} className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-3">
+                <label class=${labelClass} for="new-issue-assignee">Assignee</label>
+                <input
+                  id="new-issue-assignee"
+                  type="text"
+                  class=${inputClass}
+                  placeholder="Assignee"
+                  value=${createAssignee}
+                  disabled=${submitting}
+                  onInput=${e => setCreateAssignee(e.target.value)}
+                />
+              </div>
+
+              <div class="mt-3">
+                <label class=${labelClass} for="new-issue-notes">Notes</label>
+                <textarea
+                  id="new-issue-notes"
+                  class=${textareaClass + " resize-y min-h-[80px]"}
+                  placeholder="Optional notes"
+                  disabled=${submitting}
+                  onInput=${e => setCreateNotes(e.target.value)}
+                  value=${createNotes}
+                ></textarea>
               </div>
             </fieldset>
           `

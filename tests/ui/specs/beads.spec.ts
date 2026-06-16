@@ -1010,6 +1010,9 @@ const SUBMENU_ISSUES = [0, 1, 2].map((n) => ({
 // Both the parent menu and any open submenu render as a fixed daisyUI menu.
 const CTX_MENU = ".menu.fixed.z-50.shadow-xl";
 
+// The new-issue create panel is opened by clicking the "+" button in the beads toolbar.
+const NEW_ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("New Issue"))';
+
 testWithCleanup.describe("Beads view - submenu positioning", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     await page.route("**/api/beads/list**", async (route) => {
@@ -1079,6 +1082,91 @@ testWithCleanup.describe("Beads view - submenu positioning", () => {
       // 3) Since the parent menu sits at the right edge, the submenu opened to its
       //    left (its left edge is left of the parent menu's left edge).
       expect(subBox!.x).toBeLessThan(parentBox!.x);
+    },
+  );
+});
+
+/**
+ * Beads view — create form with dependencies, assignee, and notes.
+ *
+ * Opens the "New Issue" panel via the "+" toolbar button, fills in a
+ * description, adds a dependency, sets an assignee and notes, then clicks
+ * Save. The POST /api/beads/create request is intercepted and the body is
+ * asserted to contain the `dependencies`, `assignee`, and `notes` fields.
+ */
+testWithCleanup.describe("Beads view - create form fields", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+    await page.route("**/api/beads/list**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MOCK_ISSUES),
+      });
+    });
+
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+    const createResp = await request.post(apiUrl("/api/sessions"), {
+      data: { name: `Beads Seed ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    await helpers.navigateAndWait(page);
+  });
+
+  testWithCleanup(
+    "create form sends dependencies, assignee, and notes in POST body",
+    async ({ page, timeouts }) => {
+      await openBeads(page, timeouts);
+
+      // Capture the create request body before clicking Save.
+      let capturedBody: Record<string, unknown> | null = null;
+      await page.route("**/api/beads/create", async (route) => {
+        capturedBody = JSON.parse(route.request().postData() ?? "{}");
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ id: "mitto-new", title: "Test" }),
+        });
+      });
+
+      // Open the create panel via the "+" button in the beads toolbar.
+      await page.locator('button[title="New issue"]').first().click();
+      const panel = page.locator(NEW_ISSUE_PANEL);
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Fill in description (required).
+      const descEditor = panel.locator(".cm-editor").first();
+      await descEditor.click();
+      await page.keyboard.type("Test description for create form");
+
+      // Add a dependency: type an issue id in the dep input and click "+".
+      const depInput = panel.locator('input[list="beads-create-dep-options"]');
+      await depInput.fill("mitto-aaa");
+      await panel.locator('button[title="Add dependency"]').click();
+
+      // Fill assignee.
+      await panel.locator("#new-issue-assignee").fill("alice");
+
+      // Fill notes.
+      await panel.locator("#new-issue-notes").fill("some notes");
+
+      // Click Save.
+      await panel.locator('button:has-text("Save")').click();
+
+      // Wait for the intercepted request to be captured.
+      await expect
+        .poll(() => capturedBody, { timeout: timeouts.shortAction })
+        .not.toBeNull();
+
+      expect(capturedBody!.assignee).toBe("alice");
+      expect(capturedBody!.notes).toBe("some notes");
+      expect(Array.isArray(capturedBody!.dependencies)).toBeTruthy();
+      const deps = capturedBody!.dependencies as Array<{ id: string; type: string }>;
+      expect(deps.length).toBeGreaterThan(0);
+      expect(deps[0].id).toBe("mitto-aaa");
+      expect(deps[0].type).toBe("blocks"); // default type
     },
   );
 });
