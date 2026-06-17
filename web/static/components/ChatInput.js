@@ -2464,7 +2464,7 @@ ${activeUIPrompt.text || ""}</textarea
                   onClick=${handleImprovePrompt}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                  class="chat-input-action ${isImproving ? "loading" : ""}"
+                  class="chat-input-action ${isImproving ? "improving" : ""}"
                   title="Improve prompt with AI (Ctrl+P)"
                 >
                   ${isImproving
