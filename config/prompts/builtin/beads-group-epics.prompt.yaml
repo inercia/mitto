@@ -1,0 +1,148 @@
+icon: beads
+name: Group in Epics
+menus: beadsList
+description: Review ungrouped open beads, propose high-confidence epic groupings for review, and (after confirmation) create the epics and reparent the member issues
+backgroundColor: '#B2DFDB'
+group: Tasks
+enabledWhen: commandExists("bd") && dirExists(".beads")
+prompt: |
+  ## Session Context
+
+  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Beads: Group Issues into Epics
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`. Beads supports first-class parent/child hierarchy: an **epic** is a parent bead that groups related child beads.
+
+  Your job is to look across the **currently open issues**, find issues that clearly belong together, and propose grouping them under epics. **Err strongly on the side of caution**: only propose a grouping when you are highly confident the issues share a genuine common theme or objective. It is better to leave issues ungrouped than to force them into a loosely related epic.
+
+  ## Step 1 — Review the current open issues
+
+  List the open beads to work from:
+
+  ```bash
+  bd list --status open --json
+  ```
+
+  If there are no open issues, tell the user there is nothing to group and stop.
+
+  ## Step 2 — Identify ungrouped, non-epic issues
+
+  From the list, keep only issues that are **candidates for grouping**:
+
+  - **Exclude epics** — skip any issue whose `type` (`issue_type`) is `epic`.
+  - **Exclude already-grouped issues** — skip any issue that already has a `parent` (it is already a child of some epic).
+
+  The remaining set is the **ungrouped, non-epic** issues. For context, also note the **existing epics** (so you don't propose a new epic that duplicates one — if an ungrouped issue clearly belongs to an existing epic, you may propose adding it there instead of creating a new epic). Inspect any issue more deeply when needed:
+
+  ```bash
+  bd show <bead-id> --long --json
+  ```
+
+  ## Step 3 — Find natural, high-confidence groupings
+
+  Analyze the ungrouped issues for clusters that are **strongly** related — issues that share a common theme, feature area, component, or objective such that completing them together is meaningfully coherent.
+
+  Apply a **high-confidence bar**:
+
+  - Only group issues when the shared purpose is **clear and specific** (e.g., "all parts of the new export pipeline", "hardening the WebSocket reconnection path").
+  - **Do not** force groupings on weak or tangential links (e.g., "both touch the frontend", "both are bugs", "both are P2"). Shared type, priority, or broad area alone is **not** sufficient.
+  - A valid epic should have **at least two** member issues. A single issue is not an epic.
+  - It is perfectly acceptable — and often correct — to **leave most issues ungrouped**. Propose few, strong epics rather than many speculative ones.
+
+  If **no** grouping clears the confidence bar, report that you found no strongly-related clusters and stop without changing anything.
+
+  ## Step 4 — Draft the proposed epics
+
+  For each grouping that clears the bar, prepare:
+
+  - **Epic name**: a concise, descriptive title capturing the shared purpose.
+  - **Epic description**: a short paragraph stating the common objective and what "done" means for the group.
+  - **Member issues**: the list of bead IDs (and titles) to place under this epic.
+  - **Rationale**: a clear justification of *why* these specific issues belong together — the concrete shared theme/objective — so the user can judge the grouping.
+
+  Also note any issues you deliberately **left ungrouped** and why, so the user sees you considered them.
+
+  ## Step 5 — Present the proposal and wait for confirmation
+
+  This step is **read-only until the user confirms** — do not modify any bead yet.
+
+  First, **print the structured proposal as a regular message** so the user can read the full reasoning:
+
+  > **Epic: <name>**
+  > <description>
+  > Members: <bead-id: title>, <bead-id: title>, …
+  > Rationale: <why these belong together>
+
+  Then present the proposal for approval with `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as checkboxes — one per proposed epic (**checked** by default), with each member as a nested checkbox so the user can drop individual issues from an epic:
+
+  ```html
+  <p>Select which epic groupings to apply. Unchecked items are skipped.</p>
+
+  <label><input type="checkbox" name="epic_1" checked /> Create epic: "Export pipeline" (3 issues)</label>
+  <label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="epic_1_member_bd-12" checked /> bd-12 — Add CSV exporter</label>
+  <label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="epic_1_member_bd-19" checked /> bd-19 — Add JSON exporter</label>
+  <label>&nbsp;&nbsp;&nbsp;&nbsp;<input type="checkbox" name="epic_1_member_bd-23" checked /> bd-23 — Export progress UI</label>
+  ```
+
+  Use stable names: `epic_<N>` for each proposed epic and `epic_<N>_member_<bead-id>` for each member. Submit/Cancel buttons are added automatically.
+
+  Interpreting the result:
+  - An epic is **approved** only if its `epic_<N>` key is **present** in the returned values, and only its **checked members** (`epic_<N>_member_<bead-id>` present) are included.
+  - Skip any approved epic that ends up with **fewer than two** members.
+  - If the user **cancels**, or submits with everything unchecked, **make no changes** and report that nothing was grouped.
+
+  ## Step 6 — Apply the approved groupings with `bd`
+
+  For each approved epic, create the epic, then reparent its approved members under it. Write the epic description to a temporary file and pass it via `--body-file` to preserve formatting:
+
+  ```bash
+  # Create the epic (capture its ID from the output)
+  bd create "<epic name>" --type epic --body-file /tmp/epic-desc.md
+
+  # Reparent each member issue under the new epic
+  bd update <member-id> --parent <epic-id>
+  ```
+
+  If a member should instead join an **existing** epic the user approved, reparent it the same way: `bd update <member-id> --parent <existing-epic-id>`.
+
+  After wiring each epic, record a terse audit note on it:
+
+  ```bash
+  bd update <epic-id> --append-notes "Grouped <N> issues (<member-ids>): <one-line rationale>."
+  ```
+
+  ## Step 7 — Confirm the result
+
+  Verify and summarize:
+
+  ```bash
+  bd dep tree <epic-id>   # show the resulting epic → children structure
+  ```
+
+  Finish with a short summary listing each **created epic** (ID + name) with its members indented beneath it, any issues deliberately **left ungrouped**, and any failures or warnings from `bd`.
+
+  ## Final step — Offer to delete this conversation
+
+  The task is complete. Offer to tidy up so finished conversations do not accumulate.
+
+  1. Ask the user whether to delete this conversation now, via
+     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     - **"Yes, delete it"**
+     - **"No, keep it"**
+
+  2. Honour the answer:
+     - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+       message is delivered first) with
+       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       then self-destruct with
+       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+     - **Keep** → leave the conversation in place.
+
+  3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+     it was **started by this prompt** (a dedicated conversation for this task, not an existing
+     conversation you were invoked into), **no further action is expected from the user**, and
+     **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+     leave the conversation untouched.
+
+  If the `mitto_*` tools are unavailable, skip this step silently.

@@ -1,0 +1,110 @@
+icon: broom
+name: Clean up children
+description: Review child conversations and delete the finished ones that are no longer needed
+group: Work flow
+menus: prompts, conversation
+backgroundColor: '#FFF9C4'
+enabledWhen: children.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+prompt: |
+  Review the child conversations spawned from this one, identify the ones that have
+  finished their work and are no longer needed, and delete them after user confirmation.
+  **Never delete auto-child conversations.**
+
+  ## Phase 1: Context
+
+  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+
+  All child conversations:
+  @mitto:children
+
+  MCP-created children (these are safe to delete and are never auto-children):
+  @mitto:mcp_children
+
+  Use these variables as the authoritative child list — do **not** call
+  `mitto_conversation_list` to re-enumerate them.
+
+  Any child that appears in the full list but **not** in the MCP list was created
+  automatically (auto-child) or manually by the user. **Auto-children must never be
+  deleted** (they are cascade-managed with this parent).
+
+  ## Phase 2: Inspect Each Child
+
+  For each child, call `mitto_conversation_get(self_id: "@mitto:session_id",
+  conversation_id: <child_id>)` (run these in parallel) to learn:
+
+  - `child_origin` — `"auto"`, `"mcp"`, or `"human"`. Treat `"auto"` as protected.
+  - Whether the agent is currently replying — a child that is still prompting is busy.
+  - `queued_prompts` — a child with pending queued prompts still has work to do.
+
+  Recall from this conversation's own context (you are the parent) whether each child
+  was asked to report back and whether it already did. Do **not** call
+  `mitto_conversation_get_summary` — you already have this context.
+
+  ## Phase 3: Classify
+
+  **Protected — never delete:**
+  - Auto-children (`child_origin == "auto"`).
+  - Children currently prompting (agent still replying).
+  - Children with pending queued prompts.
+  - Children that were asked to report back but have **not** reported yet.
+
+  **Cleanup candidates** (all of the following):
+  - Not an auto-child.
+  - Idle (not currently prompting) and no queued prompts.
+  - Have finished their assigned work.
+  - Already reported back, if a report was expected of them.
+
+  ## Phase 4: Evaluate Future Need
+
+  For each cleanup candidate, judge from the conversation context whether you are likely
+  to need it again in the near future (follow-up iteration, additional questions, or as a
+  reference for ongoing work). Keep the ones you may reuse soon; mark the rest for deletion.
+  When in doubt, keep the conversation.
+
+  ## Phase 5: Confirm With User
+
+  Present a short summary, then ask for confirmation via
+  `mitto_ui_form(self_id: "@mitto:session_id", ...)` (timeout: 120s) with one checkbox per
+  candidate, pre-checked for the ones you recommend deleting:
+
+  ```html
+  <p>Select the finished child conversations to delete:</p>
+  <label><input type="checkbox" name="delete" value="<id1>" checked /> Title 1 — Server (finished, reported)</label>
+  <label><input type="checkbox" name="delete" value="<id2>" checked /> Title 2 — Server (finished)</label>
+  <label><input type="checkbox" name="delete" value="<id3>" /> Title 3 — Server (finished, may reuse)</label>
+  ```
+
+  Do not include protected children in the form. On timeout or cancel: abort and delete
+  nothing. Read back the selected `delete` values (the conversation IDs to delete).
+
+  ## Phase 6: Delete
+
+  For each confirmed conversation ID:
+
+  ```
+  mitto_conversation_delete(self_id: "@mitto:session_id", conversation_id: <child_id>)
+  ```
+
+  Double-check before each call that the target is **not** an auto-child and was in the
+  confirmed selection. Skip anything that no longer qualifies.
+
+  ## Phase 7: Report
+
+  ```markdown
+  ## Children Cleanup
+
+  ### Deleted
+  - <title> (<id>) — <why it was safe to delete>
+
+  ### Kept
+  - <title> (<id>) — <auto-child | still working | may be needed soon | not yet reported>
+  ```
+
+  ## Guidelines
+
+  - **Never** delete auto-child conversations.
+  - **Never** delete a child that is still prompting or has queued prompts.
+  - Only delete idle children that finished their work and — when a report was expected —
+    have already reported back.
+  - When in doubt, keep the conversation; deletion is permanent.
+  - Always get explicit user confirmation before deleting anything.

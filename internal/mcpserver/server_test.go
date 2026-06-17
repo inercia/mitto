@@ -8045,14 +8045,14 @@ func TestPromptUpdate_ContentUpdate(t *testing.T) {
 		t.Fatalf("Failed to read written file: %v", err)
 	}
 	s := string(content)
-	if !strings.Contains(s, "name: \"New Prompt\"") {
-		t.Errorf("Expected name in frontmatter, got:\n%s", s)
+	if !strings.Contains(s, "name:") || !strings.Contains(s, "New Prompt") {
+		t.Errorf("Expected name in YAML, got:\n%s", s)
 	}
 	if !strings.Contains(s, "Hello world") {
 		t.Errorf("Expected prompt text in content, got:\n%s", s)
 	}
-	if !strings.Contains(s, "description: \"A greeting\"") {
-		t.Errorf("Expected description in frontmatter, got:\n%s", s)
+	if !strings.Contains(s, "description:") || !strings.Contains(s, "A greeting") {
+		t.Errorf("Expected description in YAML, got:\n%s", s)
 	}
 }
 
@@ -8083,8 +8083,8 @@ func TestPromptUpdate_EnableDisableOnly(t *testing.T) {
 	// First create a prompt file so the enable/disable path uses UpdatePromptFileEnabled
 	promptsDir := filepath.Join(workDir, ".mitto", "prompts")
 	os.MkdirAll(promptsDir, 0o755)
-	promptFile := filepath.Join(promptsDir, "test-prompt.md")
-	os.WriteFile(promptFile, []byte("---\nname: \"Test Prompt\"\n---\nHello"), 0o644)
+	promptFile := filepath.Join(promptsDir, "test-prompt.prompt.yaml")
+	os.WriteFile(promptFile, []byte("name: \"Test Prompt\"\nprompt: |\n  Hello\n"), 0o644)
 
 	ctx := context.Background()
 	enabled := false

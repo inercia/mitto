@@ -80,9 +80,9 @@ func TestPromptsWatcher_BasicUsage(t *testing.T) {
 		t.Fatalf("Failed to subscribe: %v", err)
 	}
 
-	// Create a .md file
-	mdFile := filepath.Join(tmpDir, "test.md")
-	if err := os.WriteFile(mdFile, []byte("# Test"), 0644); err != nil {
+	// Create a .prompt.yaml file
+	mdFile := filepath.Join(tmpDir, "test.prompt.yaml")
+	if err := os.WriteFile(mdFile, []byte("name: Test\nprompt: |\n  Test\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
@@ -121,8 +121,8 @@ func TestPromptsWatcher_Debouncing(t *testing.T) {
 
 	// Create multiple files rapidly
 	for i := 0; i < 5; i++ {
-		mdFile := filepath.Join(tmpDir, "test"+string(rune('0'+i))+".md")
-		if err := os.WriteFile(mdFile, []byte("# Test"), 0644); err != nil {
+		mdFile := filepath.Join(tmpDir, "test"+string(rune('0'+i))+".prompt.yaml")
+		if err := os.WriteFile(mdFile, []byte("name: Test\nprompt: |\n  Test\n"), 0644); err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
 	}
@@ -174,8 +174,8 @@ func TestPromptsWatcher_MultipleSubscribers(t *testing.T) {
 	}
 
 	// Create a file
-	mdFile := filepath.Join(tmpDir, "shared.md")
-	if err := os.WriteFile(mdFile, []byte("# Shared"), 0644); err != nil {
+	mdFile := filepath.Join(tmpDir, "shared.prompt.yaml")
+	if err := os.WriteFile(mdFile, []byte("name: Shared\nprompt: |\n  Shared\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestPromptsWatcher_OnlyMDFiles(t *testing.T) {
 		t.Fatalf("Failed to subscribe: %v", err)
 	}
 
-	// Create a non-.md file
+	// Create a non-.prompt.yaml file
 	txtFile := filepath.Join(tmpDir, "test.txt")
 	if err := os.WriteFile(txtFile, []byte("text"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
@@ -305,15 +305,15 @@ func TestPromptsWatcher_OnlyMDFiles(t *testing.T) {
 		t.Errorf("Should not notify for .txt files, got %d events", sub.EventCount())
 	}
 
-	// Now create a .md file
-	mdFile := filepath.Join(tmpDir, "test.md")
-	if err := os.WriteFile(mdFile, []byte("# Test"), 0644); err != nil {
+	// Now create a .prompt.yaml file
+	mdFile := filepath.Join(tmpDir, "test.prompt.yaml")
+	if err := os.WriteFile(mdFile, []byte("name: Test\nprompt: |\n  Test\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
 	// Should receive notification
 	if !sub.WaitForEvent(2 * time.Second) {
-		t.Fatal("Timed out waiting for .md file event")
+		t.Fatal("Timed out waiting for .prompt.yaml file event")
 	}
 }
 

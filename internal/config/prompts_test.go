@@ -8,20 +8,18 @@ import (
 )
 
 func TestParsePromptFile_WithFrontMatter(t *testing.T) {
-	data := []byte(`---
-name: "Test Prompt"
+	data := []byte(`name: "Test Prompt"
 description: "A test prompt"
 backgroundColor: "#E8F5E9"
 icon: "code"
 tags: ["test", "example"]
----
+prompt: |
+  This is the prompt content.
 
-This is the prompt content.
-
-It can span multiple lines.
+  It can span multiple lines.
 `)
 
-	prompt, err := ParsePromptFile("test.md", data, time.Now())
+	prompt, err := ParsePromptFile("test.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -41,44 +39,45 @@ It can span multiple lines.
 	if len(prompt.Tags) != 2 || prompt.Tags[0] != "test" || prompt.Tags[1] != "example" {
 		t.Errorf("Tags = %v, want [test example]", prompt.Tags)
 	}
-	if prompt.Content != "This is the prompt content.\n\nIt can span multiple lines." {
-		t.Errorf("Content = %q, want multiline content", prompt.Content)
+	wantContent := "This is the prompt content.\n\nIt can span multiple lines.\n"
+	if prompt.Content != wantContent {
+		t.Errorf("Content = %q, want %q", prompt.Content, wantContent)
 	}
 	if !prompt.IsEnabled() {
 		t.Error("IsEnabled() = false, want true (default)")
 	}
 }
 
-func TestParsePromptFile_WithoutFrontMatter(t *testing.T) {
-	data := []byte(`This is just content without front-matter.
+func TestParsePromptFile_NameFromFilenameNoNameField(t *testing.T) {
+	data := []byte(`prompt: |
+  This is just content with no name.
 
-Multiple lines work too.
+  Multiple lines work too.
 `)
 
-	prompt, err := ParsePromptFile("my-prompt.md", data, time.Now())
+	prompt, err := ParsePromptFile("my-prompt.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	// Name should be derived from filename
+	// Name should be derived from filename (strips .prompt.yaml)
 	if prompt.Name != "my-prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "my-prompt")
 	}
-	if prompt.Content != "This is just content without front-matter.\n\nMultiple lines work too." {
-		t.Errorf("Content = %q", prompt.Content)
+	wantContent := "This is just content with no name.\n\nMultiple lines work too.\n"
+	if prompt.Content != wantContent {
+		t.Errorf("Content = %q, want %q", prompt.Content, wantContent)
 	}
 }
 
 func TestParsePromptFile_DisabledPrompt(t *testing.T) {
-	data := []byte(`---
-name: "Disabled Prompt"
+	data := []byte(`name: "Disabled Prompt"
 enabled: false
----
-
-This prompt is disabled.
+prompt: |
+  This prompt is disabled.
 `)
 
-	prompt, err := ParsePromptFile("disabled.md", data, time.Now())
+	prompt, err := ParsePromptFile("disabled.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -89,14 +88,12 @@ This prompt is disabled.
 }
 
 func TestParsePromptFile_NameFromFilename(t *testing.T) {
-	data := []byte(`---
-description: "No name specified"
----
-
-Content here.
+	data := []byte(`description: "No name specified"
+prompt: |
+  Content here.
 `)
 
-	prompt, err := ParsePromptFile("code-review.md", data, time.Now())
+	prompt, err := ParsePromptFile("code-review.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -107,20 +104,18 @@ Content here.
 }
 
 func TestParsePromptFile_SubdirectoryPath(t *testing.T) {
-	data := []byte(`---
-name: "Git Commit"
----
-
-Write a commit message.
+	data := []byte(`name: "Git Commit"
+prompt: |
+  Write a commit message.
 `)
 
-	prompt, err := ParsePromptFile("git/commit.md", data, time.Now())
+	prompt, err := ParsePromptFile("git/commit.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	if prompt.Path != "git/commit.md" {
-		t.Errorf("Path = %q, want %q", prompt.Path, "git/commit.md")
+	if prompt.Path != "git/commit.prompt.yaml" {
+		t.Errorf("Path = %q, want %q", prompt.Path, "git/commit.prompt.yaml")
 	}
 	if prompt.Name != "Git Commit" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Git Commit")
@@ -174,19 +169,17 @@ func TestToWebPrompt(t *testing.T) {
 }
 
 func TestParsePromptFile_WithPeriodic(t *testing.T) {
-	data := []byte(`---
-name: "Daily Standup"
+	data := []byte(`name: "Daily Standup"
 description: "Run daily standup"
 periodic:
   value: 1
   unit: days
   at: "09:00"
----
-
-Run the daily standup.
+prompt: |
+  Run the daily standup.
 `)
 
-	prompt, err := ParsePromptFile("daily-standup.md", data, time.Now())
+	prompt, err := ParsePromptFile("daily-standup.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -224,17 +217,15 @@ Run the daily standup.
 }
 
 func TestParsePromptFile_WithPeriodic_NoAt(t *testing.T) {
-	data := []byte(`---
-name: "Hourly Check"
+	data := []byte(`name: "Hourly Check"
 periodic:
   value: 2
   unit: hours
----
-
-Check every 2 hours.
+prompt: |
+  Check every 2 hours.
 `)
 
-	prompt, err := ParsePromptFile("hourly.md", data, time.Now())
+	prompt, err := ParsePromptFile("hourly.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -254,14 +245,12 @@ Check every 2 hours.
 }
 
 func TestParsePromptFile_NoPeriodic(t *testing.T) {
-	data := []byte(`---
-name: "One-time Prompt"
----
-
-Just a regular prompt.
+	data := []byte(`name: "One-time Prompt"
+prompt: |
+  Just a regular prompt.
 `)
 
-	prompt, err := ParsePromptFile("one-time.md", data, time.Now())
+	prompt, err := ParsePromptFile("one-time.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -311,14 +300,12 @@ func TestLoadPromptsFromDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create root prompt
-	rootPrompt := `---
-name: "Root Prompt"
----
-
-Root content.
+	rootPrompt := `name: "Root Prompt"
+prompt: |
+  Root content.
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "root.md"), []byte(rootPrompt), 0644); err != nil {
-		t.Fatalf("Failed to write root.md: %v", err)
+	if err := os.WriteFile(filepath.Join(tmpDir, "root.prompt.yaml"), []byte(rootPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write root.prompt.yaml: %v", err)
 	}
 
 	// Create subdirectory with prompt
@@ -327,30 +314,26 @@ Root content.
 		t.Fatalf("Failed to create subdir: %v", err)
 	}
 
-	subPrompt := `---
-name: "Git Commit"
+	subPrompt := `name: "Git Commit"
 backgroundColor: "#E8F5E9"
----
-
-Write a commit message.
+prompt: |
+  Write a commit message.
 `
-	if err := os.WriteFile(filepath.Join(subDir, "commit.md"), []byte(subPrompt), 0644); err != nil {
-		t.Fatalf("Failed to write commit.md: %v", err)
+	if err := os.WriteFile(filepath.Join(subDir, "commit.prompt.yaml"), []byte(subPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write commit.prompt.yaml: %v", err)
 	}
 
 	// Create disabled prompt (should be excluded)
-	disabledPrompt := `---
-name: "Disabled"
+	disabledPrompt := `name: "Disabled"
 enabled: false
----
-
-This should not appear.
+prompt: |
+  This should not appear.
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "disabled.md"), []byte(disabledPrompt), 0644); err != nil {
-		t.Fatalf("Failed to write disabled.md: %v", err)
+	if err := os.WriteFile(filepath.Join(tmpDir, "disabled.prompt.yaml"), []byte(disabledPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write disabled.prompt.yaml: %v", err)
 	}
 
-	// Create non-md file (should be ignored)
+	// Create non-prompt.yaml file (should be ignored)
 	if err := os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignore me"), 0644); err != nil {
 		t.Fatalf("Failed to write readme.txt: %v", err)
 	}
@@ -435,15 +418,13 @@ func TestPromptsToWebPrompts_Empty(t *testing.T) {
 }
 
 func TestParsePromptFile_WithACPs(t *testing.T) {
-	data := []byte(`---
-name: "Claude Only Prompt"
+	data := []byte(`name: "Claude Only Prompt"
 enabledWhen: 'acp.matchesServerType("claude-code")'
----
-
-This prompt is only for Claude Code.
+prompt: |
+  This prompt is only for Claude Code.
 `)
 
-	prompt, err := ParsePromptFile("claude-only.md", data, time.Now())
+	prompt, err := ParsePromptFile("claude-only.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -458,15 +439,13 @@ This prompt is only for Claude Code.
 }
 
 func TestParsePromptFile_WithMultipleACPs(t *testing.T) {
-	data := []byte(`---
-name: "Multi ACP Prompt"
+	data := []byte(`name: "Multi ACP Prompt"
 enabledWhen: 'acp.matchesServerType(["auggie", "claude-code", "custom-acp"])'
----
-
-This prompt works with multiple ACPs.
+prompt: |
+  This prompt works with multiple ACPs.
 `)
 
-	prompt, err := ParsePromptFile("multi-acp.md", data, time.Now())
+	prompt, err := ParsePromptFile("multi-acp.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -478,17 +457,15 @@ This prompt works with multiple ACPs.
 }
 
 func TestParsePromptFile_WithGroup(t *testing.T) {
-	data := []byte(`---
-name: "Test Prompt"
+	data := []byte(`name: "Test Prompt"
 description: "A test prompt"
 group: "Testing"
 backgroundColor: "#E8F5E9"
----
-
-This is a test prompt with a group.
+prompt: |
+  This is a test prompt with a group.
 `)
 
-	prompt, err := ParsePromptFile("test.md", data, time.Now())
+	prompt, err := ParsePromptFile("test.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -505,16 +482,14 @@ This is a test prompt with a group.
 }
 
 func TestParsePromptFile_WithMenus(t *testing.T) {
-	data := []byte(`---
-name: "Context Prompt"
+	data := []byte(`name: "Context Prompt"
 group: "Workflow"
 menus: conversation
----
-
-This prompt appears in the conversation context menu.
+prompt: |
+  This prompt appears in the conversation context menu.
 `)
 
-	prompt, err := ParsePromptFile("context.md", data, time.Now())
+	prompt, err := ParsePromptFile("context.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -537,15 +512,13 @@ This prompt appears in the conversation context menu.
 }
 
 func TestParsePromptFile_WithMultipleMenus(t *testing.T) {
-	data := []byte(`---
-name: "Multi Menu Prompt"
+	data := []byte(`name: "Multi Menu Prompt"
 menus: "conversation, group"
----
-
-This prompt appears in multiple menus.
+prompt: |
+  This prompt appears in multiple menus.
 `)
 
-	prompt, err := ParsePromptFile("multi.md", data, time.Now())
+	prompt, err := ParsePromptFile("multi.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -556,14 +529,12 @@ This prompt appears in multiple menus.
 }
 
 func TestParsePromptFile_WithoutMenus(t *testing.T) {
-	data := []byte(`---
-name: "Plain Prompt"
----
-
-A prompt without a menus attribute.
+	data := []byte(`name: "Plain Prompt"
+prompt: |
+  A prompt without a menus attribute.
 `)
 
-	prompt, err := ParsePromptFile("plain.md", data, time.Now())
+	prompt, err := ParsePromptFile("plain.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
@@ -646,15 +617,13 @@ func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 }
 
 func TestParsePromptFile_WithEnabledWhenTools(t *testing.T) {
-	data := []byte(`---
-name: "Jira Prompt"
+	data := []byte(`name: "Jira Prompt"
 enabledWhen: 'tools.hasAllPatterns(["jira_*", "slack_*"])'
----
-
-This prompt requires Jira and Slack tools.
+prompt: |
+  This prompt requires Jira and Slack tools.
 `)
 
-	prompt, err := ParsePromptFile("jira-prompt.md", data, time.Now())
+	prompt, err := ParsePromptFile("jira-prompt.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}

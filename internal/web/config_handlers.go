@@ -166,7 +166,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["permissions"] = s.config.MittoConfig.Permissions
 
 		// Merge prompts from global files and settings
-		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
+		// Global file prompts (MITTO_DIR/prompts/*.prompt.yaml) have lower priority than settings prompts
 		var globalFilePrompts []configPkg.WebPrompt
 		if s.config.PromptsCache != nil {
 			var err error

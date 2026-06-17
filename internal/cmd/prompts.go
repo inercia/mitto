@@ -18,21 +18,20 @@ var promptsCmd = &cobra.Command{
 	Short: "Manage global prompts",
 	Long: `Manage global prompts stored in MITTO_DIR/prompts/.
 
-Prompts are markdown files with optional YAML front-matter that define
-quick actions available in the chat interface.
+Prompts are YAML files (.prompt.yaml) that define quick actions
+available in the chat interface. All fields including the prompt body
+are top-level YAML keys.
 
-Example prompt file (prompts/code-review.md):
+Example prompt file (prompts/code-review.prompt.yaml):
 
-  ---
   name: "Code Review"
   description: "Review the selected code"
   backgroundColor: "#E8F5E9"
-  ---
-
-  Please review the following code for:
-  - Bugs and potential issues
-  - Performance improvements
-  - Code style and best practices`,
+  prompt: |
+    Please review the following code for:
+    - Bugs and potential issues
+    - Performance improvements
+    - Code style and best practices`,
 }
 
 var promptsListCmd = &cobra.Command{
@@ -84,7 +83,7 @@ func runPromptsList(cmd *cobra.Command, args []string) error {
 	// Check if directory exists
 	if _, err := os.Stat(promptsDir); os.IsNotExist(err) {
 		fmt.Printf("Prompts directory: %s\n", promptsDir)
-		fmt.Println("No prompts found. Create .md files in the prompts directory to add global prompts.")
+		fmt.Println("No prompts found. Create .prompt.yaml files in the prompts directory to add global prompts.")
 		return nil
 	}
 
@@ -104,7 +103,7 @@ func runPromptsList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Prompts directory: %s\n\n", promptsDir)
 
 	if len(prompts) == 0 {
-		fmt.Println("No prompts found. Create .md files in the prompts directory to add global prompts.")
+		fmt.Println("No prompts found. Create .prompt.yaml files in the prompts directory to add global prompts.")
 		return nil
 	}
 
@@ -178,9 +177,9 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Clean existing *.md files in the builtin directory before deploying
+	// Clean existing *.prompt.yaml files in the builtin directory before deploying
 	// This ensures removed prompts don't linger
-	existingFiles, err := filepath.Glob(filepath.Join(builtinDir, "*.md"))
+	existingFiles, err := filepath.Glob(filepath.Join(builtinDir, "*.prompt.yaml"))
 	if err != nil {
 		return fmt.Errorf("failed to list existing prompts: %w", err)
 	}

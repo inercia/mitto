@@ -23,14 +23,12 @@ func TestPromptsCache_Get(t *testing.T) {
 	}
 
 	// Create a prompt file
-	promptContent := `---
-name: "Test Prompt"
----
-
-Test content.
+	promptContent := `name: "Test Prompt"
+prompt: |
+  Test content.
 `
-	if err := os.WriteFile(filepath.Join(promptsDir, "test.md"), []byte(promptContent), 0644); err != nil {
-		t.Fatalf("Failed to write test.md: %v", err)
+	if err := os.WriteFile(filepath.Join(promptsDir, "test.prompt.yaml"), []byte(promptContent), 0644); err != nil {
+		t.Fatalf("Failed to write test.prompt.yaml: %v", err)
 	}
 
 	// Create cache and get prompts
@@ -68,15 +66,13 @@ func TestPromptsCache_GetWebPrompts(t *testing.T) {
 		t.Fatalf("Failed to create prompts dir: %v", err)
 	}
 
-	promptContent := `---
-name: "Web Prompt"
+	promptContent := `name: "Web Prompt"
 backgroundColor: "#FF0000"
----
-
-Content.
+prompt: |
+  Content.
 `
-	if err := os.WriteFile(filepath.Join(promptsDir, "web.md"), []byte(promptContent), 0644); err != nil {
-		t.Fatalf("Failed to write web.md: %v", err)
+	if err := os.WriteFile(filepath.Join(promptsDir, "web.prompt.yaml"), []byte(promptContent), 0644); err != nil {
+		t.Fatalf("Failed to write web.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -108,8 +104,8 @@ func TestPromptsCache_ReloadOnChange(t *testing.T) {
 	}
 
 	// Create initial prompt
-	if err := os.WriteFile(filepath.Join(promptsDir, "first.md"), []byte("First prompt"), 0644); err != nil {
-		t.Fatalf("Failed to write first.md: %v", err)
+	if err := os.WriteFile(filepath.Join(promptsDir, "first.prompt.yaml"), []byte("name: \"First\"\nprompt: |\n  First prompt\n"), 0644); err != nil {
+		t.Fatalf("Failed to write first.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -122,8 +118,8 @@ func TestPromptsCache_ReloadOnChange(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Add another prompt
-	if err := os.WriteFile(filepath.Join(promptsDir, "second.md"), []byte("Second prompt"), 0644); err != nil {
-		t.Fatalf("Failed to write second.md: %v", err)
+	if err := os.WriteFile(filepath.Join(promptsDir, "second.prompt.yaml"), []byte("name: \"Second\"\nprompt: |\n  Second prompt\n"), 0644); err != nil {
+		t.Fatalf("Failed to write second.prompt.yaml: %v", err)
 	}
 
 	// Get should detect the change and reload
@@ -144,8 +140,8 @@ func TestPromptsCache_ForceReload(t *testing.T) {
 		t.Fatalf("Failed to create prompts dir: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(promptsDir, "test.md"), []byte("Test"), 0644); err != nil {
-		t.Fatalf("Failed to write test.md: %v", err)
+	if err := os.WriteFile(filepath.Join(promptsDir, "test.prompt.yaml"), []byte("name: \"Test\"\nprompt: |\n  Test content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write test.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -195,8 +191,8 @@ func TestPromptsCache_AdditionalDirs(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "default.md"), []byte("---\nname: Default\n---\nDefault content"), 0644); err != nil {
-		t.Fatalf("Failed to write default.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "default.prompt.yaml"), []byte("name: Default\nprompt: |\n  Default content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write default.prompt.yaml: %v", err)
 	}
 
 	// Create additional directory with another prompt
@@ -204,8 +200,8 @@ func TestPromptsCache_AdditionalDirs(t *testing.T) {
 	if err := os.MkdirAll(additionalDir, 0755); err != nil {
 		t.Fatalf("Failed to create additional prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(additionalDir, "extra.md"), []byte("---\nname: Extra\n---\nExtra content"), 0644); err != nil {
-		t.Fatalf("Failed to write extra.md: %v", err)
+	if err := os.WriteFile(filepath.Join(additionalDir, "extra.prompt.yaml"), []byte("name: Extra\nprompt: |\n  Extra content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write extra.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -245,8 +241,8 @@ func TestPromptsCache_AdditionalDirsOverride(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "shared.md"), []byte("---\nname: Shared\n---\nDefault version"), 0644); err != nil {
-		t.Fatalf("Failed to write shared.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "shared.prompt.yaml"), []byte("name: Shared\nprompt: |\n  Default version\n"), 0644); err != nil {
+		t.Fatalf("Failed to write shared.prompt.yaml: %v", err)
 	}
 
 	// Create additional directory with same-named prompt (should override)
@@ -254,8 +250,8 @@ func TestPromptsCache_AdditionalDirsOverride(t *testing.T) {
 	if err := os.MkdirAll(additionalDir, 0755); err != nil {
 		t.Fatalf("Failed to create additional prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(additionalDir, "shared.md"), []byte("---\nname: Shared\n---\nOverridden version"), 0644); err != nil {
-		t.Fatalf("Failed to write shared.md: %v", err)
+	if err := os.WriteFile(filepath.Join(additionalDir, "shared.prompt.yaml"), []byte("name: Shared\nprompt: |\n  Overridden version\n"), 0644); err != nil {
+		t.Fatalf("Failed to write shared.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -271,8 +267,8 @@ func TestPromptsCache_AdditionalDirsOverride(t *testing.T) {
 		t.Errorf("len(prompts) = %d, want 1", len(prompts))
 	}
 
-	if prompts[0].Content != "Overridden version" {
-		t.Errorf("prompts[0].Content = %q, want %q", prompts[0].Content, "Overridden version")
+	if prompts[0].Content != "Overridden version\n" {
+		t.Errorf("prompts[0].Content = %q, want %q", prompts[0].Content, "Overridden version\n")
 	}
 }
 
@@ -287,9 +283,9 @@ func TestPromptsCache_DisabledOverride(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "add-tests.md"),
-		[]byte("---\nname: Add tests\n---\nWrite tests for the code"), 0644); err != nil {
-		t.Fatalf("Failed to write add-tests.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "add-tests.prompt.yaml"),
+		[]byte("name: Add tests\nprompt: |\n  Write tests for the code\n"), 0644); err != nil {
+		t.Fatalf("Failed to write add-tests.prompt.yaml: %v", err)
 	}
 
 	// Create additional directory with same-named disabled prompt (higher priority)
@@ -297,9 +293,9 @@ func TestPromptsCache_DisabledOverride(t *testing.T) {
 	if err := os.MkdirAll(overrideDir, 0755); err != nil {
 		t.Fatalf("Failed to create override dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(overrideDir, "add-tests.md"),
-		[]byte("---\nname: Add tests\nenabled: false\n---\n"), 0644); err != nil {
-		t.Fatalf("Failed to write disabled add-tests.md: %v", err)
+	if err := os.WriteFile(filepath.Join(overrideDir, "add-tests.prompt.yaml"),
+		[]byte("name: Add tests\nenabled: false\nprompt: \"\"\n"), 0644); err != nil {
+		t.Fatalf("Failed to write disabled add-tests.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -329,8 +325,8 @@ func TestPromptsCache_WorkspaceDirs(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "global.md"), []byte("---\nname: Global\n---\nGlobal content"), 0644); err != nil {
-		t.Fatalf("Failed to write global.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "global.prompt.yaml"), []byte("name: Global\nprompt: |\n  Global content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write global.prompt.yaml: %v", err)
 	}
 
 	// Create workspace directory with relative prompts dir
@@ -339,8 +335,8 @@ func TestPromptsCache_WorkspaceDirs(t *testing.T) {
 	if err := os.MkdirAll(workspacePromptsDir, 0755); err != nil {
 		t.Fatalf("Failed to create workspace prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workspacePromptsDir, "local.md"), []byte("---\nname: Local\n---\nLocal content"), 0644); err != nil {
-		t.Fatalf("Failed to write local.md: %v", err)
+	if err := os.WriteFile(filepath.Join(workspacePromptsDir, "local.prompt.yaml"), []byte("name: Local\nprompt: |\n  Local content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write local.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -380,8 +376,8 @@ func TestPromptsCache_WorkspaceDirsOverrideAll(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "shared.md"), []byte("---\nname: Shared\n---\nDefault version"), 0644); err != nil {
-		t.Fatalf("Failed to write shared.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "shared.prompt.yaml"), []byte("name: Shared\nprompt: |\n  Default version\n"), 0644); err != nil {
+		t.Fatalf("Failed to write shared.prompt.yaml: %v", err)
 	}
 
 	// Create additional directory with same-named prompt
@@ -389,8 +385,8 @@ func TestPromptsCache_WorkspaceDirsOverrideAll(t *testing.T) {
 	if err := os.MkdirAll(additionalDir, 0755); err != nil {
 		t.Fatalf("Failed to create additional prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(additionalDir, "shared.md"), []byte("---\nname: Shared\n---\nAdditional version"), 0644); err != nil {
-		t.Fatalf("Failed to write shared.md: %v", err)
+	if err := os.WriteFile(filepath.Join(additionalDir, "shared.prompt.yaml"), []byte("name: Shared\nprompt: |\n  Additional version\n"), 0644); err != nil {
+		t.Fatalf("Failed to write shared.prompt.yaml: %v", err)
 	}
 
 	// Create workspace directory with same-named prompt (highest priority)
@@ -399,8 +395,8 @@ func TestPromptsCache_WorkspaceDirsOverrideAll(t *testing.T) {
 	if err := os.MkdirAll(workspacePromptsDir, 0755); err != nil {
 		t.Fatalf("Failed to create workspace prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workspacePromptsDir, "shared.md"), []byte("---\nname: Shared\n---\nWorkspace version"), 0644); err != nil {
-		t.Fatalf("Failed to write shared.md: %v", err)
+	if err := os.WriteFile(filepath.Join(workspacePromptsDir, "shared.prompt.yaml"), []byte("name: Shared\nprompt: |\n  Workspace version\n"), 0644); err != nil {
+		t.Fatalf("Failed to write shared.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -417,8 +413,8 @@ func TestPromptsCache_WorkspaceDirsOverrideAll(t *testing.T) {
 		t.Errorf("len(prompts) = %d, want 1", len(prompts))
 	}
 
-	if prompts[0].Content != "Workspace version" {
-		t.Errorf("prompts[0].Content = %q, want %q", prompts[0].Content, "Workspace version")
+	if prompts[0].Content != "Workspace version\n" {
+		t.Errorf("prompts[0].Content = %q, want %q", prompts[0].Content, "Workspace version\n")
 	}
 }
 
@@ -433,8 +429,8 @@ func TestPromptsCache_ClearWorkspaceDirs(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "global.md"), []byte("---\nname: Global\n---\nGlobal content"), 0644); err != nil {
-		t.Fatalf("Failed to write global.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "global.prompt.yaml"), []byte("name: Global\nprompt: |\n  Global content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write global.prompt.yaml: %v", err)
 	}
 
 	// Create workspace prompts
@@ -443,8 +439,8 @@ func TestPromptsCache_ClearWorkspaceDirs(t *testing.T) {
 	if err := os.MkdirAll(workspacePromptsDir, 0755); err != nil {
 		t.Fatalf("Failed to create workspace prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workspacePromptsDir, "local.md"), []byte("---\nname: Local\n---\nLocal content"), 0644); err != nil {
-		t.Fatalf("Failed to write local.md: %v", err)
+	if err := os.WriteFile(filepath.Join(workspacePromptsDir, "local.prompt.yaml"), []byte("name: Local\nprompt: |\n  Local content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write local.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()
@@ -477,8 +473,8 @@ func TestPromptsCache_NonExistentDirIgnored(t *testing.T) {
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatalf("Failed to create default prompts dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultDir, "test.md"), []byte("---\nname: Test\n---\nTest content"), 0644); err != nil {
-		t.Fatalf("Failed to write test.md: %v", err)
+	if err := os.WriteFile(filepath.Join(defaultDir, "test.prompt.yaml"), []byte("name: Test\nprompt: |\n  Test content\n"), 0644); err != nil {
+		t.Fatalf("Failed to write test.prompt.yaml: %v", err)
 	}
 
 	cache := NewPromptsCache()

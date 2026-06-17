@@ -19,9 +19,9 @@ const __dirname = path.dirname(__filename);
  * conditional prompt only appears on the conversations where it applies.
  *
  * Fixtures used:
- *   - Prompt: tests/fixtures/workspaces/project-alpha/.mitto/prompts/context-menu-prompt.md
+ *   - Prompt: tests/fixtures/workspaces/project-alpha/.mitto/prompts/context-menu-prompt.prompt.yaml
  *     → name: "Context Menu Test", group: "Workflow", menus: conversation
- *   - Prompt: tests/fixtures/workspaces/project-alpha/.mitto/prompts/context-menu-active-only.md
+ *   - Prompt: tests/fixtures/workspaces/project-alpha/.mitto/prompts/context-menu-active-only.prompt.yaml
  *     → name: "Conditional Test", group: "Workflow", menus: conversation,
  *       enabledWhen: "permissions.canPromptUser"
  */

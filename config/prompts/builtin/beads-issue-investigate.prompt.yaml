@@ -1,0 +1,168 @@
+icon: beads
+name: Investigate more
+menus: beadsIssues
+requires: parameters
+description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: commandExists("bd") && dirExists(".beads")
+prompt: |
+  ## Session Context
+
+  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Beads: Investigate a Bead in Depth
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  The **target bead** is `${ISSUE_ID}`. Your job is to **deepen the understanding** of this bead:
+  gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is
+  genuinely ready to work on. If the problem turns out to be larger or more complex than the bead
+  currently captures, **split it into sub-issues**.
+
+  ## Step 1 — Load the bead's full detail
+
+  ```bash
+  bd show ${ISSUE_ID} --long --json     # description, acceptance, design, notes, metadata
+  bd dep tree ${ISSUE_ID}               # blockers and what it blocks
+  bd show ${ISSUE_ID} --children --json # existing child beads (if any)
+  bd comments ${ISSUE_ID}               # prior discussion, if any
+  ```
+
+  Note what is already well-specified versus what is thin, vague, or missing.
+
+  ## Step 2 — Investigate against the codebase and history
+
+  Do **not** rely on the bead text alone. Gather hard evidence to flesh it out:
+
+  - **Codebase**: locate the files, symbols, APIs, UI, or config the bead concerns. Understand the
+    current behaviour, the relevant constraints, and what a solution would realistically touch.
+  - **Related beads**: search for beads that overlap, block, or inform this one.
+  - **History**: prior or in-flight work that affects scope.
+
+  ```bash
+  git log --oneline --all | grep -i "${ISSUE_ID}"   # commits referencing this bead
+  bd list --json                                      # scan for related beads by topic
+  git log --oneline -200                              # recent work that touches the area
+  ```
+
+  ## Step 3 — Identify gaps and open questions
+
+  From Steps 1–2, list precisely what is unclear or underspecified, e.g.:
+
+  - Vague or overly broad scope; unclear problem statement
+  - Missing or untestable **acceptance criteria**
+  - Undefined **edge cases**, error handling, or non-functional requirements
+  - No **design/approach** where one is needed; unknown technical trade-offs
+  - Unstated **dependencies** on other beads or systems
+  - Ambiguous priority or type
+
+  For each gap, note whether you can resolve it from the evidence or need the user to decide.
+
+  ## Step 4 — Resolve open questions with the user
+
+  For anything you **cannot** settle from evidence, ask the user — do not invent answers. Batch
+  related questions into a single `mitto_ui_options_mitto(self_id: "@mitto:session_id",
+  allow_free_text: true)` call, and for each, offer your **best-guess answer** as an option the user
+  can confirm, correct, or override via free text. Skip this step if nothing is genuinely ambiguous.
+
+  ## Step 5 — Assess complexity & whether to decompose
+
+  Decide whether the (now clearer) bead should stay a single unit or be split:
+
+  - **Keep as one bead** if the work is atomic, tightly coupled, or small with narrow criteria.
+  - **Split into sub-issues** if it spans independent concerns, is too large for one reviewable PR,
+    or has distinct acceptance criteria that map to separate deliverables.
+
+  For a full, dependency-aware breakdown you may defer to the **"Decompose issue"** prompt;
+  otherwise propose the sub-issues inline in the next step.
+
+  ## Step 6 — Propose the enrichment
+
+  Produce a concise **Investigation Report** and the concrete updates you propose:
+
+  ### Bead: `${ISSUE_ID}` — `<Title>`
+
+  - **Clarified problem & scope**: a tightened statement of what this bead delivers.
+  - **Findings & code locations**: key files/symbols and current behaviour, with evidence.
+  - **Refined acceptance criteria**: specific, testable conditions for "done".
+  - **Design notes**: the recommended approach, trade-offs, and constraints (if applicable).
+  - **Edge cases & risks**: what could break or is easy to miss.
+  - **Resolved questions**: the answers settled in Step 4.
+  - **Recommended sub-issues** (only if Step 5 says split): for each, a **title**, one-line scope,
+    type/priority, and any dependency on a sibling.
+
+  ## Step 7 — Confirm before writing
+
+  This is **read-only until you confirm**. Present the report, then confirm via
+  `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g. "Apply this
+  enrichment to `${ISSUE_ID}`?" with options:
+
+  - **"Apply the enrichment"** — update the bead's fields only.
+  - **"Apply and create the sub-issues"** — also create the recommended children.
+  - **"Just the report"** — make no changes.
+  - (free text) — to adjust anything first.
+
+  Honour the user's choice exactly; do not write anything they did not approve.
+
+  ## Step 8 — Apply the approved changes
+
+  Enrich the bead (only the fields that changed). Write longer text to a temp file and pass it via a
+  `*-file` flag to preserve Markdown:
+
+  ```bash
+  bd update ${ISSUE_ID} --body-file /tmp/bead-desc.md     # enriched description
+  bd update ${ISSUE_ID} --acceptance "<testable criteria>"
+  bd update ${ISSUE_ID} --design-file /tmp/bead-design.md # design/approach notes
+  # Record the investigation in the bead's history for future reference — write the Investigation
+  # Report from Step 6 (findings, code locations, design notes, resolved questions) to a temp file
+  # and post it as a comment:
+  bd comment ${ISSUE_ID} --file /tmp/investigation-report.md
+  # Audit note (always) — what changed and why, in plain language:
+  bd update ${ISSUE_ID} --append-notes "<what changed and why — e.g. 'After deeper investigation, the bug stems from <root cause>; updated the description and acceptance criteria accordingly.'>"
+  # Optional: --add-label <l>, -p <0-4>, -t <type> if the investigation changed them
+  ```
+
+  **Always** append the audit note above whenever you change any field — record *what changed and
+  why* in plain language, even for small edits, so the bead carries its own history. The `bd comment`
+  posts the fuller investigation findings as a durable work artifact in the bead's discussion.
+
+  Create approved **sub-issues** as children, then wire any dependencies:
+
+  ```bash
+  bd create "<child title>" --parent ${ISSUE_ID} --type <type> --priority <0-4> --body-file /tmp/child.md
+  bd dep add <blocked-child-id> <blocker-child-id>   # only if one child must precede another
+  ```
+
+  Report any command that failed and why.
+
+  ## Step 9 — Final summary
+
+  Summarise what was learned, which fields were enriched, and any sub-issues created (with their IDs
+  and titles). If the bead is now ready to implement, suggest the **"Start work"**
+  prompt.
+
+  ## Final step — Offer to delete this conversation
+
+  The task is complete. Offer to tidy up so finished conversations do not accumulate.
+
+  1. Ask the user whether to delete this conversation now, via
+     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     - **"Yes, delete it"**
+     - **"No, keep it"**
+
+  2. Honour the answer:
+     - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+       message is delivered first) with
+       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       then self-destruct with
+       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+     - **Keep** → leave the conversation in place.
+
+  3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+     it was **started by this prompt** (a dedicated conversation for this task, not an existing
+     conversation you were invoked into), **no further action is expected from the user**, and
+     **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+     leave the conversation untouched.
+
+  If the `mitto_*` tools are unavailable, skip this step silently.

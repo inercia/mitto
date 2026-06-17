@@ -31,10 +31,10 @@ Prompts are predefined text snippets shown in the ChatInput "Insert predefined p
 │                          (Single Source of Truth)                     │
 │                                                                      │
 │  Priority (lowest → highest):                                        │
-│  1. Global file prompts    (MITTO_DIR/prompts/*.md)                  │
+│  1. Global file prompts    (MITTO_DIR/prompts/*.prompt.yaml)         │
 │  2. Settings prompts       (settings.json .prompts)                  │
 │  3. ACP server-specific    (prompts with acps: field + inline)       │
-│  4. Workspace dir prompts  (.mitto/prompts/*.md)                     │
+│  4. Workspace dir prompts  (.mitto/prompts/*.prompt.yaml)            │
 │  5. Workspace inline       (.mittorc prompts section)                │
 │                                                                      │
 │  Filters: enabled:false removed, enabledWhen evaluated               │
@@ -45,18 +45,17 @@ Prompts are predefined text snippets shown in the ChatInput "Insert predefined p
               (No client-side merge — backend does everything)
 ```
 
-## Prompt File Format (`.md` with YAML Frontmatter)
+## Prompt File Format (`.prompt.yaml`)
 
-```markdown
----
+```yaml
 name: "Review Code"
 description: "Review code for quality"
 group: "Code Quality"
 backgroundColor: "#4a90d9"
 enabled: true
 enabledWhen: "acp.matchesServerType('augment') && tools.hasPattern('filesystem_*')"
----
-Please review the following code for quality, readability, and potential bugs.
+prompt: |
+  Please review the following code for quality, readability, and potential bugs.
 ```
 
 **Removed fields**: `enabledWhenACP` and `enabledWhenMCP` have been fully removed from the codebase. If encountered in old code or docs, replace with equivalent `enabledWhen` CEL expressions.
@@ -77,7 +76,7 @@ type WebPrompt struct {
     Periodic        *PromptPeriodic `json:"periodic,omitempty"`  // non-nil = prompt creates a periodic conversation
 }
 
-// PromptPeriodic is the frontmatter periodic: mapping. Presence = opt-in.
+// PromptPeriodic is the periodic: YAML mapping. Presence = opt-in.
 type PromptPeriodic struct {
     Value int    `yaml:"value" json:"value"`          // number of time units ≥ 1
     Unit  string `yaml:"unit"  json:"unit"`           // "minutes" | "hours" | "days"
@@ -110,10 +109,10 @@ cache.ForceReload()                        // Clear cache and reload
 ### Toggle-Enabled Logic
 
 When disabling prompt X:
-1. If `.mitto/prompts/X.md` exists → set `enabled: false` in frontmatter
+1. If `.mitto/prompts/X.prompt.yaml` exists → set `enabled: false` in the file
 2. If not → add `{name: X, enabled: false}` to `.mittorc` prompts section
 
-When re-enabling: reverse (remove `enabled: false` from frontmatter or `.mittorc` entry).
+When re-enabling: reverse (remove `enabled: false` from the file or `.mittorc` entry).
 
 ## Menu-Driven Prompt Sends (Named-Prompt Mechanism)
 
@@ -141,7 +140,7 @@ Three MCP tools for managing prompts programmatically:
 | `mitto_prompt_get` | Get full prompt details by name (case-insensitive) |
 | `mitto_prompt_update` | Create/update workspace-local prompt overrides |
 
-`loadMergedPrompts()` replicates the same 5-layer merge as the REST API. Updates always write to `.mitto/prompts/<slug>.md` (workspace-local override). Enable/disable-only updates use the optimized toggle path (`UpdatePromptFileEnabled` / `SaveWorkspaceRCPromptEnabled`). Name slugification via `config.SlugifyPromptName()`.
+`loadMergedPrompts()` replicates the same 5-layer merge as the REST API. Updates always write to `.mitto/prompts/<slug>.prompt.yaml` (workspace-local override). Enable/disable-only updates use the optimized toggle path (`UpdatePromptFileEnabled` / `SaveWorkspaceRCPromptEnabled`). Name slugification via `config.SlugifyPromptName()`.
 
 ## Frontend Architecture
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/yaml.v3"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
@@ -16,10 +17,10 @@ import (
 // loadMergedPrompts loads and merges prompts from all sources for the given working directory.
 // Returns the fully merged prompt list including disabled prompts.
 // Priority order (lowest to highest):
-//  1. Global file prompts (MITTO_DIR/prompts/*.md)
+//  1. Global file prompts (MITTO_DIR/prompts/*.prompt.yaml)
 //  2. Settings prompts (config.Prompts)
 //  3. ACP server-specific prompts
-//  4. Workspace directory prompts (.mitto/prompts/*.md)
+//  4. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
 //  5. Workspace inline prompts (.mittorc)
 func (s *Server) loadMergedPrompts(workingDir string) []config.WebPrompt {
 	s.mu.RLock()
@@ -28,7 +29,7 @@ func (s *Server) loadMergedPrompts(workingDir string) []config.WebPrompt {
 	sm := s.sessionManager
 	s.mu.RUnlock()
 
-	// 1. Global file prompts (MITTO_DIR/prompts/*.md)
+	// 1. Global file prompts (MITTO_DIR/prompts/*.prompt.yaml)
 	var globalFilePrompts []config.WebPrompt
 	if promptsCache != nil {
 		var err error
@@ -77,7 +78,7 @@ func (s *Server) loadMergedPrompts(workingDir string) []config.WebPrompt {
 		}
 	}
 
-	// 4. Workspace directory prompts (.mitto/prompts/*.md and extra dirs)
+	// 4. Workspace directory prompts (.mitto/prompts/*.prompt.yaml and extra dirs)
 	var dirPrompts []config.WebPrompt
 	workspacePromptsDirs := []string{appdir.WorkspacePromptsDir(workingDir)}
 	if sm != nil {
@@ -253,7 +254,7 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	if slug == "" {
 		slug = "prompt"
 	}
-	filePath := filepath.Join(promptsDir, slug+".md")
+	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
 
 	// Enable/disable only: no content fields set, only Enabled
 	isEnableDisableOnly := input.Enabled != nil &&
@@ -306,25 +307,19 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 		return nil, PromptUpdateOutput{Error: "failed to create prompts directory: " + err.Error()}, nil
 	}
 
-	var frontMatter strings.Builder
-	frontMatter.WriteString("---\n")
-	fmt.Fprintf(&frontMatter, "name: %q\n", name)
-	if description != "" {
-		fmt.Fprintf(&frontMatter, "description: %q\n", description)
+	pf := &config.PromptFile{
+		Name:            name,
+		Description:     description,
+		BackgroundColor: backgroundColor,
+		Group:           group,
+		Enabled:         enabled,
+		Content:         promptText,
 	}
-	if backgroundColor != "" {
-		fmt.Fprintf(&frontMatter, "backgroundColor: %q\n", backgroundColor)
+	yamlBytes, err := yaml.Marshal(pf)
+	if err != nil {
+		return nil, PromptUpdateOutput{Error: "failed to marshal prompt file: " + err.Error()}, nil
 	}
-	if group != "" {
-		fmt.Fprintf(&frontMatter, "group: %q\n", group)
-	}
-	if enabled != nil && !*enabled {
-		frontMatter.WriteString("enabled: false\n")
-	}
-	frontMatter.WriteString("---\n")
-
-	content := frontMatter.String() + promptText
-	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filePath, yamlBytes, 0o644); err != nil {
 		return nil, PromptUpdateOutput{Error: "failed to write prompt file: " + err.Error()}, nil
 	}
 

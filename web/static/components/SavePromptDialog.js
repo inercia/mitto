@@ -11,9 +11,9 @@ import { Modal } from "./Modal.js";
 
 /**
  * Sanitize a prompt name into a safe filename.
- * Lowercases, replaces spaces/special chars with hyphens, adds .md extension.
+ * Lowercases, replaces spaces/special chars with hyphens, adds .prompt.yaml extension.
  * @param {string} name - The prompt name
- * @returns {string} A sanitized filename like "my-prompt-name.md"
+ * @returns {string} A sanitized filename like "my-prompt-name.prompt.yaml"
  */
 function nameToFilename(name) {
   return (
@@ -23,7 +23,7 @@ function nameToFilename(name) {
       .replace(/[^a-z0-9\s-]/g, "")
       .replace(/\s+/g, "-")
       .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "") + ".md"
+      .replace(/^-|-$/g, "") + ".prompt.yaml"
   );
 }
 
@@ -309,7 +309,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               value=${filename}
               onInput=${handleFilenameChange}
               onKeyDown=${handleKeyDown}
-              placeholder="my-prompt.md"
+              placeholder="my-prompt.prompt.yaml"
               disabled=${isSaving}
               class="input input-sm w-full"
               data-testid="save-prompt-filename-input"

@@ -865,7 +865,7 @@ func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor 
 // MergePrompts combines them, with later sources overriding earlier ones by name.
 //
 // Priority order (lowest to highest):
-//   1. Global file prompts (MITTO_DIR/prompts/*.md)
+//   1. Global file prompts (MITTO_DIR/prompts/*.prompt.yaml)
 //   2. Settings file prompts (config.Prompts)
 //   3. Workspace prompts (.mittorc)
 // ============================================================================
@@ -880,7 +880,7 @@ func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor 
 //   - PromptSourceWorkspace for workspacePrompts
 //
 // Parameters:
-//   - globalFilePrompts: prompts from MITTO_DIR/prompts/*.md (lowest priority)
+//   - globalFilePrompts: prompts from MITTO_DIR/prompts/*.prompt.yaml (lowest priority)
 //   - settingsPrompts: prompts from settings file (medium priority)
 //   - workspacePrompts: prompts from workspace .mittorc (highest priority)
 //

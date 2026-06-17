@@ -24,7 +24,7 @@ import { selectors } from "../utils/selectors";
  *   (much longer than 10s).
  *
  * Fixture used:
- *   - Prompt: tests/fixtures/workspaces/project-alpha/.mitto/prompts/greeting.md
+ *   - Prompt: tests/fixtures/workspaces/project-alpha/.mitto/prompts/greeting.prompt.yaml
  *     → name: "Hello Greeting", text: "Hello! How are you doing today?"
  *   - Mock ACP response: tests/fixtures/responses/simple-greeting.json
  *     → trigger pattern: (?i)(^|\n)(hello|hi|hey)([!., \n]|$)  ← matches the prompt text

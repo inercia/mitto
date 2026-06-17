@@ -528,13 +528,12 @@ func TestHandleWorkspacePrompts_DefaultMittoPromptsDir(t *testing.T) {
 	}
 
 	// Create a prompt file in the default workspace prompts directory
-	promptContent := `---
-name: "Default Workspace Prompt"
+	promptContent := `name: "Default Workspace Prompt"
 description: "A prompt from the default .mitto/prompts directory"
----
-This is the prompt content from the default workspace prompts directory.
+prompt: |
+  This is the prompt content from the default workspace prompts directory.
 `
-	if err := os.WriteFile(mittoPromptsDir+"/test-prompt.md", []byte(promptContent), 0644); err != nil {
+	if err := os.WriteFile(mittoPromptsDir+"/test-prompt.prompt.yaml", []byte(promptContent), 0644); err != nil {
 		t.Fatalf("Failed to create prompt file: %v", err)
 	}
 
@@ -581,13 +580,12 @@ func TestHandleWorkspacePrompts_MittoDirOverriddenByPromptsDirs(t *testing.T) {
 	}
 
 	// Create a prompt file in the default workspace prompts directory
-	defaultPromptContent := `---
-name: "Shared Prompt"
+	defaultPromptContent := `name: "Shared Prompt"
 description: "From default .mitto/prompts"
----
-Default version
+prompt: |
+  Default version
 `
-	if err := os.WriteFile(mittoPromptsDir+"/shared.md", []byte(defaultPromptContent), 0644); err != nil {
+	if err := os.WriteFile(mittoPromptsDir+"/shared.prompt.yaml", []byte(defaultPromptContent), 0644); err != nil {
 		t.Fatalf("Failed to create default prompt file: %v", err)
 	}
 
@@ -598,13 +596,12 @@ Default version
 	}
 
 	// Create a prompt with the same name in the custom directory (should override)
-	customPromptContent := `---
-name: "Shared Prompt"
+	customPromptContent := `name: "Shared Prompt"
 description: "From custom prompts_dirs"
----
-Custom version from prompts_dirs
+prompt: |
+  Custom version from prompts_dirs
 `
-	if err := os.WriteFile(customPromptsDir+"/shared.md", []byte(customPromptContent), 0644); err != nil {
+	if err := os.WriteFile(customPromptsDir+"/shared.prompt.yaml", []byte(customPromptContent), 0644); err != nil {
 		t.Fatalf("Failed to create custom prompt file: %v", err)
 	}
 
@@ -644,7 +641,7 @@ Custom version from prompts_dirs
 	}
 
 	// The custom version should win (prompts_dirs overrides default .mitto/prompts)
-	if len(response.Prompts) > 0 && response.Prompts[0].Prompt != "Custom version from prompts_dirs" {
+	if len(response.Prompts) > 0 && response.Prompts[0].Prompt != "Custom version from prompts_dirs\n" {
 		t.Errorf("Expected custom prompt content, got %q", response.Prompts[0].Prompt)
 	}
 }

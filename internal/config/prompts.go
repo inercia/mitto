@@ -1,9 +1,8 @@
 // Package config provides prompt file parsing for global prompts.
-// Prompt files are markdown files with YAML front-matter stored in MITTO_DIR/prompts/.
+// Prompt files are YAML files stored in MITTO_DIR/prompts/.
 package config
 
 import (
-	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -34,11 +33,11 @@ type PromptPeriodic struct {
 	At string `yaml:"at,omitempty" json:"at,omitempty"`
 }
 
-// PromptFile represents a parsed markdown prompt file with YAML front-matter.
+// PromptFile represents a parsed YAML prompt file.
 // Files are stored in MITTO_DIR/prompts/ and can be organized in subdirectories.
 type PromptFile struct {
-	// Path is the relative path from the prompts directory (e.g., "git/commit.md")
-	Path string `json:"-"`
+	// Path is the relative path from the prompts directory (e.g., "git/commit.prompt.yaml")
+	Path string `yaml:"-" json:"-"`
 
 	// Name is the display name for the prompt button.
 	// If not specified in front-matter, derived from filename.
@@ -88,11 +87,11 @@ type PromptFile struct {
 	// dialog. The "at" field is in HH:MM UTC and is only valid for the "days" unit.
 	Periodic *PromptPeriodic `yaml:"periodic,omitempty" json:"periodic,omitempty"`
 
-	// Content is the markdown body after the front-matter.
-	Content string `json:"prompt"`
+	// Content is the prompt body text, stored under the "prompt" key in the YAML file.
+	Content string `yaml:"prompt" json:"prompt"`
 
 	// FileModTime is the file's modification time for cache invalidation.
-	FileModTime time.Time `json:"-"`
+	FileModTime time.Time `yaml:"-" json:"-"`
 }
 
 // IsEnabled returns true if the prompt is enabled.
@@ -145,74 +144,35 @@ func (p *PromptFile) HasVisibilityCondition() bool {
 	return strings.TrimSpace(p.EnabledWhen) != ""
 }
 
-// frontMatterDelimiter is the YAML front-matter delimiter.
-const frontMatterDelimiter = "---"
-
-// ParsePromptFile parses a markdown file with YAML front-matter.
-// The file format is:
+// ParsePromptFile parses a YAML prompt file.
+// The file format is a single YAML document with all fields as top-level keys:
 //
-//	---
 //	name: "My Prompt"
 //	description: "Optional description"
 //	backgroundColor: "#E8F5E9"
-//	---
+//	prompt: |
+//	  Prompt content here...
 //
-//	Prompt content here...
-//
-// If no front-matter is present, the entire file is treated as content
-// and the name is derived from the filename.
+// The name is derived from the filename if not specified in the file.
 func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, error) {
 	prompt := &PromptFile{
 		Path:        path,
 		FileModTime: modTime,
 	}
 
-	content := string(data)
-
-	// Check for front-matter
-	if strings.HasPrefix(strings.TrimSpace(content), frontMatterDelimiter) {
-		// Find the closing delimiter
-		lines := strings.Split(content, "\n")
-		var frontMatterEnd int
-		foundStart := false
-
-		for i, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == frontMatterDelimiter {
-				if !foundStart {
-					foundStart = true
-					continue
-				}
-				frontMatterEnd = i
-				break
-			}
-		}
-
-		if frontMatterEnd > 0 {
-			// Extract and parse front-matter
-			frontMatter := strings.Join(lines[1:frontMatterEnd], "\n")
-			frontMatterBytes := []byte(frontMatter)
-			if err := yaml.Unmarshal(frontMatterBytes, prompt); err != nil {
-				return nil, fmt.Errorf("failed to parse front-matter in %s: %w", path, err)
-			}
-
-			// Extract content after front-matter
-			if frontMatterEnd+1 < len(lines) {
-				prompt.Content = strings.TrimSpace(strings.Join(lines[frontMatterEnd+1:], "\n"))
-			}
-		} else {
-			// Malformed front-matter - treat entire file as content
-			prompt.Content = strings.TrimSpace(content)
-		}
-	} else {
-		// No front-matter - entire file is content
-		prompt.Content = strings.TrimSpace(content)
+	if err := yaml.Unmarshal(data, prompt); err != nil {
+		return nil, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
 	}
 
 	// Derive name from filename if not specified
 	if prompt.Name == "" {
 		base := filepath.Base(path)
-		prompt.Name = strings.TrimSuffix(base, filepath.Ext(base))
+		// Strip .prompt.yaml extension specifically, then fall back to last ext
+		name := strings.TrimSuffix(base, ".prompt.yaml")
+		if name == base {
+			name = strings.TrimSuffix(base, filepath.Ext(base))
+		}
+		prompt.Name = name
 	}
 
 	return prompt, nil
@@ -235,7 +195,7 @@ func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 	return ParsePromptFile(relativePath, data, info.ModTime())
 }
 
-// LoadPromptsFromDir loads all .md files from a directory recursively.
+// LoadPromptsFromDir loads all .prompt.yaml files from a directory recursively.
 // Disabled prompts (enabled: false) are included so they can suppress same-named
 // prompts from lower-priority directories during the merge phase.
 // Returns an empty slice if the directory doesn't exist.
@@ -257,8 +217,8 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 			return nil
 		}
 
-		// Only process .md files
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+		// Only process .prompt.yaml files
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".prompt.yaml") {
 			return nil
 		}
 
@@ -417,69 +377,33 @@ func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	return patterns
 }
 
-// init registers a custom YAML unmarshaler for handling the enabled field.
-func init() {
-	// Ensure bytes package is used (for potential future use)
-	_ = bytes.Buffer{}
-}
-
-// UpdatePromptFileEnabled reads a prompt .md file, updates the enabled field in its YAML
-// frontmatter, and writes it back. When enabling (enabled=true), the enabled key is deleted
-// from the frontmatter (nil means default=true). When disabling (enabled=false), it is set
-// to false explicitly.
+// UpdatePromptFileEnabled reads a .prompt.yaml file, updates the enabled field,
+// and writes it back. When enabling (enabled=true), the enabled key is removed
+// (nil means default=true). When disabling (enabled=false), it is set explicitly.
 func UpdatePromptFileEnabled(filePath string, enabled bool) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read prompt file %s: %w", filePath, err)
 	}
 
-	content := string(data)
-	lines := strings.Split(content, "\n")
-
-	// Find frontmatter boundaries
-	if !strings.HasPrefix(strings.TrimSpace(content), frontMatterDelimiter) {
-		return fmt.Errorf("prompt file %s has no YAML frontmatter", filePath)
-	}
-
-	frontMatterEnd := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == frontMatterDelimiter {
-			frontMatterEnd = i
-			break
-		}
-	}
-	if frontMatterEnd < 0 {
-		return fmt.Errorf("prompt file %s has malformed frontmatter (no closing ---)", filePath)
-	}
-
-	// Parse frontmatter into a map to preserve unknown fields
-	frontMatterText := strings.Join(lines[1:frontMatterEnd], "\n")
-	var fm map[string]interface{}
-	if err := yaml.Unmarshal([]byte(frontMatterText), &fm); err != nil {
-		return fmt.Errorf("failed to parse frontmatter in %s: %w", filePath, err)
-	}
-	if fm == nil {
-		fm = make(map[string]interface{})
+	var prompt PromptFile
+	if err := yaml.Unmarshal(data, &prompt); err != nil {
+		return fmt.Errorf("failed to parse prompt file %s: %w", filePath, err)
 	}
 
 	if enabled {
-		// Remove enabled key — nil means enabled by default
-		delete(fm, "enabled")
+		prompt.Enabled = nil // nil means enabled by default
 	} else {
-		fm["enabled"] = false
+		f := false
+		prompt.Enabled = &f
 	}
 
-	// Re-marshal frontmatter
-	fmBytes, err := yaml.Marshal(fm)
+	out, err := yaml.Marshal(&prompt)
 	if err != nil {
-		return fmt.Errorf("failed to marshal frontmatter for %s: %w", filePath, err)
+		return fmt.Errorf("failed to marshal prompt file %s: %w", filePath, err)
 	}
 
-	// Reconstruct file: ---\n<yaml>---\n<body>
-	body := strings.Join(lines[frontMatterEnd+1:], "\n")
-	newContent := "---\n" + string(fmBytes) + "---\n" + body
-
-	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(filePath, out, 0644); err != nil {
 		return fmt.Errorf("failed to write prompt file %s: %w", filePath, err)
 	}
 

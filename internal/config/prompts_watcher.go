@@ -284,15 +284,14 @@ func (pw *PromptsWatcher) eventLoop() {
 
 // handleEvent processes a single fsnotify event.
 func (pw *PromptsWatcher) handleEvent(event fsnotify.Event) {
-	// Only care about .md files and directory changes
+	// Only care about .prompt.yaml files and directory changes
 	path := event.Name
-	ext := strings.ToLower(filepath.Ext(path))
 
 	// Check if this is a relevant event
 	isRelevant := false
 
-	// Check for .md file changes
-	if ext == ".md" {
+	// Check for .prompt.yaml file changes
+	if strings.HasSuffix(strings.ToLower(path), ".prompt.yaml") {
 		isRelevant = event.Has(fsnotify.Create) ||
 			event.Has(fsnotify.Write) ||
 			event.Has(fsnotify.Remove) ||

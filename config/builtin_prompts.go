@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DeployBuiltinPromptsResult contains the result of deploying builtin prompts.
@@ -126,7 +127,7 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 	}
 
 	// Prune orphaned builtin prompts: the builtin directory is fully managed by
-	// Mitto, so any deployed .md file not present in the embedded set is stale
+	// Mitto, so any deployed .prompt.yaml file not present in the embedded set is stale
 	// (e.g. a prompt that was consolidated or removed in a newer build).
 	if deployedEntries, derr := os.ReadDir(targetDir); derr == nil {
 		for _, entry := range deployedEntries {
@@ -134,7 +135,7 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 				continue
 			}
 			name := entry.Name()
-			if filepath.Ext(name) != ".md" {
+			if !strings.HasSuffix(name, ".prompt.yaml") {
 				continue
 			}
 			if _, ok := embeddedNames[name]; ok {

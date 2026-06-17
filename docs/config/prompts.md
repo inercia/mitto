@@ -47,10 +47,10 @@ higher-priority sources override lower-priority ones.
 | Priority    | Source                        | Location                         |
 | ----------- | ----------------------------- | -------------------------------- |
 | 1 (lowest)  | Built-in defaults             | `config/config.default.yaml`     |
-| 2           | Global prompts directory      | `MITTO_DIR/prompts/*.md`         |
+| 2           | Global prompts directory      | `MITTO_DIR/prompts/*.prompt.yaml`         |
 | 3           | Additional prompts dirs       | `prompts_dirs` in settings       |
 | 4           | User settings file            | `MITTO_DIR/settings.yaml`        |
-| 5           | Default workspace prompts dir | `$MITTO_WORKING_DIR/.mitto/prompts/*.md` |
+| 5           | Default workspace prompts dir | `$MITTO_WORKING_DIR/.mitto/prompts/*.prompt.yaml` |
 | 6           | Workspace prompts dirs        | `prompts_dirs` in `.mittorc`     |
 | 7 (highest) | Workspace `.mittorc` prompts  | `prompts:` in `.mittorc`         |
 
@@ -70,23 +70,23 @@ Default prompts include:
 
 ### 2. Global Prompts Directory
 
-Store reusable prompts as markdown files in the global prompts directory:
+Store reusable prompts as YAML files in the global prompts directory:
 
 | Platform | Location                                       |
 | -------- | ---------------------------------------------- |
 | macOS    | `~/Library/Application Support/Mitto/prompts/` |
 | Linux    | `~/.local/share/mitto/prompts/`                |
 
-Files must have a `.md` extension. Subdirectories are supported for organization:
+Files must have a `.prompt.yaml` extension. Subdirectories are supported for organization:
 
 ```
 prompts/
-├── code-review.md
+├── code-review.prompt.yaml
 ├── git/
-│   ├── commit.md
-│   └── pr-description.md
+│   ├── commit.prompt.yaml
+│   └── pr-description.prompt.yaml
 └── testing/
-    └── write-tests.md
+    └── write-tests.prompt.yaml
 ```
 
 See [File Format](#file-format-for-global-prompts) below for the full specification.
@@ -113,15 +113,15 @@ repository without any additional configuration.
 my-project/
 ├── .mitto/
 │   └── prompts/
-│       ├── code-review.md
-│       ├── deploy.md
-│       └── run-tests.md
+│       ├── code-review.prompt.yaml
+│       ├── deploy.prompt.yaml
+│       └── run-tests.prompt.yaml
 ├── src/
 └── package.json
 ```
 
 This directory is automatically searched when you open the workspace - no `.mittorc`
-configuration is required. The prompts use the same markdown format as global prompts
+configuration is required. The prompts use the same YAML format as global prompts
 (see [File Format](#file-format-for-global-prompts)).
 
 **Benefits:**
@@ -230,29 +230,29 @@ In this setup:
 
 ## File Format for Global Prompts
 
-Global prompt files use markdown with YAML front-matter:
+Global prompt files are standalone YAML files with the `.prompt.yaml` extension. The
+entire file is YAML, with the prompt body stored as the `prompt:` key using a literal
+block scalar (`|`).
 
-```markdown
----
+```yaml
 name: "Code Review"
 description: "Review code for bugs and improvements"
 backgroundColor: "#E8F5E9"
 icon: "search"
 tags: ["review", "quality"]
 enabled: true
----
+prompt: |
+  Please review the following code for:
 
-Please review the following code for:
+  - Bugs and potential issues
+  - Performance improvements
+  - Code style and best practices
+  - Security vulnerabilities
 
-- Bugs and potential issues
-- Performance improvements
-- Code style and best practices
-- Security vulnerabilities
-
-Provide specific suggestions with code examples where applicable.
+  Provide specific suggestions with code examples where applicable.
 ```
 
-### Front-matter Fields
+### YAML Fields
 
 | Field             | Required | Type     | Description                                                                                  |
 | ----------------- | -------- | -------- | -------------------------------------------------------------------------------------------- |
@@ -268,9 +268,12 @@ Provide specific suggestions with code examples where applicable.
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
 | `periodic`        | No       | mapping  | Opt-in periodic mode — presence means selecting this prompt from a menu creates a **new recurring conversation** instead of a one-time seed. See [below](#periodic-prompts). |
+| `prompt`          | Yes\*\*  | string   | The prompt body text, written as a YAML literal block scalar (`\|`). |
 
-\*If `name` is not specified, it's derived from the filename (e.g., `code-review.md` →
+\*If `name` is not specified, it's derived from the filename (e.g., `code-review.prompt.yaml` →
 "code-review").
+
+\*\*`prompt` is optional for disable-only overrides — an entry with only `name` and `enabled: false` is valid.
 
 ### icon (Names)
 
@@ -304,14 +307,14 @@ Mitto provides two fields for controlling when prompts appear:
 **Example:**
 
 ```yaml
----
 name: "JIRA: start work"
 description: "Pick a JIRA ticket and spawn parallel conversations"
 group: "JIRA"
 backgroundColor: "#BBDEFB"
 enabled: true
 enabledWhen: '!session.isChild && acp.matchesServerType(["augment", "claude-code"]) && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
----
+prompt: |
+  (prompt body here)
 ```
 
 This prompt:
@@ -323,30 +326,28 @@ This prompt:
 
 ### Multi-line Prompts
 
-The prompt content (after the front-matter) can span multiple lines and supports full
-markdown:
+The prompt body (`prompt:` key) can span multiple lines and supports full
+markdown. Use the YAML literal block scalar (`|`) to preserve newlines:
 
-```markdown
----
+```yaml
 name: "Detailed Analysis"
----
+prompt: |
+  Please analyze the code with the following criteria:
 
-Please analyze the code with the following criteria:
+  ## Performance
 
-## Performance
+  - Identify bottlenecks
+  - Suggest optimizations
 
-- Identify bottlenecks
-- Suggest optimizations
+  ## Security
 
-## Security
+  - Check for vulnerabilities
+  - Review input validation
 
-- Check for vulnerabilities
-- Review input validation
+  ## Maintainability
 
-## Maintainability
-
-- Assess code clarity
-- Suggest refactoring opportunities
+  - Assess code clarity
+  - Suggest refactoring opportunities
 ```
 
 ## Menus
@@ -365,15 +366,13 @@ prompt appears in. The available menu values are:
 If a prompt has **no `menus` attribute**, it defaults to `prompts` (the ChatInput
 dropup only). To make a prompt appear in both menus, list both values:
 
-```markdown
----
+```yaml
 name: "Summarize Progress"
 description: "Ask the agent to summarize what has been done so far"
 group: "Workflow"
 menus: prompts, conversation
----
-
-Summarize everything we've accomplished in this conversation so far.
+prompt: |
+  Summarize everything we've accomplished in this conversation so far.
 ```
 
 Whitespace around each entry is ignored. Because `menus` is an explicit list, a
@@ -392,15 +391,13 @@ prompts keep working without changes. To make a prompt appear **only** in the
 periodic selector (and hide it from the regular dropup), set `menus:
 promptsPeriodic` without `prompts`:
 
-```markdown
----
+```yaml
 name: "Babysit PRs"
 description: "Check for pending reviews and stale branches"
 group: "GitHub"
 menus: promptsPeriodic
----
-
-Check the repository for pending review requests and stale branches.
+prompt: |
+  Check the repository for pending review requests and stale branches.
 ```
 
 Pair this with the `session.isPeriodicConversation` CEL variable (see
@@ -454,21 +451,19 @@ text, and the menu supplies the selected issue's ID as an `ISSUE_ID` argument. T
 prompt body should reference it via `${ISSUE_ID}` and load its own context with
 `bd show ${ISSUE_ID}` rather than relying on a pre-built context block:
 
-```markdown
----
+```yaml
 name: "Start work"
 group: "Beads"
 menus: beadsIssues
 requires: parameters
----
+prompt: |
+  The target bead is `${ISSUE_ID}`.
 
-The target bead is `${ISSUE_ID}`.
+  Load its full detail:
 
-Load its full detail:
+      bd show ${ISSUE_ID} --long --json
 
-    bd show ${ISSUE_ID} --long --json
-
-then claim it and propose a plan.
+  then claim it and propose a plan.
 ```
 
 Because the `beadsIssues` menu always provides the `parameters` capability (it
@@ -487,19 +482,19 @@ cleaning up old issues or triaging the backlog) rather than a single issue, so t
 **take no parameters**. Selecting one creates a new conversation seeded with the
 prompt text alone.
 
-```markdown
----
+```yaml
 name: "Beads: cleanup old issues"
 group: "Beads"
 menus: beadsList
----
+prompt: |
+  (prompt body here)
 ```
 
 ## Periodic Prompts
 
-A prompt can declare that selecting it from a menu should **create a new recurring (periodic) conversation** instead of a one-time seed. This is opt-in: presence of the `periodic:` mapping in the frontmatter enables the behavior.
+A prompt can declare that selecting it from a menu should **create a new recurring (periodic) conversation** instead of a one-time seed. This is opt-in: presence of the `periodic:` mapping enables the behavior.
 
-### Frontmatter
+### Periodic Fields
 
 ```yaml
 periodic:
@@ -532,8 +527,7 @@ When a user selects a periodic-declaring prompt from any menu:
 
 ### Example
 
-```markdown
----
+```yaml
 name: "Daily Standup"
 description: "Run the daily team standup"
 group: "Workflow"
@@ -542,10 +536,9 @@ periodic:
   value: 1
   unit: days
   at: "09:00"
----
-
-You are running the daily standup. Check progress, surface blockers, and
-summarize what the team completed yesterday and plans for today.
+prompt: |
+  You are running the daily standup. Check progress, surface blockers, and
+  summarize what the team completed yesterday and plans for today.
 ```
 
 Selecting **Daily Standup** from a conversation's context menu opens a dialog
@@ -587,19 +580,17 @@ The transcript always shows the **substituted** text, not the original template.
 
 ### Example
 
-```markdown
----
+```yaml
 name: "Beads: start work"
 group: "Beads"
 menus: beadsIssues
 requires: parameters
----
+prompt: |
+  You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
 
-You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
+  ${ISSUE_BODY}
 
-${ISSUE_BODY}
-
-Please begin by reading the full issue description above, then propose a plan.
+  Please begin by reading the full issue description above, then propose a plan.
 ```
 
 Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls back to
@@ -607,7 +598,7 @@ Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls ba
 
 ## requires (Capability Gating)
 
-The `requires` front-matter field lets a prompt declare which **capabilities** a menu
+The `requires` field lets a prompt declare which **capabilities** a menu
 must provide before the prompt is shown in that menu. This is the counterpart to the
 `menus` field: `menus` says *where* a prompt can appear; `requires` says *what the
 menu must supply* for it to be usable there.
@@ -621,15 +612,15 @@ requires: capability1, capability2
 The value is a **comma-separated list** of capability names (parsed identically to
 `menus`). Whitespace around each entry is ignored.
 
-### Frontmatter example
+### YAML example
 
-```markdown
----
+```yaml
 name: "Beads: start work"
 group: "Beads"
 menus: beadsIssues
 requires: parameters
----
+prompt: |
+  (prompt body here)
 ```
 
 ### Visibility rule
@@ -715,21 +706,19 @@ would otherwise require additional tool calls to retrieve.
 
 A prompt that helps the agent use Mitto MCP tools efficiently:
 
-```markdown
----
+```yaml
 name: "Spawn Workers"
 enabledWhen: 'tools.hasPattern("mitto_conversation_*")'
----
+prompt: |
+  ## Session Context
 
-## Session Context
+  Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
+  Available ACP servers: `@mitto:available_acp_servers`
+  Existing children: `@mitto:children`
 
-Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
-Available ACP servers: `@mitto:available_acp_servers`
-Existing children: `@mitto:children`
+  ## Instructions
 
-## Instructions
-
-Create child conversations to work on subtasks...
+  Create child conversations to work on subtasks...
 ```
 
 ### Important: Child Session Limitation
@@ -745,13 +734,14 @@ case where the tool call cannot be avoided.
 
 ### Minimal Example
 
-Front-matter is optional. A file with just content uses the filename as the name:
+A file with just a `prompt:` field uses the filename as the name:
 
-```markdown
-Fix any linting errors in the current file.
+```yaml
+prompt: |
+  Fix any linting errors in the current file.
 ```
 
-If saved as `fix-lint.md`, this creates a prompt named "fix-lint".
+If saved as `fix-lint.prompt.yaml`, this creates a prompt named "fix-lint".
 
 ## enabledWhen: Conditional Enablement
 
@@ -762,11 +752,11 @@ expressions.
 ### Basic Syntax
 
 ```yaml
----
 name: "Create Minions"
 description: "Break work into parallel tasks"
 enabledWhen: "!session.isChild"
----
+prompt: |
+  (prompt body here)
 ```
 
 When `enabledWhen` evaluates to `true`, the prompt is visible. When it evaluates to
@@ -1071,8 +1061,8 @@ Open the Workspaces dialog, select a workspace, and toggle the switch next to
 any prompt to disable it. This persists the `enabled: false` state in the
 appropriate workspace-local file:
 
-- If the prompt has a `.md` file in `.mitto/prompts/`, the `enabled: false`
-  front-matter is added to that file.
+- If the prompt has a `.prompt.yaml` file in `.mitto/prompts/`, the `enabled: false`
+  field is updated in that file.
 - Otherwise, an entry is added to the workspace `.mittorc` file.
 
 Re-enabling a prompt via the UI removes the `enabled: false` override.
@@ -1088,11 +1078,9 @@ prompts:
 
 **Option 3: In a workspace prompt file**
 
-```markdown
----
+```yaml
 name: "Continue"
 enabled: false
----
 ```
 
 **Option 4: In global prompts directory**
@@ -1100,117 +1088,107 @@ enabled: false
 Create a file in `MITTO_DIR/prompts/` with `enabled: false`. This disables
 the prompt across all workspaces (unless a workspace re-enables it).
 
-```markdown
----
+```yaml
 name: "Continue"
 enabled: false
----
 ```
 
 ### Overriding a Built-in Prompt
 
 To customize a built-in prompt, create one with the same name:
 
-```markdown
----
+```yaml
 name: "Continue"
 description: "Resume work with my custom workflow"
 backgroundColor: "#FFF3E0"
----
+prompt: |
+  Continue with the current task. Before proceeding:
 
-Continue with the current task. Before proceeding:
-
-1. Run `git status` to check for uncommitted changes
-2. Review the task list
-3. Pick up where we left off
+  1. Run `git status` to check for uncommitted changes
+  2. Review the task list
+  3. Pick up where we left off
 ```
 
 ## Examples
 
 ### Code Review Prompt
 
-```markdown
----
+```yaml
 name: "Code Review"
 description: "Thorough code review with actionable feedback"
 backgroundColor: "#E8F5E9"
 tags: ["review", "quality"]
----
+prompt: |
+  Please review the code I'm about to share. Focus on:
 
-Please review the code I'm about to share. Focus on:
+  ## Correctness
 
-## Correctness
+  - Logic errors and edge cases
+  - Proper error handling
+  - Type safety issues
 
-- Logic errors and edge cases
-- Proper error handling
-- Type safety issues
+  ## Performance
 
-## Performance
+  - Unnecessary computations
+  - Memory leaks
+  - N+1 queries
 
-- Unnecessary computations
-- Memory leaks
-- N+1 queries
+  ## Maintainability
 
-## Maintainability
+  - Code clarity and naming
+  - DRY violations
+  - Missing documentation
 
-- Code clarity and naming
-- DRY violations
-- Missing documentation
+  ## Security
 
-## Security
+  - Input validation
+  - Authentication/authorization
+  - Data exposure
 
-- Input validation
-- Authentication/authorization
-- Data exposure
-
-Provide specific, actionable feedback with code examples.
+  Provide specific, actionable feedback with code examples.
 ```
 
 ### Git Workflow Prompt
 
-```markdown
----
+```yaml
 name: "Git Commit"
 description: "Generate a conventional commit message"
 backgroundColor: "#FFF3E0"
 tags: ["git", "workflow"]
----
+prompt: |
+  Generate a commit message for the staged changes.
 
-Generate a commit message for the staged changes.
+  Follow the Conventional Commits format:
 
-Follow the Conventional Commits format:
+  - `feat:` for new features
+  - `fix:` for bug fixes
+  - `docs:` for documentation
+  - `refactor:` for code refactoring
+  - `test:` for adding tests
+  - `chore:` for maintenance tasks
 
-- `feat:` for new features
-- `fix:` for bug fixes
-- `docs:` for documentation
-- `refactor:` for code refactoring
-- `test:` for adding tests
-- `chore:` for maintenance tasks
-
-Include a brief description and bullet points for details if needed.
+  Include a brief description and bullet points for details if needed.
 ```
 
 ### Testing Prompt
 
-```markdown
----
+```yaml
 name: "Write Tests"
 description: "Generate comprehensive tests for the current code"
 backgroundColor: "#FCE4EC"
 tags: ["testing"]
----
+prompt: |
+  Write comprehensive tests for the code I'll share.
 
-Write comprehensive tests for the code I'll share.
+  Requirements:
 
-Requirements:
+  1. Cover happy path and edge cases
+  2. Include error scenarios
+  3. Use descriptive test names
+  4. Follow existing test patterns in the codebase
+  5. Aim for high coverage of critical paths
 
-1. Cover happy path and edge cases
-2. Include error scenarios
-3. Use descriptive test names
-4. Follow existing test patterns in the codebase
-5. Aim for high coverage of critical paths
-
-Use the project's existing test framework and conventions.
+  Use the project's existing test framework and conventions.
 ```
 
 ## CLI Commands
@@ -1228,9 +1206,9 @@ Prompts directory: /Users/me/Library/Application Support/Mitto/prompts
 
 NAME         DESCRIPTION                               FILE
 ----         -----------                               ----
-Code Review  Thorough code review with actionable...   code-review.md
-Git Commit   Generate a conventional commit message    git/commit.md
-Write Tests  Generate comprehensive tests for the...   testing/write-tests.md
+Code Review  Thorough code review with actionable...   code-review.prompt.yaml
+Git Commit   Generate a conventional commit message    git/commit.prompt.yaml
+Write Tests  Generate comprehensive tests for the...   testing/write-tests.prompt.yaml
 
 Total: 3 prompt(s)
 ```

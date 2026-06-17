@@ -19,10 +19,10 @@ const __dirname = path.dirname(__filename);
  *   4. Cmd+/ predefined prompts    (regression: still works as before)
  *
  * Fixtures used:
- *   - Prompt: context-menu-prompt.md        (name: "Context Menu Test", menus: conversation)
- *   - Prompt: beads-issue-prompt.md         (name: "Beads Issue Task", menus: beadsIssues)
- *   - Prompt: beads-list-prompt.md          (name: "Beads List Review", menus: beadsList)
- *   - Prompt: greeting.md                   (name: "Hello Greeting", no menus gate)
+ *   - Prompt: context-menu-prompt.prompt.yaml        (name: "Context Menu Test", menus: conversation)
+ *   - Prompt: beads-issue-prompt.prompt.yaml         (name: "Beads Issue Task", menus: beadsIssues)
+ *   - Prompt: beads-list-prompt.prompt.yaml          (name: "Beads List Review", menus: beadsList)
+ *   - Prompt: greeting.prompt.yaml                   (name: "Hello Greeting", no menus gate)
  *   - Mock ACP: beads-issue-task.json       (matches "mitto-aaa" → echoes issue ID)
  *   - Mock ACP: simple-greeting.json        (matches "hello" → greeting reply)
  */
@@ -402,7 +402,7 @@ testWithCleanup.describe(
         await expect(promptsToggle).toBeVisible({ timeout: timeouts.appReady });
         await promptsToggle.click();
 
-        // "Hello Greeting" is a workspace prompt from project-alpha/greeting.md.
+        // "Hello Greeting" is a workspace prompt from project-alpha/greeting.prompt.yaml.
         const promptItem = page
           .locator("button")
           .filter({ hasText: "Hello Greeting" });

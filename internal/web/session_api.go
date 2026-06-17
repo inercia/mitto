@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
@@ -1111,10 +1113,10 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 
 	// === Load prompts from ALL sources and merge into a single list ===
 	// Priority (lowest to highest):
-	// 1. Global file prompts (MITTO_DIR/prompts/*.md)
+	// 1. Global file prompts (MITTO_DIR/prompts/*.prompt.yaml)
 	// 2. Settings file prompts (config.Prompts)
 	// 3. ACP server-specific prompts (prompts with acps: field targeting this server)
-	// 4. Workspace directory prompts (.mitto/prompts/*.md)
+	// 4. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
 	// 5. Workspace inline prompts (.mittorc prompts section) — highest priority
 
 	// 1. Global file prompts
@@ -1154,7 +1156,7 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// 4. Workspace directory prompts (.mitto/prompts/*.md)
+	// 4. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
 	var workspacePromptsDirs []string
 	defaultWorkspacePromptsDir := appdir.WorkspacePromptsDir(workingDir)
 	workspacePromptsDirs = append(workspacePromptsDirs, defaultWorkspacePromptsDir)
@@ -1310,7 +1312,7 @@ func (s *Server) handleWorkspacePromptsGETIncludeGlobal(w http.ResponseWriter, r
 }
 
 // handleWorkspacePromptsPOST handles POST /api/workspace-prompts
-// Creates or updates a workspace prompt file in .mitto/prompts/<slug>.md.
+// Creates or updates a workspace prompt file in .mitto/prompts/<slug>.prompt.yaml.
 func (s *Server) handleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Dir             string `json:"dir"`
@@ -1341,33 +1343,26 @@ func (s *Server) handleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Build the YAML front-matter
-	var frontMatter strings.Builder
-	frontMatter.WriteString("---\n")
-	fmt.Fprintf(&frontMatter, "name: %q\n", req.Name)
-	if req.Description != "" {
-		fmt.Fprintf(&frontMatter, "description: %q\n", req.Description)
-	}
-	if req.BackgroundColor != "" {
-		fmt.Fprintf(&frontMatter, "backgroundColor: %q\n", req.BackgroundColor)
-	}
-	if req.Group != "" {
-		fmt.Fprintf(&frontMatter, "group: %q\n", req.Group)
-	}
-	// Only include enabled in front-matter when explicitly false
-	if req.Enabled != nil && !*req.Enabled {
-		frontMatter.WriteString("enabled: false\n")
-	}
-	frontMatter.WriteString("---\n")
-
-	content := frontMatter.String() + req.Prompt
-
 	slug := config.SlugifyPromptName(req.Name)
 	if slug == "" {
 		slug = "prompt"
 	}
-	filePath := filepath.Join(promptsDir, slug+".md")
-	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
+
+	pf := &config.PromptFile{
+		Name:            req.Name,
+		Description:     req.Description,
+		BackgroundColor: req.BackgroundColor,
+		Group:           req.Group,
+		Enabled:         req.Enabled,
+		Content:         req.Prompt,
+	}
+	yamlBytes, err := yaml.Marshal(pf)
+	if err != nil {
+		http.Error(w, "failed to marshal prompt file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := os.WriteFile(filePath, yamlBytes, 0o644); err != nil {
 		http.Error(w, "failed to write prompt file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1424,7 +1419,7 @@ func (s *Server) handleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.Req
 }
 
 // handleWorkspacePromptsToggleEnabled handles PUT /api/workspace-prompts/toggle-enabled.
-// If the prompt file exists in .mitto/prompts/, updates the enabled field in its frontmatter.
+// If the prompt file exists in .mitto/prompts/, updates the enabled field in the YAML file.
 // Otherwise, records the enabled state in the workspace .mittorc file.
 func (s *Server) handleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
@@ -1453,10 +1448,10 @@ func (s *Server) handleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r *h
 	// Check if a dedicated prompt file exists in .mitto/prompts/
 	slug := config.SlugifyPromptName(req.Name)
 	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
-	filePath := filepath.Join(promptsDir, slug+".md")
+	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
 
 	if _, err := os.Stat(filePath); err == nil {
-		// File exists — update its frontmatter
+		// File exists — update its enabled field
 		if err := config.UpdatePromptFileEnabled(filePath, req.Enabled); err != nil {
 			http.Error(w, "failed to update prompt file: "+err.Error(), http.StatusInternalServerError)
 			return
