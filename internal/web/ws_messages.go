@@ -172,6 +172,8 @@ const (
 	//   "periodic_configured": bool,
 	//   "periodic_enabled": bool,
 	//   "fresh_context": bool,  // if configured; each run starts with a clean agent context
+	//   "max_iterations": number,  // cap on scheduled runs (0 = unlimited)
+	//   "iteration_count": number, // scheduled runs delivered so far
 	//   "frequency": { "value": number, "unit": string, "at"?: string },  // if configured
 	//   "next_scheduled_at": string  // ISO 8601, if enabled and scheduled
 	// }

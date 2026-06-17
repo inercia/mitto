@@ -1157,6 +1157,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"For periodic with days, optionally specify 'periodic_frequency_at' (HH:MM in UTC). " +
 			"Set 'periodic_enabled' to false to create the periodic configuration in a paused state. " +
 			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
+			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
@@ -1224,6 +1225,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'periodic_enabled' to false to pause periodic execution without deleting the configuration. " +
 			"To disable periodic entirely, set 'periodic_enabled' to false. " +
 			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
+			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
 
@@ -2672,6 +2674,7 @@ type ConversationStartInput struct {
 	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
 	PeriodicEnabled        *bool  `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 	PeriodicFreshContext   *bool  `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
+	PeriodicMaxIterations  *int   `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -3004,11 +3007,17 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			freshContext = *input.PeriodicFreshContext
 		}
 
+		maxIterations := 0
+		if input.PeriodicMaxIterations != nil {
+			maxIterations = *input.PeriodicMaxIterations
+		}
+
 		periodic := &session.PeriodicPrompt{
-			Prompt:       input.PeriodicPrompt,
-			Frequency:    freq,
-			Enabled:      enabled,
-			FreshContext: freshContext,
+			Prompt:        input.PeriodicPrompt,
+			Frequency:     freq,
+			Enabled:       enabled,
+			FreshContext:  freshContext,
+			MaxIterations: maxIterations,
 		}
 
 		periodicStore := store.Periodic(newSessionID)
@@ -3742,7 +3751,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Update periodic configuration if any periodic fields provided
-	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil {
+	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil || input.PeriodicMaxIterations != nil {
 		periodicStore := store.Periodic(input.ConversationID)
 
 		// Check if this is an update to existing periodic config or a new setup
@@ -3809,11 +3818,17 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				freshContext = *input.PeriodicFreshContext
 			}
 
+			maxIterations := 0
+			if input.PeriodicMaxIterations != nil {
+				maxIterations = *input.PeriodicMaxIterations
+			}
+
 			periodic := &session.PeriodicPrompt{
-				Prompt:       *input.PeriodicPrompt,
-				Frequency:    freq,
-				Enabled:      enabled,
-				FreshContext: freshContext,
+				Prompt:        *input.PeriodicPrompt,
+				Frequency:     freq,
+				Enabled:       enabled,
+				FreshContext:  freshContext,
+				MaxIterations: maxIterations,
 			}
 
 			if err := periodicStore.Set(periodic); err != nil {
@@ -3863,7 +3878,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				enabled = input.PeriodicEnabled
 			}
 
-			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext); err != nil {
+			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update periodic: %v", err),
@@ -3937,6 +3952,8 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		output.PeriodicFrequencyAt = p.Frequency.At
 		output.PeriodicEnabled = p.Enabled
 		output.PeriodicFreshContext = p.FreshContext
+		output.PeriodicMaxIterations = p.MaxIterations
+		output.PeriodicIterationCount = p.IterationCount
 		if p.NextScheduledAt != nil {
 			output.PeriodicNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 		}

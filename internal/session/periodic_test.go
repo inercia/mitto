@@ -316,7 +316,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil)
+	err := ps.Update(nil, nil, nil, &enabled, nil, nil)
 	if err != ErrPeriodicNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrPeriodicNotFound", err)
 	}
@@ -333,7 +333,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &disabled, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -347,7 +347,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -358,7 +358,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestPeriodicStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil)
+	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil)
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -493,7 +493,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil)
+	ps.Update(nil, nil, nil, &enabled, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -502,7 +502,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil)
+	ps.Update(nil, nil, nil, &disabled, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -563,5 +563,166 @@ func TestPeriodicStore_LastSentAtPreservedOnUpdate(t *testing.T) {
 	}
 	if !got2.LastSentAt.Equal(*lastSent) {
 		t.Error("LastSentAt should not change after Set()")
+	}
+}
+
+func TestPeriodicPrompt_Validate_MaxIterations(t *testing.T) {
+	tests := []struct {
+		name    string
+		prompt  PeriodicPrompt
+		wantErr bool
+	}{
+		{
+			name: "zero max iterations (unlimited)",
+			prompt: PeriodicPrompt{
+				Prompt:        "Test",
+				Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+				MaxIterations: 0,
+			},
+			wantErr: false,
+		},
+		{
+			name: "positive max iterations",
+			prompt: PeriodicPrompt{
+				Prompt:        "Test",
+				Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+				MaxIterations: 5,
+			},
+			wantErr: false,
+		},
+		{
+			name: "negative max iterations",
+			prompt: PeriodicPrompt{
+				Prompt:        "Test",
+				Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+				MaxIterations: -1,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.prompt.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPeriodicPrompt_ReachedMaxIterations(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxIterations  int
+		iterationCount int
+		want           bool
+	}{
+		{name: "unlimited (zero)", maxIterations: 0, iterationCount: 100, want: false},
+		{name: "count less than max", maxIterations: 5, iterationCount: 3, want: false},
+		{name: "count equals max", maxIterations: 5, iterationCount: 5, want: true},
+		{name: "count exceeds max", maxIterations: 5, iterationCount: 6, want: true},
+		{name: "zero count, nonzero max", maxIterations: 3, iterationCount: 0, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &PeriodicPrompt{MaxIterations: tt.maxIterations, IterationCount: tt.iterationCount}
+			if got := p.ReachedMaxIterations(); got != tt.want {
+				t.Errorf("ReachedMaxIterations() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPeriodicStore_RecordSent_IncrementsIterationCount(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if got.IterationCount != 0 {
+		t.Errorf("IterationCount initially = %d, want 0", got.IterationCount)
+	}
+
+	for i := 1; i <= 3; i++ {
+		if err := ps.RecordSent(); err != nil {
+			t.Fatalf("RecordSent() #%d error = %v", i, err)
+		}
+		got, _ = ps.Get()
+		if got.IterationCount != i {
+			t.Errorf("After RecordSent #%d: IterationCount = %d, want %d", i, got.IterationCount, i)
+		}
+	}
+}
+
+func TestPeriodicStore_IterationCountPreservedOnSet(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	ps.Set(p)
+	ps.RecordSent()
+	ps.RecordSent()
+
+	got, _ := ps.Get()
+	if got.IterationCount != 2 {
+		t.Fatalf("IterationCount = %d, want 2 before Set()", got.IterationCount)
+	}
+
+	// Re-save the config (simulates user updating frequency without resetting counter)
+	p2 := &PeriodicPrompt{
+		Prompt:    "Updated prompt",
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := ps.Set(p2); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got2, _ := ps.Get()
+	if got2.IterationCount != 2 {
+		t.Errorf("IterationCount after Set() = %d, want 2 (should be preserved)", got2.IterationCount)
+	}
+}
+
+func TestPeriodicStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	ps.Set(p)
+	ps.RecordSent()
+
+	got, _ := ps.Get()
+	if got.IterationCount != 1 {
+		t.Fatalf("IterationCount = %d, want 1", got.IterationCount)
+	}
+
+	// Update via partial update — should not touch IterationCount
+	newPrompt := "Updated"
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got2, _ := ps.Get()
+	if got2.IterationCount != 1 {
+		t.Errorf("IterationCount after Update() = %d, want 1 (should be unchanged)", got2.IterationCount)
 	}
 }

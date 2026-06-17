@@ -37,6 +37,10 @@ type PeriodicStartedCallback func(sessionID, sessionName string)
 // It should handle broadcasting the archive state change and stopping ACP.
 type AutoArchiveCallback func(sessionID string)
 
+// PeriodicAutoStoppedCallback is called when a periodic conversation is auto-stopped after reaching max iterations.
+// It should broadcast the updated periodic state to all WebSocket clients.
+type PeriodicAutoStoppedCallback func(sessionID string, periodic *session.PeriodicPrompt)
+
 // PromptResolverFunc resolves a prompt name to its full text for a given working directory.
 type PromptResolverFunc func(promptName string, workingDir string) (string, error)
 
@@ -66,6 +70,9 @@ type PeriodicRunner struct {
 	// onAutoArchive is called when a session is auto-archived.
 	// The callback should broadcast the archive state change and ACP stop to WebSocket clients.
 	onAutoArchive AutoArchiveCallback
+
+	// onPeriodicAutoStopped is called when a periodic conversation is disabled after reaching max iterations.
+	onPeriodicAutoStopped PeriodicAutoStoppedCallback
 
 	// autoArchiveAfter, when > 0, causes sessions inactive for this long to be archived.
 	autoArchiveAfter time.Duration
@@ -135,6 +142,11 @@ func (r *PeriodicRunner) SetAutoArchiveAfter(d time.Duration) {
 // SetOnAutoArchive sets the callback for when a session is auto-archived.
 func (r *PeriodicRunner) SetOnAutoArchive(callback AutoArchiveCallback) {
 	r.onAutoArchive = callback
+}
+
+// SetOnPeriodicAutoStopped sets the callback for when a periodic conversation is auto-stopped after reaching max iterations.
+func (r *PeriodicRunner) SetOnPeriodicAutoStopped(callback PeriodicAutoStoppedCallback) {
+	r.onPeriodicAutoStopped = callback
 }
 
 // SetArchiveRetentionPeriod sets the retention period for archived session cleanup.
@@ -713,9 +725,30 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 						"error", err)
 				}
 			} else {
-				// Log the new schedule (useful for debugging catch-up behavior)
-				if r.logger != nil {
-					if updated, err := periodicStore.Get(); err == nil && updated.NextScheduledAt != nil {
+				updated, getErr := periodicStore.Get()
+				if getErr == nil && updated != nil {
+					if updated.ReachedMaxIterations() {
+						// Cap reached — disable the periodic prompt so it stops firing.
+						if r.logger != nil {
+							r.logger.Info("Periodic conversation reached max iterations, auto-stopping",
+								"session_id", sessionID,
+								"max_iterations", updated.MaxIterations,
+								"iteration_count", updated.IterationCount)
+						}
+						disabled := false
+						if disableErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil); disableErr != nil {
+							if r.logger != nil {
+								r.logger.Warn("Failed to disable periodic after reaching max iterations",
+									"session_id", sessionID,
+									"error", disableErr)
+							}
+						} else if r.onPeriodicAutoStopped != nil {
+							// Re-read so the broadcast reflects Enabled=false / NextScheduledAt=nil.
+							if final, err := periodicStore.Get(); err == nil {
+								r.onPeriodicAutoStopped(sessionID, final)
+							}
+						}
+					} else if r.logger != nil && updated.NextScheduledAt != nil {
 						r.logger.Debug("Periodic schedule updated after delivery",
 							"session_id", sessionID,
 							"next_scheduled_at", updated.NextScheduledAt)

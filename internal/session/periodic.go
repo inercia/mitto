@@ -23,6 +23,8 @@ var (
 	ErrInvalidFrequency = errors.New("invalid frequency configuration")
 	// ErrPromptEmpty is returned when the prompt text is empty.
 	ErrPromptEmpty = errors.New("prompt cannot be empty")
+	// ErrInvalidMaxIterations is returned when max_iterations is negative.
+	ErrInvalidMaxIterations = errors.New("invalid max_iterations: must be >= 0")
 )
 
 // FrequencyUnit represents the time unit for periodic scheduling.
@@ -110,6 +112,10 @@ type PeriodicPrompt struct {
 	// FreshContext indicates whether each scheduled run should start with a clean
 	// agent context (no history injection, new ACP session). Default is false.
 	FreshContext bool `json:"fresh_context,omitempty"`
+	// MaxIterations is the maximum number of scheduled runs to deliver (0 = unlimited).
+	MaxIterations int `json:"max_iterations,omitempty"`
+	// IterationCount is the number of scheduled runs delivered so far.
+	IterationCount int `json:"iteration_count"`
 	// CreatedAt is when the periodic prompt was created.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt is when the periodic prompt was last modified.
@@ -120,10 +126,19 @@ type PeriodicPrompt struct {
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
 }
 
+// ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
+// Returns false when MaxIterations is 0 (unlimited).
+func (p *PeriodicPrompt) ReachedMaxIterations() bool {
+	return p.MaxIterations > 0 && p.IterationCount >= p.MaxIterations
+}
+
 // Validate checks if the periodic prompt configuration is valid.
 func (p *PeriodicPrompt) Validate() error {
 	if p.Prompt == "" && p.PromptName == "" {
 		return ErrPromptEmpty
+	}
+	if p.MaxIterations < 0 {
+		return ErrInvalidMaxIterations
 	}
 	return p.Frequency.Validate()
 }
@@ -178,9 +193,12 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 	// Check if this is an update or create
 	existing, err := ps.getUnlocked()
 	if err == nil && existing != nil {
-		// Update: preserve created_at
+		// Preserve immutable/accumulated fields across a replace.
+		// IterationCount is preserved so re-saving config doesn't reset the delivery counter;
+		// the counter only resets if the user explicitly sets it via the API (not supported yet).
 		p.CreatedAt = existing.CreatedAt
 		p.LastSentAt = existing.LastSentAt
+		p.IterationCount = existing.IterationCount
 	} else {
 		// Create: set created_at
 		p.CreatedAt = now
@@ -197,7 +215,8 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool) error {
+// IterationCount is never modified by Update — it is managed exclusively by RecordSent.
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -220,6 +239,9 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if freshContext != nil {
 		existing.FreshContext = *freshContext
+	}
+	if maxIterations != nil {
+		existing.MaxIterations = *maxIterations
 	}
 
 	if err := existing.Validate(); err != nil {
@@ -250,7 +272,7 @@ func (ps *PeriodicStore) Delete() error {
 	return nil
 }
 
-// RecordSent updates the last_sent_at timestamp and computes next_scheduled_at.
+// RecordSent updates the last_sent_at timestamp, increments iteration_count, and computes next_scheduled_at.
 func (ps *PeriodicStore) RecordSent() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -261,6 +283,7 @@ func (ps *PeriodicStore) RecordSent() error {
 	}
 
 	now := time.Now().UTC()
+	existing.IterationCount++
 	existing.LastSentAt = &now
 	existing.UpdatedAt = now
 	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)

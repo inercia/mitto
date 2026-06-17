@@ -9,20 +9,22 @@ import (
 
 // PeriodicPromptRequest is the request body for creating/updating a periodic prompt.
 type PeriodicPromptRequest struct {
-	Prompt       string            `json:"prompt"`
-	PromptName   string            `json:"prompt_name,omitempty"`
-	Frequency    session.Frequency `json:"frequency"`
-	Enabled      bool              `json:"enabled"`
-	FreshContext bool              `json:"fresh_context,omitempty"`
+	Prompt        string            `json:"prompt"`
+	PromptName    string            `json:"prompt_name,omitempty"`
+	Frequency     session.Frequency `json:"frequency"`
+	Enabled       bool              `json:"enabled"`
+	FreshContext  bool              `json:"fresh_context,omitempty"`
+	MaxIterations int               `json:"max_iterations,omitempty"`
 }
 
 // PeriodicPromptPatchRequest is the request body for partial updates.
 type PeriodicPromptPatchRequest struct {
-	Prompt       *string            `json:"prompt,omitempty"`
-	PromptName   *string            `json:"prompt_name,omitempty"`
-	Frequency    *session.Frequency `json:"frequency,omitempty"`
-	Enabled      *bool              `json:"enabled,omitempty"`
-	FreshContext *bool              `json:"fresh_context,omitempty"`
+	Prompt        *string            `json:"prompt,omitempty"`
+	PromptName    *string            `json:"prompt_name,omitempty"`
+	Frequency     *session.Frequency `json:"frequency,omitempty"`
+	Enabled       *bool              `json:"enabled,omitempty"`
+	FreshContext  *bool              `json:"fresh_context,omitempty"`
+	MaxIterations *int               `json:"max_iterations,omitempty"`
 }
 
 // handleSessionPeriodic handles periodic prompt operations for a session.
@@ -100,15 +102,16 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 	}
 
 	p := &session.PeriodicPrompt{
-		Prompt:       req.Prompt,
-		PromptName:   req.PromptName,
-		Frequency:    req.Frequency,
-		Enabled:      req.Enabled,
-		FreshContext: req.FreshContext,
+		Prompt:        req.Prompt,
+		PromptName:    req.PromptName,
+		Frequency:     req.Frequency,
+		Enabled:       req.Enabled,
+		FreshContext:  req.FreshContext,
+		MaxIterations: req.MaxIterations,
 	}
 
 	if err := ps.Set(p); err != nil {
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty {
+		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -152,12 +155,12 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext); err != nil {
+	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations); err != nil {
 		if err == session.ErrPeriodicNotFound {
 			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
 			return
 		}
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty {
+		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

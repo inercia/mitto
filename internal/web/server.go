@@ -622,6 +622,7 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
 	})
+	s.periodicRunner.SetOnPeriodicAutoStopped(s.BroadcastPeriodicUpdated)
 
 	// Configure startup delay for periodic runner to avoid thundering herd.
 	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
@@ -1185,6 +1186,8 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 // The broadcast includes:
 // - periodic_configured: true if a periodic config exists (controls UI mode)
 // - periodic_enabled: true if periodic runs are active (controls lock state)
+// - max_iterations: cap on scheduled runs (0 = unlimited)
+// - iteration_count: number of scheduled runs delivered so far
 func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
 	data := map[string]interface{}{
 		"session_id": sessionID,
@@ -1197,6 +1200,8 @@ func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.Pe
 		data["periodic_enabled"] = periodic.Enabled
 		// fresh_context: true means each scheduled run starts with a clean agent context
 		data["fresh_context"] = periodic.FreshContext
+		data["max_iterations"] = periodic.MaxIterations
+		data["iteration_count"] = periodic.IterationCount
 		data["frequency"] = map[string]interface{}{
 			"value": periodic.Frequency.Value,
 			"unit":  periodic.Frequency.Unit,
