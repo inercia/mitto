@@ -488,7 +488,12 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       }
     };
 
-    const agentTimeStr = !isStreaming ? formatMessageTime(message.timestamp) : null;
+    // Show the timestamp for every agent message except the one that is
+    // actively streaming right now. Gating on session-level `isStreaming` alone
+    // hid the time for every agent message whenever the conversation was running
+    // (e.g. completed messages followed by a tool call); mirror `showCursor` so
+    // only the live message hides its time.
+    const agentTimeStr = !showCursor ? formatMessageTime(message.timestamp) : null;
     return html`
       <div class="message-enter flex justify-start mb-3 group">
         <div
@@ -514,7 +519,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
                 ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
                 : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
             </button>
-            ${agentTimeStr && html`<div class="message-timestamp">${agentTimeStr}</div>`}
+            ${agentTimeStr && html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
           </div>
         </div>
       </div>
