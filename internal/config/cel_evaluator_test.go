@@ -474,3 +474,86 @@ func TestCELEvaluator_SessionIsPeriodicConversation(t *testing.T) {
 		t.Error("expected false when IsPeriodicConversation=false")
 	}
 }
+
+// TestCELEvaluator_ReferencesItem validates static detection of the item.* namespace.
+// List endpoints use this to keep single-pass behavior for prompts that don't depend
+// on per-row item data.
+func TestCELEvaluator_ReferencesItem(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	tests := []struct {
+		expr string
+		want bool
+	}{
+		// References item.* — must be detected.
+		{`item.status == "open"`, true},
+		{`session.isChild && item.priority == "P0"`, true},
+		{`item.id != ""`, true},
+		{`has(item.kind)`, true},
+		// Does NOT reference item.* — must not be detected.
+		{`session.isChild`, false},
+		{`tools.hasPattern("github_*")`, false},
+		{`acp.matchesServerType("augment") && children.count > 0`, false},
+		{`fileExists(".git/config")`, false},
+		// "item" only as part of an unrelated string/identifier must not trigger.
+		{`acp.name == "item"`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			if got := ce.ReferencesItem(); got != tt.want {
+				t.Errorf("ReferencesItem(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// benchEvalCtx is a representative context exercising tools/ACP/workspace functions.
+var benchEvalCtx = &PromptEnabledContext{
+	ACP:      ACPContext{Name: "Auggie (Opus)", Type: "augment", Tags: []string{"coding", "fast"}},
+	Session:  SessionContext{ID: "s1", IsChild: true, ParentID: "p1"},
+	Parent:   ParentContext{Exists: true, Name: "Parent", ACPServer: "augment"},
+	Children: ChildrenContext{Count: 2, Exists: true},
+	Tools:    ToolsContext{Available: true, Names: []string{"github_create_pr", "github_list_issues", "mitto_list"}},
+}
+
+// BenchmarkEvaluate measures the per-evaluation cost after the program is compiled
+// and cached. Previously Evaluate called env.Extend + env.Program on every call;
+// now it reuses the cached cel.Program, so this reflects pure evaluation cost.
+func BenchmarkEvaluate(b *testing.B) {
+	e, err := NewCELEvaluator()
+	if err != nil {
+		b.Fatalf("NewCELEvaluator: %v", err)
+	}
+	ce, err := e.Compile(`session.isChild && parent.exists && acp.matchesServerType("augment") && tools.hasAllPatterns(["github_*", "mitto_*"])`)
+	if err != nil {
+		b.Fatalf("Compile: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := e.Evaluate(ce, benchEvalCtx); err != nil {
+			b.Fatalf("Evaluate: %v", err)
+		}
+	}
+}
+
+// BenchmarkCompileAndEvaluate measures a cold compile followed by an evaluation,
+// for comparison against the cached-program path in BenchmarkEvaluate.
+func BenchmarkCompileAndEvaluate(b *testing.B) {
+	const expr = `session.isChild && parent.exists && acp.matchesServerType("augment") && tools.hasAllPatterns(["github_*", "mitto_*"])`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e, err := NewCELEvaluator()
+		if err != nil {
+			b.Fatalf("NewCELEvaluator: %v", err)
+		}
+		ce, err := e.Compile(expr)
+		if err != nil {
+			b.Fatalf("Compile: %v", err)
+		}
+		if _, err := e.Evaluate(ce, benchEvalCtx); err != nil {
+			b.Fatalf("Evaluate: %v", err)
+		}
+	}
+}

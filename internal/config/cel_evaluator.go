@@ -9,21 +9,30 @@ import (
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	celcommon "github.com/google/cel-go/common"
+	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 )
 
-// CompiledExpression holds a compiled CEL AST ready for evaluation.
-// ASTs are cached for performance; programs are created per-evaluation so that
-// the tools.hasPattern function can access the current tools list.
+// CompiledExpression holds a compiled, executable CEL program ready for evaluation.
+// Programs are cached for performance: all context-dependent functions are bound as
+// context-free internal functions (fed via activation variables) so a single program
+// can be reused across evaluations.
 type CompiledExpression struct {
-	ast  *cel.Ast
-	expr string
+	expr           string
+	prog           cel.Program
+	referencesItem bool
 }
 
 // String returns the original expression string.
 func (c *CompiledExpression) String() string { return c.expr }
+
+// ReferencesItem reports whether the expression references the item.* namespace.
+// List endpoints use this to keep single-pass behavior for prompts that don't
+// depend on per-row item data, re-evaluating only item-referencing expressions.
+func (c *CompiledExpression) ReferencesItem() bool { return c.referencesItem }
 
 // CELEvaluator evaluates CEL expressions against a PromptEnabledContext.
 // Compiled ASTs are cached for performance.
@@ -89,82 +98,97 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("permissions.canInteractOtherWorkspaces", cel.BoolType),
 		cel.Variable("permissions.autoApprovePermissions", cel.BoolType),
 
-		// Custom function: tools.hasPattern(pattern) bool
-		// The implementation is injected per-evaluation via cel.Functions ProgramOption.
-		cel.Function("tools.hasPattern",
-			cel.Overload("tools_hasPattern_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-			),
-		),
+		// item.* namespace variable (generic per-row context for list menus).
+		// Declared as a map so expressions like item.status compile; values are
+		// supplied per-row by callers via the activation. ReferencesItem reports
+		// whether a compiled expression touches this namespace.
+		cel.Variable("item", cel.MapType(cel.StringType, cel.DynType)),
 
-		// Custom function: acp.matchesServerType(type) bool / acp.matchesServerType(types_list) bool
-		// Returns true if the current ACP server type matches any of the given types.
-		// Fail-open: returns true if no ACP server is active (acp.name == "").
-		cel.Function("acp.matchesServerType",
-			cel.Overload("acp_matchesServerType_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-			),
-			cel.Overload("acp_matchesServerType_list",
-				[]*cel.Type{cel.ListType(cel.StringType)},
-				cel.BoolType,
-			),
-		),
-
-		// Custom function: tools.hasAllPatterns(pattern) bool / tools.hasAllPatterns(patterns_list) bool
-		// Returns true if ALL glob patterns are satisfied by at least one tool each.
-		cel.Function("tools.hasAllPatterns",
-			cel.Overload("tools_hasAllPatterns_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-			),
-			cel.Overload("tools_hasAllPatterns_list",
-				[]*cel.Type{cel.ListType(cel.StringType)},
-				cel.BoolType,
-			),
-		),
-
-		// Custom function: tools.hasAnyPattern(pattern) bool / tools.hasAnyPattern(patterns_list) bool
-		// Returns true if ANY of the glob patterns is satisfied by at least one tool.
-		cel.Function("tools.hasAnyPattern",
-			cel.Overload("tools_hasAnyPattern_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-			),
-			cel.Overload("tools_hasAnyPattern_list",
-				[]*cel.Type{cel.ListType(cel.StringType)},
-				cel.BoolType,
-			),
-		),
-
-		// Custom function: commandExists(name) bool
-		// Returns true if the given command name is found in the system PATH and is executable.
+		// commandExists(name) bool — context-free; bound once here.
+		// Returns true if the given command name is found in the system PATH.
 		cel.Function("commandExists",
 			cel.Overload("commandExists_string",
 				[]*cel.Type{cel.StringType},
 				cel.BoolType,
+				cel.UnaryBinding(commandExistsImpl()),
 			),
 		),
 
-		// Custom function: fileExists(path) bool
-		// Returns true if the given path exists and is a file (not a directory).
-		// Relative paths are resolved against the workspace folder.
-		cel.Function("fileExists",
-			cel.Overload("fileExists_string",
-				[]*cel.Type{cel.StringType},
+		// Internal context-free functions. User-facing calls such as
+		// tools.hasPattern(p), acp.matchesServerType(t), fileExists(path) are
+		// rewritten into these by the macros below, sourcing their context
+		// (tool names, ACP identity, workspace folder) from activation variables.
+		// Because the bindings are pure functions of their arguments, the compiled
+		// cel.Program can be created once at compile time and reused per evaluation.
+		cel.Function("__mitto_hasPattern",
+			cel.Overload("__mitto_hasPattern_list_string",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
+				cel.BinaryBinding(mittoHasPattern),
+			),
+		),
+		cel.Function("__mitto_hasAllPatterns",
+			cel.Overload("__mitto_hasAllPatterns_list_string",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoHasAllPatterns),
+			),
+			cel.Overload("__mitto_hasAllPatterns_list_list",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.BinaryBinding(mittoHasAllPatterns),
+			),
+		),
+		cel.Function("__mitto_hasAnyPattern",
+			cel.Overload("__mitto_hasAnyPattern_list_string",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoHasAnyPattern),
+			),
+			cel.Overload("__mitto_hasAnyPattern_list_list",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.BinaryBinding(mittoHasAnyPattern),
+			),
+		),
+		cel.Function("__mitto_matchesServerType",
+			cel.Overload("__mitto_matchesServerType_string_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoMatchesServerType),
+			),
+			cel.Overload("__mitto_matchesServerType_string_string_list",
+				[]*cel.Type{cel.StringType, cel.StringType, cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.FunctionBinding(mittoMatchesServerType),
+			),
+		),
+		cel.Function("__mitto_fileExists",
+			cel.Overload("__mitto_fileExists_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoFileExists),
+			),
+		),
+		cel.Function("__mitto_dirExists",
+			cel.Overload("__mitto_dirExists_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoDirExists),
 			),
 		),
 
-		// Custom function: dirExists(path) bool
-		// Returns true if the given path exists and is a directory.
-		// Relative paths are resolved against the workspace folder.
-		cel.Function("dirExists",
-			cel.Overload("dirExists_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-			),
+		// Macros rewrite user-facing convenience calls into the internal
+		// context-free functions above, injecting activation-sourced arguments.
+		// They run at parse time (before type-checking), so the original
+		// tools.*/acp.*/fileExists/dirExists calls never reach the checker.
+		cel.Macros(
+			cel.ReceiverMacro("hasPattern", 1, toolsHasPatternMacro),
+			cel.ReceiverMacro("hasAllPatterns", 1, toolsHasAllPatternsMacro),
+			cel.ReceiverMacro("hasAnyPattern", 1, toolsHasAnyPatternMacro),
+			cel.ReceiverMacro("matchesServerType", 1, acpMatchesServerTypeMacro),
+			cel.GlobalMacro("fileExists", 1, fileExistsMacro),
+			cel.GlobalMacro("dirExists", 1, dirExistsMacro),
 		),
 	)
 	if err != nil {
@@ -192,13 +216,41 @@ func (e *CELEvaluator) Compile(expression string) (*CompiledExpression, error) {
 		return nil, fmt.Errorf("cel: compile error in %q: %w", expression, issues.Err())
 	}
 
-	ce := &CompiledExpression{ast: ast, expr: expression}
+	// Build the executable program once. Because all context-dependent functions
+	// are now context-free (fed from activation variables via the parse-time
+	// macros), the program is fully reusable across evaluations and is cached.
+	prog, err := e.env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("cel: program error in %q: %w", expression, err)
+	}
+
+	ce := &CompiledExpression{
+		expr:           expression,
+		prog:           prog,
+		referencesItem: referencesItemNamespace(ast),
+	}
 
 	e.mu.Lock()
 	e.cache[expression] = ce
 	e.mu.Unlock()
 
 	return ce, nil
+}
+
+// referencesItemNamespace reports whether the AST references the item.* namespace
+// (the bare "item" identifier or any "item."-prefixed qualified name).
+func referencesItemNamespace(ast *cel.Ast) bool {
+	matches := celast.MatchDescendants(
+		celast.NavigateAST(ast.NativeRep()),
+		func(e celast.NavigableExpr) bool {
+			if e.Kind() != celast.IdentKind {
+				return false
+			}
+			name := e.AsIdent()
+			return name == "item" || strings.HasPrefix(name, "item.")
+		},
+	)
+	return len(matches) > 0
 }
 
 // Evaluate runs a compiled CEL expression against the provided context.
@@ -209,84 +261,7 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 		return true, nil
 	}
 
-	// Extend the environment per evaluation so runtime-context functions can close over
-	// the current tools/ACP data. env.Extend() creates a child env inheriting all
-	// declarations; we add the bindings here in a single call.
-	evalEnv, err := e.env.Extend(
-		cel.Function("tools.hasPattern",
-			cel.Overload("tools_hasPattern_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.UnaryBinding(toolsHasPatternImpl(ctx.Tools.Names)),
-			),
-		),
-		cel.Function("acp.matchesServerType",
-			cel.Overload("acp_matchesServerType_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(acpMatchesServerImpl(ctx.ACP.Name, ctx.ACP.Type)),
-			),
-			cel.Overload("acp_matchesServerType_list",
-				[]*cel.Type{cel.ListType(cel.StringType)},
-				cel.BoolType,
-				cel.FunctionBinding(acpMatchesServerImpl(ctx.ACP.Name, ctx.ACP.Type)),
-			),
-		),
-		cel.Function("tools.hasAllPatterns",
-			cel.Overload("tools_hasAllPatterns_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(toolsHasAllPatternsImpl(ctx.Tools.Names)),
-			),
-			cel.Overload("tools_hasAllPatterns_list",
-				[]*cel.Type{cel.ListType(cel.StringType)},
-				cel.BoolType,
-				cel.FunctionBinding(toolsHasAllPatternsImpl(ctx.Tools.Names)),
-			),
-		),
-		cel.Function("tools.hasAnyPattern",
-			cel.Overload("tools_hasAnyPattern_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.FunctionBinding(toolsHasAnyPatternImpl(ctx.Tools.Names)),
-			),
-			cel.Overload("tools_hasAnyPattern_list",
-				[]*cel.Type{cel.ListType(cel.StringType)},
-				cel.BoolType,
-				cel.FunctionBinding(toolsHasAnyPatternImpl(ctx.Tools.Names)),
-			),
-		),
-		cel.Function("commandExists",
-			cel.Overload("commandExists_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.UnaryBinding(commandExistsImpl()),
-			),
-		),
-		cel.Function("fileExists",
-			cel.Overload("fileExists_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.UnaryBinding(fileExistsImpl(ctx.Workspace.Folder)),
-			),
-		),
-		cel.Function("dirExists",
-			cel.Overload("dirExists_string",
-				[]*cel.Type{cel.StringType},
-				cel.BoolType,
-				cel.UnaryBinding(dirExistsImpl(ctx.Workspace.Folder)),
-			),
-		),
-	)
-	if err != nil {
-		return true, fmt.Errorf("cel: extend environment error for %q: %w", compiled.expr, err)
-	}
-	prog, err := evalEnv.Program(compiled.ast)
-	if err != nil {
-		return true, fmt.Errorf("cel: program error for %q: %w", compiled.expr, err)
-	}
-
-	out, _, err := prog.Eval(buildActivation(ctx))
+	out, _, err := compiled.prog.Eval(buildActivation(ctx))
 	if err != nil {
 		return true, fmt.Errorf("cel: evaluation error for %q: %w", compiled.expr, err)
 	}
@@ -346,6 +321,11 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"permissions.canStartConversation":       ctx.Permissions.CanStartConversation,
 		"permissions.canInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
 		"permissions.autoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
+
+		// item.* per-row context. Empty by default so non-item expressions evaluate
+		// normally; per-row population for list menus is added by mitto-o0u.1.
+		// See ReferencesItem for how callers detect item-dependent expressions.
+		"item": map[string]any{},
 	}
 }
 
@@ -365,79 +345,129 @@ func GetCELEvaluator() *CELEvaluator {
 	return globalCELEvaluator
 }
 
-// toolsHasPatternImpl returns a CEL UnaryOp that checks whether any tool name
-// in the provided list matches the given glob pattern (e.g., "github_*").
-func toolsHasPatternImpl(names []string) func(ref.Val) ref.Val {
-	return func(patternVal ref.Val) ref.Val {
-		pattern, ok := patternVal.(types.String)
-		if !ok {
-			return types.Bool(false)
-		}
-		for _, name := range names {
-			matched, err := filepath.Match(string(pattern), name)
-			if err == nil && matched {
-				return types.Bool(true)
-			}
-		}
-		return types.Bool(false)
-	}
+// isIdent reports whether e is a bare identifier with the given name.
+func isIdent(e celast.Expr, name string) bool {
+	return e != nil && e.Kind() == celast.IdentKind && e.AsIdent() == name
 }
 
-// acpMatchesServerImpl returns a CEL FunctionOp that checks whether the current ACP
-// server type matches any of the given server types (case-insensitive).
-// Only compares against the server type (e.g., "augment", "claude-code"), not the
-// display name (e.g., "Auggie (Opus 4.6)").
-// Fail-open: if acpName is empty (no ACP server active), always returns true.
-func acpMatchesServerImpl(acpName, acpType string) func(args ...ref.Val) ref.Val {
-	return func(args ...ref.Val) ref.Val {
-		if acpName == "" {
+// toolsHasPatternMacro rewrites tools.hasPattern(p) -> __mitto_hasPattern(tools.names, p).
+func toolsHasPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "tools") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("tools.names"), args[0]), nil
+}
+
+// toolsHasAllPatternsMacro rewrites tools.hasAllPatterns(a) -> __mitto_hasAllPatterns(tools.names, a).
+func toolsHasAllPatternsMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "tools") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("tools.names"), args[0]), nil
+}
+
+// toolsHasAnyPatternMacro rewrites tools.hasAnyPattern(a) -> __mitto_hasAnyPattern(tools.names, a).
+func toolsHasAnyPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "tools") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("tools.names"), args[0]), nil
+}
+
+// acpMatchesServerTypeMacro rewrites acp.matchesServerType(t) ->
+// __mitto_matchesServerType(acp.name, acp.type, t).
+func acpMatchesServerTypeMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "acp") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_matchesServerType", eh.NewIdent("acp.name"), eh.NewIdent("acp.type"), args[0]), nil
+}
+
+// fileExistsMacro rewrites fileExists(p) -> __mitto_fileExists(workspace.folder, p).
+func fileExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_fileExists", eh.NewIdent("workspace.folder"), args[0]), nil
+}
+
+// dirExistsMacro rewrites dirExists(p) -> __mitto_dirExists(workspace.folder, p).
+func dirExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_dirExists", eh.NewIdent("workspace.folder"), args[0]), nil
+}
+
+// valToString returns the Go string for a CEL string value, or "" otherwise.
+func valToString(v ref.Val) string {
+	if s, ok := v.(types.String); ok {
+		return string(s)
+	}
+	return ""
+}
+
+// mittoHasPattern reports whether any name (first arg, a list) matches the glob
+// pattern (second arg). Context-free so the compiled program can be cached.
+func mittoHasPattern(namesVal, patternVal ref.Val) ref.Val {
+	pattern, ok := patternVal.(types.String)
+	if !ok {
+		return types.Bool(false)
+	}
+	for _, name := range extractStringArgs([]ref.Val{namesVal}) {
+		if matched, err := filepath.Match(string(pattern), name); err == nil && matched {
 			return types.Bool(true)
 		}
-		for _, server := range extractStringArgs(args) {
-			if strings.EqualFold(server, acpType) {
+	}
+	return types.Bool(false)
+}
+
+// mittoHasAllPatterns reports whether ALL patterns (second arg, string or list)
+// are satisfied by at least one name each (first arg, a list).
+func mittoHasAllPatterns(namesVal, argVal ref.Val) ref.Val {
+	names := extractStringArgs([]ref.Val{namesVal})
+	for _, pattern := range extractStringArgs([]ref.Val{argVal}) {
+		found := false
+		for _, name := range names {
+			if matched, err := filepath.Match(pattern, name); err == nil && matched {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return types.Bool(false)
+		}
+	}
+	return types.Bool(true)
+}
+
+// mittoHasAnyPattern reports whether ANY pattern (second arg, string or list)
+// is satisfied by at least one name (first arg, a list).
+func mittoHasAnyPattern(namesVal, argVal ref.Val) ref.Val {
+	names := extractStringArgs([]ref.Val{namesVal})
+	for _, pattern := range extractStringArgs([]ref.Val{argVal}) {
+		for _, name := range names {
+			if matched, err := filepath.Match(pattern, name); err == nil && matched {
 				return types.Bool(true)
 			}
 		}
-		return types.Bool(false)
 	}
+	return types.Bool(false)
 }
 
-// toolsHasAllPatternsImpl returns a CEL FunctionOp that checks whether ALL of the
-// given glob patterns are satisfied by at least one tool name each.
-func toolsHasAllPatternsImpl(names []string) func(args ...ref.Val) ref.Val {
-	return func(args ...ref.Val) ref.Val {
-		patterns := extractStringArgs(args)
-		for _, pattern := range patterns {
-			found := false
-			for _, name := range names {
-				matched, err := filepath.Match(pattern, name)
-				if err == nil && matched {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return types.Bool(false)
-			}
-		}
+// mittoMatchesServerType reports whether the ACP server type matches any of the
+// given types (case-insensitive). args[0]=acp.name, args[1]=acp.type, args[2:]=types.
+// Only compares the server type (e.g., "augment"), not the display name.
+// Fail-open: returns true when no ACP server is active (acp.name == "").
+func mittoMatchesServerType(args ...ref.Val) ref.Val {
+	if len(args) < 2 {
+		return types.Bool(false)
+	}
+	acpName := valToString(args[0])
+	acpType := valToString(args[1])
+	if acpName == "" {
 		return types.Bool(true)
 	}
-}
-
-// toolsHasAnyPatternImpl returns a CEL FunctionOp that checks whether ANY of the
-// given glob patterns is satisfied by at least one tool name.
-func toolsHasAnyPatternImpl(names []string) func(args ...ref.Val) ref.Val {
-	return func(args ...ref.Val) ref.Val {
-		for _, pattern := range extractStringArgs(args) {
-			for _, name := range names {
-				matched, err := filepath.Match(pattern, name)
-				if err == nil && matched {
-					return types.Bool(true)
-				}
-			}
+	for _, server := range extractStringArgs(args[2:]) {
+		if strings.EqualFold(server, acpType) {
+			return types.Bool(true)
 		}
-		return types.Bool(false)
 	}
+	return types.Bool(false)
 }
 
 // commandExistsImpl returns a CEL UnaryOp that checks whether a command
@@ -453,52 +483,40 @@ func commandExistsImpl() func(ref.Val) ref.Val {
 	}
 }
 
-// fileExistsImpl returns a CEL UnaryOp that checks whether a file (not directory) exists
-// at the given path. Relative paths are resolved against the provided workspace folder.
-func fileExistsImpl(workspaceFolder string) func(ref.Val) ref.Val {
-	return func(pathVal ref.Val) ref.Val {
-		p, ok := pathVal.(types.String)
-		if !ok {
-			return types.Bool(false)
-		}
-		path := string(p)
-		if path == "" {
-			return types.Bool(false)
-		}
-		// Resolve relative paths against workspace folder
-		if !filepath.IsAbs(path) && workspaceFolder != "" {
-			path = filepath.Join(workspaceFolder, path)
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return types.Bool(false)
-		}
-		return types.Bool(!info.IsDir())
+// statResolved stats path, resolving relative paths against workspaceFolder.
+// Returns (info, true) on success, or (nil, false) for empty paths or stat errors.
+func statResolved(workspaceFolder, path string) (os.FileInfo, bool) {
+	if path == "" {
+		return nil, false
 	}
+	if !filepath.IsAbs(path) && workspaceFolder != "" {
+		path = filepath.Join(workspaceFolder, path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, false
+	}
+	return info, true
 }
 
-// dirExistsImpl returns a CEL UnaryOp that checks whether a directory exists
-// at the given path. Relative paths are resolved against the provided workspace folder.
-func dirExistsImpl(workspaceFolder string) func(ref.Val) ref.Val {
-	return func(pathVal ref.Val) ref.Val {
-		p, ok := pathVal.(types.String)
-		if !ok {
-			return types.Bool(false)
-		}
-		path := string(p)
-		if path == "" {
-			return types.Bool(false)
-		}
-		// Resolve relative paths against workspace folder
-		if !filepath.IsAbs(path) && workspaceFolder != "" {
-			path = filepath.Join(workspaceFolder, path)
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return types.Bool(false)
-		}
-		return types.Bool(info.IsDir())
+// mittoFileExists reports whether path exists and is a regular file (not a dir).
+// Relative paths are resolved against the workspace folder (first argument).
+func mittoFileExists(folderVal, pathVal ref.Val) ref.Val {
+	info, ok := statResolved(valToString(folderVal), valToString(pathVal))
+	if !ok {
+		return types.Bool(false)
 	}
+	return types.Bool(!info.IsDir())
+}
+
+// mittoDirExists reports whether path exists and is a directory.
+// Relative paths are resolved against the workspace folder (first argument).
+func mittoDirExists(folderVal, pathVal ref.Val) ref.Val {
+	info, ok := statResolved(valToString(folderVal), valToString(pathVal))
+	if !ok {
+		return types.Bool(false)
+	}
+	return types.Bool(info.IsDir())
 }
 
 // extractStringArgs extracts string values from CEL function arguments.
