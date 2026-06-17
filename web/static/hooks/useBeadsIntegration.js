@@ -38,6 +38,7 @@ export function useBeadsIntegration({
   setShowSidePanel,
   setSidePanelTab,
   onOpenPeriodicDialog,
+  activeSessionId,
 }) {
   const { startConversationWithPrompt } = useConversationSeeding({ newSession });
   const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
@@ -101,10 +102,17 @@ export function useBeadsIntegration({
   // `issue` is provided, appends item_* params so the server can evaluate
   // item.*-gated enabledWhen expressions per row (mitto-o0u.1). Prompts that
   // don't reference item.* are unaffected by the extra params.
+  //
+  // enabled_context=workspace tells the server to evaluate the full enabledWhen
+  // gates even without a session (mitto-gns). We also pass the current active
+  // session_id when one exists so real per-session permission flags +
+  // session.isChild apply (approach B); the server falls back to session-less
+  // workspace defaults only when no session is active.
   const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir, issue) => {
     if (!workingDir) return [];
     try {
-      let url = `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`;
+      let url = `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
+      if (activeSessionId) url += `&session_id=${encodeURIComponent(activeSessionId)}`;
       if (issue) {
         url += `&item_kind=beadsIssue`;
         if (issue.id) url += `&item_id=${encodeURIComponent(issue.id)}`;
@@ -128,20 +136,24 @@ export function useBeadsIntegration({
       console.error("Failed to fetch beads prompts for workspace:", err);
       return [];
     }
-  }, []);
+  }, [activeSessionId]);
 
   // Fetch the prompts whose `menus` list includes `beadsList` for a workspace
   // directory. Used by the list-level prompts button in the Beads list view.
   // These prompts operate on the whole issue list (e.g. cleanup, triage) rather
-  // than a single issue, so they take no parameters. There is no specific
-  // conversation here, so `enabledWhen` is evaluated without a session_id; we
-  // only keep the prompts that opt into the beads-list menu via `menus`.
+  // than a single issue, so they take no item parameters.
+  //
+  // enabled_context=workspace asks the server to evaluate the full enabledWhen
+  // gates (commandExists/dirExists/!session.isChild/tools/permissions) for these
+  // prompts (mitto-gns); we pass the current active session_id when one exists so
+  // real per-session flags + session.isChild apply (approach B), falling back to
+  // session-less workspace defaults only when no session is active.
   const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
     if (!workingDir) return [];
     try {
-      const res = await authFetch(
-        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
-      );
+      let url = `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
+      if (activeSessionId) url += `&session_id=${encodeURIComponent(activeSessionId)}`;
+      const res = await authFetch(apiUrl(url));
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
@@ -157,7 +169,7 @@ export function useBeadsIntegration({
       console.error("Failed to fetch beads list prompts for workspace:", err);
       return [];
     }
-  }, []);
+  }, [activeSessionId]);
 
   // Run a beads prompt against a specific issue: create a new conversation in
   // the beads workspace, then seed it with the prompt text plus a single

@@ -215,6 +215,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   if (issue) lastIssueRef.current = issue;
   if (isOpen) lastCreatingRef.current = isCreating;
 
+  // While closing, keep rendering whichever mode was last open.
+  const creating = isOpen ? isCreating : lastCreatingRef.current;
+  const data = issue || lastIssueRef.current;
+
   // Create-mode form state.
   const [title, setTitle] = useState("");
   const [type, setType] = useState("task");
@@ -348,9 +352,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     const rect = e.currentTarget.getBoundingClientRect();
     setPanelMenu({ x: rect.left, y: rect.bottom });
     if (onFetchPrompts && workingDir) {
-      onFetchPrompts(workingDir).then((list) => setPrompts(list || []));
+      // Pass the issue so item.*-gated prompts (e.g. Start work hidden for
+      // closed issues) evaluate against this issue's status (mitto-gns).
+      onFetchPrompts(workingDir, data).then((list) => setPrompts(list || []));
     }
-  }, [onFetchPrompts, workingDir]);
+  }, [onFetchPrompts, workingDir, data]);
 
   useEffect(() => {
     if (isOpen) {
@@ -452,9 +458,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     }
   }, [improvingDesc, showToast]);
 
-  // While closing, keep rendering whichever mode was last open.
-  const creating = isOpen ? isCreating : lastCreatingRef.current;
-  const data = issue || lastIssueRef.current;
   // md renders the draft description so the read-only view reflects in-progress edits.
   const md = useMemo(
     () => renderMarkdown(!creating && viewDraft && viewDraft.description),

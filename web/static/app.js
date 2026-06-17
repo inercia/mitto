@@ -435,6 +435,7 @@ function App() {
     setShowSidePanel,
     setSidePanelTab,
     onOpenPeriodicDialog: (prompt, onSchedule) => setPeriodicScheduleDialog({ prompt, onSchedule }),
+    activeSessionId,
   });
 
   // Conversation seeding: send a named prompt to an existing conversation via queue,
