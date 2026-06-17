@@ -3,29 +3,30 @@ import type { Page } from "@playwright/test";
 
 /**
  * Structural regression net for the sidebar toolbar button row (the join group
- * holding New Conversation / Filter / Density / two placeholders).
+ * holding New Conversation / Workspaces / Filter / Density / Search / Settings).
  *
  * Locks down two bugs that were fixed separately:
  *   1. SIZING: the Filter/Density triggers are <summary> elements inside a
  *      <details>, and a <details> silently ignores flex-grow when flex-basis is
  *      0 (the `flex-1` utility). That left those two items at content width
  *      (~44px) while the plain <button> items grew to ~70px. The fix switches
- *      all five children to `flex-auto` (flex-basis auto) so every item gets an
- *      equal share. This spec asserts all five items share the same width/height.
+ *      all children to `flex-auto` (flex-basis auto) so every item gets an
+ *      equal share. This spec asserts all items share the same width/height.
  *   2. BORDER: the global per-<button> border rule never reached the <summary>
  *      triggers, leaving Filter/Density borderless. A scoped styles-v2.css rule
  *      mirrors the border onto the toolbar's summaries. This spec asserts all
- *      five items share the same border-top color.
+ *      items share the same border-top color.
  *
  * Selectors are anchored on stable data-testids so they survive restyles.
  */
 
 const ITEM_IDS = [
   "new-conversation-btn",
+  "workspaces-btn",
   "category-filter-btn",
   "density-btn",
-  "sidebar-toolbar-placeholder-1",
-  "sidebar-toolbar-placeholder-2",
+  "search-btn",
+  "settings-btn",
 ] as const;
 
 const toolbar = (page: Page) =>
@@ -56,14 +57,14 @@ test.describe("Sidebar toolbar structure (sizing + border regression)", () => {
     await expect(toolbar(page)).toBeVisible({ timeout: 5000 });
   });
 
-  test("all five toolbar items are present and visible", async ({ page }) => {
+  test("all toolbar items are present and visible", async ({ page }) => {
     const tb = toolbar(page);
     for (const id of ITEM_IDS) {
       await expect(tb.locator(`[data-testid="${id}"]`).first()).toBeVisible();
     }
   });
 
-  test("all five toolbar items share identical width and height", async ({
+  test("all toolbar items share identical width and height", async ({
     page,
   }) => {
     const metrics = await collectItemMetrics(page);
@@ -91,7 +92,7 @@ test.describe("Sidebar toolbar structure (sizing + border regression)", () => {
     ).toBeLessThanOrEqual(1.5);
   });
 
-  test("all five toolbar items share the same border-top color", async ({
+  test("all toolbar items share the same border-top color", async ({
     page,
   }) => {
     const metrics = await collectItemMetrics(page);

@@ -1169,7 +1169,7 @@ export function SessionList({
                     if (deleted) parts.push(html`<span class="text-red-400">−${deleted}</span>`);
                     if (untracked) parts.push(html`<span class="text-mitto-text-muted">?${untracked}</span>`);
                     return html`
-                      <div class="text-[0.5rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
+                      <div class="text-[0.5625rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
                         ${gitData.branch ? html`<${Fragment}><span title=${gitData.branch}>⎇ ${branchDisplay}</span><span>·</span></${Fragment}>` : null}
                         ${parts}
                       </div>
@@ -1200,71 +1200,87 @@ export function SessionList({
                           onBeadsOpen && onBeadsOpen(folder.workingDir);
                         }}
                         aria-current=${tasksActive ? "page" : undefined}
-                        class="flex items-center gap-2 text-sm border-0! ${tasksActive
+                        class="flex flex-col gap-0.5 items-stretch text-sm border-0! ${tasksActive
                           ? "bg-mitto-accent text-mitto-accent-fg"
                           : "text-mitto-text-muted"}"
                         title="Beads issues: ${folder.workingDir}"
                       >
-                        <${BeadsIcon} className="w-4 h-4 shrink-0" />
-                        <span class="truncate min-w-0"
-                          >${folder.tasksNode.label}</span
-                        >
-                        <span class="flex-1"></span>
-                        ${folder.workingDir &&
-                        html`
-                          <button
-                            type="button"
-                            onClick=${(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              onBeadsCreate && onBeadsCreate(folder.workingDir);
-                            }}
-                            class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                            title="New issue"
-                            aria-label="New issue"
+                        <!-- Top row: icon, label, and trailing action buttons.
+                             The stats row below lives inside the same clickable
+                             container so the whole entry behaves as one unit
+                             (matches regular conversation items). -->
+                        <div class="flex items-center gap-2 min-w-0 w-full">
+                          <${BeadsIcon} className="w-4 h-4 shrink-0" />
+                          <span class="truncate min-w-0"
+                            >${folder.tasksNode.label}</span
                           >
-                            <${PlusIcon} className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick=${(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const rect =
-                                e.currentTarget.getBoundingClientRect();
-                              openTasksContextMenu(
-                                rect.left,
-                                rect.bottom,
-                                folder.workingDir,
-                                folder.tasksNode.label,
-                              );
-                            }}
-                            class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                            title="More actions"
-                            aria-label="More actions"
-                          >
-                            <${EllipsisIcon} className="w-3.5 h-3.5" />
-                          </button>
-                        `}
+                          <span class="flex-1"></span>
+                          ${folder.workingDir &&
+                          html`
+                            <button
+                              type="button"
+                              onClick=${(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onBeadsCreate &&
+                                  onBeadsCreate(folder.workingDir);
+                              }}
+                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                              title="New issue"
+                              aria-label="New issue"
+                            >
+                              <${PlusIcon} className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick=${(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const rect =
+                                  e.currentTarget.getBoundingClientRect();
+                                openTasksContextMenu(
+                                  rect.left,
+                                  rect.bottom,
+                                  folder.workingDir,
+                                  folder.tasksNode.label,
+                                );
+                              }}
+                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                              title="More actions"
+                              aria-label="More actions"
+                            >
+                              <${EllipsisIcon} className="w-3.5 h-3.5" />
+                            </button>
+                          `}
+                        </div>
+                        ${density === "comfortable" && folderExpanded && (() => {
+                          const stats = beadsStatsMap[folder.workingDir];
+                          if (!stats) return null;
+                          const open = stats.open_issues || 0;
+                          const inProgress = stats.in_progress_issues || 0;
+                          const ready = stats.ready_issues || 0;
+                          const blocked = stats.blocked_issues || 0;
+                          const total = stats.total_issues || 0;
+                          if (!total) return null;
+                          return html`
+                            <!-- w-full + min-w-0: the parent button is a flex
+                                 column where daisyUI's menu rule forces
+                                 align-items:center, which would shrink this row
+                                 to its content and center it (pushing the stats
+                                 ~22px right of the label). Stretching it full
+                                 width keeps its box at the content edge so the
+                                 pl-6 indent lands the text under the label —
+                                 matching the folder git line and conversation
+                                 subtitle second-line style. -->
+                            <div class="text-[0.5625rem] font-normal italic truncate pl-6 w-full min-w-0 flex items-center gap-1.5 ${tasksActive ? "text-mitto-accent-fg/80" : "text-mitto-text-muted"}">
+                              <span title="${open} open">○ ${open}</span>
+                              <span class="${tasksActive ? "" : "text-amber-400"}" title="${inProgress} in progress">◐ ${inProgress}</span>
+                              <span class="${tasksActive ? "" : "text-green-400"}" title="${ready} ready">● ${ready}</span>
+                              ${blocked ? html`<span class="${tasksActive ? "" : "text-red-400"}" title="${blocked} blocked">⊘ ${blocked}</span>` : null}
+                            </div>
+                          `;
+                        })()}
                       </div>
-                      ${density === "comfortable" && folderExpanded && (() => {
-                        const stats = beadsStatsMap[folder.workingDir];
-                        if (!stats) return null;
-                        const open = stats.open_issues || 0;
-                        const inProgress = stats.in_progress_issues || 0;
-                        const ready = stats.ready_issues || 0;
-                        const blocked = stats.blocked_issues || 0;
-                        const total = stats.total_issues || 0;
-                        if (!total) return null;
-                        return html`
-                          <div class="text-[0.5rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
-                            <span class="text-mitto-text-muted" title="${open} open">○ ${open}</span>
-                            <span class="text-amber-400" title="${inProgress} in progress">◐ ${inProgress}</span>
-                            <span class="text-green-400" title="${ready} ready">● ${ready}</span>
-                            ${blocked ? html`<span class="text-red-400" title="${blocked} blocked">⊘ ${blocked}</span>` : null}
-                          </div>
-                        `;
-                      })()}
                     </li>
                   `}
                   ${renderSessionNodes(folder.conversations)}
@@ -1564,9 +1580,10 @@ export function SessionList({
         `}
       </div>
       <!-- Side panel toolbar: panel-wide actions, sitting right above the
-           Dashboard entry. Holds the new-conversation and category-filter
-           buttons (moved from the header), a density control, and a couple of
-           placeholder buttons reserved for upcoming features. -->
+           Dashboard entry. Holds, in order: new-conversation, workspaces,
+           category-filter, density, search, and settings. Workspaces and
+           settings were moved up from the footer; they are disabled (greyed)
+           rather than hidden when the configuration is read-only. -->
       <div
         ref=${toolbarRef}
         class="px-3 pb-8"
@@ -1587,6 +1604,21 @@ export function SessionList({
             ${isCreatingSession
               ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
               : html`<${PlusIcon} className="w-4 h-4" />`}
+          </button>
+          <!-- Workspaces: moved up from the footer. Disabled (greyed) instead
+               of hidden when the configuration is read-only. -->
+          <button
+            data-testid="workspaces-btn"
+            type="button"
+            onClick=${() => !configReadonly && onShowWorkspaces && onShowWorkspaces()}
+            aria-disabled=${configReadonly ? "true" : "false"}
+            class="btn btn-ghost btn-sm join-item flex-auto ${configReadonly
+              ? "opacity-40 pointer-events-none text-mitto-text-muted"
+              : "text-mitto-text-muted hover:text-mitto-text-strong"}"
+            title=${configReadonly ? "Workspaces (read-only configuration)" : "Workspaces"}
+            aria-label="Workspaces"
+          >
+            <${FolderIcon} className="w-4 h-4" />
           </button>
           <!-- The dropdown trigger is the nested <summary>, so the join's
                weld margin (applied to direct join-item children) never reaches
@@ -1675,22 +1707,32 @@ export function SessionList({
               </li>
             </ul>
           </details>
-          <!-- Placeholder buttons reserved for upcoming features. -->
+          <!-- Search (placeholder — search is not yet implemented). -->
           <button
             type="button"
-            data-testid="sidebar-toolbar-placeholder-1"
+            data-testid="search-btn"
             class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
-            aria-label="Placeholder"
+            aria-label="Search"
+            title="Search"
           >
             <${SearchIcon} className="w-4 h-4" />
           </button>
+          <!-- Settings: moved up from the footer. Disabled (greyed) instead of
+               hidden when the configuration is read-only. -->
           <button
+            data-testid="settings-btn"
             type="button"
-            data-testid="sidebar-toolbar-placeholder-2"
-            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
-            aria-label="Placeholder"
+            onClick=${() => !configReadonly && onShowSettings && onShowSettings()}
+            aria-disabled=${configReadonly ? "true" : "false"}
+            class="btn btn-ghost btn-sm join-item flex-auto ${configReadonly
+              ? "opacity-40 pointer-events-none text-mitto-text-muted"
+              : "text-mitto-text-muted hover:text-mitto-text-strong"}"
+            title=${configReadonly
+              ? (rcFilePath ? `Using ${rcFilePath}` : "Settings (read-only configuration)")
+              : "Settings"}
+            aria-label="Settings"
           >
-            <${EllipsisIcon} className="w-4 h-4" />
+            <${SettingsIcon} className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -1703,40 +1745,9 @@ export function SessionList({
         `}
         ${renderUnifiedTree()}
       </div>
-      <!-- Footer with settings, theme and font size toggles -->
+      <!-- Footer with theme and font size toggles -->
       <div class="p-4 border-t border-mitto-border-1">
         <div class="flex items-center justify-center gap-3">
-          <!-- Settings | Workspaces segmented button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
-          ${!configReadonly
-            ? html`
-                <div class="flex items-center gap-0.5">
-                  <button
-                    onClick=${onShowSettings}
-                    class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:text-mitto-text-strong"
-                    title="Settings"
-                  >
-                    <${SettingsIcon} className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick=${onShowWorkspaces}
-                    class="btn btn-ghost btn-square btn-sm text-mitto-text-muted hover:text-mitto-text-strong"
-                    title="Workspaces"
-                  >
-                    <${FolderIcon} className="w-4 h-4" />
-                  </button>
-                </div>
-              `
-            : rcFilePath
-              ? html`
-                  <button
-                    aria-disabled="true"
-                    class="btn btn-ghost btn-square btn-sm opacity-40 pointer-events-none"
-                    title="Using ${rcFilePath}"
-                  >
-                    <${SettingsIcon} className="w-5 h-5 text-mitto-text-muted" />
-                  </button>
-                `
-              : null}
           <!-- Theme toggle (daisyUI swap; checked = light = sun shown).
                Controlled Preact checkbox — useTheme owns persistence / follow-system /
                Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
