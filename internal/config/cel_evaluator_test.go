@@ -509,6 +509,82 @@ func TestCELEvaluator_ReferencesItem(t *testing.T) {
 	}
 }
 
+// TestCELEvaluator_ItemContext validates that item.* fields in the activation are
+// populated from PromptEnabledContext.Item and that per-row expressions evaluate
+// correctly. ReferencesItem must be true for any expression that touches item.*.
+func TestCELEvaluator_ItemContext(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	closedCtx := &PromptEnabledContext{
+		Item: ItemContext{
+			Id:       "mitto-abc",
+			Status:   "closed",
+			Type:     "task",
+			Priority: "2",
+			Kind:     "beadsIssue",
+		},
+	}
+	openCtx := &PromptEnabledContext{
+		Item: ItemContext{
+			Id:       "mitto-xyz",
+			Status:   "open",
+			Type:     "feature",
+			Priority: "1",
+			Kind:     "beadsIssue",
+		},
+	}
+	emptyCtx := &PromptEnabledContext{} // Item fields all zero-valued
+
+	tests := []struct {
+		name           string
+		expr           string
+		ctx            *PromptEnabledContext
+		want           bool
+		wantReferences bool
+	}{
+		// item.status checks
+		{"closed hides when closed", `item.status != "closed"`, closedCtx, false, true},
+		{"open passes when open", `item.status != "closed"`, openCtx, true, true},
+		{"empty status passes", `item.status != "closed"`, emptyCtx, true, true},
+
+		// item.kind check
+		{"kind matches", `item.kind == "beadsIssue"`, closedCtx, true, true},
+		{"kind empty on empty ctx", `item.kind == "beadsIssue"`, emptyCtx, false, true},
+
+		// item.id check
+		{"id non-empty", `item.id != ""`, closedCtx, true, true},
+		{"id empty on empty ctx", `item.id != ""`, emptyCtx, false, true},
+
+		// item.type check
+		{"type matches feature", `item.type == "feature"`, openCtx, true, true},
+		{"type does not match task", `item.type == "task"`, openCtx, false, true},
+
+		// item.priority check
+		{"priority string match", `item.priority == "1"`, openCtx, true, true},
+		{"priority no match", `item.priority == "0"`, openCtx, false, true},
+
+		// Combined with session
+		{"item and session combined", `item.status != "closed" && !session.isChild`, openCtx, true, true},
+
+		// Non-item expression must have ReferencesItem=false
+		{"non-item expr not detected", `session.isChild`, openCtx, false, false},
+		{"acp expr not detected", `acp.name == ""`, openCtx, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			if ce.ReferencesItem() != tt.wantReferences {
+				t.Errorf("ReferencesItem(%q) = %v, want %v", tt.expr, ce.ReferencesItem(), tt.wantReferences)
+			}
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
 // benchEvalCtx is a representative context exercising tools/ACP/workspace functions.
 var benchEvalCtx = &PromptEnabledContext{
 	ACP:      ACPContext{Name: "Auggie (Opus)", Type: "augment", Tags: []string{"coding", "fast"}},

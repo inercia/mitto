@@ -19,6 +19,9 @@ type PromptEnabledContext struct {
 	Tools ToolsContext
 	// Permissions contains session permission flags (advanced settings)
 	Permissions PermissionsContext
+	// Item contains the per-row item context for list menus (e.g. a beads issue row).
+	// All fields are empty strings when no item context is provided.
+	Item ItemContext
 }
 
 // ACPContext holds ACP server context for CEL evaluation.
@@ -110,6 +113,23 @@ type ToolsContext struct {
 	Available bool
 	// Names contains the names of available tools
 	Names []string
+}
+
+// ItemContext holds the generic per-row item context for CEL evaluation of list menus.
+// Populated when a menu is opened for a specific row (e.g. a beads issue); empty otherwise.
+// All fields are always present (empty string when unset) so expressions like item.status
+// always resolve without a missing-key error.
+type ItemContext struct {
+	// Id is the unique identifier of the item (e.g. a beads issue ID like "mitto-abc")
+	Id string
+	// Status is the current status of the item (e.g. "open", "closed", "in_progress")
+	Status string
+	// Type is the type of the item (e.g. "task", "feature", "bug", "epic")
+	Type string
+	// Priority is the priority of the item as a string (e.g. "0", "1", "2", "3")
+	Priority string
+	// Kind distinguishes the source of the item (e.g. "beadsIssue")
+	Kind string
 }
 
 // PermissionsContext holds session permission flags for CEL evaluation.

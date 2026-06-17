@@ -322,10 +322,17 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"permissions.canInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
 		"permissions.autoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
 
-		// item.* per-row context. Empty by default so non-item expressions evaluate
-		// normally; per-row population for list menus is added by mitto-o0u.1.
+		// item.* per-row context. All keys are always present (empty string when
+		// no item context is set) so expressions like item.status resolve cleanly.
+		// Callers populate ctx.Item for per-row list-menu evaluation (mitto-o0u.1).
 		// See ReferencesItem for how callers detect item-dependent expressions.
-		"item": map[string]any{},
+		"item": map[string]any{
+			"id":       ctx.Item.Id,
+			"status":   ctx.Item.Status,
+			"type":     ctx.Item.Type,
+			"priority": ctx.Item.Priority,
+			"kind":     ctx.Item.Kind,
+		},
 	}
 }
 
