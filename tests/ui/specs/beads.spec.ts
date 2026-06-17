@@ -310,9 +310,12 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect(titleInput).toBeVisible({ timeout: timeouts.shortAction });
       await expect(titleInput).toHaveValue("Short issue");
 
-      // Replace the title and save with Enter.
+      // Replace the title and blur with Enter (draft updated, not yet saved).
       await titleInput.fill("Renamed issue");
       await titleInput.press("Enter");
+
+      // Click the unified Save button to persist all dirty fields.
+      await panel.locator('button[title="Save changes"]').click();
 
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })

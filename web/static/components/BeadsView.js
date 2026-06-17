@@ -239,49 +239,39 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   const [promptsLoading, setPromptsLoading] = useState(false);
   const promptsRef = useRef(null);
 
-  // View-mode inline description editing. Clicking the rendered description
-  // switches it to a CodeMirror editor; blur saves via /api/beads/update when
-  // the text changed. `descDraft` holds the in-progress text (kept in sync with
-  // the editor via onChange so the magic-wand disabled check stays accurate);
-  // `savingDesc` gates the in-flight request.
+  // View-mode inline description editing. editingDesc switches the rendered
+  // description to a CodeMirror editor. Edits accumulate in viewDraft and are
+  // persisted by the unified Save button. descMinHeight keeps the editor at
+  // least as tall as the content it replaces.
   const [editingDesc, setEditingDesc] = useState(false);
-  const [descDraft, setDescDraft] = useState("");
-  const [savingDesc, setSavingDesc] = useState(false);
-  // Min height (px) applied to the editor so it does not shrink relative to
-  // the rendered description it replaces. Measured from descViewRef on entry.
   const [descMinHeight, setDescMinHeight] = useState(0);
   const detailEditorApiRef = useRef(null);
   const descViewRef = useRef(null);
   // Imperative handle for the create-form's description CodeMirror editor.
   const createEditorApiRef = useRef(null);
 
-  // View-mode inline title editing. Clicking the rendered title in the header
-  // switches it to a text input; blur saves via /api/beads/update when the text
-  // changed. `titleDraft` holds the in-progress text; `savingTitle` gates the
-  // in-flight request. `titleCancelRef` lets Escape blur without saving.
+  // View-mode inline title editing.
   const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
-  const [savingTitle, setSavingTitle] = useState(false);
   const titleRef = useRef(null);
-  const titleCancelRef = useRef(false);
+  // Snapshot of viewDraft.title captured on startEditTitle so Escape can revert.
+  const titleEditStartRef = useRef("");
 
-  // View-mode inline priority editing. Clicking the priority badge opens a small
-  // dropdown of the available priorities; selecting one saves via
-  // /api/beads/update. `savingPriority` gates the in-flight request.
+  // View-mode inline priority editing.
   const [editingPriority, setEditingPriority] = useState(false);
-  const [savingPriority, setSavingPriority] = useState(false);
   const priorityRef = useRef(null);
 
-  // View-mode inline assignee editing. Clicking the rendered assignee switches
-  // it to a text input; blur saves via /api/beads/update when the text changed
-  // (an empty value clears the assignee). `assigneeDraft` holds the in-progress
-  // text; `savingAssignee` gates the in-flight request. `assigneeCancelRef` lets
-  // Escape blur without saving.
+  // View-mode inline assignee editing.
   const [editingAssignee, setEditingAssignee] = useState(false);
-  const [assigneeDraft, setAssigneeDraft] = useState("");
-  const [savingAssignee, setSavingAssignee] = useState(false);
   const assigneeRef = useRef(null);
-  const assigneeCancelRef = useRef(false);
+  // Snapshot of viewDraft.assignee captured on startEditAssignee so Escape can revert.
+  const assigneeEditStartRef = useRef("");
+
+  // Draft / dirty / save state for view mode. All five editable fields
+  // accumulate into viewDraft; a single Save posts them together.
+  const [viewDraft, setViewDraft] = useState({ title: "", priority: 2, description: "", assignee: "", notes: "" });
+  const [savingView, setSavingView] = useState(false);
+  // When true, show the "Discard changes?" confirm dialog before closing.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   // View-mode dependencies. The list rows only carry a dependency_count, so the
   // full edges (id + title + status + dependency_type) are fetched from
@@ -295,13 +285,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   const [comments, setComments] = useState([]);
   const [notes, setNotes] = useState("");
 
-  // View-mode inline notes editing (mirrors description: clicking the rendered
-  // notes switches to a textarea; blur saves via /api/beads/update when the
-  // text changed). `notesDraft` holds the in-progress text; `savingNotes` gates
-  // the in-flight request.
+  // View-mode inline notes editing.
   const [editingNotes, setEditingNotes] = useState(false);
-  const [notesDraft, setNotesDraft] = useState("");
-  const [savingNotes, setSavingNotes] = useState(false);
   const [notesMinHeight, setNotesMinHeight] = useState(0);
   const notesRef = useRef(null);
   const notesViewRef = useRef(null);
@@ -382,11 +367,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       return () => clearTimeout(timer);
     }
   }, [isOpen]);
-
-  const handleClose = useCallback(() => {
-    setIsClosing(true);
-    setTimeout(() => onClose(), 150);
-  }, [onClose]);
 
   const handleSave = useCallback(async () => {
     if (!description.trim()) return;
@@ -476,28 +456,70 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // While closing, keep rendering whichever mode was last open.
   const creating = isOpen ? isCreating : lastCreatingRef.current;
   const data = issue || lastIssueRef.current;
+  // md renders the draft description so the read-only view reflects in-progress edits.
   const md = useMemo(
-    () => renderMarkdown(!creating && data && data.description),
-    [creating, data && data.description],
+    () => renderMarkdown(!creating && viewDraft && viewDraft.description),
+    [creating, viewDraft && viewDraft.description],
   );
   const subtasks = useMemo(
     () => (!creating && data ? allIssues.filter(i => i.parent === data.id) : []),
     [creating, allIssues, data && data.id],
   );
 
-  // Leave description-edit mode whenever the viewed issue changes so a new issue
-  // never opens showing the previous one's draft.
+  // The "original" values used to compute dirtiness. Notes come from async
+  // fetchDeps, so they are sourced from the `notes` state rather than data.
+  const viewOriginal = useMemo(() => ({
+    title: (data && data.title) || "",
+    priority: (data && typeof data.priority === "number") ? data.priority : 2,
+    description: (data && data.description) || "",
+    assignee: (data && data.assignee) || "",
+    notes: notes || "",
+  }), [data && data.id, data && data.title, data && data.priority, data && data.description, data && data.assignee, notes]);
+
+  const viewDirty = useMemo(() => {
+    if (creating) return false;
+    const t = viewDraft.title.trim();
+    return (t !== "" && t !== viewOriginal.title)
+      || viewDraft.priority !== viewOriginal.priority
+      || viewDraft.description !== viewOriginal.description
+      || viewDraft.assignee.trim() !== viewOriginal.assignee
+      || viewDraft.notes !== viewOriginal.notes;
+  }, [creating, viewDraft, viewOriginal]);
+
+  // handleClose and handleDiscardAndClose are defined here (after creating and
+  // viewDirty) because their dep arrays reference both computed values.
+  const handleClose = useCallback(() => {
+    if (!creating && viewDirty) { setConfirmDiscard(true); return; }
+    setIsClosing(true);
+    setTimeout(() => onClose(), 150);
+  }, [creating, viewDirty, onClose]);
+
+  const handleDiscardAndClose = useCallback(() => {
+    setConfirmDiscard(false);
+    setIsClosing(true);
+    setTimeout(() => onClose(), 150);
+  }, [onClose]);
+
+  // Seed non-notes fields whenever a different issue opens (notes come from
+  // fetchDeps below, which calls setViewDraft when seedDraftNotes is true).
+  useEffect(() => {
+    if (creating || !data || !data.id) return;
+    setViewDraft({
+      title: data.title || "",
+      priority: (typeof data.priority === "number") ? data.priority : 2,
+      description: data.description || "",
+      assignee: data.assignee || "",
+      notes: "",
+    });
+  }, [creating, data && data.id]);
+
+  // Leave all edit modes whenever the viewed issue changes.
   useEffect(() => {
     setEditingDesc(false);
-    setSavingDesc(false);
     setEditingTitle(false);
-    setSavingTitle(false);
     setEditingPriority(false);
-    setSavingPriority(false);
     setEditingAssignee(false);
-    setSavingAssignee(false);
     setEditingNotes(false);
-    setSavingNotes(false);
     setAddingComment(false);
     setSavingComment(false);
     setCommentDraft("");
@@ -540,247 +562,94 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     }
   }, [editingAssignee]);
 
-  // Enter inline edit mode, seeding the draft from the current description.
-  // Capture the rendered area's height first so the textarea opens at least as
-  // tall as the content it replaces (it can still grow via min-height/rows).
   const startEditDesc = useCallback(() => {
-    if (savingDesc) return;
     if (descViewRef.current) setDescMinHeight(descViewRef.current.offsetHeight);
-    setDescDraft((data && data.description) || "");
     setEditingDesc(true);
-  }, [data && data.description, savingDesc]);
+  }, []);
 
-  // Persist the edited description on blur. Saves only when the text changed;
-  // otherwise just leaves edit mode. Uses /api/beads/update and refreshes the
-  // list via onUpdated so the panel re-renders with the saved value.
-  // `text` is the current editor value passed directly from CodeEditorField's
-  // onBlur callback (not read from descDraft state).
-  const handleDescBlur = useCallback(async (text) => {
-    // While an AI "improve" request is in flight, ignore blur so a stray click
-    // elsewhere can't save the pre-improved draft and drop the incoming result.
-    // The user stays in edit mode; once the improvement lands they can blur to
-    // save normally. (Clicking the wand itself never blurs — its onMouseDown
-    // preventDefault keeps the CodeMirror editor focused.)
-    if (improvingDesc) return;
-    const original = (data && data.description) || "";
-    const next = text;
-    if (next === original) {
-      setEditingDesc(false);
-      return;
-    }
-    setSavingDesc(true);
-    try {
-      const res = await secureFetch(apiUrl("/api/beads/update"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: data.id, description: next }),
-      });
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to update description" });
-      } else {
-        showToast && showToast({ style: "success", title: "Description updated" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to update description" });
-    } finally {
-      setSavingDesc(false);
-      setEditingDesc(false);
-    }
-  }, [data && data.id, data && data.description, workingDir, showToast, onUpdated, improvingDesc]);
-
-  // Enter inline notes-edit mode, seeding the draft from the current notes.
-  // Capture the rendered area's height first so the textarea opens at least as
-  // tall as the content it replaces.
   const startEditNotes = useCallback(() => {
-    if (savingNotes) return;
     if (notesViewRef.current) setNotesMinHeight(notesViewRef.current.offsetHeight);
-    setNotesDraft(notes || "");
     setEditingNotes(true);
-  }, [notes, savingNotes]);
+  }, []);
 
-  // Persist the edited notes on blur. Saves only when the text changed;
-  // otherwise just leaves edit mode. Uses /api/beads/update with the notes
-  // field and updates local state so the panel re-renders with the saved value.
-  const handleNotesBlur = useCallback(async () => {
-    const original = notes || "";
-    const next = notesDraft;
-    if (next === original) {
-      setEditingNotes(false);
-      return;
-    }
-    setSavingNotes(true);
-    try {
-      const res = await secureFetch(apiUrl("/api/beads/update"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: data.id, notes: next }),
-      });
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to update notes" });
-      } else {
-        setNotes(next);
-        showToast && showToast({ style: "success", title: "Notes updated" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to update notes" });
-    } finally {
-      setSavingNotes(false);
-      setEditingNotes(false);
-    }
-  }, [notes, notesDraft, data && data.id, workingDir, showToast, onUpdated]);
-
-  // Enter inline title-edit mode, seeding the draft from the current title.
   const startEditTitle = useCallback(() => {
-    if (savingTitle) return;
-    titleCancelRef.current = false;
-    setTitleDraft((data && data.title) || "");
+    titleEditStartRef.current = viewDraft.title;
     setEditingTitle(true);
-  }, [data && data.title, savingTitle]);
+  }, [viewDraft.title]);
 
-  // Persist the edited title on blur. Saves only when the (non-empty) text
-  // changed; otherwise just leaves edit mode. Escape sets titleCancelRef so the
-  // blur it triggers discards the draft. Uses /api/beads/update and refreshes
-  // the list via onUpdated so the panel re-renders with the saved value.
-  const handleTitleBlur = useCallback(async () => {
-    if (titleCancelRef.current) {
-      titleCancelRef.current = false;
-      setEditingTitle(false);
-      return;
-    }
-    const original = (data && data.title) || "";
-    const next = titleDraft.trim();
-    if (next === "" || next === original) {
-      setEditingTitle(false);
-      return;
-    }
-    setSavingTitle(true);
-    try {
-      const res = await secureFetch(apiUrl("/api/beads/update"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: data.id, title: next }),
-      });
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to update title" });
-      } else {
-        showToast && showToast({ style: "success", title: "Title updated" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to update title" });
-    } finally {
-      setSavingTitle(false);
-      setEditingTitle(false);
-    }
-  }, [data && data.id, data && data.title, titleDraft, workingDir, showToast, onUpdated]);
+  const startEditAssignee = useCallback(() => {
+    assigneeEditStartRef.current = viewDraft.assignee;
+    setEditingAssignee(true);
+  }, [viewDraft.assignee]);
 
-  // Enter saves (via blur); Escape discards the draft (via blur).
+  // Enter saves (via blur); Escape reverts to snapshot and blurs.
   const handleTitleKeyDown = useCallback((e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       e.target.blur();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      titleCancelRef.current = true;
+      setViewDraft(p => ({ ...p, title: titleEditStartRef.current }));
       e.target.blur();
     }
   }, []);
 
-  // Persist a newly selected priority via /api/beads/update, then refresh the
-  // list via onUpdated so the panel re-renders with the saved value. Selecting
-  // the current priority just closes the dropdown without a request.
-  const handleSetPriority = useCallback(async (next) => {
-    setEditingPriority(false);
-    const current = (data && typeof data.priority === "number") ? data.priority : null;
-    if (next === current) return;
-    setSavingPriority(true);
-    try {
-      const res = await secureFetch(apiUrl("/api/beads/update"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: data.id, priority: next }),
-      });
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to update priority" });
-      } else {
-        showToast && showToast({ style: "success", title: "Priority updated" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to update priority" });
-    } finally {
-      setSavingPriority(false);
-    }
-  }, [data && data.id, data && data.priority, workingDir, showToast, onUpdated]);
-
-  // Enter inline assignee-edit mode, seeding the draft from the current assignee.
-  const startEditAssignee = useCallback(() => {
-    if (savingAssignee) return;
-    assigneeCancelRef.current = false;
-    setAssigneeDraft((data && data.assignee) || "");
-    setEditingAssignee(true);
-  }, [data && data.assignee, savingAssignee]);
-
-  // Persist the edited assignee on blur. Saves only when the (trimmed) text
-  // changed; otherwise just leaves edit mode. An empty value clears the
-  // assignee. Escape sets assigneeCancelRef so the blur it triggers discards the
-  // draft. Uses /api/beads/update and refreshes the list via onUpdated so the
-  // panel re-renders with the saved value.
-  const handleAssigneeBlur = useCallback(async () => {
-    if (assigneeCancelRef.current) {
-      assigneeCancelRef.current = false;
-      setEditingAssignee(false);
-      return;
-    }
-    const original = (data && data.assignee) || "";
-    const next = assigneeDraft.trim();
-    if (next === original) {
-      setEditingAssignee(false);
-      return;
-    }
-    setSavingAssignee(true);
-    try {
-      const res = await secureFetch(apiUrl("/api/beads/update"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: data.id, assignee: next }),
-      });
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to update assignee" });
-      } else {
-        showToast && showToast({ style: "success", title: next === "" ? "Assignee cleared" : "Assignee updated" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to update assignee" });
-    } finally {
-      setSavingAssignee(false);
-      setEditingAssignee(false);
-    }
-  }, [data && data.id, data && data.assignee, assigneeDraft, workingDir, showToast, onUpdated]);
-
-  // Enter saves (via blur); Escape discards the draft (via blur).
   const handleAssigneeKeyDown = useCallback((e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       e.target.blur();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      assigneeCancelRef.current = true;
+      setViewDraft(p => ({ ...p, assignee: assigneeEditStartRef.current }));
       e.target.blur();
     }
   }, []);
 
+  // Unified Save: posts all dirty fields in one /api/beads/update call.
+  const handleViewSave = useCallback(async () => {
+    if (!data || !data.id || savingView) return;
+    const body = { working_dir: workingDir, id: data.id };
+    const t = viewDraft.title.trim();
+    if (t !== "" && t !== viewOriginal.title) body.title = t;
+    if (viewDraft.priority !== viewOriginal.priority) body.priority = viewDraft.priority;
+    if (viewDraft.description !== viewOriginal.description) body.description = viewDraft.description;
+    if (viewDraft.assignee.trim() !== viewOriginal.assignee) body.assignee = viewDraft.assignee.trim();
+    if (viewDraft.notes !== viewOriginal.notes) body.notes = viewDraft.notes;
+    if (Object.keys(body).filter(k => k !== "working_dir" && k !== "id").length === 0) return;
+    setSavingView(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/update"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const respData = await readBeadsResponse(res);
+      if (!res.ok || respData.error) {
+        showToast && showToast({ style: "error", title: respData.error || "Failed to save changes" });
+      } else {
+        if ("notes" in body) setNotes(viewDraft.notes);
+        setEditingTitle(false);
+        setEditingDesc(false);
+        setEditingNotes(false);
+        setEditingAssignee(false);
+        setEditingPriority(false);
+        showToast && showToast({ style: "success", title: "Changes saved" });
+        onUpdated && onUpdated();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to save changes" });
+    } finally {
+      setSavingView(false);
+    }
+  }, [viewDraft, viewOriginal, data && data.id, workingDir, savingView, showToast, onUpdated]);
+
   // Load the issue's full dependency edges, notes, and comments. The list row
   // only carries counts, so the actual data comes from /api/beads/show.
-  const fetchDeps = useCallback(async () => {
+  // seedDraftNotes: when true, also seeds viewDraft.notes from the response so
+  // the initial open has a correct draft baseline. Callers that refresh deps
+  // after a dep add/remove or comment post must pass false to avoid clobbering
+  // an in-progress notes edit.
+  const fetchDeps = useCallback(async (seedDraftNotes = false) => {
     if (!workingDir || !data || !data.id) return;
     setDepsLoading(true);
     try {
@@ -792,16 +661,20 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         setDeps([]);
         setComments([]);
         setNotes("");
+        if (seedDraftNotes) setViewDraft(prev => ({ ...prev, notes: "" }));
       } else {
         const issueObj = Array.isArray(respData) ? respData[0] : respData;
         setDeps((issueObj && issueObj.dependencies) || []);
         setComments((issueObj && issueObj.comments) || []);
-        setNotes((issueObj && issueObj.notes) || "");
+        const fetchedNotes = (issueObj && issueObj.notes) || "";
+        setNotes(fetchedNotes);
+        if (seedDraftNotes) setViewDraft(prev => ({ ...prev, notes: fetchedNotes }));
       }
     } catch (_err) {
       setDeps([]);
       setComments([]);
       setNotes("");
+      if (seedDraftNotes) setViewDraft(prev => ({ ...prev, notes: "" }));
     } finally {
       setDepsLoading(false);
     }
@@ -836,7 +709,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       } else {
         setCommentDraft("");
         showToast && showToast({ style: "success", title: "Comment added" });
-        await fetchDeps();
+        await fetchDeps(false);
         onUpdated && onUpdated();
       }
     } catch (err) {
@@ -848,6 +721,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   }, [commentDraft, data && data.id, workingDir, showToast, fetchDeps, onUpdated]);
 
   // Fetch dependencies, notes, and comments whenever a (non-create) issue is opened or switched.
+  // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
   useEffect(() => {
     setDeps([]);
     setComments([]);
@@ -855,7 +729,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     setNewDepId("");
     setNewDepType("blocks");
     if (isOpen && !creating && data && data.id) {
-      fetchDeps();
+      fetchDeps(true);
     }
   }, [isOpen, creating, data && data.id]);
 
@@ -878,7 +752,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         return false;
       }
       showToast && showToast({ style: "success", title: action === "add" ? `Added dependency on ${dependsOn}` : `Removed dependency on ${dependsOn}` });
-      await fetchDeps();
+      await fetchDeps(false);
       onUpdated && onUpdated();
       return true;
     } catch (err) {
@@ -921,7 +795,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       } else {
         showToast && showToast({ style: "success", title: `Changed ${dependsOn} to ${nextType}` });
       }
-      await fetchDeps();
+      await fetchDeps(false);
       onUpdated && onUpdated();
     } catch (err) {
       showToast && showToast({ style: "error", title: err.message || "Failed to change dependency type" });
@@ -995,18 +869,18 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           ref=${titleRef}
           type="text"
           class="${inputClass} font-semibold text-base"
-          value=${titleDraft}
-          onInput=${e => setTitleDraft(e.target.value)}
-          onBlur=${handleTitleBlur}
+          value=${viewDraft.title}
+          onInput=${e => setViewDraft(p => ({ ...p, title: e.target.value }))}
+          onBlur=${() => setEditingTitle(false)}
           onKeyDown=${handleTitleKeyDown}
-          disabled=${savingTitle}
+          disabled=${savingView}
         />`
       : html`
         <h2
           class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
           onClick=${startEditTitle}
           title="Click to edit"
-        >${data.title}</h2>`;
+        >${viewDraft.title}</h2>`;
   };
 
   const TypeField = (mode) => mode === "create"
@@ -1039,24 +913,22 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       <div class="relative" ref=${priorityRef}>
         <button
           type="button"
-          onClick=${() => !savingPriority && setEditingPriority(o => !o)}
-          disabled=${savingPriority}
+          onClick=${() => setEditingPriority(o => !o)}
           class="btn btn-ghost btn-xs"
           title="Click to change priority"
         >
-          ${priorityBadge(data.priority)}
+          ${priorityBadge(viewDraft.priority)}
         </button>
-        ${savingPriority && html`<span class="loading loading-spinner w-3.5 h-3.5 inline-block ml-1 text-mitto-text-secondary align-middle"></span>`}
         ${editingPriority && html`
           <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
             ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
               const num = Number(n);
-              const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
+              const isCurrent = num === viewDraft.priority;
               return html`
                 <li key=${n}>
                   <button
                     type="button"
-                    onClick=${() => handleSetPriority(num)}
+                    onClick=${() => { setViewDraft(p => ({ ...p, priority: num })); setEditingPriority(false); }}
                   >
                     ${priorityBadge(num)}
                     <span class="flex-1">${label}</span>
@@ -1102,19 +974,19 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         ${renderDescToolbar(
           editingDesc
             ? {
-                text: descDraft,
-                setText: (v) => { setDescDraft(v); detailEditorApiRef.current?.setValue(v); },
-                disabled: savingDesc,
+                text: viewDraft.description,
+                setText: (v) => { setViewDraft(p => ({ ...p, description: v })); detailEditorApiRef.current?.setValue(v); },
+                disabled: savingView,
               }
             : { text: "", setText: () => {}, disabled: true }
         )}
         ${editingDesc
           ? html`
             <${CodeEditorField}
-              value=${descDraft}
-              onChange=${(v) => setDescDraft(v)}
-              onBlur=${handleDescBlur}
-              disabled=${savingDesc}
+              value=${viewDraft.description}
+              onChange=${(v) => setViewDraft(p => ({ ...p, description: v }))}
+              onBlur=${() => setEditingDesc(false)}
+              disabled=${savingView}
               darkMode=${false}
               lineNumbers=${false}
               lineWrapping=${true}
@@ -1131,11 +1003,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               onClick=${startEditDesc}
               title="Click to edit"
             >
-              ${savingDesc && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
-              ${data.description
+              ${viewDraft.description
                 ? (md
                     ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                    : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${data.description}</pre>`)
+                    : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${viewDraft.description}</pre>`)
                 : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
               }
             </div>`
@@ -1163,11 +1034,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           type="text"
           class=${inputClass}
           placeholder="Assignee (empty to clear)"
-          value=${assigneeDraft}
-          onInput=${e => setAssigneeDraft(e.target.value)}
-          onBlur=${handleAssigneeBlur}
+          value=${viewDraft.assignee}
+          onInput=${e => setViewDraft(p => ({ ...p, assignee: e.target.value }))}
+          onBlur=${() => setEditingAssignee(false)}
           onKeyDown=${handleAssigneeKeyDown}
-          disabled=${savingAssignee}
+          disabled=${savingView}
         />`
       : html`
         <div
@@ -1175,9 +1046,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           onClick=${startEditAssignee}
           title="Click to edit"
         >
-          ${savingAssignee && html`<span class="loading loading-spinner w-3.5 h-3.5 text-mitto-text-secondary shrink-0"></span>`}
-          ${data.assignee
-            ? html`<span>${data.assignee}</span>`
+          ${viewDraft.assignee
+            ? html`<span>${viewDraft.assignee}</span>`
             : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
         </div>`;
   };
@@ -1205,10 +1075,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           rows="4"
           style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
           placeholder="Add notes…"
-          value=${notesDraft}
-          onInput=${e => setNotesDraft(e.target.value)}
-          onBlur=${handleNotesBlur}
-          disabled=${savingNotes}
+          value=${viewDraft.notes}
+          onInput=${e => setViewDraft(p => ({ ...p, notes: e.target.value }))}
+          onBlur=${() => setEditingNotes(false)}
+          disabled=${savingView}
         ></textarea>`
       : html`
         <div
@@ -1217,9 +1087,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           onClick=${startEditNotes}
           title="Click to edit"
         >
-          ${savingNotes && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
-          ${notes && notes.trim()
-            ? commentBody(notes)
+          ${viewDraft.notes && viewDraft.notes.trim()
+            ? commentBody(viewDraft.notes)
             : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
         </div>`;
   };
@@ -1635,6 +1504,16 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           <div class="flex items-center gap-1 ml-auto">
             <button
               type="button"
+              onClick=${handleViewSave}
+              disabled=${!viewDirty || savingView}
+              class="btn btn-primary btn-sm"
+              title="Save changes"
+            >
+              ${savingView ? html`<span class="loading loading-spinner w-4 h-4"></span>` : null}
+              Save
+            </button>
+            <button
+              type="button"
               onClick=${() => { if (statusBusy) return; onToggleStatus && onToggleStatus(data); }}
               aria-disabled=${statusBusy ? "true" : "false"}
               class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
@@ -1667,6 +1546,16 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </div>
       `}
       <//>
+      <${ConfirmDialog}
+        isOpen=${confirmDiscard}
+        title="Discard changes?"
+        message="You have unsaved changes. Discard them and close?"
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        confirmVariant="danger"
+        onConfirm=${handleDiscardAndClose}
+        onCancel=${() => setConfirmDiscard(false)}
+      />
     </${Fragment}>
   `;
 }
