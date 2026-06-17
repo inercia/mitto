@@ -1189,6 +1189,24 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	// Item-context filtering: evaluate item.*-gated prompts per row.
+	// item_kind is the signal that item params are present (the beads view always
+	// sends item_kind=beadsIssue). Non-item prompts are left untouched here;
+	// full session-less enabledWhen filtering is handled by the separate mitto-gns bead.
+	query := r.URL.Query()
+	itemKind := query.Get("item_kind")
+	if itemKind != "" {
+		itemCtx := config.ItemContext{
+			Id:       query.Get("item_id"),
+			Status:   query.Get("item_status"),
+			Type:     query.Get("item_type"),
+			Priority: query.Get("item_priority"),
+			Kind:     itemKind,
+		}
+		itemEnabledCtx := s.buildItemPromptEnabledContext(workingDir, itemCtx)
+		prompts = filterPromptsByItem(prompts, itemEnabledCtx, s)
+	}
+
 	if s.logger != nil {
 		s.logger.Debug("Returning workspace prompts (all sources merged)",
 			"working_dir", workingDir,
@@ -1203,6 +1221,7 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 			"prompts_dirs", workspacePromptsDirs,
 			"last_modified", lastModified,
 			"session_id", sessionID,
+			"item_kind", itemKind,
 			"enabled_evaluated", sessionID != "")
 	}
 
@@ -1622,6 +1641,106 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 	}
 
 	return filtered
+}
+
+// buildItemPromptEnabledContext creates a session-less PromptEnabledContext populated
+// with the given item.* data and the cheaply-available workspace/ACP/permissions
+// namespaces. Designed for the beads per-row menu path, which has no session_id.
+//
+// NOTE: mitto-gns will generalise the session-less context; reuse this helper
+// rather than duplicating it when implementing that bead.
+func (s *Server) buildItemPromptEnabledContext(workingDir string, item config.ItemContext) *config.PromptEnabledContext {
+	ctx := &config.PromptEnabledContext{}
+	ctx.Item = item
+
+	// Workspace context
+	ctx.Workspace.Folder = workingDir
+	var acpServerName string
+	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+		ctx.Workspace.UUID = ws.UUID
+		ctx.Workspace.Name = ws.Name
+		acpServerName = ws.ACPServer
+	} else if defaultWs := s.sessionManager.GetDefaultWorkspace(); defaultWs != nil {
+		acpServerName = defaultWs.ACPServer
+	}
+	if schema := s.sessionManager.GetUserDataSchema(workingDir); schema != nil && len(schema.Fields) > 0 {
+		ctx.Workspace.HasUserDataSchema = true
+	}
+
+	// ACP context
+	ctx.ACP.Name = acpServerName
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		if srv, err := s.config.MittoConfig.GetServer(acpServerName); err == nil {
+			ctx.ACP.Type = srv.GetType()
+			ctx.ACP.Tags = srv.Tags
+			ctx.ACP.AutoApprove = srv.AutoApprove
+		}
+	}
+	if ctx.ACP.Type == "" {
+		ctx.ACP.Type = acpServerName
+	}
+
+	// Tools context (workspace-level cache; may be empty if not yet fetched)
+	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
+		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
+			ctx.Tools.Available = true
+			for _, tool := range tools {
+				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+			}
+		}
+	}
+
+	// Permissions: use compile-time defaults (no session to override from)
+	ctx.Permissions.CanDoIntrospection = session.GetFlagDefault(session.FlagCanDoIntrospection)
+	ctx.Permissions.CanSendPrompt = session.GetFlagDefault(session.FlagCanSendPrompt)
+	ctx.Permissions.CanPromptUser = session.GetFlagDefault(session.FlagCanPromptUser)
+	ctx.Permissions.CanStartConversation = session.GetFlagDefault(session.FlagCanStartConversation)
+	ctx.Permissions.CanInteractOtherWorkspaces = session.GetFlagDefault(session.FlagCanInteractOtherWorkspaces)
+	ctx.Permissions.AutoApprovePermissions = session.GetFlagDefault(session.FlagAutoApprovePermissions)
+
+	return ctx
+}
+
+// filterPromptsByItem re-evaluates prompts whose enabledWhen references the item.*
+// namespace against the given item context, dropping those that evaluate false.
+// Prompts that do NOT reference item.* are returned unchanged (single-pass behavior).
+// Fail-open: invalid or unevaluable expressions keep the prompt visible.
+func filterPromptsByItem(prompts []config.WebPrompt, ctx *config.PromptEnabledContext, s *Server) []config.WebPrompt {
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil || ctx == nil {
+		return prompts
+	}
+
+	var out []config.WebPrompt
+	for _, p := range prompts {
+		if p.EnabledWhen == "" {
+			out = append(out, p)
+			continue
+		}
+		compiled, err := evaluator.Compile(p.EnabledWhen)
+		if err != nil || !compiled.ReferencesItem() {
+			// Compile error or does not reference item.* — leave untouched
+			out = append(out, p)
+			continue
+		}
+		visible, err := evaluator.Evaluate(compiled, ctx)
+		if err != nil {
+			// Fail-open: include the prompt when evaluation fails
+			if s != nil && s.logger != nil {
+				s.logger.Warn("Failed to evaluate item-gated enabledWhen",
+					"prompt", p.Name, "expression", p.EnabledWhen, "error", err)
+			}
+			out = append(out, p)
+			continue
+		}
+		if visible {
+			out = append(out, p)
+		} else if s != nil && s.logger != nil {
+			s.logger.Debug("Prompt hidden by item-gated enabledWhen",
+				"prompt", p.Name, "expression", p.EnabledWhen)
+		}
+	}
+	return out
 }
 
 // loadPromptsFromDirs loads prompts from a list of directories.

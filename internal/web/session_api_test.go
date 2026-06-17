@@ -2641,3 +2641,94 @@ func TestResolveOwningWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// TestFilterPromptsByItem validates the per-row item-gated enabledWhen filtering.
+// Prompts that reference item.* in their enabledWhen are evaluated against the
+// item context and dropped when the expression is false.
+// Prompts without enabledWhen, or whose enabledWhen does NOT reference item.*, are
+// always kept (single-pass behavior — non-item prompts are unaffected).
+func TestFilterPromptsByItem(t *testing.T) {
+	// A prompt whose enabledWhen gates on item.status.
+	enabled := func(expr string) *bool { t := true; _ = t; v := true; return &v }
+	_ = enabled
+
+	makePrompt := func(name, enabledWhen string) config.WebPrompt {
+		p := config.WebPrompt{Name: name, EnabledWhen: enabledWhen}
+		tr := true
+		p.Enabled = &tr
+		return p
+	}
+
+	itemPrompt := makePrompt("start-work", `item.status != "closed"`)
+	nonItemPrompt := makePrompt("triage", `session.isChild == false`)
+	noExprPrompt := makePrompt("review", "")
+
+	closedCtx := &config.PromptEnabledContext{
+		Item: config.ItemContext{Status: "closed", Kind: "beadsIssue"},
+	}
+	openCtx := &config.PromptEnabledContext{
+		Item: config.ItemContext{Status: "open", Kind: "beadsIssue"},
+	}
+
+	tests := []struct {
+		name      string
+		prompts   []config.WebPrompt
+		ctx       *config.PromptEnabledContext
+		wantNames []string
+	}{
+		{
+			name:      "item-gated prompt dropped for closed issue",
+			prompts:   []config.WebPrompt{itemPrompt, noExprPrompt},
+			ctx:       closedCtx,
+			wantNames: []string{"review"},
+		},
+		{
+			name:      "item-gated prompt kept for open issue",
+			prompts:   []config.WebPrompt{itemPrompt, noExprPrompt},
+			ctx:       openCtx,
+			wantNames: []string{"start-work", "review"},
+		},
+		{
+			name:      "non-item enabledWhen prompt always kept",
+			prompts:   []config.WebPrompt{nonItemPrompt},
+			ctx:       closedCtx,
+			wantNames: []string{"triage"},
+		},
+		{
+			name:      "all prompt types together for closed issue",
+			prompts:   []config.WebPrompt{itemPrompt, nonItemPrompt, noExprPrompt},
+			ctx:       closedCtx,
+			wantNames: []string{"triage", "review"},
+		},
+		{
+			name:      "all prompt types together for open issue",
+			prompts:   []config.WebPrompt{itemPrompt, nonItemPrompt, noExprPrompt},
+			ctx:       openCtx,
+			wantNames: []string{"start-work", "triage", "review"},
+		},
+		{
+			name:      "nil ctx returns all prompts",
+			prompts:   []config.WebPrompt{itemPrompt, nonItemPrompt, noExprPrompt},
+			ctx:       nil,
+			wantNames: []string{"start-work", "triage", "review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterPromptsByItem(tt.prompts, tt.ctx, nil)
+			if len(got) != len(tt.wantNames) {
+				var gotNames []string
+				for _, p := range got {
+					gotNames = append(gotNames, p.Name)
+				}
+				t.Fatalf("filterPromptsByItem returned %v, want %v", gotNames, tt.wantNames)
+			}
+			for i, p := range got {
+				if p.Name != tt.wantNames[i] {
+					t.Errorf("prompt[%d] = %q, want %q", i, p.Name, tt.wantNames[i])
+				}
+			}
+		})
+	}
+}
