@@ -6,7 +6,7 @@ requires: parameters
 description: "Check if this bead is done, obsolete, or a duplicate, then close it, keep it open, or spin off follow-ups"
 backgroundColor: "#C5E1A5"
 group: "Tasks"
-enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+enabledWhen: 'commandExists("bd") && dirExists(".beads") && item.status != "closed"'
 ---
 
 ## Session Context

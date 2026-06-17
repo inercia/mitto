@@ -97,16 +97,22 @@ export function useBeadsIntegration({
   }, [allSessions]);
 
   // Fetch the prompts whose `menus` list includes `beadsIssues` for a workspace
-  // directory. Used by the per-issue context menu in the Beads list view. There
-  // is no specific conversation here, so `enabledWhen` is evaluated without a
-  // session_id; we only keep the prompts that opt into the beads menu via
-  // `menus`.
-  const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir) => {
+  // directory. Used by the per-issue context menu in the Beads list view. When
+  // `issue` is provided, appends item_* params so the server can evaluate
+  // item.*-gated enabledWhen expressions per row (mitto-o0u.1). Prompts that
+  // don't reference item.* are unaffected by the extra params.
+  const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir, issue) => {
     if (!workingDir) return [];
     try {
-      const res = await authFetch(
-        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
-      );
+      let url = `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`;
+      if (issue) {
+        url += `&item_kind=beadsIssue`;
+        if (issue.id) url += `&item_id=${encodeURIComponent(issue.id)}`;
+        if (issue.status) url += `&item_status=${encodeURIComponent(issue.status)}`;
+        if (issue.issue_type) url += `&item_type=${encodeURIComponent(issue.issue_type)}`;
+        if (typeof issue.priority === "number") url += `&item_priority=${encodeURIComponent(String(issue.priority))}`;
+      }
+      const res = await authFetch(apiUrl(url));
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];

@@ -6,7 +6,7 @@ requires: parameters
 description: "Plan this bead and spawn parallel Mitto conversations to implement it"
 backgroundColor: "#B2DFDB"
 group: "Tasks"
-enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*") && item.status != "closed"'
 ---
 
 ## Session Context
