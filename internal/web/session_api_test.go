@@ -2639,15 +2639,14 @@ func TestResolveOwningWorkspace(t *testing.T) {
 	}
 }
 
-// TestFilterPromptsByItem validates the per-row item-gated enabledWhen filtering.
-// Prompts that reference item.* in their enabledWhen are evaluated against the
-// item context and dropped when the expression is false.
-// Prompts without enabledWhen, or whose enabledWhen does NOT reference item.*, are
-// always kept (single-pass behavior — non-item prompts are unaffected).
-func TestFilterPromptsByItem(t *testing.T) {
-	// A prompt whose enabledWhen gates on item.status.
-	enabled := func(expr string) *bool { t := true; _ = t; v := true; return &v }
-	_ = enabled
+// TestFilterPromptsByEnabled_ItemGating validates that the unified enabledWhen
+// filter evaluates item.*-gated prompts against the per-row item context (set on
+// the PromptEnabledContext.Item) while still evaluating non-item prompts against
+// the rest of the context. This replaces the old per-row-only item filter: with
+// mitto-gns the beads menus run the full filterPromptsByEnabled so every gate
+// (item.*, session.isChild, permissions, commandExists, …) is applied at once.
+func TestFilterPromptsByEnabled_ItemGating(t *testing.T) {
+	s := &Server{}
 
 	makePrompt := func(name, enabledWhen string) config.WebPrompt {
 		p := config.WebPrompt{Name: name, EnabledWhen: enabledWhen}
@@ -2686,7 +2685,7 @@ func TestFilterPromptsByItem(t *testing.T) {
 			wantNames: []string{"start-work", "review"},
 		},
 		{
-			name:      "non-item enabledWhen prompt always kept",
+			name:      "non-item enabledWhen evaluated and kept when true",
 			prompts:   []config.WebPrompt{nonItemPrompt},
 			ctx:       closedCtx,
 			wantNames: []string{"triage"},
@@ -2713,13 +2712,13 @@ func TestFilterPromptsByItem(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filterPromptsByItem(tt.prompts, tt.ctx, nil)
+			got := s.filterPromptsByEnabled(tt.prompts, tt.ctx)
 			if len(got) != len(tt.wantNames) {
 				var gotNames []string
 				for _, p := range got {
 					gotNames = append(gotNames, p.Name)
 				}
-				t.Fatalf("filterPromptsByItem returned %v, want %v", gotNames, tt.wantNames)
+				t.Fatalf("filterPromptsByEnabled returned %v, want %v", gotNames, tt.wantNames)
 			}
 			for i, p := range got {
 				if p.Name != tt.wantNames[i] {
@@ -2727,5 +2726,87 @@ func TestFilterPromptsByItem(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback verifies the
+// session-less fallback (mitto-gns, approach B): when the caller passes
+// enabled_context=workspace and there is no session_id, the handler builds a
+// workspace-level context and runs the full enabledWhen filter. Without that
+// param (other callers), prompts are returned unfiltered so existing behavior is
+// preserved.
+func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	rcContent := `prompts:
+  - name: "Always Visible"
+    prompt: "x"
+  - name: "Always Hidden"
+    prompt: "y"
+    enabledWhen: "false"
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, ".mittorc"), []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to create .mittorc: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+	}
+
+	decode := func(t *testing.T, body []byte) ([]string, bool) {
+		t.Helper()
+		var resp struct {
+			Prompts          []config.WebPrompt `json:"prompts"`
+			EnabledEvaluated bool               `json:"enabled_evaluated"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("decode response: %v (body=%s)", err, string(body))
+		}
+		var names []string
+		for _, p := range resp.Prompts {
+			names = append(names, p.Name)
+		}
+		return names, resp.EnabledEvaluated
+	}
+
+	hasName := func(names []string, want string) bool {
+		for _, n := range names {
+			if n == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Without enabled_context: no filtering, both prompts returned.
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	w1 := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("unfiltered request: status = %d, want %d", w1.Code, http.StatusOK)
+	}
+	names1, eval1 := decode(t, w1.Body.Bytes())
+	if eval1 {
+		t.Errorf("unfiltered request: enabled_evaluated = true, want false")
+	}
+	if !hasName(names1, "Always Visible") || !hasName(names1, "Always Hidden") {
+		t.Errorf("unfiltered request: got %v, want both prompts", names1)
+	}
+
+	// With enabled_context=workspace: full filter applied, "false"-gated prompt hidden.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir+"&enabled_context=workspace", nil)
+	w2 := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("filtered request: status = %d, want %d", w2.Code, http.StatusOK)
+	}
+	names2, eval2 := decode(t, w2.Body.Bytes())
+	if !eval2 {
+		t.Errorf("filtered request: enabled_evaluated = false, want true")
+	}
+	if !hasName(names2, "Always Visible") {
+		t.Errorf("filtered request: missing Always Visible, got %v", names2)
+	}
+	if hasName(names2, "Always Hidden") {
+		t.Errorf("filtered request: Always Hidden should be filtered out, got %v", names2)
 	}
 }

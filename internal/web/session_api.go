@@ -1183,31 +1183,40 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 	}
 	prompts = filtered
 
-	// Filter by enabled expressions if session context is available
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID != "" {
-		if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
-			prompts = s.filterPromptsByEnabled(prompts, visCtx)
-		}
-	}
-
-	// Item-context filtering: evaluate item.*-gated prompts per row.
-	// item_kind is the signal that item params are present (the beads view always
-	// sends item_kind=beadsIssue). Non-item prompts are left untouched here;
-	// full session-less enabledWhen filtering is handled by the separate mitto-gns bead.
+	// Filter by enabledWhen expressions. Approach B (mitto-gns): prefer the active
+	// session's context (real per-session permission flags + session.isChild) so
+	// gates like "Start work" stay visible when the current conversation can send
+	// prompts; fall back to a session-less workspace context only when the caller
+	// opts in via enabled_context=workspace and no session is available. The
+	// workspace fallback is what makes the beads menus actually evaluate the full
+	// gates (commandExists/dirExists/!session.isChild/tools/permissions) instead of
+	// returning everything unfiltered. item.* params (sent per-row by the beads
+	// view) are populated onto whichever context is used so item-gated prompts are
+	// evaluated against the opened row.
 	query := r.URL.Query()
+	sessionID := query.Get("session_id")
 	itemKind := query.Get("item_kind")
-	if itemKind != "" {
-		itemCtx := config.ItemContext{
-			Id:       query.Get("item_id"),
-			Status:   query.Get("item_status"),
-			Type:     query.Get("item_type"),
-			Priority: query.Get("item_priority"),
-			Kind:     itemKind,
-		}
-		itemEnabledCtx := s.buildItemPromptEnabledContext(workingDir, itemCtx)
-		prompts = filterPromptsByItem(prompts, itemEnabledCtx, s)
+
+	var enabledCtx *config.PromptEnabledContext
+	if sessionID != "" {
+		enabledCtx = s.buildPromptEnabledContext(sessionID)
 	}
+	if enabledCtx == nil && query.Get("enabled_context") == "workspace" {
+		enabledCtx = s.buildWorkspacePromptEnabledContext(workingDir)
+	}
+	if enabledCtx != nil {
+		if itemKind != "" {
+			enabledCtx.Item = config.ItemContext{
+				Id:       query.Get("item_id"),
+				Status:   query.Get("item_status"),
+				Type:     query.Get("item_type"),
+				Priority: query.Get("item_priority"),
+				Kind:     itemKind,
+			}
+		}
+		prompts = s.filterPromptsByEnabled(prompts, enabledCtx)
+	}
+	enabledEvaluated := enabledCtx != nil
 
 	if s.logger != nil {
 		s.logger.Debug("Returning workspace prompts (all sources merged)",
@@ -1224,13 +1233,13 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 			"last_modified", lastModified,
 			"session_id", sessionID,
 			"item_kind", itemKind,
-			"enabled_evaluated", sessionID != "")
+			"enabled_evaluated", enabledEvaluated)
 	}
 
 	writeJSONOK(w, map[string]interface{}{
 		"prompts":           prompts,
 		"working_dir":       workingDir,
-		"enabled_evaluated": sessionID != "",
+		"enabled_evaluated": enabledEvaluated,
 	})
 }
 
@@ -1638,15 +1647,14 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 	return filtered
 }
 
-// buildItemPromptEnabledContext creates a session-less PromptEnabledContext populated
-// with the given item.* data and the cheaply-available workspace/ACP/permissions
-// namespaces. Designed for the beads per-row menu path, which has no session_id.
-//
-// NOTE: mitto-gns will generalise the session-less context; reuse this helper
-// rather than duplicating it when implementing that bead.
-func (s *Server) buildItemPromptEnabledContext(workingDir string, item config.ItemContext) *config.PromptEnabledContext {
+// buildWorkspacePromptEnabledContext creates a session-less PromptEnabledContext
+// from the cheaply-available workspace/ACP/tools namespaces and compile-time
+// default permission flags. Used by the beads menu paths when no active session
+// is available (see handleWorkspacePromptsGET, mitto-gns): it lets enabledWhen
+// gates like commandExists("bd")/dirExists(".beads")/tools.hasPattern still be
+// evaluated. Callers set ctx.Item afterwards for per-row item.* gating.
+func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.PromptEnabledContext {
 	ctx := &config.PromptEnabledContext{}
-	ctx.Item = item
 
 	// Workspace context
 	ctx.Workspace.Folder = workingDir
@@ -1694,48 +1702,6 @@ func (s *Server) buildItemPromptEnabledContext(workingDir string, item config.It
 	ctx.Permissions.AutoApprovePermissions = session.GetFlagDefault(session.FlagAutoApprovePermissions)
 
 	return ctx
-}
-
-// filterPromptsByItem re-evaluates prompts whose enabledWhen references the item.*
-// namespace against the given item context, dropping those that evaluate false.
-// Prompts that do NOT reference item.* are returned unchanged (single-pass behavior).
-// Fail-open: invalid or unevaluable expressions keep the prompt visible.
-func filterPromptsByItem(prompts []config.WebPrompt, ctx *config.PromptEnabledContext, s *Server) []config.WebPrompt {
-	evaluator := config.GetCELEvaluator()
-	if evaluator == nil || ctx == nil {
-		return prompts
-	}
-
-	var out []config.WebPrompt
-	for _, p := range prompts {
-		if p.EnabledWhen == "" {
-			out = append(out, p)
-			continue
-		}
-		compiled, err := evaluator.Compile(p.EnabledWhen)
-		if err != nil || !compiled.ReferencesItem() {
-			// Compile error or does not reference item.* — leave untouched
-			out = append(out, p)
-			continue
-		}
-		visible, err := evaluator.Evaluate(compiled, ctx)
-		if err != nil {
-			// Fail-open: include the prompt when evaluation fails
-			if s != nil && s.logger != nil {
-				s.logger.Warn("Failed to evaluate item-gated enabledWhen",
-					"prompt", p.Name, "expression", p.EnabledWhen, "error", err)
-			}
-			out = append(out, p)
-			continue
-		}
-		if visible {
-			out = append(out, p)
-		} else if s != nil && s.logger != nil {
-			s.logger.Debug("Prompt hidden by item-gated enabledWhen",
-				"prompt", p.Name, "expression", p.EnabledWhen)
-		}
-	}
-	return out
 }
 
 // loadPromptsFromDirs loads prompts from a list of directories.
