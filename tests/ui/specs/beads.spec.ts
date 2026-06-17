@@ -346,7 +346,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Trigger delete from inside the panel footer.
+      // Delete moved to the kebab menu — open it first.
+      await panel.locator('button[title="More actions"]').click();
       await panel.locator('button[title="Delete issue"]').click();
 
       const dialog = page.locator('[data-testid="confirm-dialog"]');
@@ -639,6 +640,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
     await expect(panel.getByText("mitto-epic")).toBeVisible();
 
+    // Delete moved to the kebab menu — open it first.
+    await panel.locator('button[title="More actions"]').click();
     await panel.locator('button[title="Delete issue"]').click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });

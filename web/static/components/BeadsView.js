@@ -1321,6 +1321,58 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               ${TitleField("view")}
             `}
         </div>
+        ${!creating && data && html`
+          <div class="relative shrink-0" ref=${promptsRef}>
+            <button type="button" onClick=${togglePrompts} class="btn btn-ghost btn-square btn-sm shrink-0" title="More actions">
+              <${EllipsisIcon} className="w-5 h-5" />
+            </button>
+            ${showPrompts && html`
+              <ul class="menu absolute right-0 top-full mt-1 z-10 w-64 max-h-96 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl">
+                <li>
+                  <button type="button"
+                    onClick=${() => { if (statusBusy) return; setShowPrompts(false); onToggleStatus && onToggleStatus(data); }}
+                    aria-disabled=${statusBusy ? "true" : "false"}
+                    class=${statusBusy ? "opacity-40 pointer-events-none" : ""}
+                    title=${data.status === "closed" ? "Reopen issue" : "Close issue"}>
+                    ${data.status === "closed" ? html`<${RefreshIcon} className="w-4 h-4" />` : html`<${CheckIcon} className="w-4 h-4" />`}
+                    <span>${data.status === "closed" ? "Reopen issue" : "Close issue"}</span>
+                  </button>
+                </li>
+                <li>
+                  <button type="button"
+                    onClick=${() => { if (statusBusy) return; setShowPrompts(false); onToggleDefer && onToggleDefer(data); }}
+                    aria-disabled=${statusBusy ? "true" : "false"}
+                    class=${statusBusy ? "opacity-40 pointer-events-none" : ""}
+                    title=${data.status === "deferred" ? "Undefer issue" : "Defer issue"}>
+                    ${data.status === "deferred" ? html`<${SunIcon} className="w-4 h-4" />` : html`<${MoonIcon} className="w-4 h-4" />`}
+                    <span>${data.status === "deferred" ? "Undefer issue" : "Defer issue"}</span>
+                  </button>
+                </li>
+                <li>
+                  <button type="button"
+                    onClick=${() => { setShowPrompts(false); onDelete && onDelete(data); }}
+                    class="group" title="Delete issue">
+                    <${TrashIcon} className="w-4 h-4 group-hover:text-red-400" />
+                    <span class="group-hover:text-red-400">Delete issue</span>
+                  </button>
+                </li>
+                <li class="menu-title">Run a prompt</li>
+                ${promptsLoading && html`<li><span class="flex items-center gap-2"><span class="loading loading-spinner w-4 h-4"></span> Loading…</span></li>`}
+                ${!promptsLoading && prompts.length === 0 && html`<li class="opacity-60"><span>No task prompts</span></li>`}
+                ${!promptsLoading && prompts.map(p => {
+                  const PromptIcon = getPromptIconOrDefault(p.icon);
+                  return html`
+                    <li key=${p.name}>
+                      <button type="button" onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }} title=${p.description || p.name}>
+                        <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
+                        <span class="truncate flex-1">${p.name}</span>
+                      </button>
+                    </li>`;
+                })}
+              </ul>
+            `}
+          </div>
+        `}
         <button
           onClick=${() => setFullscreen(f => !f)}
           class="btn btn-ghost btn-square btn-sm shrink-0 ${isMobile ? "hidden" : ""}"
@@ -1329,13 +1381,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           ${fullscreen
             ? html`<${CollapseIcon} className="w-5 h-5" />`
             : html`<${ExpandIcon} className="w-5 h-5" />`}
-        </button>
-        <button
-          onClick=${handleClose}
-          class="btn btn-ghost btn-square btn-sm shrink-0"
-          title="Close"
-        >
-          <${CloseIcon} className="w-5 h-5" />
         </button>
       </div>
 
@@ -1490,110 +1535,17 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           `}
       </div>
 
-      ${creating && html`
+      ${(creating || data) && html`
         <div class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0">
-          <button
-            type="button"
-            onClick=${handleClose}
-            disabled=${submitting}
-            class="btn btn-ghost btn-sm"
-          >
-            Close
-          </button>
-          <button
-            type="button"
-            onClick=${handleSave}
-            disabled=${!description.trim() || submitting}
+          <button type="button" onClick=${handleClose} disabled=${creating ? submitting : savingView} class="btn btn-ghost btn-sm" title="Close">Close</button>
+          <button type="button"
+            onClick=${creating ? handleSave : handleViewSave}
+            disabled=${creating ? (!description.trim() || submitting) : (!viewDirty || savingView)}
             class="btn btn-primary btn-sm"
-          >
-            ${submitting && html`<span class="loading loading-spinner w-4 h-4"></span>`}
+            title="Save changes">
+            ${(creating ? submitting : savingView) ? html`<span class="loading loading-spinner w-4 h-4"></span>` : null}
             Save
           </button>
-        </div>
-      `}
-
-      ${!creating && data && html`
-        <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0 relative">
-          <div class="relative" ref=${promptsRef}>
-            <button
-              type="button"
-              onClick=${togglePrompts}
-              class="btn btn-ghost btn-square btn-sm"
-              title="Run a prompt for this issue in a new conversation"
-            >
-              <${ChevronUpIcon} className="w-4 h-4" />
-            </button>
-            ${showPrompts && html`
-              <ul class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10">
-                ${promptsLoading && html`
-                  <li class="px-3 py-2 flex items-center gap-2">
-                    <span class="loading loading-spinner w-4 h-4"></span> Loading…
-                  </li>
-                `}
-                ${!promptsLoading && prompts.length === 0 && html`
-                  <li class="px-3 py-2 opacity-60">No task prompts</li>
-                `}
-                ${!promptsLoading && prompts.map(p => {
-                  const PromptIcon = getPromptIconOrDefault(p.icon);
-                  return html`
-                  <li key=${p.name}>
-                    <button
-                      type="button"
-                      onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }}
-                      title=${p.description || p.name}
-                    >
-                      <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
-                      <span class="truncate flex-1">${p.name}</span>
-                    </button>
-                  </li>
-                `;
-                })}
-              </ul>
-            `}
-          </div>
-
-          <div class="flex items-center gap-1 ml-auto">
-            <button
-              type="button"
-              onClick=${handleViewSave}
-              disabled=${!viewDirty || savingView}
-              class="btn btn-primary btn-sm"
-              title="Save changes"
-            >
-              ${savingView ? html`<span class="loading loading-spinner w-4 h-4"></span>` : null}
-              Save
-            </button>
-            <button
-              type="button"
-              onClick=${() => { if (statusBusy) return; onToggleStatus && onToggleStatus(data); }}
-              aria-disabled=${statusBusy ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
-              title=${data.status === "closed" ? "Reopen issue" : "Close issue"}
-            >
-              ${data.status === "closed"
-                ? html`<${RefreshIcon} className="w-4 h-4" />`
-                : html`<${CheckIcon} className="w-4 h-4" />`}
-            </button>
-            <button
-              type="button"
-              onClick=${() => { if (statusBusy) return; onToggleDefer && onToggleDefer(data); }}
-              aria-disabled=${statusBusy ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm ${statusBusy ? "opacity-40 pointer-events-none" : ""}"
-              title=${data.status === "deferred" ? "Undefer issue" : "Defer issue"}
-            >
-              ${data.status === "deferred"
-                ? html`<${SunIcon} className="w-4 h-4" />`
-                : html`<${MoonIcon} className="w-4 h-4" />`}
-            </button>
-            <button
-              type="button"
-              onClick=${() => onDelete && onDelete(data)}
-              class="btn btn-ghost btn-square btn-sm group"
-              title="Delete issue"
-            >
-              <${TrashIcon} className="w-4 h-4 group-hover:text-red-400" />
-            </button>
-          </div>
         </div>
       `}
       <//>
