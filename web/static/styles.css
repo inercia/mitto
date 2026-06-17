@@ -1241,6 +1241,27 @@ a.mailto-link:hover {
   background-color: transparent;
 }
 
+/* Fix (mitto-0ho): the Beads description/create CodeMirror editor sometimes
+   paints fully blank when clicked. Same WKWebView/Safari backing-store drop as
+   .beads-table-scroll above: the editor's real scroll layer (.cm-scroller,
+   overflow:auto) is created on-demand INSIDE the BeadsDetailPanel — a scoped
+   .drawer-side beneath the panel's translucent fixed inset-0 backdrop plus the
+   scoped drawer's transparent drawer-overlay. Moving the pointer over those
+   overlays drops that scroll layer's backing store and it renders blank.
+   Promote the actual scroll layer (.cm-scroller) to its own stable GPU backing
+   layer so it keeps repainting under the overlays — mirroring the proven
+   .beads-table-scroll remedy, which likewise promotes the scroll container
+   itself. Deliberately NOT the rounded/bordered .input-font-target wrapper:
+   compositing a border-radius + overflow box leaves a 1px anti-aliased seam at
+   the layer's bottom edge in WebKit. Targeting .cm-scroller (no border, no
+   radius) avoids that seam while still fixing the blank paint. Safe: nothing
+   fixed/absolute is positioned relative to it (the markdown editor has no
+   autocomplete/tooltip popovers). input-font-target is used only on the two
+   beads editors, so the chat input (a textarea) is untouched. */
+.input-font-target .cm-scroller {
+  transform: translateZ(0);
+}
+
 /* Queue dropdown list scrollbar */
 .queue-dropdown-list::-webkit-scrollbar {
   width: 6px;

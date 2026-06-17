@@ -4,6 +4,7 @@
 const { useState, useEffect, useCallback, useRef, html } = window.preact;
 
 import { PromptsMenu } from "./PromptsMenu.js";
+import { ChatBubbleIcon } from "./Icons.js";
 import { getPromptSortMode } from "../utils/storage.js";
 
 /**
@@ -142,25 +143,13 @@ export function PeriodicPromptSelector({
           <button
             type="button"
             onClick=${onTogglePromptArea}
-            class="btn btn-ghost btn-square btn-sm shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+            class="shrink-0 h-8 w-8 flex items-center justify-center bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-secondary hover:text-mitto-text-strong hover:border-mitto-accent-500/50 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors cursor-pointer"
             title=${isPromptAreaVisible
               ? "Hide message input"
               : "Show message input"}
             data-testid="periodic-toggle-prompt-area"
           >
-            <svg
-              class="w-4 h-4 transition-transform ${isPromptAreaVisible ? "rotate-180" : ""}"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M19 9l-7 7-7-7"
-              />
-            </svg>
+            <${ChatBubbleIcon} className="w-4 h-4" />
           </button>
         `}
       </div>

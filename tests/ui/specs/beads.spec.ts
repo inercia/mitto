@@ -91,7 +91,7 @@ async function clickBeadsButton(page, timeouts) {
     await folderHeader.click();
   }
   await folderDetails
-    .locator('button[title^="Beads issues:"]')
+    .locator('[role="button"][title^="Beads issues:"]')
     .first()
     .click();
 }
@@ -847,6 +847,169 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       await expect(
         epicGroup2.locator(".pl-8").getByText("Child one", { exact: true }),
       ).toBeHidden();
+    },
+  );
+
+  testWithCleanup(
+    "the epic header shows a chevron that flips between expanded and collapsed",
+    async ({ page, timeouts }) => {
+      // The native <details> disclosure marker is hidden via .beads-epic-summary,
+      // so the epic header renders an explicit chevron: ChevronDown when open
+      // (path d="M19 9l-7 7-7-7"), ChevronRight when collapsed (d="M9 5l7 7-7 7").
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+
+      const epicGroup = page.locator("details.beads-epic-group").first();
+      await expect(epicGroup).toHaveJSProperty("open", true);
+
+      // Expanded by default → the summary chevron is the "down" glyph.
+      const chevronPath = epicGroup.locator(
+        'summary [data-testid="beads-epic-chevron"] path',
+      );
+      await expect(chevronPath).toBeVisible();
+      await expect(chevronPath).toHaveAttribute("d", "M19 9l-7 7-7-7");
+
+      // Collapsing the epic flips the chevron to the "right" glyph.
+      await epicGroup.locator("summary").click();
+      await expect(epicGroup).toHaveJSProperty("open", false);
+      await expect(chevronPath).toHaveAttribute("d", "M9 5l7 7-7 7");
+    },
+  );
+
+  testWithCleanup(
+    "clicking the chevron toggles the epic without opening the detail panel",
+    async ({ page, timeouts }) => {
+      // The chevron is its own button that stops propagation: it must toggle
+      // collapse/expand only, never select the epic (which would open the
+      // detail panel) and never let the native <summary> double-toggle.
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+
+      const epicGroup = page.locator("details.beads-epic-group").first();
+      await expect(epicGroup).toHaveJSProperty("open", true);
+      const panel = page.locator(DETAIL_PANEL);
+      const chevron = epicGroup.locator(
+        'summary [data-testid="beads-epic-chevron"]',
+      );
+
+      // Clicking the chevron collapses the epic and leaves the panel closed.
+      await chevron.click();
+      await expect(epicGroup).toHaveJSProperty("open", false);
+      await expect(panel).toBeHidden();
+
+      // Clicking it again re-expands, still without opening the panel.
+      await chevron.click();
+      await expect(epicGroup).toHaveJSProperty("open", true);
+      await expect(panel).toBeHidden();
+
+      // The rest of the epic header still selects the epic (opens the panel).
+      await epicGroup
+        .locator("summary")
+        .getByText(EPIC_TITLE)
+        .first()
+        .click();
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+    },
+  );
+});
+
+/**
+ * Beads view — a CLOSED epic with OPEN children stays visible (grouped).
+ *
+ * With the default status filter (closed hidden; open + in-progress shown), a
+ * closed epic must still appear as a real group header whenever at least one of
+ * its children survives the filter — otherwise its open children would be
+ * stranded with no parent context. The grouped path renders the epic header
+ * from the full issue list (issueById), not the filtered set, so the closed
+ * epic remains a labelled header row (with its chevron) rather than collapsing
+ * to a "not in current filter" ghost placeholder.
+ */
+const CLOSED_EPIC_TITLE = "Closed parent epic";
+const CLOSED_EPIC_ISSUES = [
+  {
+    id: "mitto-cep",
+    title: CLOSED_EPIC_TITLE,
+    description: "A closed epic that still has open children.",
+    status: "closed",
+    priority: 1,
+    issue_type: "epic",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+  {
+    id: "mitto-oc1",
+    title: "Open child of closed epic",
+    description: "",
+    status: "open",
+    priority: 2,
+    issue_type: "task",
+    parent: "mitto-cep",
+    created_at: "2026-06-01T10:00:00Z",
+    updated_at: "2026-06-01T10:00:00Z",
+  },
+];
+
+testWithCleanup.describe("Beads view - closed epic with open children", () => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+    await page.route("**/api/beads/list**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(CLOSED_EPIC_ISSUES),
+      });
+    });
+
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+    });
+    const createResp = await request.post(apiUrl("/api/sessions"), {
+      data: { name: `Beads Seed ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+    });
+    expect(createResp.ok()).toBeTruthy();
+
+    await helpers.navigateAndWait(page);
+  });
+
+  testWithCleanup(
+    "a closed epic stays visible as a header (with chevron) while its open child shows, with closed issues hidden",
+    async ({ page, timeouts }) => {
+      await clickBeadsButton(page, timeouts);
+      await expect(
+        page.getByText("Open child of closed epic").first(),
+      ).toBeVisible({ timeout: timeouts.appReady });
+
+      // The default status filter hides closed issues.
+      const closedToggle = page.locator(
+        'button[aria-label="Show closed issues"]',
+      );
+      await expect(closedToggle).toHaveAttribute("aria-pressed", "false");
+
+      // Yet the closed epic remains a real group header (rendered from the full
+      // issue list), not a "not in current filter" ghost placeholder.
+      const epicGroup = page.locator("details.beads-epic-group").first();
+      await expect(epicGroup).toBeVisible({ timeout: timeouts.shortAction });
+      const summary = epicGroup.locator("summary");
+      await expect(summary).toContainText(CLOSED_EPIC_TITLE);
+      await expect(summary).toContainText("mitto-cep");
+      await expect(
+        summary.getByText("Epic (not in current filter)"),
+      ).toHaveCount(0);
+
+      // The header carries the collapse chevron.
+      await expect(
+        summary.locator('[data-testid="beads-epic-chevron"]'),
+      ).toBeVisible();
+
+      // The open child is shown indented beneath the closed epic.
+      await expect(
+        epicGroup
+          .locator(".pl-8")
+          .getByText("Open child of closed epic", { exact: true }),
+      ).toBeVisible();
     },
   );
 });

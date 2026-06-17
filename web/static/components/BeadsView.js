@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping, getBeadsSort, setBeadsSort } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, getPromptIconOrDefault } from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -973,6 +973,392 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     </div>
   `;
 
+  // ---- field renderers (close over component state) -------------------------
+
+  const TitleField = (mode) => {
+    if (mode === "create") {
+      return html`
+        <input
+          id="new-issue-title"
+          type="text"
+          class=${inputClass}
+          placeholder="Issue title (optional — auto-generated from description)"
+          value=${title}
+          onInput=${e => setTitle(e.target.value)}
+          disabled=${submitting}
+          autoFocus
+        />`;
+    }
+    return editingTitle
+      ? html`
+        <input
+          ref=${titleRef}
+          type="text"
+          class="${inputClass} font-semibold text-base"
+          value=${titleDraft}
+          onInput=${e => setTitleDraft(e.target.value)}
+          onBlur=${handleTitleBlur}
+          onKeyDown=${handleTitleKeyDown}
+          disabled=${savingTitle}
+        />`
+      : html`
+        <h2
+          class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
+          onClick=${startEditTitle}
+          title="Click to edit"
+        >${data.title}</h2>`;
+  };
+
+  const TypeField = (mode) => mode === "create"
+    ? html`
+      <select
+        id="new-issue-type"
+        class=${selectClass}
+        value=${type}
+        onInput=${e => setType(e.target.value)}
+        disabled=${submitting}
+      >
+        ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+      </select>`
+    : typeBadge(data.issue_type);
+
+  const PriorityField = (mode) => mode === "create"
+    ? html`
+      <select
+        id="new-issue-priority"
+        class=${selectClass}
+        value=${priority}
+        onInput=${e => setPriority(Number(e.target.value))}
+        disabled=${submitting}
+      >
+        ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
+          html`<option value=${n}>${label}</option>`
+        )}
+      </select>`
+    : html`
+      <div class="relative" ref=${priorityRef}>
+        <button
+          type="button"
+          onClick=${() => !savingPriority && setEditingPriority(o => !o)}
+          disabled=${savingPriority}
+          class="btn btn-ghost btn-xs"
+          title="Click to change priority"
+        >
+          ${priorityBadge(data.priority)}
+        </button>
+        ${savingPriority && html`<span class="loading loading-spinner w-3.5 h-3.5 inline-block ml-1 text-mitto-text-secondary align-middle"></span>`}
+        ${editingPriority && html`
+          <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
+            ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
+              const num = Number(n);
+              const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
+              return html`
+                <li key=${n}>
+                  <button
+                    type="button"
+                    onClick=${() => handleSetPriority(num)}
+                  >
+                    ${priorityBadge(num)}
+                    <span class="flex-1">${label}</span>
+                    ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                  </button>
+                </li>
+              `;
+            })}
+          </ul>
+        `}
+      </div>`;
+
+  // DescriptionField is self-contained (includes label + wrapper) to avoid
+  // Fragment-induced CodeMirror remount cycles.
+  const DescriptionField = (mode) => {
+    if (mode === "create") {
+      return html`
+        <div class="mt-3">
+          <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
+          ${renderDescToolbar({
+            text: description,
+            setText: (v) => { setDescription(v); createEditorApiRef.current?.setValue(v); },
+            disabled: submitting,
+          })}
+          <${CodeEditorField}
+            value=${description}
+            onChange=${(v) => setDescription(v)}
+            onBlur=${(v) => setDescription(v)}
+            disabled=${submitting}
+            darkMode=${false}
+            lineNumbers=${false}
+            lineWrapping=${true}
+            highlightActiveLine=${false}
+            className="input-font-target"
+            minHeight=${160}
+            editorApiRef=${createEditorApiRef}
+          />
+        </div>`;
+    }
+    return html`
+      <div>
+        <label class=${labelClass}>Description</label>
+        ${renderDescToolbar(
+          editingDesc
+            ? {
+                text: descDraft,
+                setText: (v) => { setDescDraft(v); detailEditorApiRef.current?.setValue(v); },
+                disabled: savingDesc,
+              }
+            : { text: "", setText: () => {}, disabled: true }
+        )}
+        ${editingDesc
+          ? html`
+            <${CodeEditorField}
+              value=${descDraft}
+              onChange=${(v) => setDescDraft(v)}
+              onBlur=${handleDescBlur}
+              disabled=${savingDesc}
+              darkMode=${false}
+              lineNumbers=${false}
+              lineWrapping=${true}
+              highlightActiveLine=${false}
+              className="input-font-target"
+              minHeight=${descMinHeight || 0}
+              autoFocus=${true}
+              editorApiRef=${detailEditorApiRef}
+            />`
+          : html`
+            <div
+              ref=${descViewRef}
+              class="border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative"
+              onClick=${startEditDesc}
+              title="Click to edit"
+            >
+              ${savingDesc && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
+              ${data.description
+                ? (md
+                    ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
+                    : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${data.description}</pre>`)
+                : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
+              }
+            </div>`
+        }
+      </div>`;
+  };
+
+  const AssigneeField = (mode) => {
+    if (mode === "create") {
+      return html`
+        <input
+          id="new-issue-assignee"
+          type="text"
+          class=${inputClass}
+          placeholder="Assignee"
+          value=${createAssignee}
+          disabled=${submitting}
+          onInput=${e => setCreateAssignee(e.target.value)}
+        />`;
+    }
+    return editingAssignee
+      ? html`
+        <input
+          ref=${assigneeRef}
+          type="text"
+          class=${inputClass}
+          placeholder="Assignee (empty to clear)"
+          value=${assigneeDraft}
+          onInput=${e => setAssigneeDraft(e.target.value)}
+          onBlur=${handleAssigneeBlur}
+          onKeyDown=${handleAssigneeKeyDown}
+          disabled=${savingAssignee}
+        />`
+      : html`
+        <div
+          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2"
+          onClick=${startEditAssignee}
+          title="Click to edit"
+        >
+          ${savingAssignee && html`<span class="loading loading-spinner w-3.5 h-3.5 text-mitto-text-secondary shrink-0"></span>`}
+          ${data.assignee
+            ? html`<span>${data.assignee}</span>`
+            : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
+        </div>`;
+  };
+
+  const NotesField = (mode) => {
+    if (mode === "create") {
+      return html`
+        <textarea
+          id="new-issue-notes"
+          class="${textareaClass} resize-y min-h-[80px]"
+          placeholder="Optional notes"
+          disabled=${submitting}
+          onInput=${e => setCreateNotes(e.target.value)}
+          value=${createNotes}
+        ></textarea>`;
+    }
+    if (depsLoading) {
+      return html`<div class="flex items-center gap-2 text-xs text-mitto-text-secondary"><span class="loading loading-spinner w-3 h-3"></span> Loading…</div>`;
+    }
+    return editingNotes
+      ? html`
+        <textarea
+          ref=${notesRef}
+          class="${textareaClass} resize-y"
+          rows="4"
+          style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
+          placeholder="Add notes…"
+          value=${notesDraft}
+          onInput=${e => setNotesDraft(e.target.value)}
+          onBlur=${handleNotesBlur}
+          disabled=${savingNotes}
+        ></textarea>`
+      : html`
+        <div
+          ref=${notesViewRef}
+          class="border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative"
+          onClick=${startEditNotes}
+          title="Click to edit"
+        >
+          ${savingNotes && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
+          ${notes && notes.trim()
+            ? commentBody(notes)
+            : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
+        </div>`;
+  };
+
+  const DependenciesField = (mode) => {
+    if (mode === "create") {
+      return html`
+        <datalist id="beads-create-dep-options">
+          ${(allIssues || [])
+            .filter(i => !createDeps.some(d => d.id === i.id))
+            .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
+        </datalist>
+        <div class="space-y-1 mt-1">
+          ${createDeps.map(d => html`
+            <div key=${d.id} class="flex items-center gap-1.5">
+              <select
+                class="select select-xs"
+                value=${d.type || "blocks"}
+                disabled=${submitting}
+                onInput=${e => setCreateDeps(prev => prev.map(x => x.id === d.id ? { ...x, type: e.target.value } : x))}
+              >
+                ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+              </select>
+              <span class="font-mono text-xs flex-1 min-w-0 truncate">${d.id}</span>
+              <button
+                type="button"
+                onClick=${() => removeCreateDep(d.id)}
+                disabled=${submitting}
+                class="btn btn-ghost btn-square btn-xs shrink-0"
+                title="Remove dependency"
+              >
+                <${CloseIcon} className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          `)}
+          <div class="flex items-center gap-1.5 pt-1">
+            <select
+              class="select select-xs"
+              value=${createNewDepType}
+              disabled=${submitting}
+              onInput=${e => setCreateNewDepType(e.target.value)}
+            >
+              ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+            </select>
+            <input
+              type="text"
+              list="beads-create-dep-options"
+              placeholder="issue id…"
+              value=${createNewDepId}
+              disabled=${submitting}
+              onInput=${e => setCreateNewDepId(e.target.value)}
+              onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addCreateDep(); } }}
+              class="input input-xs flex-1 min-w-0"
+            />
+            <button
+              type="button"
+              onClick=${addCreateDep}
+              aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-xs shrink-0 ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
+              title="Add dependency"
+            >
+              <${PlusIcon} className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>`;
+    }
+    return html`
+      <datalist id="beads-dep-options">
+        ${(allIssues || [])
+          .filter(i => i.id !== data.id && !deps.some(d => d.id === i.id))
+          .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
+      </datalist>
+      ${depsLoading
+        ? html`<div class="flex items-center gap-2 text-xs text-mitto-text-secondary"><span class="loading loading-spinner w-3 h-3"></span> Loading…</div>`
+        : html`
+          <div class="space-y-1">
+            ${deps.length === 0 && html`<div class="text-xs text-mitto-text-secondary italic">No dependencies.</div>`}
+            ${deps.map(d => html`
+              <div key=${d.id} class="flex items-center gap-1.5">
+                <select
+                  class="select select-xs"
+                  value=${d.dependency_type || "blocks"}
+                  disabled=${depsBusy}
+                  onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
+                >
+                  ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                </select>
+                <button
+                  type="button"
+                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
+                  class="font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline flex-1 min-w-0 truncate text-left"
+                  title=${"Open " + d.id}
+                >${d.id}</button>
+                <button
+                  type="button"
+                  onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
+                  aria-disabled=${depsBusy ? "true" : "false"}
+                  class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
+                  title="Remove dependency"
+                >
+                  <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
+                </button>
+              </div>
+            `)}
+            <div class="flex items-center gap-1.5 pt-1">
+              <select
+                class="select select-xs"
+                value=${newDepType}
+                disabled=${depsBusy}
+                onInput=${e => setNewDepType(e.target.value)}
+              >
+                ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+              </select>
+              <input
+                type="text"
+                list="beads-dep-options"
+                placeholder="issue id…"
+                value=${newDepId}
+                disabled=${depsBusy}
+                onInput=${e => setNewDepId(e.target.value)}
+                onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
+                class="input input-xs flex-1 min-w-0"
+              />
+              <button
+                type="button"
+                onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
+                aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-xs shrink-0 ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
+                title="Add dependency"
+              >
+                ${depsBusy
+                  ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
+                  : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+              </button>
+            </div>
+          </div>
+        `}`;
+  };
+
   return html`
     <${Fragment}>
       <!-- Full-window dimming backdrop (like SessionPanel) so the conversations
@@ -1012,26 +1398,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
                 ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}`
             : html`
               <div class="font-mono text-xs text-mitto-text-secondary">${data.id}</div>
-              ${editingTitle
-                ? html`
-                  <input
-                    ref=${titleRef}
-                    type="text"
-                    class="${inputClass} font-semibold text-base"
-                    value=${titleDraft}
-                    onInput=${e => setTitleDraft(e.target.value)}
-                    onBlur=${handleTitleBlur}
-                    onKeyDown=${handleTitleKeyDown}
-                    disabled=${savingTitle}
-                  />
-                `
-                : html`
-                  <h2
-                    class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
-                    onClick=${startEditTitle}
-                    title="Click to edit"
-                  >${data.title}</h2>
-                `}
+              ${TitleField("view")}
             `}
         </div>
         <button
@@ -1060,224 +1427,49 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
               <div>
                 <label class=${labelClass} for="new-issue-title">Title</label>
-                <input
-                  id="new-issue-title"
-                  type="text"
-                  class=${inputClass}
-                  placeholder="Issue title (optional — auto-generated from description)"
-                  value=${title}
-                  onInput=${e => setTitle(e.target.value)}
-                  disabled=${submitting}
-                  autoFocus
-                />
+                ${TitleField("create")}
               </div>
 
               <div class="flex gap-3 mt-3">
                 <div class="flex-1">
                   <label class=${labelClass} for="new-issue-type">Type</label>
-                  <select
-                    id="new-issue-type"
-                    class=${selectClass}
-                    value=${type}
-                    onInput=${e => setType(e.target.value)}
-                    disabled=${submitting}
-                  >
-                    ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                  </select>
+                  ${TypeField("create")}
                 </div>
                 <div class="flex-1">
                   <label class=${labelClass} for="new-issue-priority">Priority</label>
-                  <select
-                    id="new-issue-priority"
-                    class=${selectClass}
-                    value=${priority}
-                    onInput=${e => setPriority(Number(e.target.value))}
-                    disabled=${submitting}
-                  >
-                    ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
-                      html`<option value=${n}>${label}</option>`
-                    )}
-                  </select>
+                  ${PriorityField("create")}
                 </div>
               </div>
 
-              <div class="mt-3">
-                <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
-                ${renderDescToolbar({
-                  text: description,
-                  setText: (v) => { setDescription(v); createEditorApiRef.current?.setValue(v); },
-                  disabled: submitting,
-                })}
-                <${CodeEditorField}
-                  value=${description}
-                  onChange=${(v) => setDescription(v)}
-                  onBlur=${(v) => setDescription(v)}
-                  disabled=${submitting}
-                  darkMode=${false}
-                  lineNumbers=${false}
-                  lineWrapping=${true}
-                  highlightActiveLine=${false}
-                  className="input-font-target"
-                  minHeight=${160}
-                  editorApiRef=${createEditorApiRef}
-                />
-              </div>
+              ${DescriptionField("create")}
 
               <div class="mt-3">
                 <label class=${labelClass}>Dependencies</label>
-                <datalist id="beads-create-dep-options">
-                  ${(allIssues || [])
-                    .filter(i => !createDeps.some(d => d.id === i.id))
-                    .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
-                </datalist>
-                <div class="space-y-1 mt-1">
-                  ${createDeps.map(d => html`
-                    <div key=${d.id} class="flex items-center gap-1.5">
-                      <select
-                        class="select select-xs"
-                        value=${d.type || "blocks"}
-                        disabled=${submitting}
-                        onInput=${e => setCreateDeps(prev => prev.map(x => x.id === d.id ? { ...x, type: e.target.value } : x))}
-                      >
-                        ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                      </select>
-                      <span class="font-mono text-xs flex-1 min-w-0 truncate">${d.id}</span>
-                      <button
-                        type="button"
-                        onClick=${() => removeCreateDep(d.id)}
-                        disabled=${submitting}
-                        class="btn btn-ghost btn-square btn-xs shrink-0"
-                        title="Remove dependency"
-                      >
-                        <${CloseIcon} className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  `)}
-                  <div class="flex items-center gap-1.5 pt-1">
-                    <select
-                      class="select select-xs"
-                      value=${createNewDepType}
-                      disabled=${submitting}
-                      onInput=${e => setCreateNewDepType(e.target.value)}
-                    >
-                      ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                    </select>
-                    <input
-                      type="text"
-                      list="beads-create-dep-options"
-                      placeholder="issue id…"
-                      value=${createNewDepId}
-                      disabled=${submitting}
-                      onInput=${e => setCreateNewDepId(e.target.value)}
-                      onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addCreateDep(); } }}
-                      class="input input-xs flex-1 min-w-0"
-                    />
-                    <button
-                      type="button"
-                      onClick=${addCreateDep}
-                      aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-xs shrink-0 ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
-                      title="Add dependency"
-                    >
-                      <${PlusIcon} className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
+                ${DependenciesField("create")}
               </div>
 
               <div class="mt-3">
                 <label class=${labelClass} for="new-issue-assignee">Assignee</label>
-                <input
-                  id="new-issue-assignee"
-                  type="text"
-                  class=${inputClass}
-                  placeholder="Assignee"
-                  value=${createAssignee}
-                  disabled=${submitting}
-                  onInput=${e => setCreateAssignee(e.target.value)}
-                />
+                ${AssigneeField("create")}
               </div>
 
               <div class="mt-3">
                 <label class=${labelClass} for="new-issue-notes">Notes</label>
-                <textarea
-                  id="new-issue-notes"
-                  class=${textareaClass + " resize-y min-h-[80px]"}
-                  placeholder="Optional notes"
-                  disabled=${submitting}
-                  onInput=${e => setCreateNotes(e.target.value)}
-                  value=${createNotes}
-                ></textarea>
+                ${NotesField("create")}
               </div>
             </fieldset>
           `
           : html`
             <div class="flex flex-wrap gap-2 items-center">
-              ${typeBadge(data.issue_type)}
+              ${TypeField("view")}
               ${statusBadge(data.status)}
-              <div class="relative" ref=${priorityRef}>
-                <button
-                  type="button"
-                  onClick=${() => !savingPriority && setEditingPriority(o => !o)}
-                  disabled=${savingPriority}
-                  class="btn btn-ghost btn-xs"
-                  title="Click to change priority"
-                >
-                  ${priorityBadge(data.priority)}
-                </button>
-                ${savingPriority && html`<span class="loading loading-spinner w-3.5 h-3.5 inline-block ml-1 text-mitto-text-secondary align-middle"></span>`}
-                ${editingPriority && html`
-                  <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
-                    ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
-                      const num = Number(n);
-                      const isCurrent = num === (typeof data.priority === "number" ? data.priority : 3);
-                      return html`
-                        <li key=${n}>
-                          <button
-                            type="button"
-                            onClick=${() => handleSetPriority(num)}
-                          >
-                            ${priorityBadge(num)}
-                            <span class="flex-1">${label}</span>
-                            ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                          </button>
-                        </li>
-                      `;
-                    })}
-                  </ul>
-                `}
-              </div>
+              ${PriorityField("view")}
             </div>
 
             <div class="grid grid-cols-2 gap-3">
               <div>
                 <label class=${labelClass}>Assignee</label>
-                ${editingAssignee
-                  ? html`
-                    <input
-                      ref=${assigneeRef}
-                      type="text"
-                      class=${inputClass}
-                      placeholder="Assignee (empty to clear)"
-                      value=${assigneeDraft}
-                      onInput=${e => setAssigneeDraft(e.target.value)}
-                      onBlur=${handleAssigneeBlur}
-                      onKeyDown=${handleAssigneeKeyDown}
-                      disabled=${savingAssignee}
-                    />
-                  `
-                  : html`
-                    <div
-                      class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2"
-                      onClick=${startEditAssignee}
-                      title="Click to edit"
-                    >
-                      ${savingAssignee && html`<span class="loading loading-spinner w-3.5 h-3.5 text-mitto-text-secondary shrink-0"></span>`}
-                      ${data.assignee
-                        ? html`<span>${data.assignee}</span>`
-                        : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
-                    </div>
-                  `}
+                ${AssigneeField("view")}
               </div>
               ${labelValue("Owner", data.owner)}
               ${labelValue("Created", data.created_at && new Date(data.created_at).toLocaleDateString())}
@@ -1285,51 +1477,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
               ${data.parent && labelValue("Parent", html`<span class="font-mono">${data.parent}</span>`)}
             </div>
 
-            <div>
-              <label class=${labelClass}>Description</label>
-              ${renderDescToolbar(
-                editingDesc
-                  ? {
-                      text: descDraft,
-                      setText: (v) => { setDescDraft(v); detailEditorApiRef.current?.setValue(v); },
-                      disabled: savingDesc,
-                    }
-                  : { text: "", setText: () => {}, disabled: true }
-              )}
-              ${editingDesc
-                ? html`
-                  <${CodeEditorField}
-                    value=${descDraft}
-                    onChange=${(v) => setDescDraft(v)}
-                    onBlur=${handleDescBlur}
-                    disabled=${savingDesc}
-                    darkMode=${false}
-                    lineNumbers=${false}
-                    lineWrapping=${true}
-                    highlightActiveLine=${false}
-                    className="input-font-target"
-                    minHeight=${descMinHeight || 0}
-                    autoFocus=${true}
-                    editorApiRef=${detailEditorApiRef}
-                  />
-                `
-                : html`
-                  <div
-                    ref=${descViewRef}
-                    class="border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative"
-                    onClick=${startEditDesc}
-                    title="Click to edit"
-                  >
-                    ${savingDesc && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
-                    ${data.description
-                      ? (md
-                          ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                          : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${data.description}</pre>`)
-                      : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
-                    }
-                  </div>
-                `}
-            </div>
+            ${DescriptionField("view")}
 
             ${subtasks.length > 0 && html`
               <fieldset class="fieldset">
@@ -1355,85 +1503,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
             <fieldset class="fieldset">
               <legend class="fieldset-legend">Dependencies</legend>
-
-              <datalist id="beads-dep-options">
-                ${(allIssues || [])
-                  .filter(i => i.id !== data.id && !deps.some(d => d.id === i.id))
-                  .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
-              </datalist>
-
-              ${depsLoading
-                ? html`
-                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
-                  </div>
-                `
-                : html`
-                  <div class="space-y-1">
-                    ${deps.length === 0 && html`
-                      <div class="text-xs text-mitto-text-secondary italic">No dependencies.</div>
-                    `}
-                    ${deps.map(d => html`
-                      <div key=${d.id} class="flex items-center gap-1.5">
-                        <select
-                          class="select select-xs"
-                          value=${d.dependency_type || "blocks"}
-                          disabled=${depsBusy}
-                          onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
-                        >
-                          ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                        </select>
-                        <button
-                          type="button"
-                          onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                          class="font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline flex-1 min-w-0 truncate text-left"
-                          title=${"Open " + d.id}
-                        >${d.id}</button>
-                        <button
-                          type="button"
-                          onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
-                          aria-disabled=${depsBusy ? "true" : "false"}
-                          class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
-                          title="Remove dependency"
-                        >
-                          <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
-                        </button>
-                      </div>
-                    `)}
-
-                    <div class="flex items-center gap-1.5 pt-1">
-                      <select
-                        class="select select-xs"
-                        value=${newDepType}
-                        disabled=${depsBusy}
-                        onInput=${e => setNewDepType(e.target.value)}
-                      >
-                        ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                      </select>
-                      <input
-                        type="text"
-                        list="beads-dep-options"
-                        placeholder="issue id…"
-                        value=${newDepId}
-                        disabled=${depsBusy}
-                        onInput=${e => setNewDepId(e.target.value)}
-                        onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
-                        class="input input-xs flex-1 min-w-0"
-                      />
-                      <button
-                        type="button"
-                        onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
-                        aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-                        class="btn btn-ghost btn-square btn-xs shrink-0 ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
-                        title="Add dependency"
-                      >
-                        ${depsBusy
-                          ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
-                          : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                      </button>
-                    </div>
-                  </div>
-                `}
+              ${DependenciesField("view")}
             </fieldset>
 
             <fieldset class="fieldset">
@@ -1495,39 +1565,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
 
             <fieldset class="fieldset">
               <legend class="fieldset-legend">Notes</legend>
-              ${depsLoading
-                ? html`
-                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
-                  </div>
-                `
-                : editingNotes
-                  ? html`
-                    <textarea
-                      ref=${notesRef}
-                      class="${textareaClass} resize-y"
-                      rows="4"
-                      style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
-                      placeholder="Add notes…"
-                      value=${notesDraft}
-                      onInput=${e => setNotesDraft(e.target.value)}
-                      onBlur=${handleNotesBlur}
-                      disabled=${savingNotes}
-                    ></textarea>
-                  `
-                  : html`
-                    <div
-                      ref=${notesViewRef}
-                      class="border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative"
-                      onClick=${startEditNotes}
-                      title="Click to edit"
-                    >
-                      ${savingNotes && html`<span class="loading loading-spinner w-4 h-4 absolute top-2 right-2 text-mitto-text-secondary"></span>`}
-                      ${notes && notes.trim()
-                        ? commentBody(notes)
-                        : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
-                    </div>
-                  `}
+              ${NotesField("view")}
             </fieldset>
           `}
       </div>
@@ -2557,12 +2595,16 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // brand red — the same red used for the active session item and delete
   // buttons; priority/status/type badge pills are opaque so they stay
   // readable on the red background.
-  function renderIssueRow(issue) {
+  // When `epicExpanded` is non-null the row is an epic group header in grouped
+  // mode: a chevron is prepended to indicate collapse/expand state (the native
+  // <details> disclosure marker is hidden via .beads-epic-summary).
+  function renderIssueRow(issue, epicExpanded = null) {
     const linkedSessionId = issueSessionMap[issue.id];
     const isStreamingIssue = issueStreamingSet.has(issue.id);
     const isSelected = selectedIssue && selectedIssue.id === issue.id;
     const childCount = childCountById[issue.id] || 0;
     const isEpic = issue.issue_type === "epic" || childCount > 0;
+    const showChevron = epicExpanded !== null;
     const bgTone = isSelected
       ? "bg-mitto-surface-3/30"
       : "bg-mitto-surface-3/20 hover:bg-red-600";
@@ -2577,6 +2619,33 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         ? "border border-mitto-border border-l-4 border-l-purple-500"
         : "border border-mitto-border";
     const rowContent = html`
+      ${showChevron
+        ? html`<button
+            type="button"
+            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong"
+            title=${epicExpanded ? "Collapse epic" : "Expand epic"}
+            aria-label=${epicExpanded ? "Collapse epic" : "Expand epic"}
+            aria-expanded=${epicExpanded ? "true" : "false"}
+            data-testid="beads-epic-chevron"
+            onClick=${(e) => {
+              // Toggle collapse/expand only — never select the epic (open the
+              // detail panel) and never let the native <summary> toggle fire.
+              // stopPropagation keeps the click off the BeadsIssueRow onSelect
+              // and the summary; we then drive collapsedEpics ourselves (the
+              // <details> onToggle re-derives the same state idempotently).
+              e.preventDefault();
+              e.stopPropagation();
+              setCollapsedEpics(prev => {
+                const next = new Set(prev);
+                if (next.has(issue.id)) next.delete(issue.id);
+                else next.add(issue.id);
+                return next;
+              });
+            }}
+          >${epicExpanded
+            ? html`<${ChevronDownIcon} className="w-4 h-4" />`
+            : html`<${ChevronRightIcon} className="w-4 h-4" />`}</button>`
+        : null}
       <div class="list-col-grow flex flex-col gap-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           ${isStreamingIssue
@@ -2812,8 +2881,13 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                     >
                       <summary class="beads-epic-summary">
                         ${epicIssue
-                          ? renderIssueRow(epicIssue)
+                          ? renderIssueRow(epicIssue, isOpen)
                           : html`<div class="list-row opacity-60 border border-dashed border-mitto-border">
+                              <span class="shrink-0 self-center text-mitto-text-muted" aria-hidden="true" data-testid="beads-epic-chevron">
+                                ${isOpen
+                                  ? html`<${ChevronDownIcon} className="w-4 h-4" />`
+                                  : html`<${ChevronRightIcon} className="w-4 h-4" />`}
+                              </span>
                               <div class="list-col-grow text-xs text-mitto-text-muted italic">Epic (not in current filter)</div>
                             </div>`}
                       </summary>
