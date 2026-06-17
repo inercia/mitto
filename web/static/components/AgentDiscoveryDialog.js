@@ -241,7 +241,7 @@ export function AgentDiscoveryDialog({
       ${phase === "results" && html`
         <div>
           <p class="text-mitto-text-secondary text-sm mb-3">Select the agents to add:</p>
-          <div class="list max-h-64 overflow-y-auto">
+          <ul class="list max-h-64 overflow-y-auto">
             ${agents.filter((a) => a.available).map((agent) => {
               const alreadyConfigured = existingCommands.has(agent.status?.command);
               // Selectable cards on the daisyUI list: the list owns row radius +
@@ -255,7 +255,7 @@ export function AgentDiscoveryDialog({
                   ? "border border-mitto-accent-600 bg-mitto-accent-600/10 cursor-pointer hover:border-mitto-accent"
                   : "cursor-pointer hover:bg-mitto-input-box";
               return html`
-                <div
+                <li
                   key=${agent.dir_name}
                   class="list-row items-start transition-colors ${stateTone}"
                   onClick=${() => !alreadyConfigured && toggleAgent(agent.dir_name)}
@@ -286,10 +286,10 @@ export function AgentDiscoveryDialog({
                       <div class="text-xs text-mitto-text-muted truncate mt-0.5">${agent.status.command}</div>
                     `}
                   </div>
-                </div>
+                </li>
               `;
             })}
-          </div>
+          </ul>
           ${agents.some((a) => !a.available) && html`
             <p class="text-mitto-text-muted text-xs mt-3">
               ${agents.filter((a) => !a.available).length} agent(s) not installed on this system.

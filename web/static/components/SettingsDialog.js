@@ -263,17 +263,13 @@ export function AutoChildrenEditor({
             <div class="space-y-2">
               ${(children || []).map(
                 (child, idx) => html`
-                  <div
-                    key=${idx}
-                    class="flex items-center gap-2 p-2 bg-mitto-input-box rounded-md border border-mitto-border"
-                  >
+                  <div key=${idx} class="join w-full">
                     <input
                       type="text"
                       value=${child.title || ""}
                       placeholder="Child title"
                       onInput=${(e) => updateChild(idx, "title", e.target.value)}
-                      class="input input-sm flex-1"
-                      style="height: 38px; box-sizing: border-box"
+                      class="input input-sm join-item flex-1"
                     />
                     <select
                       value=${child.target_workspace_uuid || ""}
@@ -283,8 +279,7 @@ export function AutoChildrenEditor({
                           "target_workspace_uuid",
                           e.target.value,
                         )}
-                      class="select select-sm"
-                      style="height: 38px; box-sizing: border-box"
+                      class="select select-sm join-item"
                     >
                       ${targetOptions.map(
                         (ws) => html`
@@ -298,7 +293,7 @@ export function AutoChildrenEditor({
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="btn btn-ghost btn-square btn-xs"
+                      class="btn btn-ghost btn-square btn-sm join-item"
                       title="Remove child"
                     >
                       <${TrashIcon} className="w-4 h-4" />
