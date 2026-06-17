@@ -21,6 +21,7 @@ type beadsCreateParams struct {
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
 	createFn func(dir string, p beadsCreateParams) ([]byte, error)
+	updateFn func(p beads.UpdateParams) error
 }
 
 func (c *stubBeadsClient) List(_ context.Context, _ string) ([]byte, error) {
@@ -41,7 +42,10 @@ func (c *stubBeadsClient) Create(_ context.Context, dir string, p beads.CreatePa
 func (c *stubBeadsClient) Delete(_ context.Context, _, _ string) error       { return nil }
 func (c *stubBeadsClient) Cleanup(_ context.Context, _ string) (int, error)  { return 0, nil }
 func (c *stubBeadsClient) SetStatus(_ context.Context, _, _, _ string) error { return nil }
-func (c *stubBeadsClient) Update(_ context.Context, _ string, _ beads.UpdateParams) error {
+func (c *stubBeadsClient) Update(_ context.Context, _ string, p beads.UpdateParams) error {
+	if c.updateFn != nil {
+		return c.updateFn(p)
+	}
 	return nil
 }
 func (c *stubBeadsClient) Comment(_ context.Context, _, _, _ string) error { return nil }
@@ -844,6 +848,35 @@ func TestHandleBeadsUpdate_EmptyAssigneeAllowed(t *testing.T) {
 	s.handleBeadsUpdate(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleBeadsUpdate_TypeAccepted(t *testing.T) {
+	// A type-only update must be accepted (HTTP 200) and the captured
+	// UpdateParams.Type must equal the submitted value.
+	setupMittoDir(t)
+	var captured beads.UpdateParams
+	s := newBeadsTestServer()
+	s.beads = &stubBeadsClient{
+		updateFn: func(p beads.UpdateParams) error {
+			captured = p
+			return nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
+		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","type":"bug"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if captured.Type == nil {
+		t.Fatal("UpdateParams.Type is nil; want non-nil")
+	}
+	if *captured.Type != "bug" {
+		t.Errorf("UpdateParams.Type = %q, want %q", *captured.Type, "bug")
 	}
 }
 

@@ -256,6 +256,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // Snapshot of viewDraft.title captured on startEditTitle so Escape can revert.
   const titleEditStartRef = useRef("");
 
+  // View-mode inline type editing.
+  const [editingType, setEditingType] = useState(false);
+  const typeRef = useRef(null);
+
   // View-mode inline priority editing.
   const [editingPriority, setEditingPriority] = useState(false);
   const priorityRef = useRef(null);
@@ -266,9 +270,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // Snapshot of viewDraft.assignee captured on startEditAssignee so Escape can revert.
   const assigneeEditStartRef = useRef("");
 
-  // Draft / dirty / save state for view mode. All five editable fields
+  // Draft / dirty / save state for view mode. All six editable fields
   // accumulate into viewDraft; a single Save posts them together.
-  const [viewDraft, setViewDraft] = useState({ title: "", priority: 2, description: "", assignee: "", notes: "" });
+  const [viewDraft, setViewDraft] = useState({ title: "", type: "task", priority: 2, description: "", assignee: "", notes: "" });
   const [savingView, setSavingView] = useState(false);
   // When true, show the "Discard changes?" confirm dialog before closing.
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -327,6 +331,18 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showPrompts]);
+
+  // Close the type dropdown on outside click while it is open.
+  useEffect(() => {
+    if (!editingType) return undefined;
+    const onDocClick = (e) => {
+      if (typeRef.current && !typeRef.current.contains(e.target)) {
+        setEditingType(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [editingType]);
 
   // Close the priority dropdown on outside click while it is open.
   useEffect(() => {
@@ -470,16 +486,18 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // fetchDeps, so they are sourced from the `notes` state rather than data.
   const viewOriginal = useMemo(() => ({
     title: (data && data.title) || "",
+    type: (data && data.issue_type) || "task",
     priority: (data && typeof data.priority === "number") ? data.priority : 2,
     description: (data && data.description) || "",
     assignee: (data && data.assignee) || "",
     notes: notes || "",
-  }), [data && data.id, data && data.title, data && data.priority, data && data.description, data && data.assignee, notes]);
+  }), [data && data.id, data && data.title, data && data.issue_type, data && data.priority, data && data.description, data && data.assignee, notes]);
 
   const viewDirty = useMemo(() => {
     if (creating) return false;
     const t = viewDraft.title.trim();
     return (t !== "" && t !== viewOriginal.title)
+      || viewDraft.type !== viewOriginal.type
       || viewDraft.priority !== viewOriginal.priority
       || viewDraft.description !== viewOriginal.description
       || viewDraft.assignee.trim() !== viewOriginal.assignee
@@ -506,6 +524,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     if (creating || !data || !data.id) return;
     setViewDraft({
       title: data.title || "",
+      type: data.issue_type || "task",
       priority: (typeof data.priority === "number") ? data.priority : 2,
       description: data.description || "",
       assignee: data.assignee || "",
@@ -517,6 +536,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   useEffect(() => {
     setEditingDesc(false);
     setEditingTitle(false);
+    setEditingType(false);
     setEditingPriority(false);
     setEditingAssignee(false);
     setEditingNotes(false);
@@ -611,6 +631,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     const body = { working_dir: workingDir, id: data.id };
     const t = viewDraft.title.trim();
     if (t !== "" && t !== viewOriginal.title) body.title = t;
+    if (viewDraft.type !== viewOriginal.type) body.type = viewDraft.type;
     if (viewDraft.priority !== viewOriginal.priority) body.priority = viewDraft.priority;
     if (viewDraft.description !== viewOriginal.description) body.description = viewDraft.description;
     if (viewDraft.assignee.trim() !== viewOriginal.assignee) body.assignee = viewDraft.assignee.trim();
@@ -629,6 +650,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       } else {
         if ("notes" in body) setNotes(viewDraft.notes);
         setEditingTitle(false);
+        setEditingType(false);
         setEditingDesc(false);
         setEditingNotes(false);
         setEditingAssignee(false);
@@ -894,7 +916,36 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
       >
         ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
       </select>`
-    : typeBadge(data.issue_type);
+    : html`
+      <div class="relative" ref=${typeRef}>
+        <button
+          type="button"
+          onClick=${() => setEditingType(o => !o)}
+          class="btn btn-ghost btn-xs"
+          title="Click to change type"
+        >
+          ${typeBadge(viewDraft.type)}
+        </button>
+        ${editingType && html`
+          <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
+            ${ISSUE_TYPES.map(t => {
+              const isCurrent = t === viewDraft.type;
+              return html`
+                <li key=${t}>
+                  <button
+                    type="button"
+                    onClick=${() => { setViewDraft(p => ({ ...p, type: t })); setEditingType(false); }}
+                  >
+                    ${typeBadge(t)}
+                    <span class="flex-1">${t}</span>
+                    ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                  </button>
+                </li>
+              `;
+            })}
+          </ul>
+        `}
+      </div>`;
 
   const PriorityField = (mode) => mode === "create"
     ? html`

@@ -477,6 +477,46 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       expect(box!.height).toBeGreaterThan(0);
     },
   );
+
+  testWithCleanup(
+    "clicking the type badge opens a dropdown and selecting a type marks the draft dirty",
+    async ({ page, timeouts }) => {
+      // Capture the update request so we can assert the new type is sent.
+      let updateBody: any = null;
+      await page.route("**/api/beads/update", async (route) => {
+        updateBody = route.request().postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      });
+
+      await openBeads(page, timeouts);
+      const panel = page.locator(DETAIL_PANEL);
+
+      // Open the panel for the short issue (mitto-bbb, which has issue_type "bug").
+      await page
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
+        .first()
+        .click();
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+
+      // Click the type badge button to open the dropdown.
+      // mitto-bbb has issue_type "bug"; select a different type to make the draft dirty.
+      await panel.locator('button[title="Click to change type"]').click();
+      await panel.locator('button:has-text("task")').first().click();
+
+      // Click the unified Save button.
+      await panel.locator('button[title="Save changes"]').click();
+
+      await expect
+        .poll(() => updateBody, { timeout: timeouts.shortAction })
+        .not.toBeNull();
+      expect(updateBody.id).toBe("mitto-bbb");
+      expect(updateBody.type).toBe("task");
+    },
+  );
 });
 
 /**

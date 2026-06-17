@@ -26,7 +26,7 @@ import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon } from "./Icons.js";
+import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import { flattenPrompts } from "../utils/prompts.js";
 
@@ -70,7 +70,7 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
 }
 
 /**
- * PromptCollapseToggle - Chevron button to show/hide the chat input area
+ * PromptCollapseToggle - Chat-bubble button to show/hide the chat input area
  * while an MCP UI prompt panel is active.
  */
 function PromptCollapseToggle({ collapsed, onToggle }) {
@@ -81,19 +81,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
       class="btn btn-ghost btn-square btn-sm"
       title=${collapsed ? "Show prompt area" : "Hide prompt area"}
     >
-      <svg
-        class="w-4 h-4 transition-transform ${collapsed ? "" : "rotate-180"}"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M19 9l-7 7-7-7"
-        />
-      </svg>
+      <${ChatBubbleIcon} className="w-4 h-4" />
     </button>
   `;
 }

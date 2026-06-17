@@ -435,6 +435,7 @@ type beadsUpdateRequest struct {
 	ID          string  `json:"id"`
 	Description *string `json:"description,omitempty"`
 	Title       *string `json:"title,omitempty"`
+	Type        *string `json:"type,omitempty"`
 	Priority    *int    `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
 	Assignee    *string `json:"assignee,omitempty"` // pointer so an empty string (clear assignee) is distinguishable from absent
 	Notes       *string `json:"notes,omitempty"`    // pointer so an empty string (clear notes) is distinguishable from absent
@@ -472,8 +473,8 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	if req.Description == nil && req.Title == nil && req.Priority == nil && req.Assignee == nil && req.Notes == nil {
-		http.Error(w, "title, description, priority, assignee or notes is required", http.StatusBadRequest)
+	if req.Description == nil && req.Title == nil && req.Type == nil && req.Priority == nil && req.Assignee == nil && req.Notes == nil {
+		http.Error(w, "title, description, type, priority, assignee or notes is required", http.StatusBadRequest)
 		return
 	}
 	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
@@ -492,6 +493,7 @@ func (s *Server) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 	if err := s.beadsClient().Update(r.Context(), req.WorkingDir, beads.UpdateParams{
 		ID:          req.ID,
 		Title:       req.Title,
+		Type:        req.Type,
 		Description: req.Description,
 		Priority:    req.Priority,
 		Assignee:    req.Assignee,

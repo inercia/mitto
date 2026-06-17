@@ -49,6 +49,7 @@ type CreateParams struct {
 type UpdateParams struct {
 	ID          string
 	Title       *string
+	Type        *string
 	Description *string
 	Priority    *int
 	Assignee    *string

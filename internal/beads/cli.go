@@ -186,6 +186,9 @@ func (c *cliClient) Update(ctx context.Context, dir string, p UpdateParams) erro
 	if p.Title != nil {
 		args = append(args, "--title", *p.Title)
 	}
+	if p.Type != nil {
+		args = append(args, "--type", *p.Type)
+	}
 	if p.Description != nil {
 		args = append(args, "-d", *p.Description)
 		if *p.Description == "" {
