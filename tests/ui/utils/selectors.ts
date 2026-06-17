@@ -102,6 +102,15 @@ export const selectors = {
   // Message list — error bubble and retry button
   errorMessageBubble: '.alert.alert-error',
   retryButton: 'button[title="Retry — resend the last prompt"]',
+
+  // Copy as Markdown
+  // Per-message hover-reveal copy button (present on both user and agent bubbles)
+  copyMessageMarkdown: '[data-testid="copy-message-markdown"]',
+  // Header three-dot button that opens the conversation actions menu
+  headerConversationMenu: '[data-testid="header-conversation-menu"]',
+  // Fixed-position daisyUI context menu rendered by the ContextMenu component
+  // (shared by the conversation header menu and the sidebar row menu).
+  contextMenu: '.menu.fixed.z-50.shadow-xl',
 } as const;
 
 /**

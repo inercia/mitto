@@ -29,6 +29,8 @@ import {
   getPendingPromptsForSession,
   cleanupExpiredPrompts,
   getArchiveReasonText,
+  conversationToMarkdown,
+  copyToClipboard,
 } from "./lib.js";
 
 // Import session tree utilities
@@ -1733,6 +1735,16 @@ function App() {
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 
+  const handleCopyConversation = useCallback(async () => {
+    const md = conversationToMarkdown(messages);
+    const ok = await copyToClipboard(md);
+    if (ok) {
+      showToast({ style: "success", title: "Conversation copied as Markdown", duration: 3000 });
+    } else {
+      showToast({ style: "error", title: "Failed to copy conversation", duration: 3000 });
+    }
+  }, [messages, showToast]);
+
   const {
     contextMenu: headerMenu,
     contextMenuItems: headerMenuItems,
@@ -1753,6 +1765,7 @@ function App() {
     onMakeNonPeriodic: handleMakeNonPeriodic,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
+    onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
   });
 
   return html`

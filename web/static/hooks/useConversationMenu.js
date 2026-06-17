@@ -16,6 +16,7 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   TrashIcon,
+  CopyIcon,
   getPromptIconOrDefault,
 } from "../components/Icons.js";
 
@@ -34,6 +35,7 @@ export function useConversationMenu({
   onMakeNonPeriodic,
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
+  onCopyConversation,         // optional: (session) => void — shows "Copy as Markdown" item
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -119,6 +121,16 @@ export function useConversationMenu({
         icon: html`<${EditIcon} />`,
         onClick: () => onRename && onRename(session),
       },
+      // "Copy as Markdown" — only shown when caller provides the callback
+      ...(onCopyConversation
+        ? [
+            {
+              label: "Copy as Markdown",
+              icon: html`<${CopyIcon} />`,
+              onClick: () => onCopyConversation(session),
+            },
+          ]
+        : []),
       // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
       ...(!isPeriodicEnabled && !isSpawned && !isArchived
         ? [
@@ -179,6 +191,7 @@ export function useConversationMenu({
     archiveBlockedReason,
     onArchive,
     onDelete,
+    onCopyConversation,
   ]);
 
   return {

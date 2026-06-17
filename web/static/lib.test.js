@@ -60,6 +60,9 @@ import {
   formatTimeAgo,
   parseToolTitlePaths,
   getArchiveReasonText,
+  htmlToMarkdown,
+  messageToMarkdown,
+  conversationToMarkdown,
 } from "./lib.js";
 
 // =============================================================================
@@ -5154,5 +5157,236 @@ describe("getArchiveReasonText", () => {
 
   test("returns default for undefined reason", () => {
     expect(getArchiveReasonText(undefined, null)).toBe("Archived");
+  });
+});
+
+// =============================================================================
+// htmlToMarkdown Tests
+// =============================================================================
+
+describe("htmlToMarkdown", () => {
+  test("returns empty string for empty input", () => {
+    expect(htmlToMarkdown("")).toBe("");
+    expect(htmlToMarkdown(null)).toBe("");
+  });
+
+  test("headings h1 through h6", () => {
+    expect(htmlToMarkdown("<h1>Title</h1>")).toBe("# Title");
+    expect(htmlToMarkdown("<h2>Sub</h2>")).toBe("## Sub");
+    expect(htmlToMarkdown("<h3>Third</h3>")).toBe("### Third");
+    expect(htmlToMarkdown("<h4>Four</h4>")).toBe("#### Four");
+    expect(htmlToMarkdown("<h5>Five</h5>")).toBe("##### Five");
+    expect(htmlToMarkdown("<h6>Six</h6>")).toBe("###### Six");
+  });
+
+  test("bold and italic", () => {
+    expect(htmlToMarkdown("<strong>bold</strong>")).toBe("**bold**");
+    expect(htmlToMarkdown("<b>bold</b>")).toBe("**bold**");
+    expect(htmlToMarkdown("<em>italic</em>")).toBe("*italic*");
+    expect(htmlToMarkdown("<i>italic</i>")).toBe("*italic*");
+  });
+
+  test("strikethrough", () => {
+    expect(htmlToMarkdown("<del>struck</del>")).toBe("~~struck~~");
+    expect(htmlToMarkdown("<s>struck</s>")).toBe("~~struck~~");
+  });
+
+  test("inline code", () => {
+    expect(htmlToMarkdown("<code>foo()</code>")).toBe("`foo()`");
+  });
+
+  test("fenced code block without language", () => {
+    const result = htmlToMarkdown("<pre><code>const x = 1;</code></pre>");
+    expect(result).toBe("```\nconst x = 1;\n```");
+  });
+
+  test("fenced code block with language class", () => {
+    const result = htmlToMarkdown('<pre><code class="language-javascript">const x = 1;</code></pre>');
+    expect(result).toBe("```javascript\nconst x = 1;\n```");
+  });
+
+  test("fenced code block preserves content verbatim (no whitespace collapse)", () => {
+    const result = htmlToMarkdown("<pre><code>line1\n  line2\nline3</code></pre>");
+    expect(result).toBe("```\nline1\n  line2\nline3\n```");
+  });
+
+  test("link", () => {
+    expect(htmlToMarkdown('<a href="https://example.com">Click</a>')).toBe("[Click](https://example.com)");
+  });
+
+  test("unordered list", () => {
+    const result = htmlToMarkdown("<ul><li>Alpha</li><li>Beta</li></ul>");
+    expect(result).toBe("- Alpha\n- Beta");
+  });
+
+  test("ordered list", () => {
+    const result = htmlToMarkdown("<ol><li>First</li><li>Second</li></ol>");
+    expect(result).toBe("1. First\n2. Second");
+  });
+
+  test("nested unordered list", () => {
+    const result = htmlToMarkdown("<ul><li>Top<ul><li>Nested</li></ul></li></ul>");
+    expect(result).toContain("- Top");
+    expect(result).toContain("  - Nested");
+  });
+
+  test("blockquote", () => {
+    const result = htmlToMarkdown("<blockquote><p>Quoted text</p></blockquote>");
+    expect(result).toContain("> Quoted text");
+  });
+
+  test("horizontal rule", () => {
+    expect(htmlToMarkdown("<hr/>")).toBe("---");
+  });
+
+  test("paragraph", () => {
+    const result = htmlToMarkdown("<p>Hello world</p>");
+    expect(result).toBe("Hello world");
+  });
+
+  test("GFM table", () => {
+    const html = `
+      <table>
+        <thead><tr><th>Name</th><th>Age</th></tr></thead>
+        <tbody>
+          <tr><td>Alice</td><td>30</td></tr>
+          <tr><td>Bob</td><td>25</td></tr>
+        </tbody>
+      </table>`;
+    const result = htmlToMarkdown(html);
+    expect(result).toContain("| Name | Age |");
+    expect(result).toContain("| --- | --- |");
+    expect(result).toContain("| Alice | 30 |");
+    expect(result).toContain("| Bob | 25 |");
+  });
+
+  test("table pipes in cell content are escaped", () => {
+    const html = "<table><thead><tr><th>A|B</th></tr></thead></table>";
+    const result = htmlToMarkdown(html);
+    expect(result).toContain("A\\|B");
+  });
+
+  test("multiple blank lines are collapsed to max two", () => {
+    const result = htmlToMarkdown("<p>A</p><p>B</p><p>C</p>");
+    expect(result).not.toMatch(/\n{3,}/);
+  });
+
+  test("unknown elements pass through their children", () => {
+    const result = htmlToMarkdown("<div><span>hello</span></div>");
+    expect(result).toBe("hello");
+  });
+
+  test("br becomes newline", () => {
+    const result = htmlToMarkdown("line1<br/>line2");
+    expect(result).toContain("line1\nline2");
+  });
+});
+
+// =============================================================================
+// messageToMarkdown Tests
+// =============================================================================
+
+describe("messageToMarkdown", () => {
+  test("returns empty string for null/undefined", () => {
+    expect(messageToMarkdown(null)).toBe("");
+    expect(messageToMarkdown(undefined)).toBe("");
+  });
+
+  test("user message returns raw text", () => {
+    const msg = { role: ROLE_USER, text: "Hello **world**" };
+    expect(messageToMarkdown(msg)).toBe("Hello **world**");
+  });
+
+  test("user message with no text returns empty string", () => {
+    expect(messageToMarkdown({ role: ROLE_USER })).toBe("");
+  });
+
+  test("agent message converts HTML to markdown", () => {
+    const msg = { role: ROLE_AGENT, html: "<p><strong>Bold</strong></p>" };
+    expect(messageToMarkdown(msg)).toBe("**Bold**");
+  });
+
+  test("agent message with no html returns empty string", () => {
+    expect(messageToMarkdown({ role: ROLE_AGENT })).toBe("");
+  });
+
+  test("thought message returns empty string", () => {
+    expect(messageToMarkdown({ role: ROLE_THOUGHT, text: "thinking..." })).toBe("");
+  });
+
+  test("tool message returns empty string", () => {
+    expect(messageToMarkdown({ role: ROLE_TOOL, title: "Edit file.js" })).toBe("");
+  });
+
+  test("error message returns empty string", () => {
+    expect(messageToMarkdown({ role: ROLE_ERROR, text: "oops" })).toBe("");
+  });
+});
+
+// =============================================================================
+// conversationToMarkdown Tests
+// =============================================================================
+
+describe("conversationToMarkdown", () => {
+  test("returns empty string for empty/null input", () => {
+    expect(conversationToMarkdown([])).toBe("");
+    expect(conversationToMarkdown(null)).toBe("");
+  });
+
+  test("single user message", () => {
+    const msgs = [{ role: ROLE_USER, text: "Hi there" }];
+    const result = conversationToMarkdown(msgs);
+    expect(result).toContain("## 🧑 User");
+    expect(result).toContain("Hi there");
+  });
+
+  test("single agent message", () => {
+    const msgs = [{ role: ROLE_AGENT, html: "<p>Hello!</p>" }];
+    const result = conversationToMarkdown(msgs);
+    expect(result).toContain("## 🤖 Assistant");
+    expect(result).toContain("Hello!");
+  });
+
+  test("alternating turns are separated by ---", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Question" },
+      { role: ROLE_AGENT, html: "<p>Answer</p>" },
+    ];
+    const result = conversationToMarkdown(msgs);
+    expect(result).toContain("---");
+    const parts = result.split("---");
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toContain("Question");
+    expect(parts[1]).toContain("Answer");
+  });
+
+  test("non-copyable messages (tool, thought, error) are skipped", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Start" },
+      { role: ROLE_TOOL, title: "Edit file.js" },
+      { role: ROLE_THOUGHT, text: "thinking..." },
+      { role: ROLE_AGENT, html: "<p>Done</p>" },
+    ];
+    const result = conversationToMarkdown(msgs);
+    // Should only have user + agent sections
+    expect((result.match(/---/g) || []).length).toBe(1);
+    expect(result).toContain("## 🧑 User");
+    expect(result).toContain("## 🤖 Assistant");
+    expect(result).not.toContain("Edit file.js");
+    expect(result).not.toContain("thinking...");
+  });
+
+  test("messages are iterated in order", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "First" },
+      { role: ROLE_AGENT, html: "<p>Second</p>" },
+      { role: ROLE_USER, text: "Third" },
+    ];
+    const result = conversationToMarkdown(msgs);
+    const firstIdx = result.indexOf("First");
+    const secondIdx = result.indexOf("Second");
+    const thirdIdx = result.indexOf("Third");
+    expect(firstIdx).toBeLessThan(secondIdx);
+    expect(secondIdx).toBeLessThan(thirdIdx);
   });
 });

@@ -1549,6 +1549,193 @@ export function formatTimeAgo(date) {
 }
 
 // =============================================================================
+// Copy as Markdown
+// =============================================================================
+
+/** @param {Node} node @param {{ inPre: boolean, listDepth: number }} ctx @returns {string} */
+function _serializeNode(node, ctx) {
+  if (node.nodeType === 3) { // TEXT_NODE
+    const text = node.textContent;
+    return ctx.inPre ? text : text.replace(/[\n\r\t ]+/g, " ");
+  }
+  if (node.nodeType !== 1) return ""; // skip non-element nodes
+
+  const tag = node.tagName.toLowerCase();
+
+  // Pre: preserve whitespace; detect fenced code language from inner <code class>
+  if (tag === "pre") {
+    const codeEl = node.querySelector("code");
+    const lang = codeEl
+      ? (codeEl.className.match(/language-(\S+)/) || [])[1] || ""
+      : "";
+    const content = (codeEl ? codeEl.textContent : node.textContent).replace(/\n$/, "");
+    return "\n\n```" + lang + "\n" + content + "\n```\n\n";
+  }
+
+  // Inline code (pre handled above, so any code here is inline)
+  if (tag === "code") return "`" + node.textContent + "`";
+
+  const HEADINGS = { h1: "#", h2: "##", h3: "###", h4: "####", h5: "#####", h6: "######" };
+  if (HEADINGS[tag]) {
+    return "\n\n" + HEADINGS[tag] + " " + _serializeChildren(node, ctx).trim() + "\n\n";
+  }
+
+  switch (tag) {
+    case "p": return "\n\n" + _serializeChildren(node, ctx).trim() + "\n\n";
+    case "strong":
+    case "b": return "**" + _serializeChildren(node, ctx) + "**";
+    case "em":
+    case "i": return "*" + _serializeChildren(node, ctx) + "*";
+    case "del":
+    case "s": return "~~" + _serializeChildren(node, ctx) + "~~";
+    case "a": return "[" + _serializeChildren(node, ctx) + "](" + (node.getAttribute("href") || "") + ")";
+    case "br": return "\n";
+    case "hr": return "\n\n---\n\n";
+    case "ul":
+    case "ol": {
+      const ordered = tag === "ol";
+      const depth = ctx.listDepth;
+      const indent = "  ".repeat(depth);
+      let idx = 0;
+      const lines = Array.from(node.childNodes)
+        .filter((c) => c.nodeType === 1 && c.tagName.toLowerCase() === "li")
+        .map((li) => {
+          const bullet = ordered ? ++idx + "." : "-";
+          return indent + bullet + " " + _serializeLi(li, { ...ctx, listDepth: depth + 1 });
+        });
+      return "\n\n" + lines.join("\n") + "\n\n";
+    }
+    case "blockquote": {
+      const inner = _serializeChildren(node, ctx).trim();
+      return "\n\n" + inner.split("\n").map((l) => "> " + l).join("\n") + "\n\n";
+    }
+    case "table": return "\n\n" + _serializeTable(node) + "\n\n";
+    default: return _serializeChildren(node, ctx);
+  }
+}
+
+function _serializeChildren(node, ctx) {
+  return Array.from(node.childNodes).map((c) => _serializeNode(c, ctx)).join("");
+}
+
+function _serializeLi(li, ctx) {
+  let inline = "";
+  let nested = "";
+  for (const child of li.childNodes) {
+    const t = child.tagName?.toLowerCase();
+    if (t === "ul" || t === "ol") {
+      nested += _serializeNode(child, ctx);
+    } else {
+      inline += _serializeNode(child, ctx);
+    }
+  }
+  inline = inline.trim();
+  nested = nested.replace(/^\n\n/, "\n").replace(/\n\n$/, "");
+  return inline + (nested ? nested : "");
+}
+
+function _serializeTable(table) {
+  const thead = table.querySelector("thead");
+  const getCells = (row, sel) =>
+    Array.from(row.querySelectorAll(sel)).map((c) => c.textContent.replace(/\|/g, "\\|").trim());
+
+  let headers = [];
+  if (thead) {
+    const row = thead.querySelector("tr");
+    if (row) headers = getCells(row, "th, td");
+  }
+
+  const bodyRows = [];
+  for (const row of table.querySelectorAll("tr")) {
+    if (thead && thead.contains(row)) continue;
+    bodyRows.push(getCells(row, "td, th"));
+  }
+
+  if (!headers.length && bodyRows.length) headers = bodyRows.shift();
+  if (!headers.length) return "";
+
+  return [
+    "| " + headers.join(" | ") + " |",
+    "| " + headers.map(() => "---").join(" | ") + " |",
+    ...bodyRows.map((cells) => "| " + cells.join(" | ") + " |"),
+  ].join("\n");
+}
+
+/**
+ * Converts an HTML string to Markdown.
+ * Handles headings, paragraphs, bold/italic/del, inline code, fenced code
+ * blocks (with language), links, lists, blockquotes, hr, and GFM tables.
+ * @param {string} html
+ * @returns {string}
+ */
+export function htmlToMarkdown(html) {
+  if (!html || typeof html !== "string") return "";
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const raw = _serializeNode(div, { inPre: false, listDepth: 0 });
+  return raw.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * Returns the Markdown for a single message.
+ * Agent messages are converted from HTML; user messages use raw text.
+ * Non-copyable roles (thought, tool, error, system) return empty string.
+ * @param {Object} message
+ * @returns {string}
+ */
+export function messageToMarkdown(message) {
+  if (!message) return "";
+  if (message.role === ROLE_USER) return message.text || "";
+  if (message.role === ROLE_AGENT) return htmlToMarkdown(message.html || "");
+  return "";
+}
+
+/**
+ * Builds a full-conversation Markdown document from an array of messages.
+ * Each copyable turn gets a role header; turns are separated by `---`.
+ * @param {Array} messages
+ * @returns {string}
+ */
+export function conversationToMarkdown(messages) {
+  if (!messages || messages.length === 0) return "";
+  const parts = [];
+  for (const msg of messages) {
+    const md = messageToMarkdown(msg);
+    if (!md) continue;
+    const header = msg.role === ROLE_USER ? "## 🧑 User" : "## 🤖 Assistant";
+    parts.push(header + "\n\n" + md);
+  }
+  return parts.join("\n\n---\n\n");
+}
+
+/**
+ * Copies text to the clipboard. Returns true on success, false on failure.
+ * Falls back to execCommand('copy') when navigator.clipboard is unavailable.
+ * @param {string} text
+ * @returns {Promise<boolean>}
+ */
+export async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+// =============================================================================
 // Archive Reason Helpers
 // =============================================================================
 

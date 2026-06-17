@@ -13,9 +13,12 @@ import {
   renderUserMarkdown,
   parseToolTitlePaths,
   linkifyUrls,
+  messageToMarkdown,
+  copyToClipboard,
 } from "../lib.js";
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
+import { CopyIcon, CheckIcon } from "./Icons.js";
 
 /**
  * Check if a thought message appears to be reporting an upstream model/API error.
@@ -374,9 +377,18 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       }
     }, [renderedHtml, useMarkdown]);
 
+    const [userCopied, setUserCopied] = useState(false);
+    const handleUserCopy = async () => {
+      const ok = await copyToClipboard(messageToMarkdown(message));
+      if (ok) {
+        setUserCopied(true);
+        setTimeout(() => setUserCopied(false), 1500);
+      }
+    };
+
     const userTimeStr = formatMessageTime(message.timestamp);
     return html`
-      <div class="message-enter flex justify-end mb-3">
+      <div class="message-enter flex justify-end mb-3 group">
         <div
           class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
         >
@@ -407,8 +419,21 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
                 class="whitespace-pre-wrap font-sans text-sm m-0"
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
-          ${userTimeStr &&
-          html`<div class="message-timestamp text-right mt-1">${userTimeStr}</div>`}
+          <div class="flex items-center justify-end gap-1 mt-1">
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+              title=${userCopied ? "Copied!" : "Copy as Markdown"}
+              aria-label="Copy as Markdown"
+              data-testid="copy-message-markdown"
+              onClick=${handleUserCopy}
+            >
+              ${userCopied
+                ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
+                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+            </button>
+            ${userTimeStr && html`<div class="message-timestamp">${userTimeStr}</div>`}
+          </div>
         </div>
       </div>
     `;
@@ -454,9 +479,18 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       }
     }, [message.html]);
 
+    const [agentCopied, setAgentCopied] = useState(false);
+    const handleAgentCopy = async () => {
+      const ok = await copyToClipboard(messageToMarkdown(message));
+      if (ok) {
+        setAgentCopied(true);
+        setTimeout(() => setAgentCopied(false), 1500);
+      }
+    };
+
     const agentTimeStr = !isStreaming ? formatMessageTime(message.timestamp) : null;
     return html`
-      <div class="message-enter flex justify-start mb-3">
+      <div class="message-enter flex justify-start mb-3 group">
         <div
           class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
         >
@@ -467,8 +501,21 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
               : ""}"
             dangerouslySetInnerHTML=${{ __html: message.html || "" }}
           />
-          ${agentTimeStr &&
-          html`<div class="message-timestamp mt-1">${agentTimeStr}</div>`}
+          <div class="flex items-center gap-1 mt-1">
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+              title=${agentCopied ? "Copied!" : "Copy as Markdown"}
+              aria-label="Copy as Markdown"
+              data-testid="copy-message-markdown"
+              onClick=${handleAgentCopy}
+            >
+              ${agentCopied
+                ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
+                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+            </button>
+            ${agentTimeStr && html`<div class="message-timestamp">${agentTimeStr}</div>`}
+          </div>
         </div>
       </div>
     `;

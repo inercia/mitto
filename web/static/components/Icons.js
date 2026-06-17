@@ -249,6 +249,28 @@ export function EditIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Clipboard/copy icon for "Copy as Markdown" affordances
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function CopyIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Checkmark icon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
