@@ -263,11 +263,11 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
       >
         <div class="space-y-4">
           <!-- Name field -->
-          <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-mitto-text-secondary">
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend text-mitto-text-secondary">
               Name
               <span class="text-mitto-danger ml-0.5">*</span>
-            </label>
+            </legend>
             <input
               ref=${nameInputRef}
               type="text"
@@ -279,14 +279,14 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               class="input input-sm w-full"
               data-testid="save-prompt-name-input"
             />
-          </div>
+          </fieldset>
 
           <!-- Description field -->
-          <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-mitto-text-secondary">
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend text-mitto-text-secondary">
               Description
               <span class="text-mitto-text-muted text-xs ml-1">(optional)</span>
-            </label>
+            </legend>
             <textarea
               value=${description}
               onInput=${(e) => setDescription(e.target.value)}
@@ -297,33 +297,31 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
               class="textarea textarea-sm w-full resize-none disabled:opacity-50"
               data-testid="save-prompt-description-input"
             />
-          </div>
+          </fieldset>
 
-          <!-- Filename field with optional Browse button -->
-          <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-mitto-text-secondary">
+          <!-- Filename field -->
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend text-mitto-text-secondary">
               Filename
-            </label>
-            <div class="flex gap-2">
-              <input
-                type="text"
-                value=${filename}
-                onInput=${handleFilenameChange}
-                onKeyDown=${handleKeyDown}
-                placeholder="my-prompt.md"
-                disabled=${isSaving}
-                class="input input-sm flex-1"
-                data-testid="save-prompt-filename-input"
-              />
-            </div>
-          </div>
+            </legend>
+            <input
+              type="text"
+              value=${filename}
+              onInput=${handleFilenameChange}
+              onKeyDown=${handleKeyDown}
+              placeholder="my-prompt.md"
+              disabled=${isSaving}
+              class="input input-sm w-full"
+              data-testid="save-prompt-filename-input"
+            />
+          </fieldset>
 
           <!-- Save directory with optional Browse button -->
-          <div class="space-y-1.5">
-            <label class="block text-sm font-medium text-mitto-text-secondary">
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend text-mitto-text-secondary">
               Save to
-            </label>
-            <div class="flex gap-2">
+            </legend>
+            <div class="join w-full">
               <input
                 type="text"
                 value=${directory}
@@ -331,7 +329,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 onKeyDown=${handleKeyDown}
                 placeholder="/path/to/save/directory"
                 disabled=${isSaving}
-                class="input input-sm flex-1 font-mono text-xs"
+                class="input input-sm join-item flex-1 font-mono text-xs"
                 data-testid="save-prompt-directory-input"
               />
               ${hasNativeFolderPicker() &&
@@ -340,7 +338,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                   type="button"
                   onClick=${handleBrowse}
                   disabled=${isSaving}
-                  class="btn btn-sm whitespace-nowrap"
+                  class="btn btn-sm join-item whitespace-nowrap"
                   data-testid="save-prompt-browse-btn"
                 >
                   Browse…
@@ -356,7 +354,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 ${fullPath}
               </p>
             `}
-          </div>
+          </fieldset>
 
           <!-- Error message -->
           ${error &&
