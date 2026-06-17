@@ -1021,6 +1021,56 @@ export function setBeadsGrouping(state) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Beads sort preference (field + direction)
+// ---------------------------------------------------------------------------
+// Persists the field the Beads list is sorted by and the direction. Like the
+// other Beads view preferences this is localStorage-only (no server sync) and
+// survives a full reload. The default matches the most useful first view:
+// newest issues first (creation date, descending).
+
+const BEADS_SORT_KEY = "mitto_beads_sort";
+const BEADS_SORT_FIELDS = ["created", "updated", "priority"];
+const BEADS_SORT_DIRECTIONS = ["asc", "desc"];
+const DEFAULT_BEADS_SORT = { field: "created", direction: "desc" };
+
+/**
+ * Get the persisted Beads sort preference from localStorage.
+ * @returns {{field: 'created'|'updated'|'priority', direction: 'asc'|'desc'}}
+ *          Sort state, falling back to defaults for any missing/invalid field.
+ */
+export function getBeadsSort() {
+  try {
+    const value = localStorage.getItem(BEADS_SORT_KEY);
+    if (value) {
+      const parsed = JSON.parse(value);
+      return {
+        field: BEADS_SORT_FIELDS.includes(parsed.field) ? parsed.field : DEFAULT_BEADS_SORT.field,
+        direction: BEADS_SORT_DIRECTIONS.includes(parsed.direction) ? parsed.direction : DEFAULT_BEADS_SORT.direction,
+      };
+    }
+  } catch (e) {
+    console.warn("Failed to read Beads sort from localStorage:", e);
+  }
+  return { ...DEFAULT_BEADS_SORT };
+}
+
+/**
+ * Persist the Beads sort preference to localStorage.
+ * @param {{field?: string, direction?: string}} sort - Sort state to save.
+ */
+export function setBeadsSort(sort) {
+  try {
+    const toStore = {
+      field: BEADS_SORT_FIELDS.includes(sort?.field) ? sort.field : DEFAULT_BEADS_SORT.field,
+      direction: BEADS_SORT_DIRECTIONS.includes(sort?.direction) ? sort.direction : DEFAULT_BEADS_SORT.direction,
+    };
+    localStorage.setItem(BEADS_SORT_KEY, JSON.stringify(toStore));
+  } catch (e) {
+    console.warn("Failed to save Beads sort to localStorage:", e);
+  }
+}
+
 /**
  * Get the current conversation density mode from localStorage.
  * @returns {'condensed' | 'comfortable'} The current density mode

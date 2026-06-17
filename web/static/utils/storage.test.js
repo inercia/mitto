@@ -13,6 +13,8 @@ import {
   setBeadsFilters,
   getBeadsGrouping,
   setBeadsGrouping,
+  getBeadsSort,
+  setBeadsSort,
   getCategoryFilter,
   setCategoryFilter,
   DEFAULT_CATEGORY_FILTER,
@@ -352,6 +354,56 @@ describe("setBeadsGrouping", () => {
     const state = { enabled: true, collapsedEpics: ["mitto-abc", "mitto-def"] };
     setBeadsGrouping(state);
     expect(getBeadsGrouping()).toEqual(state);
+  });
+});
+
+// =============================================================================
+// getBeadsSort / setBeadsSort Tests
+// =============================================================================
+
+const BEADS_SORT_KEY = "mitto_beads_sort";
+
+describe("getBeadsSort", () => {
+  test("returns newest-first default when localStorage empty", () => {
+    expect(getBeadsSort()).toEqual({ field: "created", direction: "desc" });
+  });
+
+  test("returns stored field and direction", () => {
+    mockStore[BEADS_SORT_KEY] = JSON.stringify({ field: "priority", direction: "asc" });
+    expect(getBeadsSort()).toEqual({ field: "priority", direction: "asc" });
+  });
+
+  test("falls back to defaults for invalid field/direction", () => {
+    mockStore[BEADS_SORT_KEY] = JSON.stringify({ field: "bogus", direction: "sideways" });
+    expect(getBeadsSort()).toEqual({ field: "created", direction: "desc" });
+  });
+
+  test("invalid JSON → returns default", () => {
+    mockStore[BEADS_SORT_KEY] = "not-json{";
+    expect(getBeadsSort()).toEqual({ field: "created", direction: "desc" });
+  });
+});
+
+describe("setBeadsSort", () => {
+  test("persists sort state to localStorage", () => {
+    setBeadsSort({ field: "updated", direction: "asc" });
+    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({ field: "updated", direction: "asc" });
+  });
+
+  test("normalizes invalid values to defaults when saving", () => {
+    setBeadsSort({ field: "nope", direction: "nope" });
+    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({ field: "created", direction: "desc" });
+  });
+
+  test("uses all defaults when given no argument", () => {
+    setBeadsSort();
+    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({ field: "created", direction: "desc" });
+  });
+
+  test("round-trips through getBeadsSort", () => {
+    const state = { field: "priority", direction: "desc" };
+    setBeadsSort(state);
+    expect(getBeadsSort()).toEqual(state);
   });
 });
 

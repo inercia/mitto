@@ -3,9 +3,9 @@
 
 const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
 
-import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping } from "../utils/index.js";
+import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping, getBeadsSort, setBeadsSort } from "../utils/index.js";
 import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, getPromptIconOrDefault } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, getPromptIconOrDefault } from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import { ContextMenu } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -108,6 +108,36 @@ export function statusBadge(s) {
 
 function typeBadge(t) {
   return badge(t || "task", TYPE_COLORS[t] ?? TYPE_COLORS.task);
+}
+
+// Sort menu options. `field` is the persisted key; `key` is the issue property
+// holding the value to compare on (priority is numeric, the dates are RFC3339
+// strings).
+const SORT_FIELD_OPTIONS = [
+  { field: "created", label: "Creation date", key: "created_at" },
+  { field: "updated", label: "Modification date", key: "updated_at" },
+  { field: "priority", label: "Priority", key: "priority" },
+];
+
+const SORT_FIELD_LABELS = Object.fromEntries(SORT_FIELD_OPTIONS.map(o => [o.field, o.label]));
+
+// Compare two issues for the chosen sort field and direction. Priority is a
+// number (0 = highest) so ascending = most important first; the dates compare
+// by parsed timestamp. A stable id tiebreaker keeps ordering deterministic and
+// is intentionally independent of direction.
+function cmpBySort(a, b, sort) {
+  const dir = sort.direction === "asc" ? 1 : -1;
+  let primary = 0;
+  if (sort.field === "priority") {
+    const pa = typeof a.priority === "number" ? a.priority : 3;
+    const pb = typeof b.priority === "number" ? b.priority : 3;
+    primary = pa - pb;
+  } else {
+    const key = sort.field === "updated" ? "updated_at" : "created_at";
+    primary = (Date.parse(a?.[key] || "") || 0) - (Date.parse(b?.[key] || "") || 0);
+  }
+  if (primary !== 0) return primary * dir;
+  return (a.id || "").localeCompare(b.id || "");
 }
 
 function renderMarkdown(text) {
@@ -929,7 +959,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         onClick=${() => improveDescriptionText(text, setText)}
         onMouseDown=${(e) => e.preventDefault()}
         disabled=${disabled || improvingDesc || !text || !text.trim()}
-        class="chat-input-action ${improvingDesc ? "loading" : ""}"
+        class="chat-input-action ${improvingDesc ? "improving" : ""}"
         title="Improve description with AI"
       >
         ${improvingDesc
@@ -1744,6 +1774,29 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setBeadsGrouping({ enabled: grouping, collapsedEpics: [...collapsedEpics] });
   }, [grouping, collapsedEpics]);
 
+  // Sort preference (field + direction), persisted to localStorage. Defaults to
+  // newest-first by creation date. `showSortMenu` drives the toolbar dropdown.
+  const [sort, setSort] = useState(() => getBeadsSort());
+  const [showSortMenu, setShowSortMenu] = useState(false);
+  const sortMenuRef = useRef(null);
+
+  // Write-through: persist the sort preference whenever it changes.
+  useEffect(() => {
+    setBeadsSort(sort);
+  }, [sort]);
+
+  // Close the sort menu on outside click while it is open.
+  useEffect(() => {
+    if (!showSortMenu) return undefined;
+    const onDocClick = (e) => {
+      if (sortMenuRef.current && !sortMenuRef.current.contains(e.target)) {
+        setShowSortMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showSortMenu]);
+
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
   // in the "Prompts" submenu. Actions are not wired to behavior yet.
@@ -1888,17 +1941,26 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // as soon as we have the issue: instantly from the already-loaded list when
   // present, otherwise via a single `/api/beads/show` fetch for just that issue
   // (the list keeps loading in the background to back the view and the
-  // dependency picker). The nonce is consumed synchronously so the effect does
-  // not re-fire — and re-fetch — on every background list refresh.
+  // dependency picker).
+  //
+  // The nonce is consumed only once a selection actually happens (fast-path hit
+  // or a successful cold fetch) — NOT synchronously at the top. `issues` is a
+  // dependency, so when the background list resolves it re-runs this effect and
+  // its cleanup cancels any in-flight cold fetch. If the nonce were consumed up
+  // front, that re-run would early-return on the already-applied nonce while the
+  // cancelled fetch never sets the panel — leaving the user on the bare list
+  // (the symptom this guards against, which only surfaces when the list resolves
+  // before the show fetch). Deferring consumption lets the list-first re-run
+  // fall through to the fast path and select the now-loaded row instead.
   const appliedSelectNonceRef = useRef(0);
   useEffect(() => {
     if (!initialSelectedIssueId || !workingDir) return;
     if (initialSelectNonce === appliedSelectNonceRef.current) return;
-    appliedSelectNonceRef.current = initialSelectNonce;
 
     // Fast path: the list is already loaded and carries this issue's row.
     const existing = issues.find((i) => i.id === initialSelectedIssueId);
     if (existing) {
+      appliedSelectNonceRef.current = initialSelectNonce;
       setIsCreating(false);
       setSelectedIssue(existing);
       openedFromConversationRef.current = true;
@@ -1916,6 +1978,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         if (cancelled || !res.ok || respData.error) return;
         const issueObj = Array.isArray(respData) ? respData[0] : respData;
         if (issueObj && issueObj.id) {
+          appliedSelectNonceRef.current = initialSelectNonce;
           setIsCreating(false);
           setSelectedIssue(issueObj);
           openedFromConversationRef.current = true;
@@ -2034,7 +2097,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   }, [issues]);
 
   const filtered = useMemo(() => {
-    return issues.filter(issue => {
+    const out = issues.filter(issue => {
       // Hide an issue only when its status maps to a toggle that is currently
       // off. Statuses without a toggle (e.g. blocked, deferred) are unaffected.
       if (statusToggles[issue.status] === false) return false;
@@ -2047,7 +2110,11 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       }
       return true;
     });
-  }, [issues, statusToggles, typeFilter, search]);
+    // Flat list ordering follows the user's sort preference. The grouped view
+    // re-sorts within groupedItems, so this ordering only drives the flat path.
+    out.sort((a, b) => cmpBySort(a, b, sort));
+    return out;
+  }, [issues, statusToggles, typeFilter, search, sort]);
 
   const allTypes = useMemo(() => [...new Set(issues.map(i => i.issue_type).filter(Boolean))], [issues]);
 
@@ -2126,26 +2193,24 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       }
     }
 
-    function cmpIssue(a, b) {
-      const pa = typeof a.priority === "number" ? a.priority : 3;
-      const pb = typeof b.priority === "number" ? b.priority : 3;
-      if (pa !== pb) return pa - pb;
-      return (a.id || "").localeCompare(b.id || "");
-    }
+    // Children inside each epic follow the active sort preference.
+    for (const [, group] of epicGroups) group.children.sort((a, b) => cmpBySort(a, b, sort));
 
-    for (const [, group] of epicGroups) group.children.sort(cmpIssue);
-
-    // Top-level: epics and orphans sorted together by priority then id.
+    // Top-level: epics and orphans sorted together. Each row sorts by its own
+    // representative issue — an epic by the epic's own attributes, an orphan by
+    // its own — so the active sort field/direction applies throughout. A ghost
+    // epic (filtered out but with surviving children) has no representative, so
+    // it falls back to a low-priority, undated placeholder.
     const topLevel = [];
     for (const id of epicOrderIds) topLevel.push({ type: "epic", group: epicGroups.get(id) });
     for (const issue of orphans) topLevel.push({ type: "orphan", issue });
     topLevel.sort((a, b) => {
       const ia = a.type === "epic" ? (a.group.epic || { priority: 3, id: "" }) : a.issue;
       const ib = b.type === "epic" ? (b.group.epic || { priority: 3, id: "" }) : b.issue;
-      return cmpIssue(ia, ib);
+      return cmpBySort(ia, ib, sort);
     });
     return topLevel;
-  }, [filtered, issues, childCountById, grouping]);
+  }, [filtered, issues, childCountById, grouping, sort]);
 
   // Every descendant (children, grandchildren, ...) of the issue queued for
   // deletion, each tagged with its depth below the target. Used to offer the
@@ -2443,9 +2508,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const ctxIsClosed = ctxIssue && ctxIssue.status === "closed";
   const ctxIsDeferred = ctxIssue && ctxIssue.status === "deferred";
 
-  // "Depends On" / "Blocks" submenus list every other issue. Picking one creates
-  // a "blocks" edge in the chosen direction via handleAddDependencyEdge.
-  const otherIssues = (issues || []).filter((i) => ctxIssue && i.id !== ctxIssue.id);
+  // "Depends On" / "Blocks" submenus list every other open/in-progress issue.
+  // Picking one creates a "blocks" edge in the chosen direction via
+  // handleAddDependencyEdge. Closed/deferred issues are excluded as dependency targets.
+  const otherIssues = (issues || []).filter(
+    (i) => ctxIssue && i.id !== ctxIssue.id && (i.status === "open" || i.status === "in_progress"),
+  );
   const issueSubmenu = (direction) =>
     otherIssues.map((i) => ({
       label: `${i.id} · ${i.title}`,
@@ -2637,6 +2705,57 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           onInput=${e => setSearch(e.target.value)}
           class="input input-xs flex-1 min-w-0"
         />
+        <div class="relative shrink-0" ref=${sortMenuRef}>
+          <button
+            type="button"
+            onClick=${() => setShowSortMenu(o => !o)}
+            aria-haspopup="true"
+            aria-expanded=${showSortMenu ? "true" : "false"}
+            class="btn btn-xs gap-1 ${showSortMenu ? "btn-active" : "btn-ghost"}"
+            title=${`Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`}
+            data-testid="beads-sort-button"
+          >
+            <${SortIcon} className="w-3.5 h-3.5" />
+            ${sort.direction === "asc"
+              ? html`<${ArrowUpIcon} className="w-3 h-3" />`
+              : html`<${ArrowDownIcon} className="w-3 h-3" />`}
+          </button>
+          ${showSortMenu && html`
+            <ul class="menu absolute top-full right-0 mt-2 w-52 bg-base-200 rounded-box shadow-xl z-10" data-testid="beads-sort-menu">
+              <li class="menu-title">Sort by</li>
+              ${SORT_FIELD_OPTIONS.map(opt => html`
+                <li key=${opt.field}>
+                  <button
+                    type="button"
+                    onClick=${() => setSort(s => ({ ...s, field: opt.field }))}
+                    class=${sort.field === opt.field ? "menu-active" : ""}
+                  >
+                    <span class="w-4 h-4 shrink-0">
+                      ${sort.field === opt.field ? html`<${CheckIcon} className="w-4 h-4" />` : null}
+                    </span>
+                    <span class="flex-1">${opt.label}</span>
+                  </button>
+                </li>
+              `)}
+              <li class="menu-title">Direction</li>
+              ${[{ dir: "asc", label: "Ascending", Icon: ArrowUpIcon }, { dir: "desc", label: "Descending", Icon: ArrowDownIcon }].map(d => html`
+                <li key=${d.dir}>
+                  <button
+                    type="button"
+                    onClick=${() => setSort(s => ({ ...s, direction: d.dir }))}
+                    class=${sort.direction === d.dir ? "menu-active" : ""}
+                  >
+                    <span class="w-4 h-4 shrink-0">
+                      ${sort.direction === d.dir ? html`<${CheckIcon} className="w-4 h-4" />` : null}
+                    </span>
+                    <span class="flex-1">${d.label}</span>
+                    <${d.Icon} className="w-3.5 h-3.5 opacity-60" />
+                  </button>
+                </li>
+              `)}
+            </ul>
+          `}
+        </div>
       </div>
 
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll" ref=${scrollContainerRef}>

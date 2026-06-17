@@ -47,6 +47,8 @@ export {
   setBeadsFilters,
   getBeadsGrouping,
   setBeadsGrouping,
+  getBeadsSort,
+  setBeadsSort,
   getDensity,
   setDensity,
   migrateLegacyTabStorage,
