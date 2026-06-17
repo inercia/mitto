@@ -82,7 +82,8 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }) {
             `,
           )}
       </div>
-      <div class="mt-4 pt-3 border-t border-mitto-border-1 space-y-2">
+      <div class="divider"></div>
+      <div class="space-y-2">
         <p class="text-xs text-mitto-text-muted text-center">
           On touch devices, swipe left/right to switch conversations
         </p>

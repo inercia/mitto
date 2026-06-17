@@ -194,7 +194,7 @@ export function MessageList({
                     });
                   }
                   dateSeparator = html`
-                    <div key=${"sep-" + origIdx} class="date-separator">
+                    <div key=${"sep-" + origIdx} class="divider date-separator">
                       ${label}
                     </div>
                   `;

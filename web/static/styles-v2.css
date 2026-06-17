@@ -915,22 +915,13 @@ a:hover {
   user-select: none;
 }
 
+/* daisyUI .divider provides the flex layout and the lines via its own
+   pseudo-elements; these overrides preserve the prior compact appearance. */
 .date-separator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin: 12px 16px;
   color: var(--muted);
   font-size: 11px;
   user-select: none;
-}
-
-.date-separator::before,
-.date-separator::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--border-color);
 }
 
 /* =============================================================================
