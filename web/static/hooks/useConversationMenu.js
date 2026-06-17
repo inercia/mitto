@@ -17,8 +17,8 @@ import {
   ArchiveFilledIcon,
   TrashIcon,
   CopyIcon,
-  getPromptIconOrDefault,
 } from "../components/Icons.js";
+import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
 
 export function useConversationMenu({
   session,
@@ -82,36 +82,14 @@ export function useConversationMenu({
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   const contextMenuItems = useMemo(() => {
-    // Build group submenus from prompts flagged with menus:conversation.
-    // Prompts are grouped by their `group` attribute; ungrouped prompts fall
-    // under "Other". Each group becomes a submenu listing its prompts.
-    const promptGroupItems = [];
-    if (onSendPromptToConversation && menuPrompts && menuPrompts.length > 0) {
-      const groups = new Map();
-      for (const p of menuPrompts) {
-        if (!p || !p.name) continue;
-        const groupName = (p.group && p.group.trim()) || "Other";
-        if (!groups.has(groupName)) groups.set(groupName, []);
-        groups.get(groupName).push(p);
-      }
-      for (const [groupName, prompts] of groups) {
-        promptGroupItems.push({
-          label: groupName,
-          icon: html`<${LightningIcon} />`,
-          submenu: prompts
-            .slice()
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((p) => {
-              const PromptIcon = getPromptIconOrDefault(p.icon);
-              return {
-                label: p.name,
-                icon: html`<${PromptIcon} className="w-4 h-4" />`,
-                onClick: () => onSendPromptToConversation(session, p),
-              };
-            }),
-        });
-      }
-    }
+    const promptGroupItems =
+      onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
+        ? buildPromptGroupMenuItems(
+            menuPrompts,
+            (p) => onSendPromptToConversation(session, p),
+            html`<${LightningIcon} />`,
+          )
+        : [];
 
     return [
       // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"

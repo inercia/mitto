@@ -7,7 +7,7 @@ import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBe
 import { getBasename } from "../lib.js";
 import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, getPromptIconOrDefault } from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
-import { ContextMenu } from "./ContextMenu.js";
+import { ContextMenu, buildPromptGroupMenuItems } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
@@ -232,12 +232,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // in-flight request and drives the spinner.
   const [improvingDesc, setImprovingDesc] = useState(false);
 
-  // View-mode "Prompts" dropup state. Prompts are loaded lazily the first time
-  // the dropup is opened (per panel mount) via onFetchPrompts.
-  const [showPrompts, setShowPrompts] = useState(false);
+  // Prompts loaded for the detail-panel kebab menu.
   const [prompts, setPrompts] = useState([]);
-  const [promptsLoading, setPromptsLoading] = useState(false);
-  const promptsRef = useRef(null);
+  // ContextMenu anchor for the detail-panel kebab; null = closed.
+  const [panelMenu, setPanelMenu] = useState(null);
 
   // View-mode inline description editing. editingDesc switches the rendered
   // description to a CodeMirror editor. Edits accumulate in viewDraft and are
@@ -320,18 +318,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     }
   }, [isCreating]);
 
-  // Close the prompts dropup on outside click while it is open.
-  useEffect(() => {
-    if (!showPrompts) return undefined;
-    const onDocClick = (e) => {
-      if (promptsRef.current && !promptsRef.current.contains(e.target)) {
-        setShowPrompts(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [showPrompts]);
-
   // Close the type dropdown on outside click while it is open.
   useEffect(() => {
     if (!editingType) return undefined;
@@ -356,17 +342,14 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [editingPriority]);
 
-  const togglePrompts = useCallback(() => {
-    setShowPrompts((open) => {
-      const next = !open;
-      if (next && onFetchPrompts && workingDir) {
-        setPromptsLoading(true);
-        onFetchPrompts(workingDir)
-          .then((list) => setPrompts(list || []))
-          .finally(() => setPromptsLoading(false));
-      }
-      return next;
-    });
+  const openPanelMenu = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setPanelMenu({ x: rect.left, y: rect.bottom });
+    if (onFetchPrompts && workingDir) {
+      onFetchPrompts(workingDir).then((list) => setPrompts(list || []));
+    }
   }, [onFetchPrompts, workingDir]);
 
   useEffect(() => {
@@ -517,6 +500,36 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
     setIsClosing(true);
     setTimeout(() => onClose(), 150);
   }, [onClose]);
+
+  const panelMenuItems = useMemo(() => {
+    if (!data) return [];
+    const promptGroupItems = buildPromptGroupMenuItems(
+      prompts,
+      (p) => { setPanelMenu(null); onRunPrompt && onRunPrompt(p, data); },
+      html`<${PlusIcon} />`,
+    );
+    return [
+      ...promptGroupItems,
+      {
+        label: data.status === "closed" ? "Reopen" : "Close",
+        icon: data.status === "closed" ? html`<${RefreshIcon} />` : html`<${CheckIcon} />`,
+        onClick: () => onToggleStatus && onToggleStatus(data),
+        disabled: statusBusy,
+      },
+      {
+        label: data.status === "deferred" ? "Undefer" : "Defer",
+        icon: data.status === "deferred" ? html`<${SunIcon} />` : html`<${MoonIcon} />`,
+        onClick: () => onToggleDefer && onToggleDefer(data),
+        disabled: statusBusy,
+      },
+      {
+        label: "Delete",
+        icon: html`<${TrashIcon} />`,
+        onClick: () => onDelete && onDelete(data),
+        danger: true,
+      },
+    ];
+  }, [data, prompts, statusBusy, onRunPrompt, onToggleStatus, onToggleDefer, onDelete]);
 
   // Seed non-notes fields whenever a different issue opens (notes come from
   // fetchDeps below, which calls setViewDraft when seedDraftNotes is true).
@@ -1322,56 +1335,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             `}
         </div>
         ${!creating && data && html`
-          <div class="relative shrink-0" ref=${promptsRef}>
-            <button type="button" onClick=${togglePrompts} class="btn btn-ghost btn-square btn-sm shrink-0" title="More actions">
-              <${EllipsisIcon} className="w-5 h-5" />
-            </button>
-            ${showPrompts && html`
-              <ul class="menu absolute right-0 top-full mt-1 z-10 w-64 max-h-96 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl">
-                <li>
-                  <button type="button"
-                    onClick=${() => { if (statusBusy) return; setShowPrompts(false); onToggleStatus && onToggleStatus(data); }}
-                    aria-disabled=${statusBusy ? "true" : "false"}
-                    class=${statusBusy ? "opacity-40 pointer-events-none" : ""}
-                    title=${data.status === "closed" ? "Reopen issue" : "Close issue"}>
-                    ${data.status === "closed" ? html`<${RefreshIcon} className="w-4 h-4" />` : html`<${CheckIcon} className="w-4 h-4" />`}
-                    <span>${data.status === "closed" ? "Reopen issue" : "Close issue"}</span>
-                  </button>
-                </li>
-                <li>
-                  <button type="button"
-                    onClick=${() => { if (statusBusy) return; setShowPrompts(false); onToggleDefer && onToggleDefer(data); }}
-                    aria-disabled=${statusBusy ? "true" : "false"}
-                    class=${statusBusy ? "opacity-40 pointer-events-none" : ""}
-                    title=${data.status === "deferred" ? "Undefer issue" : "Defer issue"}>
-                    ${data.status === "deferred" ? html`<${SunIcon} className="w-4 h-4" />` : html`<${MoonIcon} className="w-4 h-4" />`}
-                    <span>${data.status === "deferred" ? "Undefer issue" : "Defer issue"}</span>
-                  </button>
-                </li>
-                <li>
-                  <button type="button"
-                    onClick=${() => { setShowPrompts(false); onDelete && onDelete(data); }}
-                    class="group" title="Delete issue">
-                    <${TrashIcon} className="w-4 h-4 group-hover:text-red-400" />
-                    <span class="group-hover:text-red-400">Delete issue</span>
-                  </button>
-                </li>
-                <li class="menu-title">Run a prompt</li>
-                ${promptsLoading && html`<li><span class="flex items-center gap-2"><span class="loading loading-spinner w-4 h-4"></span> Loading…</span></li>`}
-                ${!promptsLoading && prompts.length === 0 && html`<li class="opacity-60"><span>No task prompts</span></li>`}
-                ${!promptsLoading && prompts.map(p => {
-                  const PromptIcon = getPromptIconOrDefault(p.icon);
-                  return html`
-                    <li key=${p.name}>
-                      <button type="button" onClick=${() => { setShowPrompts(false); onRunPrompt && onRunPrompt(p, data); }} title=${p.description || p.name}>
-                        <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
-                        <span class="truncate flex-1">${p.name}</span>
-                      </button>
-                    </li>`;
-                })}
-              </ul>
-            `}
-          </div>
+          <button type="button" onClick=${openPanelMenu} class="btn btn-ghost btn-square btn-sm shrink-0" title="More actions">
+            <${EllipsisIcon} className="w-5 h-5" />
+          </button>
         `}
         <button
           onClick=${() => setFullscreen(f => !f)}
@@ -1549,6 +1515,14 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
         </div>
       `}
       <//>
+      ${panelMenu && html`
+        <${ContextMenu}
+          x=${panelMenu.x}
+          y=${panelMenu.y}
+          items=${panelMenuItems}
+          onClose=${() => setPanelMenu(null)}
+        />
+      `}
       <${ConfirmDialog}
         isOpen=${confirmDiscard}
         title="Discard changes?"
@@ -1984,13 +1958,14 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
   // Open the per-issue context menu at the cursor and load the `menus: beadsIssues`
   // prompts for this workspace so the "Prompts" submenu reflects them.
+  // The issue is passed so the server can evaluate item.*-gated enabledWhen per row.
   const handleRowContextMenu = useCallback(
     (e, issue) => {
       e.preventDefault();
       e.stopPropagation();
       setContextMenu({ x: e.clientX, y: e.clientY, issue });
       if (onFetchBeadsPrompts) {
-        onFetchBeadsPrompts(workingDir).then((prompts) =>
+        onFetchBeadsPrompts(workingDir, issue).then((prompts) =>
           setMenuPrompts(prompts || []),
         );
       }
@@ -2002,6 +1977,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
   // Open the per-issue context menu anchored to the row's "..." button (rather
   // than at the cursor), then load the beadsIssues prompts like the right-click path.
+  // The issue is passed so the server can evaluate item.*-gated enabledWhen per row.
   const handleRowMenuButton = useCallback(
     (e, issue) => {
       e.preventDefault();
@@ -2009,7 +1985,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       const rect = e.currentTarget.getBoundingClientRect();
       setContextMenu({ x: rect.left, y: rect.bottom, issue });
       if (onFetchBeadsPrompts) {
-        onFetchBeadsPrompts(workingDir).then((prompts) =>
+        onFetchBeadsPrompts(workingDir, issue).then((prompts) =>
           setMenuPrompts(prompts || []),
         );
       }
@@ -2420,19 +2396,13 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     onRunBeadsListPrompt && onRunBeadsListPrompt(prompt);
   }, [onRunBeadsListPrompt]);
 
-  // Build the per-issue context menu: a Close/Reopen toggle and a Delete action,
-  // plus a "Prompts" submenu listing every `menus: beadsIssues` prompt — all
-  // wired to the same handlers used by the detail panel footer.
-  const promptSubmenuItems = (menuPrompts || [])
-    .filter((p) => p && p.name)
-    .map((p) => {
-      const PromptIcon = getPromptIconOrDefault(p.icon);
-      return {
-        label: p.name,
-        icon: html`<${PromptIcon} className="w-4 h-4" />`,
-        onClick: () => handleRunPrompt(p, contextMenu && contextMenu.issue),
-      };
-    });
+  // Group the beadsIssues prompts by their `group` into per-group submenus,
+  // identical to the conversation menu and the detail-panel kebab.
+  const promptGroupItems = buildPromptGroupMenuItems(
+    menuPrompts,
+    (p) => handleRunPrompt(p, contextMenu && contextMenu.issue),
+    html`<${PlusIcon} />`,
+  );
 
   const ctxIssue = contextMenu && contextMenu.issue;
   const ctxIsClosed = ctxIssue && ctxIssue.status === "closed";
@@ -2451,9 +2421,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }));
 
   const contextMenuItems = [
-    ...(promptSubmenuItems.length > 0
-      ? [{ label: "Task", icon: html`<${PlusIcon} />`, submenu: promptSubmenuItems }]
-      : []),
+    ...promptGroupItems,
     ...(otherIssues.length > 0
       ? [
           { label: "Depends On", icon: html`<${ArrowDownIcon} />`, submenu: issueSubmenu("depends-on") },

@@ -346,9 +346,9 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Delete moved to the kebab menu — open it first.
+      // Delete moved to the kebab menu (now a ContextMenu portaled to body).
       await panel.locator('button[title="More actions"]').click();
-      await panel.locator('button[title="Delete issue"]').click();
+      await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
 
       const dialog = page.locator('[data-testid="confirm-dialog"]');
       await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
@@ -640,9 +640,9 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
     await expect(panel.getByText("mitto-epic")).toBeVisible();
 
-    // Delete moved to the kebab menu — open it first.
+    // Delete moved to the kebab menu (now a ContextMenu portaled to body).
     await panel.locator('button[title="More actions"]').click();
-    await panel.locator('button[title="Delete issue"]').click();
+    await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
     return dialog;

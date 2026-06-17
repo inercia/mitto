@@ -5,7 +5,27 @@
 const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
-import { ChevronRightIcon } from "./Icons.js";
+import { ChevronRightIcon, getPromptIconOrDefault } from "./Icons.js";
+import { flattenPrompts } from "../utils/prompts.js";
+
+// Build ContextMenu submenu items that group `prompts` by their `group`
+// attribute (ungrouped prompts fall under "Other"), each group sorted by name.
+// Every group becomes one ContextMenu entry whose `submenu` lists its prompts.
+// `onRun(prompt)` handles selection; `groupIcon` is shown on each group entry.
+// Returns [] when there are no prompts. Shared by the conversation menu and the
+// Beads issue menus so all three surfaces present identical grouped submenus.
+export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
+  const { groups } = flattenPrompts(prompts || [], {});
+  return groups.map((g) => ({
+    label: g.name,
+    icon: groupIcon,
+    submenu: g.prompts.map((p) => ({
+      label: p.name,
+      icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
+      onClick: () => onRun(p),
+    })),
+  }));
+}
 
 // Renders `children` into a fresh <div> appended to document.body so the menu
 // escapes any ancestor stacking context / containing block. The sidebar lives
@@ -137,8 +157,8 @@ function ContextMenuItem({ item, onClose }) {
         html`
           <ul
             ref=${submenuRef}
-            class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px] max-h-[60vh] overflow-y-auto"
-            style="left: ${submenuPos.left}px; top: ${submenuPos.top}px; max-width: min(20rem, 92vw);"
+            class="menu bg-base-200 rounded-box shadow-xl fixed min-w-[140px] max-h-[60vh] overflow-y-auto"
+            style="left: ${submenuPos.left}px; top: ${submenuPos.top}px; max-width: min(20rem, 92vw); z-index: 9999;"
             onMouseEnter=${() => clearTimeout(closeTimerRef.current)}
             onMouseLeave=${scheduleClose}
           >
@@ -256,8 +276,8 @@ export function ContextMenu({ x, y, items, onClose }) {
     <${Portal}>
       <ul
         ref=${menuRef}
-        class="menu bg-base-200 rounded-box shadow-xl fixed z-50 min-w-[140px] max-h-[95vh] overflow-y-auto flex-nowrap"
-        style="left: ${position.x}px; top: ${position.y}px;"
+        class="menu bg-base-200 rounded-box shadow-xl fixed min-w-[140px] max-h-[95vh] overflow-y-auto flex-nowrap"
+        style="left: ${position.x}px; top: ${position.y}px; z-index: 9999;"
       >
         ${items.map(
           (item) => html`
