@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8008,6 +8009,126 @@ func TestPromptGet_EmptyName(t *testing.T) {
 	}
 	if !strings.Contains(out.Error, "name is required") {
 		t.Errorf("Expected 'name is required' error, got: %s", out.Error)
+	}
+}
+
+func TestPromptGet_ParametersRoundTrip(t *testing.T) {
+	req := true
+	params := []config.PromptParameter{
+		{Name: "ISSUE_ID", Type: "beadsId", Description: "The beads issue ID"},
+		{Name: "note", Type: "text", Required: &req},
+	}
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "Param Prompt", Prompt: "work on ${ISSUE_ID}", Parameters: params},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptGet(ctx, nil, PromptGetInput{SelfID: sessionID, Name: "Param Prompt"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got: %s", out.Error)
+	}
+	if len(out.Prompt.Parameters) != 2 {
+		t.Fatalf("Expected 2 parameters, got %d", len(out.Prompt.Parameters))
+	}
+	if out.Prompt.Parameters[0].Name != "ISSUE_ID" || out.Prompt.Parameters[0].Type != "beadsId" {
+		t.Errorf("Parameters[0] = %+v, want {ISSUE_ID beadsId}", out.Prompt.Parameters[0])
+	}
+
+	// JSON must include "parameters" array with name and type.
+	raw, err := json.Marshal(out.Prompt)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+	if !strings.Contains(jsonStr, `"parameters"`) {
+		t.Errorf("JSON missing 'parameters' key; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"name":"ISSUE_ID"`) {
+		t.Errorf("JSON missing parameter name; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"type":"beadsId"`) {
+		t.Errorf("JSON missing parameter type; got: %s", jsonStr)
+	}
+}
+
+func TestPromptGet_EmptyParametersOmitted(t *testing.T) {
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "No Params", Prompt: "just text"},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptGet(ctx, nil, PromptGetInput{SelfID: sessionID, Name: "No Params"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got: %s", out.Error)
+	}
+	// JSON must NOT include "parameters" key when empty (omitempty).
+	raw, err := json.Marshal(out.Prompt)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	if strings.Contains(string(raw), `"parameters"`) {
+		t.Errorf("JSON must omit 'parameters' when empty; got: %s", string(raw))
+	}
+}
+
+func TestPromptList_ParametersRoundTrip(t *testing.T) {
+	params := []config.PromptParameter{
+		{Name: "ISSUE_ID", Type: "beadsId"},
+	}
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "With Params", Parameters: params},
+			{Name: "No Params"},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptList(ctx, nil, PromptListInput{SelfID: sessionID})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got: %s", out.Error)
+	}
+	if len(out.Prompts) != 2 {
+		t.Fatalf("Expected 2 prompts, got %d", len(out.Prompts))
+	}
+
+	// First prompt should carry parameters through.
+	if len(out.Prompts[0].Parameters) != 1 {
+		t.Errorf("Prompts[0].Parameters len = %d, want 1", len(out.Prompts[0].Parameters))
+	}
+	// Second prompt should have nil/empty parameters.
+	if len(out.Prompts[1].Parameters) != 0 {
+		t.Errorf("Prompts[1].Parameters len = %d, want 0", len(out.Prompts[1].Parameters))
+	}
+
+	// Serialised JSON omits "parameters" for the second entry.
+	raw, err := json.Marshal(out.Prompts[1])
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	if strings.Contains(string(raw), `"parameters"`) {
+		t.Errorf("JSON must omit 'parameters' when empty; got: %s", string(raw))
 	}
 }
 

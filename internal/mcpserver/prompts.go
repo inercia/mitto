@@ -178,6 +178,7 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
+			Parameters:      p.Parameters,
 		})
 	}
 	return nil, PromptListOutput{Success: true, Prompts: prompts, WorkingDir: workingDir}, nil
@@ -217,6 +218,7 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
+			Parameters:      p.Parameters,
 		},
 	}, nil
 }

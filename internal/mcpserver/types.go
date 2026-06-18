@@ -819,14 +819,15 @@ type PromptListInput struct {
 
 // PromptInfo contains basic metadata about a prompt (without full text).
 type PromptInfo struct {
-	Name            string                 `json:"name"`
-	Description     string                 `json:"description,omitempty"`
-	Group           string                 `json:"group,omitempty"`
-	BackgroundColor string                 `json:"background_color,omitempty"`
-	Icon            string                 `json:"icon,omitempty"`
-	Source          string                 `json:"source,omitempty"`   // "file", "settings", "workspace", "builtin"
-	Enabled         *bool                  `json:"enabled,omitempty"`  // nil = enabled (default true)
-	Periodic        *config.PromptPeriodic `json:"periodic,omitempty"` // non-nil = prompt starts a periodic conversation
+	Name            string                   `json:"name"`
+	Description     string                   `json:"description,omitempty"`
+	Group           string                   `json:"group,omitempty"`
+	BackgroundColor string                   `json:"background_color,omitempty"`
+	Icon            string                   `json:"icon,omitempty"`
+	Source          string                   `json:"source,omitempty"`     // "file", "settings", "workspace", "builtin"
+	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
+	Periodic        *config.PromptPeriodic   `json:"periodic,omitempty"`   // non-nil = prompt starts a periodic conversation
+	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
 }
 
 // PromptListOutput is the output for mitto_prompt_list tool.
@@ -846,15 +847,16 @@ type PromptGetInput struct {
 
 // PromptDetail contains full details about a prompt including text.
 type PromptDetail struct {
-	Name            string                 `json:"name"`
-	Prompt          string                 `json:"prompt"` // Full prompt text
-	Description     string                 `json:"description,omitempty"`
-	Group           string                 `json:"group,omitempty"`
-	BackgroundColor string                 `json:"background_color,omitempty"`
-	Icon            string                 `json:"icon,omitempty"`
-	Source          string                 `json:"source,omitempty"`   // "file", "settings", "workspace", "builtin"
-	Enabled         *bool                  `json:"enabled,omitempty"`  // nil = enabled (default true)
-	Periodic        *config.PromptPeriodic `json:"periodic,omitempty"` // non-nil = prompt starts a periodic conversation
+	Name            string                   `json:"name"`
+	Prompt          string                   `json:"prompt"` // Full prompt text
+	Description     string                   `json:"description,omitempty"`
+	Group           string                   `json:"group,omitempty"`
+	BackgroundColor string                   `json:"background_color,omitempty"`
+	Icon            string                   `json:"icon,omitempty"`
+	Source          string                   `json:"source,omitempty"`     // "file", "settings", "workspace", "builtin"
+	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
+	Periodic        *config.PromptPeriodic   `json:"periodic,omitempty"`   // non-nil = prompt starts a periodic conversation
+	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
 }
 
 // PromptGetOutput is the output for mitto_prompt_get tool.
