@@ -40,6 +40,15 @@ jobs:
       - name: Lint frontend code
         run: make lint-frontend
 
+      - name: Check CodeMirror bundle is up to date
+        run: |
+          make vendor-codemirror
+          if ! git diff --quiet -- web/static/vendor/codemirror/codemirror.js; then
+            echo "::error::CodeMirror bundle is out of date. Run 'make vendor-codemirror' and commit web/static/vendor/codemirror/codemirror.js."
+            git diff --stat -- web/static/vendor/codemirror/codemirror.js
+            exit 1
+          fi
+
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest

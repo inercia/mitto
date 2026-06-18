@@ -23,6 +23,15 @@ See `config.js` for the authoritative version configuration:
 | Marked | 11.1.1 | `marked.js` | jsdelivr |
 | DOMPurify | 3.0.8 | `dompurify.js` | jsdelivr |
 | Mermaid | 11.x | *(not bundled)* | jsdelivr (on-demand) |
+| CodeMirror (core + One Dark + Markdown) | 6.x | `codemirror/codemirror.js` | *(local only)* |
+
+> **CodeMirror is different.** Unlike the single-file ESM libraries above (which
+> are downloaded with `curl`), CodeMirror is a set of interdependent npm packages
+> that require a single shared instance of `@codemirror/state`/`@codemirror/language`.
+> It is therefore **bundled with esbuild**, not curled. The build packages are
+> regular `devDependencies` in `package.json`; only the bundled output is committed.
+> Scope is markdown-only: other languages still load from esm.sh at runtime (see
+> `web/static/utils/editor-loader.js`).
 
 ## Updating a Library
 
@@ -57,6 +66,24 @@ curl -o marked.js "https://cdn.jsdelivr.net/npm/marked@11.1.1/lib/marked.esm.js"
 # DOMPurify
 curl -o dompurify.js "https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.es.mjs"
 ```
+
+### CodeMirror (bundled, not curled)
+
+CodeMirror is bundled from its npm packages with esbuild. To update it:
+
+```bash
+# Update the @codemirror/* versions in devDependencies
+npm install --save-dev --save-exact @codemirror/view@^6 @codemirror/state@^6 \
+  @codemirror/commands@^6 @codemirror/language@^6 @codemirror/search@^6 \
+  @codemirror/lint@^6 @codemirror/theme-one-dark@^6 @codemirror/lang-markdown@^6
+
+# Regenerate web/static/vendor/codemirror/codemirror.js
+npm run vendor:codemirror   # or: make vendor-codemirror
+```
+
+The entry point is `scripts/codemirror/entry.js`. To bundle additional languages
+locally, add their `export * as ...` lines there, install the package, and wire
+them up in `web/static/utils/editor-loader.js`.
 
 ### 3. Test Both Loading Modes
 

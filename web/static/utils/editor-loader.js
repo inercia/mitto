@@ -1,13 +1,32 @@
 /**
  * CodeMirror 6 Lazy Loader
  *
- * Loads CodeMirror packages from esm.sh CDN on demand.
- * All modules are cached after first load.
+ * The core editor, One Dark theme, and Markdown language are loaded from a
+ * locally bundled file (web/static/vendor/codemirror/codemirror.js, produced by
+ * `npm run vendor:codemirror`). This works offline and avoids the CDN entirely.
+ *
+ * Other languages are still loaded from the esm.sh CDN on demand. NOTE: those
+ * esm.sh language packages pull their own copies of @codemirror/state and
+ * @codemirror/language, which are different instances than the local bundle's.
+ * Non-legacy languages built that way (e.g. lang-javascript) may not apply
+ * correctly because CodeMirror requires a single shared instance. Legacy modes
+ * are wrapped with the local bundle's StreamLanguage below to stay consistent.
+ * Bundle the remaining languages locally (the full plan) if other file types
+ * ever need editing. All modules are cached after first load.
  */
 
 const ESM_BASE = "https://esm.sh";
 
-// Module cache
+// Local CodeMirror bundle (resolved relative to this module so it works under
+// API-prefix deployments). Memoized so it imports at most once.
+const LOCAL_BUNDLE = new URL("../vendor/codemirror/codemirror.js", import.meta.url).href;
+let _bundlePromise = null;
+function loadBundle() {
+  if (!_bundlePromise) _bundlePromise = import(LOCAL_BUNDLE);
+  return _bundlePromise;
+}
+
+// Module cache (esm.sh CDN imports for non-bundled languages)
 const cache = new Map();
 
 /**
@@ -28,16 +47,15 @@ async function importCached(pkg) {
  * @returns {Promise<{view, state, commands, language, search, lint}>}
  */
 export async function loadCore() {
-  const [view, state, commands, language, search, lint] = await Promise.all([
-    importCached("@codemirror/view@6"),
-    importCached("@codemirror/state@6"),
-    importCached("@codemirror/commands@6"),
-    importCached("@codemirror/language@6"),
-    importCached("@codemirror/search@6"),
-    importCached("@codemirror/lint@6"),
-  ]);
-
-  return { view, state, commands, language, search, lint };
+  const b = await loadBundle();
+  return {
+    view: b.view,
+    state: b.state,
+    commands: b.commands,
+    language: b.language,
+    search: b.search,
+    lint: b.lint,
+  };
 }
 
 /**
@@ -45,7 +63,8 @@ export async function loadCore() {
  * @returns {Promise<any>}
  */
 export async function loadDarkTheme() {
-  return importCached("@codemirror/theme-one-dark@6");
+  const b = await loadBundle();
+  return b.themeOneDark;
 }
 
 /**
@@ -82,9 +101,7 @@ const LANG_MAP = {
   yaml: { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
   yml:  { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
 
-  // Markup
-  md:       { pkg: "@codemirror/lang-markdown@6", fn: "markdown" },
-  markdown: { pkg: "@codemirror/lang-markdown@6", fn: "markdown" },
+  // Markup (markdown is bundled locally — handled in loadLanguage, not here)
   xml:      { pkg: "@codemirror/lang-xml@6", fn: "xml" },
 
   // Other languages
@@ -117,22 +134,32 @@ const LANG_MAP = {
  * @returns {Promise<any|null>} Language extension or null
  */
 export async function loadLanguage(ext) {
-  const entry = LANG_MAP[ext?.toLowerCase()];
+  const key = ext?.toLowerCase();
+
+  // Markdown is bundled locally — never touch the CDN for it.
+  if (key === "md" || key === "markdown") {
+    const b = await loadBundle();
+    return b.langMarkdown.markdown();
+  }
+
+  const entry = LANG_MAP[key];
   if (!entry) return null;
 
   try {
     if (entry.legacy) {
-      // Legacy modes need StreamLanguage wrapper
-      const [langMod, languageMod] = await Promise.all([
+      // Legacy modes are plain stream-parser specs (instance-agnostic), so we
+      // load the mode object from esm.sh but wrap it with the LOCAL bundle's
+      // StreamLanguage to keep it consistent with the local core instance.
+      const [langMod, b] = await Promise.all([
         importCached(entry.pkg),
-        importCached("@codemirror/language@6"),
+        loadBundle(),
       ]);
       // Legacy mode modules export the mode directly by modKey or first object export
       const mode = entry.modKey ? langMod[entry.modKey] : Object.values(langMod).find(
         (v) => typeof v === "object" && v !== null && typeof v.token === "function"
       );
       if (mode) {
-        return languageMod.StreamLanguage.define(mode);
+        return b.language.StreamLanguage.define(mode);
       }
       return null;
     }
