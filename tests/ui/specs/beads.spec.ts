@@ -1114,10 +1114,14 @@ testWithCleanup.describe("Beads view - closed epic with open children", () => {
 const CONV_PANEL = 'div.properties-panel:has(h2:has-text("Conversation"))';
 const ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("Short issue"))';
 
+// The list-vs-show race test ("opens the linked issue even when the list loads
+// before the show fetch") was removed: BeadsIssueView is now a standalone
+// component that only calls /api/beads/show — there is no full-list fetch to
+// race against. The list is never mounted in this flow.
 testWithCleanup.describe("Beads view - return to conversation", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    // Mock the single-issue show endpoint so the fast-open path resolves
-    // immediately regardless of the (gated) list load. Returns mitto-bbb.
+    // Mock the single-issue show endpoint so the detail panel resolves
+    // immediately. Returns mitto-bbb.
     await page.route("**/api/beads/show**", async (route) => {
       await route.fulfill({
         status: 200,
@@ -1144,9 +1148,7 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
     const linkedSessionId = (await createResp.json()).session_id;
     expect(linkedSessionId).toBeTruthy();
 
-    // Make the app open directly into the linked conversation on load. This
-    // init script runs before navigateAndWait's own init script (both persist
-    // and run on page.goto).
+    // Make the app open directly into the linked conversation on load.
     await page.addInitScript((sid) => {
       localStorage.setItem("mitto_last_session_id", sid);
     }, linkedSessionId);
@@ -1155,23 +1157,8 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
   });
 
   testWithCleanup(
-    "fast-opens the linked issue before the list loads, then returns to the conversation on close",
+    "opens the linked issue standalone (no list), then returns to the conversation on close",
     async ({ page, timeouts }) => {
-      // Gate the full list so it stays pending: this proves the detail panel
-      // opens from the show fetch alone, not from the list.
-      let releaseList = () => {};
-      const listGate = new Promise<void>((resolve) => {
-        releaseList = resolve;
-      });
-      await page.route("**/api/beads/list**", async (route) => {
-        await listGate;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MOCK_ISSUES),
-        });
-      });
-
       // Wait for the linked conversation to be active (chat input enabled).
       await expect(page.locator("textarea")).toBeEnabled({
         timeout: timeouts.appReady,
@@ -1184,90 +1171,27 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
 
-      // Follow the linked-issue link → opens the beads view focused on the issue.
+      // Follow the linked-issue link → opens the standalone BeadsIssueView.
       await page.getByTitle("Open beads issue mitto-bbb").click();
 
-      // Fast-open: the issue detail panel appears immediately from the show
-      // fetch, even though the list request is still pending (gated).
+      // The issue detail panel opens from the show fetch.
       const issuePanel = page.locator(ISSUE_PANEL);
       await expect(issuePanel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(issuePanel.getByText("mitto-bbb")).toBeVisible();
 
-      // The list has NOT loaded yet: the long-title row (mitto-aaa) is absent.
+      // The list IS NOT rendered behind the panel — standalone view has no list.
+      await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
       await expect(page.getByText(LONG_TITLE)).toHaveCount(0);
-
-      // Release the gated list; its rows now render in the background behind the
-      // already-open panel.
-      releaseList();
-      await expect(page.getByText(LONG_TITLE).first()).toBeVisible({
-        timeout: timeouts.shortAction,
-      });
 
       // Close the detail panel → returns to the originating conversation with
       // its properties panel re-opened (not left on the beads list).
       await issuePanel.getByTitle("Close", { exact: true }).click();
 
       // Back in the conversation: the conversation properties panel (with the
-      // linked-issue link) is shown again and the beads table is gone.
+      // linked-issue link) is shown again and the beads table remains absent.
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
       await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
-    },
-  );
-
-  testWithCleanup(
-    "opens the linked issue even when the list loads before the show fetch (race regression)",
-    async ({ page, timeouts }) => {
-      // Reverse ordering of the fast-open test: here the full list resolves
-      // FIRST while the single-issue show fetch is held pending. The list load
-      // re-runs BeadsView's auto-select effect (its `issues` dependency changed)
-      // and cancels the in-flight show fetch. The panel must still open — via
-      // the fast path, from the now-loaded row — instead of leaving the user on
-      // the bare Tasks list. Regression guard for the consumed-nonce race where
-      // the cancelled fetch + already-applied nonce dropped the selection.
-
-      // Gate the show fetch so it stays pending (overrides the beforeEach route;
-      // Playwright matches the most-recently-added handler first).
-      let releaseShow = () => {};
-      const showGate = new Promise<void>((resolve) => {
-        releaseShow = resolve;
-      });
-      await page.route("**/api/beads/show**", async (route) => {
-        await showGate;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MOCK_ISSUES[1]), // mitto-bbb "Short issue"
-        });
-      });
-
-      // The list resolves immediately and contains the linked issue's row.
-      await page.route("**/api/beads/list**", async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MOCK_ISSUES),
-        });
-      });
-
-      await expect(page.locator("textarea")).toBeEnabled({
-        timeout: timeouts.appReady,
-      });
-
-      // Open the conversation properties panel and follow the linked-issue link.
-      await page.getByTitle("Session details").click();
-      const convPanel = page.locator(CONV_PANEL);
-      await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
-      await page.getByTitle("Open beads issue mitto-bbb").click();
-
-      // The detail panel opens from the loaded list row even though the show
-      // fetch is still pending (gated).
-      const issuePanel = page.locator(ISSUE_PANEL);
-      await expect(issuePanel).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(issuePanel.getByText("mitto-bbb")).toBeVisible();
-
-      // Release the gated show fetch (cancelled by then) for clean teardown.
-      releaseShow();
     },
   );
 });

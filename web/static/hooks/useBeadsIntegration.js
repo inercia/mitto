@@ -378,18 +378,18 @@ export function useBeadsIntegration({
     setBeadsCleanupNonce((n) => n + 1);
   }, []);
 
-  // Open the beads view focused on a specific issue (used by the conversation
-  // properties panel's linked-issue link). The nonce bump lets BeadsView
-  // re-select even when the same issue is opened again. `originSessionId` is the
-  // conversation the link was clicked from; it is remembered so closing that
-  // issue's detail panel returns there (see handleReturnFromBeadsIssue).
+  // Open the standalone issue viewer for a specific issue (used by the conversation
+  // properties panel's linked-issue link). The nonce bump lets BeadsIssueView
+  // re-fetch even when the same issue is opened again. `originSessionId` is the
+  // conversation the link was clicked from; it is remembered so closing the
+  // viewer returns there (see handleReturnFromBeadsIssue).
   const handleOpenBeadsIssue = useCallback((issueId, workingDir, originSessionId) => {
     if (!issueId || !workingDir) return;
     beadsReturnSessionRef.current = originSessionId || null;
     setBeadsWorkingDir(workingDir);
     setBeadsInitialIssueId(issueId);
     setBeadsSelectNonce((n) => n + 1);
-    setMainView("beads");
+    setMainView("beadsIssue");
     setShowSidebar(false);
     setShowSidePanel(false);
   }, []);

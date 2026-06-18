@@ -152,7 +152,7 @@ import {
   EllipsisIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
-import { BeadsView, BeadsDetailPanel } from "./components/BeadsView.js";
+import { BeadsView, BeadsIssueView, BeadsDetailPanel } from "./components/BeadsView.js";
 import { DashboardView } from "./components/DashboardView.js";
 
 // Import constants
@@ -379,6 +379,7 @@ function App() {
   } = useWorkspacePrompts({
     workingDir: sessionInfo?.working_dir,
     activeSessionId,
+    showToast,
   });
 
   const [configReadonly, setConfigReadonly] = useState(
@@ -1073,7 +1074,7 @@ function App() {
       // Don't navigate if a modal dialog is open.
       if (isModalDialogOpen()) return;
       // Don't navigate when the beads view is open — swipes should not switch conversations.
-      if (mainViewRef.current === "beads") return;
+      if (mainViewRef.current === "beads" || mainViewRef.current === "beadsIssue") return;
       navigateToNextSession();
     };
 
@@ -1084,7 +1085,7 @@ function App() {
       // Don't navigate if a modal dialog is open.
       if (isModalDialogOpen()) return;
       // Don't navigate when the beads view is open — swipes should not switch conversations.
-      if (mainViewRef.current === "beads") return;
+      if (mainViewRef.current === "beads" || mainViewRef.current === "beadsIssue") return;
       navigateToPreviousSession();
     };
 
@@ -1964,6 +1965,20 @@ function App() {
         ? html`
           <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
         `
+        : mainView === "beadsIssue" && beadsWorkingDir && beadsInitialIssueId
+        ? html`
+          <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
+            <${BeadsIssueView}
+              workingDir=${beadsWorkingDir}
+              issueId=${beadsInitialIssueId}
+              selectNonce=${beadsSelectNonce}
+              showToast=${showToast}
+              onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+              onRunBeadsPrompt=${handleRunBeadsPrompt}
+              onReturnToConversation=${handleReturnFromBeadsIssue}
+            />
+          </div>
+        `
         : mainView === "beads" && beadsWorkingDir
         ? html`
           <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
@@ -1980,9 +1995,6 @@ function App() {
               issueSessionMap=${beadsIssueSessionMap}
               issueStreamingSet=${beadsIssueStreamingSet}
               onOpenConversation=${handleSelectSession}
-              onReturnToConversation=${handleReturnFromBeadsIssue}
-              initialSelectedIssueId=${beadsInitialIssueId}
-              initialSelectNonce=${beadsSelectNonce}
               initialCreateNonce=${beadsCreateNonce}
               initialRefreshNonce=${beadsRefreshNonce}
               initialCleanupNonce=${beadsCleanupNonce}

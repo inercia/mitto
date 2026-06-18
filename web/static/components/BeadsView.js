@@ -190,7 +190,7 @@ function labelValue(label, value) {
  *    dim shows through the transparent layer on the panel's left.
  * Clicking anywhere outside the panel closes it.
  */
-export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
+export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, standalone, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -198,7 +198,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   // (hiding the issue list behind it) so a single issue's details are easier to
   // read. On mobile the panel is always full-width, so this has no effect there
   // and the expand toggle is hidden.
-  const [fullscreen, setFullscreen] = useState(false);
+  // standalone=true: initialized to true (fills the whole view, no list behind).
+  const [fullscreen, setFullscreen] = useState(standalone ? true : false);
   // Phone detection drives the panel width. We deliberately use the user agent
   // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
   // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
@@ -1342,15 +1343,17 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             <${EllipsisIcon} className="w-5 h-5" />
           </button>
         `}
-        <button
-          onClick=${() => setFullscreen(f => !f)}
-          class="btn btn-ghost btn-square btn-sm shrink-0 ${isMobile ? "hidden" : ""}"
-          title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-        >
-          ${fullscreen
-            ? html`<${CollapseIcon} className="w-5 h-5" />`
-            : html`<${ExpandIcon} className="w-5 h-5" />`}
-        </button>
+        ${!standalone && html`
+          <button
+            onClick=${() => setFullscreen(f => !f)}
+            class="btn btn-ghost btn-square btn-sm shrink-0 ${isMobile ? "hidden" : ""}"
+            title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            ${fullscreen
+              ? html`<${CollapseIcon} className="w-5 h-5" />`
+              : html`<${ExpandIcon} className="w-5 h-5" />`}
+          </button>
+        `}
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
@@ -1556,6 +1559,181 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
   `;
 }
 
+// ---- Standalone single-issue viewer -----------------------------------------
+
+/**
+ * BeadsIssueView renders a single beads issue in a list-free standalone view.
+ * Opened when the user follows a conversation's "Linked beads issue" link.
+ * The issue is fetched from /api/beads/show; clicking a dependency navigates
+ * within the viewer via another show fetch. Close (X) returns to the originating
+ * conversation via onReturnToConversation.
+ */
+export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onReturnToConversation }) {
+  // currentIssueId tracks in-viewer navigation (e.g. clicking a dep id).
+  const [currentIssueId, setCurrentIssueId] = useState(issueId);
+  const [issue, setIssue] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deletingIssue, setDeletingIssue] = useState(false);
+  // Bumped to re-fetch the current issue after a status/defer/dep change.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  // Reset to the externally-requested issue when the prop changes.
+  useEffect(() => {
+    setCurrentIssueId(issueId);
+  }, [issueId, selectNonce]);
+
+  // Fetch the current issue from /api/beads/show.
+  useEffect(() => {
+    if (!workingDir || !currentIssueId) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await authFetch(
+          apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(currentIssueId),
+        );
+        const data = await readBeadsResponse(res);
+        if (cancelled) return;
+        if (!res.ok || data.error) {
+          showToast && showToast({ style: "error", title: data.error || "Failed to load issue" });
+        } else {
+          const issueObj = Array.isArray(data) ? data[0] : data;
+          setIssue(issueObj || null);
+        }
+      } catch (_err) {
+        if (!cancelled) showToast && showToast({ style: "error", title: "Failed to load issue" });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workingDir, currentIssueId, refreshNonce]);
+
+  const refresh = useCallback(() => setRefreshNonce(n => n + 1), []);
+
+  // In-viewer navigation: clicking a dep id re-fetches that issue.
+  const handleSelectIssue = useCallback((depObj) => {
+    const id = depObj?.id;
+    if (id) setCurrentIssueId(id);
+  }, []);
+
+  const handleToggleStatus = useCallback(async (iss) => {
+    if (!iss) return;
+    const action = iss.status === "closed" ? "reopen" : "close";
+    setStatusBusy(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/status"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: iss.id, action }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
+      } else {
+        showToast && showToast({ style: "success", title: action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}` });
+        refresh();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
+    } finally {
+      setStatusBusy(false);
+    }
+  }, [workingDir, showToast, refresh]);
+
+  const handleToggleDefer = useCallback(async (iss) => {
+    if (!iss) return;
+    const action = iss.status === "deferred" ? "undefer" : "defer";
+    setStatusBusy(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/status"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id: iss.id, action }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
+      } else {
+        showToast && showToast({ style: "success", title: action === "defer" ? `Deferred ${iss.id}` : `Undeferred ${iss.id}` });
+        refresh();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
+    } finally {
+      setStatusBusy(false);
+    }
+  }, [workingDir, showToast, refresh]);
+
+  const confirmDeleteIssue = useCallback(async () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
+    setDeletingIssue(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/delete"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, id }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        showToast && showToast({ style: "error", title: data.error || "Failed to delete issue" });
+      } else {
+        showToast && showToast({ style: "success", title: `Deleted ${id}` });
+        onReturnToConversation && onReturnToConversation();
+      }
+    } catch (err) {
+      showToast && showToast({ style: "error", title: err.message || "Failed to delete issue" });
+    } finally {
+      setDeletingIssue(false);
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, workingDir, showToast, onReturnToConversation]);
+
+  if (loading && !issue) {
+    return html`
+      <div class="relative h-full flex items-center justify-center">
+        <span class="loading loading-spinner w-6 h-6 text-mitto-text-secondary"></span>
+      </div>
+    `;
+  }
+
+  return html`
+    <div class="relative h-full">
+      <${BeadsDetailPanel}
+        issue=${issue}
+        allIssues=${[]}
+        isCreating=${false}
+        workingDir=${workingDir}
+        standalone=${true}
+        onClose=${onReturnToConversation}
+        onUpdated=${refresh}
+        showToast=${showToast}
+        onFetchPrompts=${onFetchBeadsPrompts}
+        onRunPrompt=${onRunBeadsPrompt}
+        onDelete=${(iss) => setDeleteTarget(iss)}
+        onToggleStatus=${handleToggleStatus}
+        onToggleDefer=${handleToggleDefer}
+        statusBusy=${statusBusy}
+        onSelectIssue=${handleSelectIssue}
+      />
+      <${ConfirmDialog}
+        isOpen=${!!deleteTarget}
+        title="Delete issue"
+        message=${deleteTarget ? `This will permanently delete ${deleteTarget.id} — "${deleteTarget.title}". This cannot be undone.` : ""}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="danger"
+        isLoading=${deletingIssue}
+        onConfirm=${confirmDeleteIssue}
+        onCancel=${() => setDeleteTarget(null)}
+      />
+    </div>
+  `;
+}
+
 // ---- Main BeadsView ---------------------------------------------------------
 
 /**
@@ -1573,9 +1751,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
  *        seeded with the prompt text alone (these prompts take no parameters).
  * @param {function} onShowSidebar - Opens the conversations sidebar (mobile);
  *        used by the header hamburger button to return to the conversation list.
- * @param {function} onReturnToConversation - Called when the detail panel that
- *        was opened by following a conversation's linked-issue link is closed;
- *        returns the user to that conversation and re-opens its properties panel.
  */
 
 // Swipeable wrapper for a single beads issue row. Mirrors the conversation
@@ -1649,7 +1824,7 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
   `;
 }
 
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onReturnToConversation, initialSelectedIssueId, initialSelectNonce = 0, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1835,87 +2010,16 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     }
   }, [workingDir, syncAction, upstream, showToast, fetchList]);
 
-  // Tracks whether the currently-open detail panel was opened by navigating
-  // directly from a conversation (the properties panel's linked-issue link).
-  // When such a panel is closed, BeadsView asks the parent to return to that
-  // conversation rather than leaving the user on the beads list. The flag is
-  // cleared as soon as the user engages with the beads view in its own right
-  // (selecting a different issue or opening the create panel).
-  const openedFromConversationRef = useRef(false);
-
   // The list rows already carry all rich fields (description, parent, dates,
   // assignee, owner), so the detail panel is populated directly from the row —
   // no extra /show request needed. Clicking the open row again toggles it shut.
   const selectIssue = useCallback((issue) => {
     setIsCreating(false);
-    setSelectedIssue(prev => {
-      const willClose = prev && prev.id === issue.id;
-      // Navigating to a different issue means the user is now browsing beads,
-      // so a later close should stay here instead of returning to a conversation.
-      if (!willClose) openedFromConversationRef.current = false;
-      return willClose ? null : issue;
-    });
+    setSelectedIssue(prev => (prev && prev.id === issue.id) ? null : issue);
   }, []);
-
-  // Auto-select an issue when the view is opened focused on one (e.g. via the
-  // conversation properties panel's linked-issue link). Applied once per nonce
-  // so re-opening the same issue re-selects it. To avoid making the user wait
-  // for the full issue list before the detail panel appears, we open the panel
-  // as soon as we have the issue: instantly from the already-loaded list when
-  // present, otherwise via a single `/api/beads/show` fetch for just that issue
-  // (the list keeps loading in the background to back the view and the
-  // dependency picker).
-  //
-  // The nonce is consumed only once a selection actually happens (fast-path hit
-  // or a successful cold fetch) — NOT synchronously at the top. `issues` is a
-  // dependency, so when the background list resolves it re-runs this effect and
-  // its cleanup cancels any in-flight cold fetch. If the nonce were consumed up
-  // front, that re-run would early-return on the already-applied nonce while the
-  // cancelled fetch never sets the panel — leaving the user on the bare list
-  // (the symptom this guards against, which only surfaces when the list resolves
-  // before the show fetch). Deferring consumption lets the list-first re-run
-  // fall through to the fast path and select the now-loaded row instead.
-  const appliedSelectNonceRef = useRef(0);
-  useEffect(() => {
-    if (!initialSelectedIssueId || !workingDir) return;
-    if (initialSelectNonce === appliedSelectNonceRef.current) return;
-
-    // Fast path: the list is already loaded and carries this issue's row.
-    const existing = issues.find((i) => i.id === initialSelectedIssueId);
-    if (existing) {
-      appliedSelectNonceRef.current = initialSelectNonce;
-      setIsCreating(false);
-      setSelectedIssue(existing);
-      openedFromConversationRef.current = true;
-      return undefined;
-    }
-
-    // Cold open: fetch just this one issue so the panel opens immediately.
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await authFetch(
-          apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(initialSelectedIssueId),
-        );
-        const respData = await readBeadsResponse(res);
-        if (cancelled || !res.ok || respData.error) return;
-        const issueObj = Array.isArray(respData) ? respData[0] : respData;
-        if (issueObj && issueObj.id) {
-          appliedSelectNonceRef.current = initialSelectNonce;
-          setIsCreating(false);
-          setSelectedIssue(issueObj);
-          openedFromConversationRef.current = true;
-        }
-      } catch (_err) {
-        // Ignore: the background list load may still surface the issue's row.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [initialSelectedIssueId, initialSelectNonce, workingDir, issues]);
 
   // Open the side panel in "create" mode for a brand-new issue.
   const openCreate = useCallback(() => {
-    openedFromConversationRef.current = false;
     setCreateParent(null);
     setSelectedIssue(null);
     setIsCreating(true);
@@ -1923,7 +2027,6 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
   // Open the create panel pre-seeded to create a child of the given epic.
   const openCreateInEpic = useCallback((epicId) => {
-    openedFromConversationRef.current = false;
     setCreateParent(epicId);
     setSelectedIssue(null);
     setIsCreating(true);
@@ -1963,17 +2066,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setShowCleanupConfirm(true);
   }, [initialCleanupNonce]);
 
-  // Close the side panel, whether it is in view or create mode. If the panel was
-  // opened by following a conversation's linked-issue link, return to that
-  // conversation instead of leaving the user on the beads list.
+  // Close the side panel, whether it is in view or create mode.
   const closePanel = useCallback(() => {
-    const returnToConversation = openedFromConversationRef.current;
-    openedFromConversationRef.current = false;
     setSelectedIssue(null);
     setIsCreating(false);
     setCreateParent(null);
-    if (returnToConversation && onReturnToConversation) onReturnToConversation();
-  }, [onReturnToConversation]);
+  }, []);
 
   // Open the per-issue context menu at the cursor and load the `menus: beadsIssues`
   // prompts for this workspace so the "Prompts" submenu reflects them.
