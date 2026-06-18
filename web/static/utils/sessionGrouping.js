@@ -456,6 +456,51 @@ export function flattenUnifiedTreeForNav(tree) {
   return entries;
 }
 
+/**
+ * Restrict flattened navigation entries to the conversations that swipe/keyboard
+ * cycling should visit: top-level (parent), non-archived conversations in the
+ * active conversation's folder only.
+ *
+ * Child conversations (parentKey != null — e.g. agent-spawned "Coder" sessions)
+ * are never cycling targets even though they remain visible in the sidebar.
+ * Archived conversations are likewise never cycling targets (they remain visible
+ * in the sidebar's Archived subgroup). Cycling is also scoped to a single
+ * folder: the folder of the active conversation. The active conversation's
+ * folder is taken from its own entry (whose folderKey is the root parent's
+ * working_dir); if the active conversation is not present in the entries (e.g.
+ * filtered out by category), the provided fallback folder key is used. When no
+ * folder key can be determined, only the parent-only and non-archived
+ * restrictions are applied (no folder scoping).
+ *
+ * @param {Array<{session: Object, folderKey: string, archived: boolean, parentKey: (string|null)}>} entries
+ *   - from flattenUnifiedTreeForNav
+ * @param {string|null} activeSessionId - currently focused conversation
+ * @param {string|null} [activeFolderKeyFallback] - folder key to use when the
+ *   active conversation is not present in entries
+ * @returns {Array} subset of entries (same shape) in the same order
+ */
+export function scopeNavEntriesToCurrentFolder(
+  entries,
+  activeSessionId,
+  activeFolderKeyFallback = null,
+) {
+  const list = entries || [];
+  const activeEntry = list.find(
+    (e) => e.session.session_id === activeSessionId,
+  );
+  const currentFolderKey = activeEntry
+    ? activeEntry.folderKey
+    : activeFolderKeyFallback;
+
+  return list.filter((e) => {
+    if (e.parentKey !== null) return false; // skip child conversations
+    if (e.archived) return false; // skip archived conversations
+    if (currentFolderKey != null && e.folderKey !== currentFolderKey)
+      return false; // restrict to the active conversation's folder
+    return true;
+  });
+}
+
 export function computeGroupedSessions(
   filteredSessions,
   groupingMode,

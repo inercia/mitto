@@ -13,6 +13,7 @@ import {
   computeUnifiedTree,
   filterUnifiedTree,
   flattenUnifiedTreeForNav,
+  scopeNavEntriesToCurrentFolder,
 } from "../utils/sessionGrouping.js";
 import { CYCLING_MODE } from "../constants.js";
 
@@ -61,11 +62,15 @@ export function useSessionNavigation({
   );
 
   // Sessions available for keyboard/swipe navigation, in the exact unified-tree
-  // visual order (folders alphabetical; conversations + nested children, then
-  // archived). Static nodes (Dashboard, Tasks) are excluded by the flattener.
-  // In VISIBLE_GROUPS cycling mode, also skip entries whose folder, Archived
-  // subgroup, or parent group is collapsed — defaults mirror the sidebar:
-  // folders + parent groups expanded, the Archived subgroup collapsed.
+  // visual order (folders alphabetical). Cycling is restricted to top-level
+  // (parent), non-archived conversations in the active conversation's folder
+  // only: child conversations spawned by agents (e.g. "Coder") are never cycling
+  // targets, archived conversations are never cycling targets, and cycling never
+  // crosses into another folder. Children and archived conversations remain
+  // visible in the sidebar; this only affects swipe/keyboard navigation.
+  // Static nodes (Dashboard, Tasks) are excluded by the flattener.
+  // In VISIBLE_GROUPS cycling mode, also skip entries whose folder is collapsed
+  // — defaults mirror the sidebar: folders expanded.
   const navigableSessions = useMemo(() => {
     const tree = filterUnifiedTree(
       computeUnifiedTree(allSessions, workspaces),
@@ -73,20 +78,29 @@ export function useSessionNavigation({
     );
     const entries = flattenUnifiedTreeForNav(tree);
 
+    // Folder of the active conversation, used when it is not present in the
+    // (category-filtered) entries. folderKey equals the root parent's
+    // working_dir; the active conversation shares its root's folder.
+    const activeSession = (allSessions || []).find(
+      (s) => s.session_id === activeSessionId,
+    );
+    const folderFallback = activeSession
+      ? activeSession.working_dir || "Unknown"
+      : null;
+
+    const scoped = scopeNavEntriesToCurrentFolder(
+      entries,
+      activeSessionId,
+      folderFallback,
+    );
+
     if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
-      return entries.map((e) => e.session);
+      return scoped.map((e) => e.session);
     }
 
-    return entries
+    return scoped
       .filter((e) => {
         if (expandedGroupsForNav[e.folderKey] === false) return false;
-        if (
-          e.archived &&
-          expandedGroupsForNav[`archived:${e.folderKey}`] !== true
-        )
-          return false;
-        if (e.parentKey && expandedGroupsForNav[e.parentKey] === false)
-          return false;
         return true;
       })
       .map((e) => e.session);
@@ -96,6 +110,7 @@ export function useSessionNavigation({
     categoryFilterForNav,
     conversationCyclingMode,
     expandedGroupsForNav,
+    activeSessionId,
   ]);
 
   // Navigate to previous/next session with animation direction (wraps around for swipe gestures)

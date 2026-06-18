@@ -9,6 +9,7 @@ import {
   computeUnifiedTree,
   filterUnifiedTree,
   flattenUnifiedTreeForNav,
+  scopeNavEntriesToCurrentFolder,
   computeFolderGroupSections,
   UNGROUPED_FOLDER_SECTION_LABEL,
   UNGROUPED_FOLDER_SECTION_KEY,
@@ -594,6 +595,118 @@ describe("flattenUnifiedTreeForNav", () => {
     expect(flattenUnifiedTreeForNav(undefined)).toEqual([]);
     expect(flattenUnifiedTreeForNav({})).toEqual([]);
     expect(flattenUnifiedTreeForNav({ folders: [] })).toEqual([]);
+  });
+});
+
+describe("scopeNavEntriesToCurrentFolder", () => {
+  function makeS(id, working_dir, overrides = {}) {
+    return makeSession({ session_id: id, working_dir, ...overrides });
+  }
+
+  function navEntries(sessions, workspaces) {
+    return flattenUnifiedTreeForNav(
+      computeUnifiedTree(sessions, workspaces),
+    );
+  }
+
+  test("excludes child conversations; keeps only the active folder's parents", () => {
+    const parent = makeS("parent-1", "/proj");
+    const child = makeS("child-1", "/proj", { parent_session_id: "parent-1" });
+    const entries = navEntries([parent, child], [{ working_dir: "/proj" }]);
+
+    const scoped = scopeNavEntriesToCurrentFolder(entries, "parent-1");
+    const ids = scoped.map((e) => e.session.session_id);
+    expect(ids).toEqual(["parent-1"]);
+    expect(scoped.every((e) => e.parentKey === null)).toBe(true);
+  });
+
+  test("active session is a child → scopes to its parent's folder, parents only", () => {
+    const parent = makeS("parent-1", "/proj");
+    const child = makeS("child-1", "/proj", { parent_session_id: "parent-1" });
+    const other = makeS("other-1", "/other");
+    const entries = navEntries(
+      [parent, child, other],
+      [{ working_dir: "/proj" }, { working_dir: "/other" }],
+    );
+
+    // Active conversation is the child; cycling should stay in "/proj" parents.
+    const scoped = scopeNavEntriesToCurrentFolder(entries, "child-1");
+    const ids = scoped.map((e) => e.session.session_id);
+    expect(ids).toEqual(["parent-1"]);
+  });
+
+  test("restricts to the active conversation's folder (cross-folder excluded)", () => {
+    const a = makeS("a1", "/a");
+    const z = makeS("z1", "/z");
+    const entries = navEntries(
+      [a, z],
+      [{ working_dir: "/a" }, { working_dir: "/z" }],
+    );
+
+    const scopedA = scopeNavEntriesToCurrentFolder(entries, "a1");
+    expect(scopedA.map((e) => e.session.session_id)).toEqual(["a1"]);
+
+    const scopedZ = scopeNavEntriesToCurrentFolder(entries, "z1");
+    expect(scopedZ.map((e) => e.session.session_id)).toEqual(["z1"]);
+  });
+
+  test("fallback folder key used when active session absent from entries", () => {
+    const a = makeS("a1", "/a");
+    const z = makeS("z1", "/z");
+    const entries = navEntries(
+      [a, z],
+      [{ working_dir: "/a" }, { working_dir: "/z" }],
+    );
+
+    // Active session not present in entries (e.g. filtered out by category);
+    // fallback folder key scopes cycling to "/z".
+    const scoped = scopeNavEntriesToCurrentFolder(entries, "missing", "/z");
+    expect(scoped.map((e) => e.session.session_id)).toEqual(["z1"]);
+  });
+
+  test("no determinable folder key → parents only, no folder restriction", () => {
+    const a = makeS("a1", "/a");
+    const z = makeS("z1", "/z");
+    const child = makeS("c1", "/a", { parent_session_id: "a1" });
+    const entries = navEntries(
+      [a, z, child],
+      [{ working_dir: "/a" }, { working_dir: "/z" }],
+    );
+
+    const scoped = scopeNavEntriesToCurrentFolder(entries, "missing", null);
+    const ids = scoped.map((e) => e.session.session_id).sort();
+    expect(ids).toEqual(["a1", "z1"]);
+  });
+
+  test("skips archived conversations in the same folder", () => {
+    const active = makeS("active-1", "/proj");
+    const archived = makeS("archived-1", "/proj", { archived: true });
+    const entries = navEntries(
+      [active, archived],
+      [{ working_dir: "/proj" }],
+    );
+
+    const scoped = scopeNavEntriesToCurrentFolder(entries, "active-1");
+    expect(scoped.map((e) => e.session.session_id)).toEqual(["active-1"]);
+  });
+
+  test("active conversation archived → still scopes to folder, excludes archived", () => {
+    const active = makeS("active-1", "/proj");
+    const archived = makeS("archived-1", "/proj", { archived: true });
+    const entries = navEntries(
+      [active, archived],
+      [{ working_dir: "/proj" }],
+    );
+
+    // Even when the active conversation is archived, cycling stays in its folder
+    // and visits only non-archived parents.
+    const scoped = scopeNavEntriesToCurrentFolder(entries, "archived-1");
+    expect(scoped.map((e) => e.session.session_id)).toEqual(["active-1"]);
+  });
+
+  test("edge cases: null/undefined entries return []", () => {
+    expect(scopeNavEntriesToCurrentFolder(null, "x")).toEqual([]);
+    expect(scopeNavEntriesToCurrentFolder(undefined, "x")).toEqual([]);
   });
 });
 
