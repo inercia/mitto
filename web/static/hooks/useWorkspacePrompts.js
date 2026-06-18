@@ -22,7 +22,7 @@ import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
  *   periodicPrompts: Array, fetchWorkspacePrompts: Function,
  *   fetchConversationPromptsForSession: Function }}
  */
-export function useWorkspacePrompts({ workingDir, activeSessionId }) {
+export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) {
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
   const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
@@ -137,6 +137,20 @@ export function useWorkspacePrompts({ workingDir, activeSessionId }) {
         setWorkspacePrompts(data?.prompts || []);
         setWorkspacePromptsDir(workingDir);
 
+        // One-time notice when the backend migrated legacy .md prompt files to
+        // the new .prompt.yaml format. The backend reports this only once per
+        // migration (afterwards the .prompt.yaml already exists), so no extra
+        // client-side de-duplication is needed.
+        const migrated = data?.migrated;
+        if (showToast && Array.isArray(migrated) && migrated.length > 0) {
+          const names = migrated.join(", ");
+          showToast({
+            style: "info",
+            title: `Migrated ${migrated.length} prompt${migrated.length === 1 ? "" : "s"} to the new format`,
+            message: `New .prompt.yaml files were written for: ${names}. You can remove the old .md files when ready.`,
+          });
+        }
+
         // Store Last-Modified header for future conditional requests
         const lastModified = res.headers.get("Last-Modified");
         setWorkspacePromptsLastModified(lastModified);
@@ -150,7 +164,12 @@ export function useWorkspacePrompts({ workingDir, activeSessionId }) {
         }
       }
     },
-    [workspacePromptsDir, workspacePromptsLastModified, activeSessionId],
+    [
+      workspacePromptsDir,
+      workspacePromptsLastModified,
+      activeSessionId,
+      showToast,
+    ],
   );
 
   // Fetch workspace prompts when the active session's working_dir changes

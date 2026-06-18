@@ -211,6 +211,11 @@ type Server struct {
 	// is emitted, followers are suppressed.
 	recentStartFailsMu sync.Mutex
 	recentStartFails   map[string]time.Time
+
+	// promptMigrationMu serializes legacy .md → .prompt.yaml prompt migration so
+	// concurrent workspace-prompts fetches don't race writing the same files and
+	// only the first caller observes (and reports) a given migration.
+	promptMigrationMu sync.Mutex
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.

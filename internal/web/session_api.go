@@ -1063,6 +1063,11 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Migrate any legacy .md prompt files in this workspace to the new
+	// .prompt.yaml format before loading. Idempotent: once migrated, subsequent
+	// fetches find the .prompt.yaml already present and report nothing.
+	migrated := s.migrateWorkspacePrompts(workingDir)
+
 	// Get the ACP server type for this workspace (used for filtering prompts).
 	// We use the server type (not name) because prompts target types,
 	// and servers with the same type share prompts (e.g., auggie-fast and auggie-smart
@@ -1086,8 +1091,10 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 	// Get the file's last modification time for conditional requests
 	lastModified := s.sessionManager.GetWorkspaceRCLastModified(workingDir)
 
-	// Check If-Modified-Since header for conditional request
-	if !lastModified.IsZero() {
+	// Check If-Modified-Since header for conditional request.
+	// Skip the 304 short-circuit when we just migrated files: the client must
+	// receive the fresh prompt list and the one-time migration notice.
+	if !lastModified.IsZero() && len(migrated) == 0 {
 		// Set Last-Modified header
 		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
 
@@ -1101,6 +1108,8 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		}
+	} else if !lastModified.IsZero() {
+		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
 	}
 
 	// When include_global=true, load builtin + workspace prompts and return all (including disabled).
@@ -1236,11 +1245,62 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 			"enabled_evaluated", enabledEvaluated)
 	}
 
-	writeJSONOK(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"prompts":           prompts,
 		"working_dir":       workingDir,
 		"enabled_evaluated": enabledEvaluated,
-	})
+	}
+	if len(migrated) > 0 {
+		migratedNames := make([]string, 0, len(migrated))
+		for _, m := range migrated {
+			migratedNames = append(migratedNames, m.Name)
+		}
+		resp["migrated"] = migratedNames
+	}
+	writeJSONOK(w, resp)
+}
+
+// migrateWorkspacePrompts migrates legacy .md prompt files to .prompt.yaml for
+// the workspace's default prompts directory (.mitto/prompts) and any extra
+// prompts_dirs declared in .mittorc. Migration is idempotent and serialized via
+// promptMigrationMu so concurrent fetches don't race writing the same files;
+// only the first caller observes a given migration (afterwards the .prompt.yaml
+// already exists and nothing is reported). Returns the files migrated this call.
+func (s *Server) migrateWorkspacePrompts(workingDir string) []config.MigratedPrompt {
+	if workingDir == "" {
+		return nil
+	}
+
+	dirs := []string{appdir.WorkspacePromptsDir(workingDir)}
+	for _, dir := range s.sessionManager.GetWorkspacePromptsDirs(workingDir) {
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(workingDir, dir)
+		}
+		dirs = append(dirs, dir)
+	}
+
+	s.promptMigrationMu.Lock()
+	defer s.promptMigrationMu.Unlock()
+
+	var migrated []config.MigratedPrompt
+	seen := make(map[string]bool)
+	for _, dir := range dirs {
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+
+		m, err := config.MigrateMarkdownPromptsInDir(dir)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to migrate legacy prompts", "dir", dir, "error", err)
+		}
+		if len(m) > 0 && s.logger != nil {
+			s.logger.Info("Migrated legacy .md prompts to .prompt.yaml",
+				"dir", dir, "count", len(m))
+		}
+		migrated = append(migrated, m...)
+	}
+	return migrated
 }
 
 // handleWorkspacePromptsGETIncludeGlobal handles the include_global=true variant of the GET endpoint.

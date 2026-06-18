@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -733,5 +734,139 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 	filtered = FilterPromptsSpecificToACP(nil, "auggie")
 	if filtered != nil {
 		t.Errorf("FilterPromptsSpecificToACP(nil) = %v, want nil", filtered)
+	}
+}
+
+func TestMigrateMarkdownPromptsInDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// Legacy .md prompt with YAML front-matter + markdown body.
+	legacy := `---
+name: "CSO: latest report"
+description: "Generate a report"
+backgroundColor: "#C8E6C9"
+group: "CSOs"
+---
+
+# CSO Latest Report
+
+Read the latest messages and generate a report.
+`
+	mdPath := filepath.Join(dir, "cso-latest.md")
+	if err := os.WriteFile(mdPath, []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+
+	// A legacy file without front-matter: whole body is the content.
+	plainPath := filepath.Join(dir, "plain.md")
+	if err := os.WriteFile(plainPath, []byte("Just the body.\n"), 0644); err != nil {
+		t.Fatalf("write plain file: %v", err)
+	}
+
+	migrated, err := MigrateMarkdownPromptsInDir(dir)
+	if err != nil {
+		t.Fatalf("MigrateMarkdownPromptsInDir failed: %v", err)
+	}
+	if len(migrated) != 2 {
+		t.Fatalf("migrated count = %d, want 2", len(migrated))
+	}
+
+	// Original .md files are kept.
+	if _, err := os.Stat(mdPath); err != nil {
+		t.Errorf("legacy .md should be kept: %v", err)
+	}
+
+	// New .prompt.yaml written and parses back into the expected prompt.
+	p, err := LoadPromptFile(dir, "cso-latest.prompt.yaml")
+	if err != nil {
+		t.Fatalf("load migrated file: %v", err)
+	}
+	if p.Name != "CSO: latest report" {
+		t.Errorf("Name = %q, want %q", p.Name, "CSO: latest report")
+	}
+	if p.Group != "CSOs" {
+		t.Errorf("Group = %q, want %q", p.Group, "CSOs")
+	}
+	if p.BackgroundColor != "#C8E6C9" {
+		t.Errorf("BackgroundColor = %q, want %q", p.BackgroundColor, "#C8E6C9")
+	}
+	wantBody := "# CSO Latest Report\n\nRead the latest messages and generate a report."
+	if p.Content != wantBody {
+		t.Errorf("Content = %q, want %q", p.Content, wantBody)
+	}
+
+	// Plain file: name derived from filename, whole file is content.
+	plain, err := LoadPromptFile(dir, "plain.prompt.yaml")
+	if err != nil {
+		t.Fatalf("load migrated plain file: %v", err)
+	}
+	if plain.Name != "plain" {
+		t.Errorf("plain Name = %q, want %q", plain.Name, "plain")
+	}
+	if plain.Content != "Just the body." {
+		t.Errorf("plain Content = %q, want %q", plain.Content, "Just the body.")
+	}
+
+	// Idempotency: a second run migrates nothing (targets already exist).
+	again, err := MigrateMarkdownPromptsInDir(dir)
+	if err != nil {
+		t.Fatalf("second MigrateMarkdownPromptsInDir failed: %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("second run migrated %d, want 0", len(again))
+	}
+
+	// Non-existent directory is treated as empty (no error).
+	none, err := MigrateMarkdownPromptsInDir(filepath.Join(dir, "does-not-exist"))
+	if err != nil {
+		t.Fatalf("missing dir should not error: %v", err)
+	}
+	if none != nil {
+		t.Errorf("missing dir migrated = %v, want nil", none)
+	}
+}
+
+// TestMigrateMarkdownPromptsInDir_LiteralBlock verifies that a multi-line body
+// containing emoji (4-byte UTF-8 runes) is written as a readable literal block
+// scalar with the emoji preserved, rather than the escaped double-quoted scalar
+// that yaml.v3 emits by default, and that it round-trips back to the original.
+func TestMigrateMarkdownPromptsInDir_LiteralBlock(t *testing.T) {
+	dir := t.TempDir()
+
+	body := "# Title\n\nLine with emoji 🔴 and a ▶️ button.\n\n- item one\n- item two"
+	legacy := "---\nname: \"Emoji Prompt\"\n---\n\n" + body + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "emoji.md"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+
+	migrated, err := MigrateMarkdownPromptsInDir(dir)
+	if err != nil {
+		t.Fatalf("MigrateMarkdownPromptsInDir failed: %v", err)
+	}
+	if len(migrated) != 1 {
+		t.Fatalf("migrated count = %d, want 1", len(migrated))
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "emoji.prompt.yaml"))
+	if err != nil {
+		t.Fatalf("read migrated file: %v", err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "prompt: |-") {
+		t.Errorf("expected literal block scalar, got:\n%s", text)
+	}
+	if strings.Contains(text, "\\U0001F534") || strings.Contains(text, `prompt: "`) {
+		t.Errorf("body should not be an escaped double-quoted scalar, got:\n%s", text)
+	}
+	if !strings.Contains(text, "🔴") {
+		t.Errorf("emoji should be preserved verbatim, got:\n%s", text)
+	}
+
+	p, err := LoadPromptFile(dir, "emoji.prompt.yaml")
+	if err != nil {
+		t.Fatalf("load migrated file: %v", err)
+	}
+	if p.Content != body {
+		t.Errorf("Content round-trip = %q, want %q", p.Content, body)
 	}
 }
