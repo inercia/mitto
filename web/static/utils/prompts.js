@@ -17,39 +17,86 @@ export function promptMenus(prompt) {
 }
 
 /**
- * Capabilities each menu can supply to prompts. A prompt that declares a
- * `requires` capability is only shown in a menu that provides ALL of the
- * capabilities it requires. Menus advertise what they can supply; prompts
- * declare what they need.
+ * Frontend mirror of the backend parameter-type registry.
+ * Canonical source of truth: internal/config/prompt_param_types.go
+ * These two lists MUST be kept in sync — do not add types here without also
+ * adding them to the Go registry, and vice versa.
+ *
+ * Type semantics:
+ *   beadsId        — a beads issue ID (e.g. "mitto-42")
+ *   beadsTitle     — a beads issue title (free text, typically auto-filled)
+ *   sessionId      — a Mitto conversation/session UUID
+ *   workspaceId    — a Mitto workspace UUID
+ *   workspaceFolder — an absolute path to the workspace root directory
+ *   text           — generic free-form text (catch-all)
  */
-export const MENU_CAPABILITIES = {
+export const KNOWN_PARAM_TYPES = [
+  "beadsId",
+  "beadsTitle",
+  "sessionId",
+  "workspaceId",
+  "workspaceFolder",
+  "text",
+];
+
+/**
+ * Returns the structured parameters array for a prompt, or [] if absent/empty.
+ * Each entry is { name, type, description?, required? }.
+ */
+export function promptParameters(prompt) {
+  const params = prompt?.parameters;
+  if (Array.isArray(params) && params.length > 0) return params;
+  return [];
+}
+
+/**
+ * Parameter types that each menu can auto-supply from its selection context.
+ * A prompt is shown in a menu only when every type it declares is in that
+ * menu's provided-types list (see menuSatisfies).
+ *
+ * beadsIssues provides beadsId and beadsTitle because the per-issue context
+ * menu always has the selected issue in scope.
+ */
+export const MENU_PARAM_TYPES = {
   prompts: [],
   promptsPeriodic: [],
   conversation: [],
-  beadsIssues: ["parameters"],
+  beadsIssues: ["beadsId", "beadsTitle"],
   beadsList: [],
 };
 
 /**
- * Parse a prompt's comma-separated `requires` list into an array of capability
- * names. Empty or absent → [].
+ * Returns true if `menu` can supply every parameter type that the prompt
+ * declares. A prompt with no parameters is satisfied by any menu (including
+ * unknown ones). For an unknown menu, its provided types are treated as []
+ * (so a prompt WITH params is NOT satisfied — matching old behaviour).
  */
-export function promptRequires(prompt) {
-  const raw =
-    typeof prompt?.requires === "string" ? prompt.requires.trim() : "";
-  if (raw === "") return [];
-  return raw
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
+export function menuSatisfies(prompt, menu) {
+  const params = promptParameters(prompt);
+  if (params.length === 0) return true;
+  const provided = MENU_PARAM_TYPES[menu] || [];
+  return params.every((p) => provided.includes(p.type));
 }
 
 /**
- * Returns true if `menu` provides every capability the prompt requires.
+ * Build the arguments map for a prompt from a map of type → value.
+ * For each declared parameter { name, type }, if typeValues[type] is defined
+ * (not undefined/null), the parameter's name is mapped to that value.
+ * Returns a plain object (possibly empty).
+ *
+ * Example:
+ *   collectPromptArguments(prompt, { beadsId: "mitto-42", beadsTitle: "Fix bug" })
+ *   // → { ISSUE_ID: "mitto-42" }  (for a prompt with param { name:"ISSUE_ID", type:"beadsId" })
  */
-export function menuSatisfiesRequires(prompt, menu) {
-  const provided = MENU_CAPABILITIES[menu] || [];
-  return promptRequires(prompt).every((cap) => provided.includes(cap));
+export function collectPromptArguments(prompt, typeValues) {
+  const result = {};
+  for (const { name, type } of promptParameters(prompt)) {
+    const val = typeValues[type];
+    if (val !== undefined && val !== null) {
+      result[name] = val;
+    }
+  }
+  return result;
 }
 
 /**

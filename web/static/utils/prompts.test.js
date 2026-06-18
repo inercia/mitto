@@ -4,9 +4,11 @@
 
 import {
   promptMenus,
-  promptRequires,
-  menuSatisfiesRequires,
-  MENU_CAPABILITIES,
+  promptParameters,
+  KNOWN_PARAM_TYPES,
+  MENU_PARAM_TYPES,
+  menuSatisfies,
+  collectPromptArguments,
 } from "./prompts.js";
 
 // =============================================================================
@@ -61,96 +63,215 @@ describe("promptMenus", () => {
 });
 
 // =============================================================================
-// promptRequires Tests
+// promptParameters Tests
 // =============================================================================
 
-describe("promptRequires", () => {
-  test("returns [] when requires field is absent", () => {
-    expect(promptRequires({})).toEqual([]);
+describe("promptParameters", () => {
+  test("returns [] when parameters field is absent", () => {
+    expect(promptParameters({})).toEqual([]);
   });
 
-  test("returns [] when requires is empty string", () => {
-    expect(promptRequires({ requires: "" })).toEqual([]);
+  test("returns [] when parameters is an empty array", () => {
+    expect(promptParameters({ parameters: [] })).toEqual([]);
   });
 
-  test("returns single capability from non-empty requires", () => {
-    expect(promptRequires({ requires: "parameters" })).toEqual(["parameters"]);
+  test("returns the parameters array when non-empty", () => {
+    const params = [{ name: "ISSUE_ID", type: "beadsId" }];
+    expect(promptParameters({ parameters: params })).toEqual(params);
   });
 
-  test("returns multiple capabilities when comma-separated", () => {
-    expect(promptRequires({ requires: "parameters, context" })).toEqual([
-      "parameters",
-      "context",
-    ]);
+  test("returns [] for null prompt", () => {
+    expect(promptParameters(null)).toEqual([]);
   });
 
-  test("trims whitespace around each capability name", () => {
-    expect(promptRequires({ requires: " parameters , context " })).toEqual([
-      "parameters",
-      "context",
-    ]);
+  test("returns [] for undefined prompt", () => {
+    expect(promptParameters(undefined)).toEqual([]);
   });
 
-  test("handles null prompt gracefully", () => {
-    expect(promptRequires(null)).toEqual([]);
+  test("returns [] when parameters is not an array", () => {
+    expect(promptParameters({ parameters: "beadsId" })).toEqual([]);
   });
 });
 
 // =============================================================================
-// menuSatisfiesRequires Tests
+// KNOWN_PARAM_TYPES Tests
 // =============================================================================
 
-describe("menuSatisfiesRequires", () => {
-  test("prompt with no requires is satisfied by any menu", () => {
-    expect(menuSatisfiesRequires({}, "prompts")).toBe(true);
-    expect(menuSatisfiesRequires({}, "conversation")).toBe(true);
-    expect(menuSatisfiesRequires({}, "beadsIssues")).toBe(true);
-    expect(menuSatisfiesRequires({}, "beadsList")).toBe(true);
+describe("KNOWN_PARAM_TYPES", () => {
+  test("includes beadsId", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("beadsId");
   });
 
-  test("beadsIssues menu satisfies 'parameters' requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "beadsIssues")).toBe(true);
+  test("includes beadsTitle", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("beadsTitle");
   });
 
-  test("prompts menu does NOT satisfy 'parameters' requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "prompts")).toBe(false);
+  test("includes sessionId", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("sessionId");
   });
 
-  test("conversation menu does NOT satisfy 'parameters' requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "conversation")).toBe(false);
+  test("includes workspaceId", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("workspaceId");
   });
 
-  test("unknown menu does NOT satisfy any capability requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "unknownMenu")).toBe(false);
+  test("includes workspaceFolder", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("workspaceFolder");
   });
 
-  test("returns true for unknown menu when prompt has no requirements", () => {
-    expect(menuSatisfiesRequires({ requires: "" }, "unknownMenu")).toBe(true);
+  test("includes text", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("text");
   });
 });
 
 // =============================================================================
-// MENU_CAPABILITIES Tests
+// MENU_PARAM_TYPES Tests
 // =============================================================================
 
-describe("MENU_CAPABILITIES", () => {
-  test("prompts menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.prompts).toEqual([]);
+describe("MENU_PARAM_TYPES", () => {
+  test("prompts menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.prompts).toEqual([]);
   });
 
-  test("promptsPeriodic menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.promptsPeriodic).toEqual([]);
+  test("promptsPeriodic menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.promptsPeriodic).toEqual([]);
   });
 
-  test("conversation menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.conversation).toEqual([]);
+  test("conversation menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.conversation).toEqual([]);
   });
 
-  test("beadsIssues menu has 'parameters' capability", () => {
-    expect(MENU_CAPABILITIES.beadsIssues).toContain("parameters");
+  test("beadsIssues menu provides beadsId and beadsTitle", () => {
+    expect(MENU_PARAM_TYPES.beadsIssues).toContain("beadsId");
+    expect(MENU_PARAM_TYPES.beadsIssues).toContain("beadsTitle");
   });
 
-  test("beadsList menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.beadsList).toEqual([]);
+  test("beadsList menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.beadsList).toEqual([]);
+  });
+});
+
+// =============================================================================
+// menuSatisfies Tests
+// =============================================================================
+
+describe("menuSatisfies", () => {
+  test("prompt with no parameters is satisfied by any known menu", () => {
+    expect(menuSatisfies({}, "prompts")).toBe(true);
+    expect(menuSatisfies({}, "conversation")).toBe(true);
+    expect(menuSatisfies({}, "beadsIssues")).toBe(true);
+    expect(menuSatisfies({}, "beadsList")).toBe(true);
+  });
+
+  test("prompt with no parameters is satisfied by an unknown menu", () => {
+    expect(menuSatisfies({}, "unknownMenu")).toBe(true);
+  });
+
+  test("beadsId prompt is satisfied by beadsIssues menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("beadsId prompt is NOT satisfied by prompts menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "prompts")).toBe(false);
+  });
+
+  test("beadsId prompt is NOT satisfied by conversation menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+
+  test("beadsId prompt is NOT satisfied by an unknown menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "unknownMenu")).toBe(false);
+  });
+
+  test("prompt requiring beadsId and beadsTitle is satisfied by beadsIssues", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("prompt requiring beadsId and beadsTitle is NOT satisfied by prompts", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(false);
+  });
+});
+
+// =============================================================================
+// collectPromptArguments Tests
+// =============================================================================
+
+describe("collectPromptArguments", () => {
+  test("returns empty object for prompt with no parameters", () => {
+    expect(collectPromptArguments({}, { beadsId: "mitto-42" })).toEqual({});
+  });
+
+  test("maps beadsId type to the correct param name", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, { beadsId: "mitto-42" })).toEqual({
+      ISSUE_ID: "mitto-42",
+    });
+  });
+
+  test("maps beadsTitle type to the correct param name", () => {
+    const prompt = { parameters: [{ name: "TITLE", type: "beadsTitle" }] };
+    expect(
+      collectPromptArguments(prompt, { beadsTitle: "Fix the bug" })
+    ).toEqual({ TITLE: "Fix the bug" });
+  });
+
+  test("maps both beadsId and beadsTitle when both are supplied", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "ISSUE_TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(
+      collectPromptArguments(prompt, {
+        beadsId: "mitto-42",
+        beadsTitle: "Fix the bug",
+      })
+    ).toEqual({ ISSUE_ID: "mitto-42", ISSUE_TITLE: "Fix the bug" });
+  });
+
+  test("ignores parameter types not present in typeValues", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    // Only beadsId is supplied; beadsTitle is absent
+    expect(collectPromptArguments(prompt, { beadsId: "mitto-42" })).toEqual({
+      ISSUE_ID: "mitto-42",
+    });
+  });
+
+  test("ignores parameter types whose value is null", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, { beadsId: null })).toEqual({});
+  });
+
+  test("ignores parameter types whose value is undefined", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(
+      collectPromptArguments(prompt, { beadsId: undefined })
+    ).toEqual({});
+  });
+
+  test("returns empty object when typeValues is empty", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, {})).toEqual({});
   });
 });

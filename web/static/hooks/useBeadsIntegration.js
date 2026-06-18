@@ -7,7 +7,7 @@
 const { useState, useCallback, useMemo, useRef } = window.preact;
 
 import { apiUrl, authFetch } from "../utils/index.js";
-import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
+import { promptMenus, menuSatisfies, collectPromptArguments } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
 /**
@@ -129,7 +129,7 @@ export function useBeadsIntegration({
           (p) =>
             p &&
             promptMenus(p).includes("beadsIssues") &&
-            menuSatisfiesRequires(p, "beadsIssues"),
+            menuSatisfies(p, "beadsIssues"),
         )
         .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } catch (err) {
@@ -162,7 +162,7 @@ export function useBeadsIntegration({
           (p) =>
             p &&
             promptMenus(p).includes("beadsList") &&
-            menuSatisfiesRequires(p, "beadsList"),
+            menuSatisfies(p, "beadsList"),
         )
         .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } catch (err) {
@@ -172,12 +172,13 @@ export function useBeadsIntegration({
   }, [activeSessionId]);
 
   // Run a beads prompt against a specific issue: create a new conversation in
-  // the beads workspace, then seed it with the prompt text plus a single
-  // `ISSUE_ID` argument. The backend's ${VAR} substitution engine resolves
-  // `${ISSUE_ID}` in the prompt body when the queued message is sent (see the
-  // queue `arguments` support from mitto-t93); the prompt itself loads any
-  // further detail via `bd show ${ISSUE_ID}`. Mirrors handleSendPromptToConversation's
-  // queue delivery (the queue runs the message once the new conversation is idle).
+  // the beads workspace, then seed it with the prompt text and a type-driven
+  // arguments map built from the prompt's declared parameters. The backend's
+  // ${VAR} substitution engine resolves each ${PARAM_NAME} in the prompt body
+  // when the queued message is sent (mitto-t93). collectPromptArguments maps
+  // each { name, type } parameter to the value supplied for its type (e.g.
+  // beadsId → issue.id, beadsTitle → issue.title). Mirrors
+  // handleSendPromptToConversation's queue delivery.
   const handleRunBeadsPrompt = useCallback(
     async (prompt, issue) => {
       if (!prompt?.name || !issue || !beadsWorkingDir) return;
@@ -221,7 +222,7 @@ export function useBeadsIntegration({
         name: convName,
         beadsIssue: issue.id,
         prompt,
-        arguments: { ISSUE_ID: issue.id },
+        arguments: collectPromptArguments(prompt, { beadsId: issue.id, beadsTitle: issue.title }),
       });
       if (!result?.sessionId) {
         showToast({

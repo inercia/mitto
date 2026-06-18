@@ -8,7 +8,7 @@
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
 import { apiUrl, authFetch } from "../utils/index.js";
-import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
+import { promptMenus, menuSatisfies } from "../utils/prompts.js";
 
 /**
  * Workspace-prompts fetch/cache hook.
@@ -34,7 +34,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       workspacePrompts.filter(
         (p) =>
           promptMenus(p).includes("prompts") &&
-          menuSatisfiesRequires(p, "prompts"),
+          menuSatisfies(p, "prompts"),
       ),
     [workspacePrompts],
   );
@@ -49,9 +49,9 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       workspacePrompts.filter((p) => {
         const menus = promptMenus(p);
         return (
-          (menus.includes("prompts") && menuSatisfiesRequires(p, "prompts")) ||
+          (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
           (menus.includes("promptsPeriodic") &&
-            menuSatisfiesRequires(p, "promptsPeriodic"))
+            menuSatisfies(p, "promptsPeriodic"))
         );
       }),
     [workspacePrompts],
@@ -84,7 +84,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
           (p) =>
             p &&
             promptMenus(p).includes("conversation") &&
-            menuSatisfiesRequires(p, "conversation"),
+            menuSatisfies(p, "conversation"),
         );
       } catch (err) {
         console.error(

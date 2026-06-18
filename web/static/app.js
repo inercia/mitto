@@ -164,12 +164,7 @@ import {
 } from "./constants.js";
 
 // Import prompt utilities
-import {
-  promptMenus,
-  promptRequires,
-  menuSatisfiesRequires,
-  MENU_CAPABILITIES,
-} from "./utils/prompts.js";
+import { promptMenus } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
 import {

@@ -4,9 +4,9 @@ package config
 // for the structured `parameters:` field in .prompt.yaml files.
 //
 // This slice is the SINGLE SOURCE OF TRUTH for backend type validation.
-// It is mirrored by the frontend type picker (sibling bead .3) and surfaced
-// via MCP tool schemas (sibling bead .2). When adding a new type, add it here
-// only — all downstream consumers reference this slice.
+// It is mirrored by KNOWN_PARAM_TYPES in web/static/utils/prompts.js (frontend)
+// and surfaced via MCP tool schemas (sibling bead .2). When adding a new type,
+// update BOTH this slice AND the frontend mirror — they must stay in sync.
 //
 // Type semantics:
 //   - beadsId        — a beads issue ID (e.g. "mitto-42")
