@@ -1359,6 +1359,22 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             <fieldset class="fieldset">
               <legend class="fieldset-legend">Issue</legend>
 
+              ${createParentId ? html`
+                <div>
+                  <label class=${labelClass} for="new-issue-parent">Parent</label>
+                  <input
+                    id="new-issue-parent"
+                    type="text"
+                    class="${inputClass} font-mono"
+                    value=${createParentId}
+                    readonly
+                    aria-readonly="true"
+                    title="This issue will be created as a child of ${createParentId}"
+                    data-testid="beads-create-parent"
+                  />
+                </div>
+              ` : null}
+
               <div>
                 <label class=${labelClass} for="new-issue-title">Title</label>
                 ${TitleField("create")}

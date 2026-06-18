@@ -961,6 +961,34 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
     },
   );
+
+  testWithCleanup(
+    "the epic '+' button opens the create panel with a read-only, pre-filled Parent field",
+    async ({ page, timeouts }) => {
+      await clickBeadsButton(page, timeouts);
+      await expect(page.getByText(EPIC_TITLE).first()).toBeVisible({
+        timeout: timeouts.appReady,
+      });
+
+      // The grouped epic header carries a "+" (add-child) button scoped to its
+      // summary. Clicking it opens the New Issue panel pre-seeded with the epic
+      // as the new issue's parent.
+      const epicGroup = page.locator("details.beads-epic-group").first();
+      await epicGroup
+        .locator('summary [data-testid="beads-issue-add-child"]')
+        .click();
+
+      const panel = page.locator(NEW_ISSUE_PANEL);
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+
+      // The Parent field is pre-filled with the epic id and is read-only, so the
+      // new issue's parent relationship is fixed to the epic it was opened from.
+      const parentField = panel.locator('[data-testid="beads-create-parent"]');
+      await expect(parentField).toBeVisible();
+      await expect(parentField).toHaveValue("mitto-epic");
+      await expect(parentField).toHaveJSProperty("readOnly", true);
+    },
+  );
 });
 
 /**
