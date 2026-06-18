@@ -5,7 +5,7 @@ requires: parameters
 description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
 backgroundColor: '#B3E5FC'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: commandExists("bd") && dirExists(".beads") && item.status != "closed"
 prompt: |
   ## Session Context
 
