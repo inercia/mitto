@@ -89,6 +89,8 @@ import {
   useSessionNavigation,
   useConversationMenu,
   useConversationSeeding,
+  decidePeriodicAction,
+  makePeriodicNow,
 } from "./hooks/index.js";
 
 // Import components
@@ -1646,18 +1648,44 @@ function App() {
   // text. The queue delivers it to the agent when the conversation is idle, so
   // this works for any conversation (not just the active one).
   //
-  // When the chosen prompt declares `periodic`, the handler ALWAYS creates a NEW
-  // periodic conversation (not a one-time seed of the existing one), even from
-  // the per-conversation context menu. Periodic is not offered for child
-  // conversations (their parent_session_id is set).
+  // When the chosen prompt declares `periodic`, the handler branches on the target
+  // conversation's state (decidePeriodicAction):
+  //   "new-periodic"  — no session: open schedule dialog → create NEW periodic conversation.
+  //   "make-periodic" — regular conversation: configure as periodic + fire first run.
+  //   "one-shot"      — already periodic / child conversation: send prompt once, no config change.
   const handleSendPromptToConversation = useCallback(
     async (session, prompt) => {
       if (!prompt?.name) return;
 
-      // Periodic prompts: open schedule dialog → create new periodic conversation.
       if (prompt.periodic) {
-        // Guard: never offer periodic for child conversations.
-        if (session?.parent_session_id) return;
+        const action = decidePeriodicAction(session);
+
+        if (action === "make-periodic") {
+          // Regular conversation: configure it as periodic now and fire the first run.
+          const sessionId = session.session_id;
+          const result = await makePeriodicNow(sessionId, prompt);
+          if (result.success) {
+            showToast({ style: "success", title: `Made conversation periodic with "${prompt.name}"`, duration: 3000 });
+          } else {
+            showToast({ style: "warning", title: "Failed to configure periodic schedule", duration: 4000 });
+          }
+          return;
+        }
+
+        if (action === "one-shot") {
+          // Already-periodic or child conversation: enqueue a single run without touching config.
+          const sessionId = session?.session_id;
+          if (!sessionId) return;
+          const result = await seedConversationWithPrompt(sessionId, prompt);
+          if (result.success) {
+            showToast({ style: "success", title: `Sent "${prompt.name}" to conversation`, duration: 3000 });
+          } else {
+            showToast({ style: "warning", title: "Failed to send prompt", duration: 4000 });
+          }
+          return;
+        }
+
+        // action === "new-periodic": no session — open schedule dialog → create NEW periodic conversation.
         setPeriodicScheduleDialog({
           prompt,
           onSchedule: async (schedule) => {
@@ -1681,7 +1709,7 @@ function App() {
         return;
       }
 
-      // One-time seed path: enqueue the named prompt to the existing conversation.
+      // Non-periodic prompt: enqueue the named prompt to the existing conversation.
       const sessionId = session?.session_id;
       if (!sessionId) return;
       const result = await seedConversationWithPrompt(sessionId, prompt);
@@ -2156,6 +2184,7 @@ function App() {
             actionButtons=${actionButtons}
             availableCommands=${availableCommands}
             periodicEnabled=${sessionInfo?.periodic_enabled || false}
+            onPeriodicPrompt=${(prompt) => handleSendPromptToConversation(activeSession, prompt)}
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             gcSuspended=${sessionInfo?.gc_suspended || false}

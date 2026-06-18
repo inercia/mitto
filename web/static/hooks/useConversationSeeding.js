@@ -6,6 +6,97 @@ import { secureFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 
 /**
+ * Decide which periodic action to take based on the target session's state.
+ *
+ * Returns one of:
+ *   "new-periodic"  — no session (or no session_id): create a NEW periodic conversation.
+ *   "one-shot"      — session is already periodic, or it is a child: send once, do NOT modify config.
+ *   "make-periodic" — regular running conversation: configure it as periodic now.
+ *
+ * @param {Object|null|undefined} session - The target session object (from session list / info).
+ * @returns {"new-periodic" | "one-shot" | "make-periodic"}
+ */
+export function decidePeriodicAction(session) {
+  if (!session || !session.session_id) return "new-periodic";
+  if (session.periodic_enabled || session.periodic_configured) return "one-shot";
+  if (session.parent_session_id) return "one-shot";
+  return "make-periodic";
+}
+
+/**
+ * Make an existing regular conversation immediately periodic using a prompt's
+ * declared defaults, then fire the first run.
+ *
+ * Steps:
+ *   1. PUT /api/sessions/{id}/periodic  — configure prompt_name + frequency + max_iterations
+ *   2. POST /api/sessions/{id}/periodic/run-now  — fire first run (reset_timer: true)
+ *
+ * @param {string} sessionId
+ * @param {{ name: string, periodic?: { value?: number, unit?: string, at?: string, maxIterations?: number } }} prompt
+ * @param {{ fetchImpl?: Function }} [opts]
+ * @returns {Promise<{ success: boolean, error?: string }>}
+ */
+export async function makePeriodicNow(sessionId, prompt, { fetchImpl } = {}) {
+  if (!sessionId || !prompt?.name) {
+    return { success: false, error: "invalid_request" };
+  }
+
+  const p = prompt?.periodic || {};
+  const value = p.value || 1;
+  const unit = p.unit || "hours";
+  const frequency = { value, unit };
+  if (unit === "days" && p.at) {
+    frequency.at = p.at;
+  }
+
+  const maxIterations = (typeof p.maxIterations === "number" && p.maxIterations > 0)
+    ? p.maxIterations : 0;
+
+  const fetch_ = fetchImpl || secureFetch;
+
+  // Step 1: configure periodic
+  try {
+    const putResp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt_name: prompt.name,
+        frequency,
+        enabled: true,
+        max_iterations: maxIterations,
+      }),
+    });
+    if (!putResp.ok) {
+      let errData = {};
+      try { errData = await putResp.json(); } catch (_) {}
+      return { success: false, error: errData.error || "periodic_setup_failed" };
+    }
+  } catch (err) {
+    console.error("makePeriodicNow PUT error:", err);
+    return { success: false, error: "periodic_setup_failed" };
+  }
+
+  // Step 2: fire first run
+  try {
+    const runResp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic/run-now`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reset_timer: true }),
+    });
+    if (!runResp.ok) {
+      let errData = {};
+      try { errData = await runResp.json(); } catch (_) {}
+      return { success: false, error: errData.error || "run_now_failed" };
+    }
+  } catch (err) {
+    console.error("makePeriodicNow run-now error:", err);
+    return { success: false, error: "run_now_failed" };
+  }
+
+  return { success: true };
+}
+
+/**
  * Build the POST body for seeding a conversation queue with a named prompt.
  * Never includes `message` or the full prompt body.
  * @param {{ name: string }} prompt
@@ -57,9 +148,11 @@ export async function seedConversationWithPrompt(sessionId, prompt, { arguments:
 
 /**
  * Configure a periodic schedule on a newly-created session via PUT.
+ * Includes max_iterations when periodic.maxIterations is a positive number,
+ * or falls back to prompt?.periodic?.maxIterations. Sends 0 (unlimited) otherwise.
  * @param {string} sessionId
- * @param {{ name: string }} prompt
- * @param {{ value: number, unit: string, at?: string }} periodic
+ * @param {{ name: string, periodic?: { maxIterations?: number } }} prompt
+ * @param {{ value: number, unit: string, at?: string, maxIterations?: number }} periodic
  * @param {{ fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
@@ -71,6 +164,15 @@ export async function configurePeriodicSchedule(sessionId, prompt, periodic, { f
     frequency.at = at;
   }
 
+  // Resolve max_iterations: from the dialog's returned value, then from prompt defaults.
+  // A positive number is sent as-is; 0 means unlimited.
+  let maxIterations = 0;
+  if (typeof periodic.maxIterations === "number" && periodic.maxIterations > 0) {
+    maxIterations = periodic.maxIterations;
+  } else if (typeof prompt?.periodic?.maxIterations === "number" && prompt.periodic.maxIterations > 0) {
+    maxIterations = prompt.periodic.maxIterations;
+  }
+
   const fetch_ = fetchImpl || secureFetch;
   try {
     const resp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic`), {
@@ -80,6 +182,7 @@ export async function configurePeriodicSchedule(sessionId, prompt, periodic, { f
         prompt_name: prompt?.name,
         frequency,
         enabled: true,
+        max_iterations: maxIterations,
       }),
     });
 

@@ -3,7 +3,7 @@
  */
 
 import { jest } from "@jest/globals";
-import { buildSeedQueueBody, seedConversationWithPrompt, configurePeriodicSchedule, useConversationSeeding } from "./useConversationSeeding.js";
+import { buildSeedQueueBody, seedConversationWithPrompt, configurePeriodicSchedule, decidePeriodicAction, makePeriodicNow, useConversationSeeding } from "./useConversationSeeding.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
 global.window = global.window || {};
@@ -375,5 +375,268 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
     expect(callArg.initialPromptName).toBe("p1");
     expect(callArg.arguments).toEqual({ X: "y" });
     expect(result).toEqual({ sessionId: "sess-one-time" });
+  });
+});
+
+// =============================================================================
+// decidePeriodicAction
+// =============================================================================
+
+describe("decidePeriodicAction", () => {
+  test("returns new-periodic when session is null", () => {
+    expect(decidePeriodicAction(null)).toBe("new-periodic");
+  });
+
+  test("returns new-periodic when session is undefined", () => {
+    expect(decidePeriodicAction(undefined)).toBe("new-periodic");
+  });
+
+  test("returns new-periodic when session has no session_id", () => {
+    expect(decidePeriodicAction({ name: "foo" })).toBe("new-periodic");
+  });
+
+  test("returns one-shot when session is periodic_enabled", () => {
+    expect(decidePeriodicAction({ session_id: "s1", periodic_enabled: true })).toBe("one-shot");
+  });
+
+  test("returns one-shot when session is periodic_configured (but not enabled)", () => {
+    expect(decidePeriodicAction({ session_id: "s1", periodic_configured: true })).toBe("one-shot");
+  });
+
+  test("returns one-shot when session has parent_session_id (child conversation)", () => {
+    expect(decidePeriodicAction({ session_id: "s1", parent_session_id: "parent-1" })).toBe("one-shot");
+  });
+
+  test("returns make-periodic for a regular running conversation", () => {
+    expect(decidePeriodicAction({ session_id: "s1" })).toBe("make-periodic");
+  });
+
+  test("returns make-periodic even when periodic_enabled is false/undefined", () => {
+    expect(decidePeriodicAction({ session_id: "s1", periodic_enabled: false })).toBe("make-periodic");
+  });
+});
+
+// =============================================================================
+// makePeriodicNow
+// =============================================================================
+
+describe("makePeriodicNow", () => {
+  const prompt = {
+    name: "daily-standup",
+    periodic: { value: 1, unit: "hours", maxIterations: 5 },
+  };
+
+  function makeFetchSequence(...responses) {
+    let i = 0;
+    return jest.fn(() => {
+      const r = responses[i++] || responses[responses.length - 1];
+      return Promise.resolve(r);
+    });
+  }
+
+  function makeResp(status, data = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(data),
+    };
+  }
+
+  test("returns invalid_request when sessionId is missing", async () => {
+    const result = await makePeriodicNow(null, prompt);
+    expect(result).toEqual({ success: false, error: "invalid_request" });
+  });
+
+  test("returns invalid_request when prompt.name is missing", async () => {
+    const result = await makePeriodicNow("sess-1", { periodic: {} });
+    expect(result).toEqual({ success: false, error: "invalid_request" });
+  });
+
+  test("PUTs periodic config with correct body including max_iterations", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-1", prompt, { fetchImpl });
+
+    const [putUrl, putOpts] = fetchImpl.mock.calls[0];
+    expect(putUrl).toContain("/api/sessions/sess-1/periodic");
+    expect(putOpts.method).toBe("PUT");
+
+    const body = JSON.parse(putOpts.body);
+    expect(body.prompt_name).toBe("daily-standup");
+    expect(body.enabled).toBe(true);
+    expect(body.frequency.value).toBe(1);
+    expect(body.frequency.unit).toBe("hours");
+    expect(body.max_iterations).toBe(5);
+  });
+
+  test("POSTs run-now with reset_timer:true after successful PUT", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    const result = await makePeriodicNow("sess-1", prompt, { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [runUrl, runOpts] = fetchImpl.mock.calls[1];
+    expect(runUrl).toContain("/api/sessions/sess-1/periodic/run-now");
+    expect(runOpts.method).toBe("POST");
+
+    const runBody = JSON.parse(runOpts.body);
+    expect(runBody.reset_timer).toBe(true);
+
+    expect(result).toEqual({ success: true });
+  });
+
+  test("does NOT call run-now when PUT fails", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(500, { error: "server_error" }));
+    const result = await makePeriodicNow("sess-1", prompt, { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  test("includes 'at' in frequency only for days unit", async () => {
+    const promptWithDays = {
+      name: "daily-report",
+      periodic: { value: 1, unit: "days", at: "09:00", maxIterations: 0 },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-2", promptWithDays, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.frequency.at).toBe("09:00");
+  });
+
+  test("sends max_iterations:0 when prompt has no maxIterations", async () => {
+    const noMaxPrompt = { name: "simple", periodic: { value: 2, unit: "hours" } };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-3", noMaxPrompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_iterations).toBe(0);
+  });
+
+  test("returns error when run-now fails", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(500, { error: "busy" }));
+    const result = await makePeriodicNow("sess-4", prompt, { fetchImpl });
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+});
+
+// =============================================================================
+// configurePeriodicSchedule — max_iterations support
+// =============================================================================
+
+describe("configurePeriodicSchedule — max_iterations", () => {
+  const prompt = { name: "my-prompt", periodic: { maxIterations: 10 } };
+
+  function makeFetch(status) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve({}),
+      }),
+    );
+  }
+
+  test("includes max_iterations from periodic.maxIterations when positive", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", { name: "p" }, { value: 1, unit: "hours", maxIterations: 7 }, { fetchImpl });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_iterations).toBe(7);
+  });
+
+  test("falls back to prompt.periodic.maxIterations when periodic.maxIterations is absent", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_iterations).toBe(10);
+  });
+
+  test("sends max_iterations:0 when both are absent/zero (unlimited)", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", { name: "p" }, { value: 1, unit: "hours", maxIterations: 0 }, { fetchImpl });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_iterations).toBe(0);
+  });
+
+  test("periodic.maxIterations takes priority over prompt.periodic.maxIterations", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours", maxIterations: 3 }, { fetchImpl });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_iterations).toBe(3);
+  });
+});
+
+// =============================================================================
+// ChatInput.handlePredefinedPrompt routing — periodic branch
+//
+// Tests the pure routing decision: when a prompt has .periodic set and
+// onPeriodicPrompt is provided, it must be called; otherwise the normal path runs.
+// This mirrors what ChatInput.handlePredefinedPrompt does after the shiftKey check.
+// =============================================================================
+
+describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
+  /**
+   * Minimal simulation of the ChatInput.handlePredefinedPrompt routing logic
+   * (the lines added in this bead). Extracted here so we can test without
+   * mounting the full ChatInput component.
+   */
+  function routePrompt(prompt, { onPeriodicPrompt, onSend } = {}) {
+    // Simulates: if (prompt && prompt.periodic && onPeriodicPrompt) { onPeriodicPrompt(prompt); return; }
+    if (prompt && prompt.periodic && onPeriodicPrompt) {
+      onPeriodicPrompt(prompt);
+      return "periodic";
+    }
+    if (onSend && prompt?.name) {
+      onSend(prompt.name);
+      return "send";
+    }
+    return "noop";
+  }
+
+  test("calls onPeriodicPrompt for a periodic-flagged prompt", () => {
+    const onPeriodicPrompt = jest.fn();
+    const onSend = jest.fn();
+    const prompt = { name: "daily-standup", periodic: { value: 1, unit: "hours" } };
+
+    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+
+    expect(onPeriodicPrompt).toHaveBeenCalledTimes(1);
+    expect(onPeriodicPrompt).toHaveBeenCalledWith(prompt);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(result).toBe("periodic");
+  });
+
+  test("does NOT call onPeriodicPrompt for a non-periodic prompt — falls through to onSend", () => {
+    const onPeriodicPrompt = jest.fn();
+    const onSend = jest.fn();
+    const prompt = { name: "regular-prompt", prompt: "do something" };
+
+    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+
+    expect(onPeriodicPrompt).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("regular-prompt");
+    expect(result).toBe("send");
+  });
+
+  test("falls through to onSend when onPeriodicPrompt is absent (even for periodic prompt)", () => {
+    const onSend = jest.fn();
+    const prompt = { name: "daily", periodic: { value: 1, unit: "hours" } };
+
+    const result = routePrompt(prompt, { onSend });
+
+    expect(onSend).toHaveBeenCalledWith("daily");
+    expect(result).toBe("send");
+  });
+
+  test("does nothing when prompt has no name and no periodic", () => {
+    const onPeriodicPrompt = jest.fn();
+    const onSend = jest.fn();
+
+    const result = routePrompt({}, { onPeriodicPrompt, onSend });
+
+    expect(onPeriodicPrompt).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(result).toBe("noop");
   });
 });

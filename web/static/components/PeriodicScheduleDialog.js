@@ -59,6 +59,8 @@ export function PeriodicScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) 
   const [unit, setUnit] = useState(defaults.unit || "hours");
   // `at` stored in local time for display; defaults.at is in UTC — convert on init.
   const [at, setAt] = useState(() => utcToLocalTime(defaults.at) || "");
+  // maxIterations: 0 = unlimited, positive = capped. Pre-filled from prompt defaults.
+  const [maxIterations, setMaxIterations] = useState(defaults.maxIterations ?? 0);
 
   // Reset to prompt defaults whenever the prompt changes (dialog re-opened).
   useEffect(() => {
@@ -66,6 +68,7 @@ export function PeriodicScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) 
     setValue(d.value || 1);
     setUnit(d.unit || "hours");
     setAt(utcToLocalTime(d.at) || "");
+    setMaxIterations(d.maxIterations ?? 0);
   }, [prompt]);
 
   const handleUnitChange = useCallback((e) => {
@@ -79,8 +82,10 @@ export function PeriodicScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) 
     if (unit === "days" && at) {
       schedule.at = localToUtcTime(at);
     }
+    // Include maxIterations: 0 = unlimited, positive = capped run count.
+    schedule.maxIterations = Math.max(0, maxIterations || 0);
     onConfirm?.(schedule);
-  }, [value, unit, at, onConfirm]);
+  }, [value, unit, at, maxIterations, onConfirm]);
 
   const handleCancel = useCallback(() => {
     onCancel?.();
@@ -147,6 +152,19 @@ export function PeriodicScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) 
               data-testid="periodic-schedule-at"
             />
           `}
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0">Max runs</span>
+          <input
+            type="number"
+            min="0"
+            max="9999"
+            value=${maxIterations}
+            onInput=${(e) => setMaxIterations(Math.max(0, parseInt(e.target.value, 10) || 0))}
+            class="input input-sm w-20 text-center shrink-0"
+            data-testid="periodic-schedule-max-iterations"
+          />
+          <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0">(0 = unlimited)</span>
         </div>
         <p class="text-xs text-mitto-text-muted dark:text-mitto-text-300">
           A new recurring conversation will be created using the

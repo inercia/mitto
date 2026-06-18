@@ -409,3 +409,152 @@ func (c *Client) ClearQueue(sessionID string) error {
 	}
 	return nil
 }
+
+// AddToQueueNamed adds a named prompt to the session's queue (resolved by name at dispatch).
+// The message body contains only prompt_name; the full prompt is resolved server-side.
+func (c *Client) AddToQueueNamed(sessionID, promptName string) (*QueuedMessage, error) {
+	reqBody := struct {
+		PromptName string `json:"prompt_name"`
+	}{PromptName: promptName}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("add named to queue: marshal: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add named to queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("add named to queue: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var msg QueuedMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		return nil, fmt.Errorf("add named to queue: decode: %w", err)
+	}
+	return &msg, nil
+}
+
+// --- Periodic API ---
+
+// PeriodicFrequency represents a periodic schedule frequency.
+type PeriodicFrequency struct {
+	Value int    `json:"value"`
+	Unit  string `json:"unit"`
+	At    string `json:"at,omitempty"` // HH:MM in UTC, only for unit=days
+}
+
+// SetPeriodicRequest is the request body for PUT /api/sessions/{id}/periodic.
+type SetPeriodicRequest struct {
+	PromptName    string            `json:"prompt_name,omitempty"`
+	Prompt        string            `json:"prompt,omitempty"`
+	Frequency     PeriodicFrequency `json:"frequency"`
+	Enabled       bool              `json:"enabled"`
+	MaxIterations int               `json:"max_iterations,omitempty"`
+}
+
+// PeriodicConfig represents the periodic configuration for a session.
+type PeriodicConfig struct {
+	Prompt          string            `json:"prompt,omitempty"`
+	PromptName      string            `json:"prompt_name,omitempty"`
+	Frequency       PeriodicFrequency `json:"frequency"`
+	Enabled         bool              `json:"enabled"`
+	MaxIterations   int               `json:"max_iterations,omitempty"`
+	NextScheduledAt string            `json:"next_scheduled_at,omitempty"`
+}
+
+// SetPeriodic configures a periodic schedule on a session via PUT.
+func (c *Client) SetPeriodic(sessionID string, req SetPeriodicRequest) (*PeriodicConfig, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("set periodic: marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPut,
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/periodic"),
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("set periodic: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("set periodic: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("set periodic: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var config PeriodicConfig
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, fmt.Errorf("set periodic: decode: %w", err)
+	}
+	return &config, nil
+}
+
+// GetPeriodic returns the periodic configuration for a session.
+func (c *Client) GetPeriodic(sessionID string) (*PeriodicConfig, error) {
+	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/periodic"))
+	if err != nil {
+		return nil, fmt.Errorf("get periodic: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("periodic not configured for session: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get periodic: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var config PeriodicConfig
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, fmt.Errorf("get periodic: decode: %w", err)
+	}
+	return &config, nil
+}
+
+// RunPeriodicNow triggers an immediate run of the periodic prompt.
+// resetTimer controls whether the next scheduled run timer is reset.
+func (c *Client) RunPeriodicNow(sessionID string, resetTimer bool) error {
+	reqBody := struct {
+		ResetTimer bool `json:"reset_timer"`
+	}{ResetTimer: resetTimer}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("run periodic now: marshal: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/periodic/run-now"),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("run periodic now: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("run periodic now: status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}

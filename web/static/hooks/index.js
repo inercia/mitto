@@ -16,4 +16,4 @@ export { useWorkspacePrompts } from "./useWorkspacePrompts.js";
 export { useBeadsIntegration } from "./useBeadsIntegration.js";
 export { useSessionNavigation } from "./useSessionNavigation.js";
 export { useConversationMenu } from "./useConversationMenu.js";
-export { buildSeedQueueBody, seedConversationWithPrompt, useConversationSeeding } from "./useConversationSeeding.js";
+export { buildSeedQueueBody, seedConversationWithPrompt, decidePeriodicAction, makePeriodicNow, useConversationSeeding } from "./useConversationSeeding.js";

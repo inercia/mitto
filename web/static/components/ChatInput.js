@@ -112,6 +112,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
  * @param {boolean} props.periodicEnabled - Whether periodic prompts are enabled (disables queue buttons)
+ * @param {Function} [props.onPeriodicPrompt] - Called with (prompt) when a periodic-flagged prompt is selected. Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
  * @param {string} props.workingDir - Workspace directory path (for smart file path insertion on native app drag & drop)
@@ -142,6 +143,7 @@ export function ChatInput({
   actionButtons = [],
   availableCommands = [],
   periodicEnabled = false,
+  onPeriodicPrompt,
   agentSupportsImages = false,
   acpReady = true,
   gcSuspended = false,
@@ -1059,6 +1061,13 @@ export function ChatInput({
             Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
         });
       }
+      return;
+    }
+
+    // Periodic-flagged prompts: route to app-level branching (decidePeriodicAction).
+    // This handles make-periodic / one-shot / new-periodic without duplicating logic here.
+    if (prompt && prompt.periodic && onPeriodicPrompt) {
+      onPeriodicPrompt(prompt);
       return;
     }
 
