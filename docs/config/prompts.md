@@ -260,7 +260,7 @@ prompt: |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
 | `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsPeriodic` (periodic prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
-| `requires`        | No       | string   | Comma-separated list of capabilities the menu must provide for this prompt to appear. See [below](#requires-capability-gating). |
+| `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required? }`. The menu must supply every declared type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
@@ -447,15 +447,18 @@ Alongside common bead actions (e.g. **Delete**), the menu includes a **New**
 submenu listing every `menus: beadsIssues` prompt.
 
 Selecting one of these prompts starts a new conversation seeded with the prompt
-text, and the menu supplies the selected issue's ID as an `ISSUE_ID` argument. The
-prompt body should reference it via `${ISSUE_ID}` and load its own context with
+text. The menu auto-fills the selected issue's ID and title as typed arguments.
+The prompt body should reference them via `${ISSUE_ID}` (and optionally
+`${ISSUE_TITLE:-Untitled}`) and load its own full context with
 `bd show ${ISSUE_ID}` rather than relying on a pre-built context block:
 
 ```yaml
 name: "Start work"
 group: "Beads"
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
 prompt: |
   The target bead is `${ISSUE_ID}`.
 
@@ -466,12 +469,12 @@ prompt: |
   then claim it and propose a plan.
 ```
 
-Because the `beadsIssues` menu always provides the `parameters` capability (it
-passes `{ ISSUE_ID: <issue.id> }`), issue-scoped prompts set `requires: parameters`
-so they appear **only** in this menu and not in the generic `prompts` dropup, where
-no `ISSUE_ID` would be available. See [Prompt Arguments](#prompt-arguments) and
-[requires (Capability Gating)](#requires-capability-gating) for the underlying
-mechanism.
+Because the `beadsIssues` menu supplies the `beadsId` type (auto-filling
+`ISSUE_ID` from the selected issue), issue-scoped prompts that declare
+`type: beadsId` appear **only** in this menu and not in the generic `prompts`
+dropup, where no issue context would be available. See [Prompt Arguments](#prompt-arguments)
+and [parameters (Typed Inputs & Type-Based Gating)](#parameters-typed-inputs--type-based-gating)
+for the full mechanism.
 
 ### Beads List Menu
 
@@ -666,7 +669,11 @@ The transcript always shows the **substituted** text, not the original template.
 name: "Beads: start work"
 group: "Beads"
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+  - name: ISSUE_TITLE
+    type: beadsTitle
 prompt: |
   You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
 
@@ -676,23 +683,34 @@ prompt: |
 ```
 
 Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls back to
-`"Untitled"` if omitted, and `${ISSUE_BODY}` expands to empty string if not supplied.
+`"Untitled"` if the `beadsTitle` argument is not supplied, and `${ISSUE_BODY}` expands
+to empty string if not supplied (it has no declared parameter — defaults still come from
+the `${VAR:-default}` body syntax).
 
-## requires (Capability Gating)
+## parameters (Typed Inputs & Type-Based Gating)
 
-The `requires` field lets a prompt declare which **capabilities** a menu
-must provide before the prompt is shown in that menu. This is the counterpart to the
-`menus` field: `menus` says *where* a prompt can appear; `requires` says *what the
-menu must supply* for it to be usable there.
+The `parameters` field declares the **typed inputs** a prompt expects. Each entry
+names a template variable (used as `${NAME}` in the prompt body) and assigns it a
+**type** drawn from the canonical type registry. The menu gating check uses these
+types: a prompt is offered in menu **M** only when M can auto-supply **every**
+declared type.
 
-### Syntax
+This replaces the retired `requires:` string field. The old string-capability gating
+approach is gone; type-based gating via `menuSatisfies`/`MENU_PARAM_TYPES` is the
+current mechanism.
+
+### Schema
 
 ```yaml
-requires: capability1, capability2
+parameters:
+  - name: PARAM_NAME        # required — used as ${PARAM_NAME} in the prompt body
+    type: beadsId           # required — one of the predefined types below
+    description: "..."      # optional — human-readable hint
+    required: true          # optional bool — for documentation/tooling only;
+                            # declarative defaults still use ${VAR:-default} syntax
 ```
 
-The value is a **comma-separated list** of capability names (parsed identically to
-`menus`). Whitespace around each entry is ignored.
+Multiple parameters may be listed; the menu must supply **all** of them.
 
 ### YAML example
 
@@ -700,45 +718,63 @@ The value is a **comma-separated list** of capability names (parsed identically 
 name: "Beads: start work"
 group: "Beads"
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
 prompt: |
-  (prompt body here)
+  (prompt body here — use ${ISSUE_ID} to reference the selected issue)
 ```
 
-### Visibility rule
+### Predefined types
+
+The canonical registry lives in `internal/config/prompt_param_types.go` and is
+mirrored by `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must be kept
+in sync.
+
+| Type | Description |
+| ---- | ----------- |
+| `beadsId` | A beads issue ID (e.g. `"mitto-42"`). Auto-filled by the `beadsIssues` menu from the selected issue's ID. |
+| `beadsTitle` | A beads issue title (free text). Auto-filled by the `beadsIssues` menu from the selected issue's title. |
+| `sessionId` | A Mitto conversation/session UUID. |
+| `workspaceId` | A Mitto workspace UUID. |
+| `workspaceFolder` | An absolute path to a workspace root directory. |
+| `text` | Generic free-form text (catch-all type). |
+
+### Visibility rule (type-based gating)
 
 A prompt appears in menu **M** if and only if **both** conditions hold:
 
 1. The prompt's `menus` list includes `M` (or `menus` is omitted and M is `prompts`).
-2. Menu `M` provides **every** capability listed in `requires`.
+2. Menu `M` can supply **every** type declared in `parameters`.
 
-If a prompt has no `requires` field (or an empty one), condition 2 is vacuously true
-and the prompt appears in any menu it targets via `menus`.
+A prompt with an empty or absent `parameters` list satisfies condition 2 for any menu.
+For an unknown menu, its supplied types are treated as empty (so a prompt with declared
+parameters is NOT shown there).
 
-### Provided capabilities per menu
+The frontend check is `menuSatisfies(prompt, menu)` in `web/static/utils/prompts.js`.
+The argument map is built generically by `collectPromptArguments(prompt, typeValues)`,
+which maps each `{ name, type }` to the value supplied for its type by the menu.
 
-| Menu | Provided capabilities |
-| ---- | --------------------- |
+### Types supplied per menu
+
+| Menu | Supplied types |
+| ---- | -------------- |
 | `prompts` (ChatInput dropup) | *(none)* |
 | `promptsPeriodic` (periodic prompt selector) | *(none)* |
 | `conversation` (per-conversation context menu) | *(none)* |
-| `beadsIssues` (Beads issue context menu) | `parameters` |
+| `beadsIssues` (Beads issue context menu) | `beadsId`, `beadsTitle` |
 | `beadsList` (Beads list-level prompts button) | *(none)* |
 
-The `parameters` capability means the menu always passes a structured `arguments` map
-when it invokes a prompt. Prompts that are **useless without arguments** (i.e., they
-have required `${VAR}` placeholders with no meaningful default) should set
-`requires: parameters` so they are hidden from menus that cannot supply them.
+`beadsIssues` supplies both `beadsId` (from `issue.id`) and `beadsTitle`
+(from `issue.title`) when it invokes a prompt.
 
-Prompts that can degrade gracefully — because all placeholders have sensible defaults
-via `${VAR:-default}` — should **omit** `requires` and let the defaults handle the
-missing arguments instead.
+Prompts that can degrade gracefully because all placeholders have sensible defaults
+(`${VAR:-default}`) can omit `parameters` entirely and appear in any menu they target.
 
-### Why a list, not a boolean?
+### MCP surfacing
 
-`requires` is designed as a list (rather than `requires_parameters: true`) so that
-future capability types can be added without changing the field semantics. For now
-`parameters` is the only defined capability.
+`mitto_prompt_get` and `mitto_prompt_list` include a `parameters` array per prompt,
+matching the YAML schema above.
 
 ## Variable Substitution in Prompts
 

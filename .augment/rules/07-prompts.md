@@ -58,7 +58,52 @@ prompt: |
   Please review the following code for quality, readability, and potential bugs.
 ```
 
-**Removed fields**: `enabledWhenACP` and `enabledWhenMCP` have been fully removed from the codebase. If encountered in old code or docs, replace with equivalent `enabledWhen` CEL expressions.
+**Removed fields**: `enabledWhenACP` and `enabledWhenMCP` have been fully removed from the codebase. If encountered in old code or docs, replace with equivalent `enabledWhen` CEL expressions. The old `requires:` string field and its frontend counterparts (string-capability gating) are also gone — replaced by the typed `parameters:` system below.
+
+## Typed Parameters & Type-Based Menu Gating
+
+### parameters: field
+
+Prompts may declare typed inputs via a `parameters:` list. Each entry:
+
+```yaml
+parameters:
+  - name: ISSUE_ID      # variable used as ${ISSUE_ID} in the prompt body
+    type: beadsId       # one of the six predefined types
+    description: "..."  # optional
+    required: true      # optional bool (declarative; body ${VAR:-default} still controls fallback)
+```
+
+### Predefined types (canonical registry: `internal/config/prompt_param_types.go`)
+
+Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must stay in sync.
+
+| Type | Description |
+| ---- | ----------- |
+| `beadsId` | Beads issue ID (e.g. `"mitto-42"`). Auto-filled by `beadsIssues` menu. |
+| `beadsTitle` | Beads issue title. Auto-filled by `beadsIssues` menu. |
+| `sessionId` | Mitto conversation/session UUID. |
+| `workspaceId` | Mitto workspace UUID. |
+| `workspaceFolder` | Absolute path to a workspace root directory. |
+| `text` | Generic free-form text (catch-all). |
+
+### Type-based menu gating
+
+A prompt is shown in menu **M** only when M can supply **every** type the prompt declares (or the prompt declares no parameters). Unknown menus supply nothing.
+
+Frontend: `menuSatisfies(prompt, menu)` — replaces the retired string-capability check.
+Auto-fill: `collectPromptArguments(prompt, typeValues)` — maps `{ name, type }` entries to the values the menu provides.
+
+| Menu | Supplied types |
+| ---- | -------------- |
+| `prompts`, `promptsPeriodic`, `conversation`, `beadsList` | *(none)* |
+| `beadsIssues` | `beadsId`, `beadsTitle` |
+
+`MENU_PARAM_TYPES` in `web/static/utils/prompts.js` maps each menu to its supplied types.
+
+### MCP surfacing
+
+`mitto_prompt_get` and `mitto_prompt_list` include the `parameters` array per prompt.
 
 ## Key Types
 
