@@ -857,6 +857,149 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+// ---- PromptParameter / Parameters field tests ----
+
+func TestIsKnownPromptParameterType(t *testing.T) {
+	for _, known := range KnownPromptParameterTypes {
+		if !IsKnownPromptParameterType(known) {
+			t.Errorf("IsKnownPromptParameterType(%q) = false, want true", known)
+		}
+	}
+	if IsKnownPromptParameterType("unknown") {
+		t.Error("IsKnownPromptParameterType(\"unknown\") = true, want false")
+	}
+	if IsKnownPromptParameterType("") {
+		t.Error("IsKnownPromptParameterType(\"\") = true, want false")
+	}
+}
+
+func TestParsePromptFile_WithParameters(t *testing.T) {
+	reqTrue := true
+	data := []byte(`name: "Task Prompt"
+parameters:
+  - name: id
+    type: beadsId
+    description: the task ID
+    required: true
+  - name: folder
+    type: workspaceFolder
+prompt: |
+  Work on ${id} in ${folder}.
+`)
+
+	prompt, err := ParsePromptFile("task.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+
+	p0 := prompt.Parameters[0]
+	if p0.Name != "id" {
+		t.Errorf("Parameters[0].Name = %q, want %q", p0.Name, "id")
+	}
+	if p0.Type != "beadsId" {
+		t.Errorf("Parameters[0].Type = %q, want %q", p0.Type, "beadsId")
+	}
+	if p0.Description != "the task ID" {
+		t.Errorf("Parameters[0].Description = %q, want %q", p0.Description, "the task ID")
+	}
+	if p0.Required == nil || *p0.Required != reqTrue {
+		t.Errorf("Parameters[0].Required = %v, want *true", p0.Required)
+	}
+
+	p1 := prompt.Parameters[1]
+	if p1.Name != "folder" {
+		t.Errorf("Parameters[1].Name = %q, want %q", p1.Name, "folder")
+	}
+	if p1.Type != "workspaceFolder" {
+		t.Errorf("Parameters[1].Type = %q, want %q", p1.Type, "workspaceFolder")
+	}
+	if p1.Required != nil {
+		t.Errorf("Parameters[1].Required = %v, want nil (absent)", p1.Required)
+	}
+}
+
+func TestToWebPrompt_RoundTripsParameters(t *testing.T) {
+	req := true
+	pf := &PromptFile{
+		Name:    "Param Prompt",
+		Content: "body",
+		Parameters: []PromptParameter{
+			{Name: "id", Type: "beadsId", Description: "task id", Required: &req},
+			{Name: "note", Type: "text"},
+		},
+	}
+
+	wp := pf.ToWebPrompt()
+
+	if len(wp.Parameters) != 2 {
+		t.Fatalf("WebPrompt.Parameters len = %d, want 2", len(wp.Parameters))
+	}
+	if wp.Parameters[0].Name != "id" || wp.Parameters[0].Type != "beadsId" {
+		t.Errorf("WebPrompt.Parameters[0] = %+v, want {id beadsId}", wp.Parameters[0])
+	}
+	if wp.Parameters[0].Required == nil || !*wp.Parameters[0].Required {
+		t.Errorf("WebPrompt.Parameters[0].Required = %v, want *true", wp.Parameters[0].Required)
+	}
+	if wp.Parameters[1].Name != "note" || wp.Parameters[1].Type != "text" {
+		t.Errorf("WebPrompt.Parameters[1] = %+v, want {note text}", wp.Parameters[1])
+	}
+}
+
+func TestParsePromptFile_UnknownParameterType(t *testing.T) {
+	data := []byte(`name: "Bad Prompt"
+parameters:
+  - name: foo
+    type: notAType
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unknown parameter type, got nil error")
+	}
+	if !strings.Contains(err.Error(), "unknown type") {
+		t.Errorf("error = %q, want it to mention 'unknown type'", err.Error())
+	}
+}
+
+func TestParsePromptFile_EmptyParameterName(t *testing.T) {
+	data := []byte(`name: "Bad Prompt"
+parameters:
+  - name: ""
+    type: text
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for empty parameter name, got nil error")
+	}
+	if !strings.Contains(err.Error(), "name must not be empty") {
+		t.Errorf("error = %q, want it to mention 'name must not be empty'", err.Error())
+	}
+}
+
+func TestParsePromptFile_NoParameters(t *testing.T) {
+	data := []byte(`name: "Simple Prompt"
+prompt: |
+  No params here.
+`)
+
+	prompt, err := ParsePromptFile("simple.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 0 {
+		t.Errorf("Parameters = %v, want empty", prompt.Parameters)
+	}
+}
+
 func TestMigrateMarkdownPromptsInDir(t *testing.T) {
 	dir := t.TempDir()
 

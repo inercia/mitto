@@ -54,6 +54,21 @@ type PromptPeriodic struct {
 	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
 }
 
+// PromptParameter declares a single named, typed parameter that the prompt body
+// references via ${NAME} or ${NAME:-default} substitution syntax.
+type PromptParameter struct {
+	// Name is the placeholder name used in the prompt body (e.g. "id" for ${id}).
+	Name string `yaml:"name" json:"name"`
+	// Type is one of the known parameter types (see KnownPromptParameterTypes).
+	Type string `yaml:"type" json:"type"`
+	// Description is an optional human-readable hint shown in the UI / MCP schema.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// Required, when explicitly set to true, signals that the parameter must be
+	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
+	// Declarative defaults are handled by the ${VAR:-default} body syntax, not here.
+	Required *bool `yaml:"required,omitempty" json:"required,omitempty"`
+}
+
 // PromptFile represents a parsed YAML prompt file.
 // Files are stored in MITTO_DIR/prompts/ and can be organized in subdirectories.
 type PromptFile struct {
@@ -113,6 +128,11 @@ type PromptFile struct {
 	// the session's baseline model.
 	PreferredModels []string `yaml:"preferredModels,omitempty" json:"preferredModels,omitempty"`
 
+	// Parameters declares the named, typed inputs this prompt expects.
+	// Each entry must have a non-empty name and a recognised type (see KnownPromptParameterTypes).
+	// Callers substitute values via ${NAME} or ${NAME:-default} placeholders in Content.
+	Parameters []PromptParameter `yaml:"parameters,omitempty" json:"parameters,omitempty"`
+
 	// Content is the prompt body text, stored under the "prompt" key in the YAML file.
 	Content string `yaml:"prompt" json:"prompt"`
 
@@ -163,6 +183,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Enabled:         p.Enabled,
 		Periodic:        p.Periodic,
 		PreferredModels: p.PreferredModels,
+		Parameters:      p.Parameters,
 	}
 }
 
@@ -200,6 +221,16 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 			name = strings.TrimSuffix(base, filepath.Ext(base))
 		}
 		prompt.Name = name
+	}
+
+	// Validate parameters block.
+	for i, param := range prompt.Parameters {
+		if param.Name == "" {
+			return nil, fmt.Errorf("prompt file %s: parameter #%d: name must not be empty", path, i+1)
+		}
+		if param.Type == "" || !IsKnownPromptParameterType(param.Type) {
+			return nil, fmt.Errorf("prompt file %s: parameter %q has unknown type %q (must be one of: beadsId, beadsTitle, sessionId, workspaceId, workspaceFolder, text)", path, param.Name, param.Type)
+		}
 	}
 
 	return prompt, nil

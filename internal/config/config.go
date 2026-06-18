@@ -126,6 +126,9 @@ type WebPrompt struct {
 	// the session's baseline model. This field is carried through PromptMeta to enable
 	// per-prompt model selection without mutating the user's model preference.
 	PreferredModels []string `json:"preferredModels,omitempty"`
+	// Parameters declares the named, typed inputs this prompt expects.
+	// Populated from the `parameters:` block in .prompt.yaml or inline config prompts.
+	Parameters []PromptParameter `json:"parameters,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -1181,17 +1184,18 @@ type rawACPServerConfig struct {
 	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Tags    []string          `yaml:"tags"` // Optional categorization tags
 	Prompts []struct {
-		Name            string          `yaml:"name"`
-		Prompt          string          `yaml:"prompt"`
-		BackgroundColor string          `yaml:"backgroundColor"`
-		Icon            string          `yaml:"icon"`
-		Description     string          `yaml:"description"`
-		Group           string          `yaml:"group"`
-		Menus           string          `yaml:"menus"`
-		Requires        string          `yaml:"requires"`
-		Enabled         *bool           `yaml:"enabled"`
-		EnabledWhen     string          `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic `yaml:"periodic,omitempty"`
+		Name            string           `yaml:"name"`
+		Prompt          string           `yaml:"prompt"`
+		BackgroundColor string           `yaml:"backgroundColor"`
+		Icon            string           `yaml:"icon"`
+		Description     string           `yaml:"description"`
+		Group           string           `yaml:"group"`
+		Menus           string           `yaml:"menus"`
+		Requires        string           `yaml:"requires"`
+		Enabled         *bool            `yaml:"enabled"`
+		EnabledWhen     string           `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic  `yaml:"periodic,omitempty"`
+		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
@@ -1201,17 +1205,18 @@ type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
-		Name            string          `yaml:"name"`
-		Prompt          string          `yaml:"prompt"`
-		BackgroundColor string          `yaml:"backgroundColor"`
-		Icon            string          `yaml:"icon"`
-		Description     string          `yaml:"description"`
-		Group           string          `yaml:"group"`
-		Menus           string          `yaml:"menus"`
-		Requires        string          `yaml:"requires"`
-		Enabled         *bool           `yaml:"enabled"`
-		EnabledWhen     string          `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic `yaml:"periodic,omitempty"`
+		Name            string           `yaml:"name"`
+		Prompt          string           `yaml:"prompt"`
+		BackgroundColor string           `yaml:"backgroundColor"`
+		Icon            string           `yaml:"icon"`
+		Description     string           `yaml:"description"`
+		Group           string           `yaml:"group"`
+		Menus           string           `yaml:"menus"`
+		Requires        string           `yaml:"requires"`
+		Enabled         *bool            `yaml:"enabled"`
+		EnabledWhen     string           `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic  `yaml:"periodic,omitempty"`
+		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1416,6 +1421,7 @@ func Parse(data []byte) (*Config, error) {
 					Requires:        p.Requires,
 					EnabledWhen:     p.EnabledWhen,
 					Periodic:        p.Periodic,
+					Parameters:      p.Parameters,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
 			}
@@ -1446,6 +1452,7 @@ func Parse(data []byte) (*Config, error) {
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
+			Parameters:      p.Parameters,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
 	}
