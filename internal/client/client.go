@@ -462,6 +462,10 @@ type SetPeriodicRequest struct {
 	Frequency     PeriodicFrequency `json:"frequency"`
 	Enabled       bool              `json:"enabled"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
+	// On-completion trigger fields (mitto-icf).
+	Trigger            string `json:"trigger,omitempty"`              // "schedule" | "onCompletion"
+	DelaySeconds       int    `json:"delay_seconds,omitempty"`        // clamped to server floor
+	MaxDurationSeconds int    `json:"max_duration_seconds,omitempty"` // 0 = unlimited
 }
 
 // PeriodicConfig represents the periodic configuration for a session.
@@ -472,6 +476,12 @@ type PeriodicConfig struct {
 	Enabled         bool              `json:"enabled"`
 	MaxIterations   int               `json:"max_iterations,omitempty"`
 	NextScheduledAt string            `json:"next_scheduled_at,omitempty"`
+	// On-completion trigger fields (mitto-icf).
+	Trigger            string `json:"trigger,omitempty"`
+	DelaySeconds       int    `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds int    `json:"max_duration_seconds,omitempty"`
+	IterationCount     int    `json:"iteration_count,omitempty"`
+	FreshContext       bool   `json:"fresh_context,omitempty"`
 }
 
 // SetPeriodic configures a periodic schedule on a session via PUT.
