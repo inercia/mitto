@@ -1,5 +1,5 @@
 icon: beads
-name: Iterate until complete
+name: Iterate until issue complete
 menus: beadsIssues
 parameters:
   - name: ISSUE_ID
@@ -64,13 +64,25 @@ prompt: |
 
   - **Normal issue (no children)** → the target *is* `${ISSUE_ID}`.
   - **Epic / parent (has children)** → an epic is a container, not directly
-    implementable. Pick the **next ready child**: open, not `closed`/`in_progress`,
-    and with **no unresolved blockers**. Map both explicit edges (`blocks` /
-    `depends-on` from `bd dep tree`) and implicit ordering you infer from the
-    children's descriptions (schema/infrastructure/scaffolding first), build a
-    topological order, and choose the first workable child. When several are
-    equally workable, apply common sense — **highest priority, then highest
-    blocking leverage** over its siblings — and proceed with **one**.
+    implementable; you must advance it by working on **the next issue inside the
+    epic**, one child per run:
+    - **Finish before you start.** If a child is already `in_progress` with active,
+      well-scoped work, continue and finish **that** child before picking up
+      anything new.
+    - **Otherwise start the next ready child in logical order.** Among open,
+      unblocked children (not `closed`/`in_progress`), map explicit edges (`blocks` /
+      `depends-on` from `bd dep tree`) and implicit ordering you infer from the
+      children's descriptions (schema/infrastructure/scaffolding first), build a
+      topological order, and choose the first workable child. When several are
+      equally workable, apply common sense — **highest priority, then highest
+      blocking leverage** over its siblings — and proceed with **one**.
+    - **Defer what is not ready.** Any child that is **not clearly defined** (vague
+      or missing acceptance criteria) or **not genuinely ready for work** must be
+      **deferred**, not guessed at — record the gap on that child and drop it out of
+      `ready` (see Step 4), then move on to the next candidate.
+    - **Record your decision.** Add a `bd comment` on the epic noting which child you
+      chose for this run and why (or why none was actionable), so the reasoning is
+      auditable across runs.
     **Do NOT ask the user** which child; this is automated.
 
   Treat the issue chosen here as **`<target>`** for the rest of this run.
@@ -104,12 +116,24 @@ prompt: |
      bd update <target> --claim
      ```
 
-  3. Perform the **next concrete increment** of work toward the acceptance
-     criteria. Either do it directly in this conversation, or dispatch it to a
-     child conversation when it is substantial and self-contained:
+  3. **Delegate the next concrete increment to a child conversation — never do the
+     implementation work yourself.** This conversation is an **orchestrator**: it
+     plans, dispatches, tracks progress, and stops. All actual work happens in a
+     child.
+     - **Hand the child a fully-defined problem.** Before dispatching, make sure the
+       work is unambiguous and self-contained. If `<target>` is itself a small,
+       well-defined bead, you may hand the child the **whole bead**; otherwise carve
+       out **one** clearly-scoped increment and define it completely (bead ID, title,
+       description, acceptance criteria, the specific increment, and an explicit
+       definition of done). If you cannot define it cleanly, **do not dispatch** —
+       defer it instead (Step 4).
+     - **Prefer a cheaper, less "smart" model.** Choose `acp_server` to match the
+       difficulty: use a **faster/cheaper** agent for routine or well-scoped work,
+       and reserve a more capable (slower/expensive) agent only for genuinely complex
+       increments.
      - Reuse a suitable **idle** child from `@mitto:mcp_children` when possible via
-       `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>", prompt: "<self-contained worker prompt>")`.
-     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", title: "${ISSUE_ID} · <increment>", beads_issue: "<target>", acp_server: "<pick from available — faster/cheaper for simple, more capable for complex>", initial_prompt: "<self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
+       `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
+     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", title: "${ISSUE_ID} · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
      - Cap spawning at **one** new child per run to avoid runaway fan-out.
   4. Log progress on the bead so the tracker reflects what happened:
 
@@ -159,6 +183,9 @@ prompt: |
 
   ## Guidelines
 
+  - **Orchestrate, don't implement.** You never do the work yourself — always
+    delegate the increment to a child conversation (Step 3), preferring a
+    faster/cheaper model and handing it a fully-defined problem.
   - **One increment per run.** Advance the work a meaningful step, then return —
     the next scheduled run continues. Do not try to finish everything in one run.
   - **Stay in scope.** Only ever act on `${ISSUE_ID}` or, for an epic, its subtree.
