@@ -1180,16 +1180,16 @@ type rawACPServerConfig struct {
 	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Tags    []string          `yaml:"tags"` // Optional categorization tags
 	Prompts []struct {
-		Name            string           `yaml:"name"`
-		Prompt          string           `yaml:"prompt"`
-		BackgroundColor string           `yaml:"backgroundColor"`
-		Icon            string           `yaml:"icon"`
-		Description     string           `yaml:"description"`
-		Group           string           `yaml:"group"`
-		Menus           string           `yaml:"menus"`
-		Enabled         *bool            `yaml:"enabled"`
-		EnabledWhen     string           `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic  `yaml:"periodic,omitempty"`
+		Name            string            `yaml:"name"`
+		Prompt          string            `yaml:"prompt"`
+		BackgroundColor string            `yaml:"backgroundColor"`
+		Icon            string            `yaml:"icon"`
+		Description     string            `yaml:"description"`
+		Group           string            `yaml:"group"`
+		Menus           string            `yaml:"menus"`
+		Enabled         *bool             `yaml:"enabled"`
+		EnabledWhen     string            `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1200,16 +1200,16 @@ type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
-		Name            string           `yaml:"name"`
-		Prompt          string           `yaml:"prompt"`
-		BackgroundColor string           `yaml:"backgroundColor"`
-		Icon            string           `yaml:"icon"`
-		Description     string           `yaml:"description"`
-		Group           string           `yaml:"group"`
-		Menus           string           `yaml:"menus"`
-		Enabled         *bool            `yaml:"enabled"`
-		EnabledWhen     string           `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic  `yaml:"periodic,omitempty"`
+		Name            string            `yaml:"name"`
+		Prompt          string            `yaml:"prompt"`
+		BackgroundColor string            `yaml:"backgroundColor"`
+		Icon            string            `yaml:"icon"`
+		Description     string            `yaml:"description"`
+		Group           string            `yaml:"group"`
+		Menus           string            `yaml:"menus"`
+		Enabled         *bool             `yaml:"enabled"`
+		EnabledWhen     string            `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
