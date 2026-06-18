@@ -19,6 +19,10 @@ const (
 	// MaxPeriodicResumeFailures is the number of consecutive ACP resume failures
 	// after which a periodic session is automatically archived.
 	MaxPeriodicResumeFailures = 3
+
+	// MaxPromptResolveFailures is the number of consecutive prompt-name resolution
+	// failures after which the periodic config is auto-paused (disabled).
+	MaxPromptResolveFailures = 3
 )
 
 // Errors for periodic runner operations.
@@ -27,6 +31,7 @@ var (
 	ErrSessionManagerNotAvailable = errors.New("session manager not available")
 	ErrPeriodicNotEnabled         = errors.New("periodic is not enabled for this session")
 	ErrSessionBusy                = errors.New("session is currently processing a prompt")
+	ErrPromptResolveFailed        = errors.New("periodic prompt could not be resolved")
 )
 
 // PeriodicStartedCallback is called when a periodic prompt is delivered.
@@ -99,6 +104,12 @@ type PeriodicRunner struct {
 	consecutiveFailures   map[string]int
 	consecutiveFailuresMu sync.Mutex
 
+	// promptResolveFailures tracks consecutive failures to resolve a periodic prompt
+	// name. After MaxPromptResolveFailures consecutive failures the periodic config is
+	// auto-paused (disabled) to stop the retry storm.
+	promptResolveFailures   map[string]int
+	promptResolveFailuresMu sync.Mutex
+
 	// completionTimers holds the armed one-shot timers for onCompletion periodic
 	// conversations, keyed by session ID. Arming a new timer replaces (stops) any
 	// existing one, so at most one firing is pending per session.
@@ -121,6 +132,7 @@ func NewPeriodicRunner(store *session.Store, sm *SessionManager, logger *slog.Lo
 		maxPeriodicIterations:     config.DefaultMaxPeriodicIterations,
 		minCompletionDelaySeconds: config.DefaultMinPeriodicCompletionDelaySeconds,
 		consecutiveFailures:       make(map[string]int),
+		promptResolveFailures:     make(map[string]int),
 		completionTimers:          make(map[string]*time.Timer),
 	}
 }
@@ -806,13 +818,22 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 
 	// Deliver the prompt — normal scheduled runs always reset the timer.
 	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore, true, false); err != nil {
-		if r.logger != nil {
-			r.logger.Error("Failed to deliver periodic prompt",
-				"session_id", sessionID,
-				"error", err)
+		if errors.Is(err, ErrPromptResolveFailed) {
+			r.handlePromptResolveFailure(sessionID, meta.Name, periodic, periodicStore, err)
+		} else {
+			if r.logger != nil {
+				r.logger.Error("Failed to deliver periodic prompt",
+					"session_id", sessionID,
+					"error", err)
+			}
 		}
 		return 0, 0, 1
 	}
+
+	// Reset resolve-failure counter on successful delivery.
+	r.promptResolveFailuresMu.Lock()
+	delete(r.promptResolveFailures, sessionID)
+	r.promptResolveFailuresMu.Unlock()
 
 	return 1, 0, 0
 }
@@ -857,6 +878,62 @@ func (r *PeriodicRunner) autoStopIfMaxDurationReached(sessionID string, periodic
 	return true
 }
 
+// handlePromptResolveFailure handles a periodic prompt whose name no longer resolves.
+// It logs the first failure at WARN and suppresses subsequent identical failures (to
+// avoid one ERROR per tick), and after MaxPromptResolveFailures consecutive failures it
+// auto-pauses (disables) the periodic config and broadcasts the change, mirroring the
+// MaxPeriodicResumeFailures auto-archive safety.
+func (r *PeriodicRunner) handlePromptResolveFailure(sessionID, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, err error) {
+	r.promptResolveFailuresMu.Lock()
+	r.promptResolveFailures[sessionID]++
+	failures := r.promptResolveFailures[sessionID]
+	r.promptResolveFailuresMu.Unlock()
+
+	if r.logger != nil {
+		if failures == 1 {
+			r.logger.Warn("Periodic prompt could not be resolved; will auto-pause after repeated failures",
+				"session_id", sessionID,
+				"prompt_name", periodic.PromptName,
+				"consecutive_failures", failures,
+				"max_failures", MaxPromptResolveFailures,
+				"error", err)
+		} else {
+			r.logger.Debug("Periodic prompt still unresolved",
+				"session_id", sessionID,
+				"prompt_name", periodic.PromptName,
+				"consecutive_failures", failures)
+		}
+	}
+
+	if failures < MaxPromptResolveFailures {
+		return
+	}
+
+	disabled := false
+	if updErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); updErr != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to disable periodic after repeated resolve failures",
+				"session_id", sessionID, "error", updErr)
+		}
+		return
+	}
+	if r.logger != nil {
+		r.logger.Warn("Auto-paused periodic conversation after repeated prompt resolve failures",
+			"session_id", sessionID,
+			"session_name", sessionName,
+			"prompt_name", periodic.PromptName,
+			"consecutive_failures", failures)
+	}
+	if r.onPeriodicAutoStopped != nil {
+		if final, gErr := periodicStore.Get(); gErr == nil {
+			r.onPeriodicAutoStopped(sessionID, final)
+		}
+	}
+	r.promptResolveFailuresMu.Lock()
+	delete(r.promptResolveFailures, sessionID)
+	r.promptResolveFailuresMu.Unlock()
+}
+
 // deliverPrompt sends the periodic prompt to the session.
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
@@ -873,7 +950,7 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 		}
 		resolved, err := r.promptResolver(periodic.PromptName, sessionMeta.WorkingDir)
 		if err != nil {
-			return fmt.Errorf("failed to resolve prompt %q: %w", periodic.PromptName, err)
+			return fmt.Errorf("%w: %q: %v", ErrPromptResolveFailed, periodic.PromptName, err)
 		}
 		promptText = resolved
 		if r.logger != nil {

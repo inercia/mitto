@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1211,6 +1212,123 @@ func TestPeriodicRunner_fireOnCompletion_MaxDurationAutoStops(t *testing.T) {
 	}
 	if got := countCompletionTimers(runner); got != 0 {
 		t.Errorf("completionTimers = %d, want 0", got)
+	}
+}
+
+// TestPeriodicRunner_PromptResolveFailure_AutoPauses verifies that after
+// MaxPromptResolveFailures consecutive resolve failures the periodic config is
+// disabled on disk and onPeriodicAutoStopped is fired exactly once.
+func TestPeriodicRunner_PromptResolveFailure_AutoPauses(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "resolve-fail", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	periodicStore := store.Periodic("resolve-fail")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		PromptName: "nonexistent-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	resolveErr := errors.New("prompt not found")
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		return "", resolveErr
+	})
+
+	callCount := 0
+	runner.SetOnPeriodicAutoStopped(func(id string, p *session.PeriodicPrompt) {
+		callCount++
+		if id != "resolve-fail" {
+			t.Errorf("onPeriodicAutoStopped: id=%q, want resolve-fail", id)
+		}
+		if p.Enabled {
+			t.Error("onPeriodicAutoStopped: periodic.Enabled = true, want false")
+		}
+	})
+
+	periodic, _ := periodicStore.Get()
+
+	// First MaxPromptResolveFailures-1 calls must not disable.
+	for i := 1; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure("resolve-fail", meta.Name, periodic, periodicStore, resolveErr)
+		p, _ := periodicStore.Get()
+		if !p.Enabled {
+			t.Fatalf("periodic disabled after %d failures, want still enabled", i)
+		}
+		if callCount != 0 {
+			t.Fatalf("onPeriodicAutoStopped called after %d failures, want 0", i)
+		}
+	}
+
+	// The MaxPromptResolveFailures-th call must disable and fire callback exactly once.
+	runner.handlePromptResolveFailure("resolve-fail", meta.Name, periodic, periodicStore, resolveErr)
+	if callCount != 1 {
+		t.Errorf("onPeriodicAutoStopped called %d times, want 1", callCount)
+	}
+	final, _ := periodicStore.Get()
+	if final.Enabled {
+		t.Error("periodic still enabled after auto-pause, want disabled")
+	}
+}
+
+// TestPeriodicRunner_PromptResolveFailure_CounterReset verifies that a successful
+// resolve resets the failure counter so prior failures don't accumulate.
+func TestPeriodicRunner_PromptResolveFailure_CounterReset(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "reset-test", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	periodicStore := store.Periodic("reset-test")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		PromptName: "maybe-missing",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	resolveErr := errors.New("not found")
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetOnPeriodicAutoStopped(func(_ string, _ *session.PeriodicPrompt) {
+		t.Error("onPeriodicAutoStopped called unexpectedly after counter reset")
+	})
+
+	periodic, _ := periodicStore.Get()
+
+	// Accumulate MaxPromptResolveFailures-1 failures.
+	for i := 1; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure("reset-test", meta.Name, periodic, periodicStore, resolveErr)
+	}
+
+	// Simulate a successful resolution: reset the counter (mirrors checkSession success path).
+	runner.promptResolveFailuresMu.Lock()
+	delete(runner.promptResolveFailures, "reset-test")
+	runner.promptResolveFailuresMu.Unlock()
+
+	// Now accumulate MaxPromptResolveFailures-1 more failures — should not trigger auto-pause.
+	for i := 1; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure("reset-test", meta.Name, periodic, periodicStore, resolveErr)
+	}
+
+	// Verify the periodic is still enabled (counter was reset, threshold not reached again).
+	final, _ := periodicStore.Get()
+	if !final.Enabled {
+		t.Error("periodic disabled unexpectedly; counter reset did not clear failure count")
 	}
 }
 
