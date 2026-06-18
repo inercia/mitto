@@ -128,7 +128,7 @@ export function SessionItem({
 
   // Leading category icon for the unified-tree row:
   //   regular  -> mitto bubble (muted)
-  //   periodic -> clock (accent)
+  //   periodic -> clock (muted)
   //   archived -> archive (muted)
   // Spawned/child rows keep their ↳ marker + child-origin glyph instead.
   let CategoryIcon = MittoIcon;
@@ -138,7 +138,7 @@ export function SessionItem({
     categoryIconClass = "text-mitto-text-muted";
   } else if (isPeriodicEnabled) {
     CategoryIcon = ClockIcon;
-    categoryIconClass = "text-mitto-accent";
+    categoryIconClass = "text-mitto-text-muted";
   }
 
   // Calculate periodic progress background style

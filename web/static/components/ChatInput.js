@@ -24,7 +24,6 @@ import {
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
-import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
@@ -365,6 +364,9 @@ export function ChatInput({
   const [periodicFreshContext, setPeriodicFreshContext] = useState(false);
   const [periodicMaxIterations, setPeriodicMaxIterations] = useState(0);
   const [periodicIterationCount, setPeriodicIterationCount] = useState(0);
+  const [periodicTrigger, setPeriodicTrigger] = useState("schedule");
+  const [periodicDelaySeconds, setPeriodicDelaySeconds] = useState(5);
+  const [periodicMaxDurationSeconds, setPeriodicMaxDurationSeconds] = useState(0);
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -398,6 +400,9 @@ export function ChatInput({
     setPeriodicNextScheduledAt(null);
     setPeriodicMaxIterations(0);
     setPeriodicIterationCount(0);
+    setPeriodicTrigger("schedule");
+    setPeriodicDelaySeconds(5);
+    setPeriodicMaxDurationSeconds(0);
   }, [sessionId]);
 
   // Reset combo box selection and free text input when UI prompt changes
@@ -436,6 +441,9 @@ export function ChatInput({
       setPeriodicPromptName("");
       setPeriodicFrequency({ value: 1, unit: "hours" });
       setPeriodicNextScheduledAt(null);
+      setPeriodicTrigger("schedule");
+      setPeriodicDelaySeconds(5);
+      setPeriodicMaxDurationSeconds(0);
       // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
@@ -465,6 +473,9 @@ export function ChatInput({
           setPeriodicFreshContext(config.fresh_context === true);
           setPeriodicMaxIterations(config.max_iterations ?? 0);
           setPeriodicIterationCount(config.iteration_count ?? 0);
+          setPeriodicTrigger(config.trigger || "schedule");
+          setPeriodicDelaySeconds(config.delay_seconds ?? 5);
+          setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
           // Set lock state based on the enabled field
           const isLocked = config.enabled === true;
           setIsPeriodicLocked(isLocked);
@@ -536,6 +547,9 @@ export function ChatInput({
             setPeriodicFreshContext(config.fresh_context === true);
             setPeriodicMaxIterations(config.max_iterations ?? 0);
             setPeriodicIterationCount(config.iteration_count ?? 0);
+            setPeriodicTrigger(config.trigger || "schedule");
+            setPeriodicDelaySeconds(config.delay_seconds ?? 5);
+            setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
@@ -2164,43 +2178,37 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       `}
 
-      <!-- Periodic settings (shown when periodic is enabled) -->
+      <!-- Periodic settings card (shown when periodic is enabled) -->
       <!-- Part of normal document flow - pushes conversation area up. -->
-      <!-- Prompt selector + frequency sit on one line at lg+, stacked on small/tablet screens. -->
-      <div class="max-w-4xl mx-auto flex flex-col lg:flex-row lg:gap-3 lg:items-start">
-        <!-- Periodic Prompt Selector -->
-        <div class="lg:flex-1 lg:min-w-0">
-          <${PeriodicPromptSelector}
-            isOpen=${periodicEnabled}
-            prompts=${periodicPrompts}
-            selectedPromptName=${periodicPromptName}
-            disabled=${false}
-            onSelect=${handlePeriodicPromptSelect}
-            isPromptAreaVisible=${!isPromptCollapsed}
-            onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
-          />
-        </div>
-
-        <!-- Periodic Frequency Panel (editable when unlocked, read-only when locked) -->
-        <!-- Size to content (flex-none) so the full "Run every … Next: …" row stays -->
-        <!-- visible; the prompt selector (flex-1) absorbs the remaining width. -->
-        <div class="lg:flex-none">
-          <${PeriodicFrequencyPanel}
-            isOpen=${periodicEnabled}
-            disabled=${isPeriodicLocked}
-            sessionId=${sessionId}
-            frequency=${periodicFrequency}
-            onFrequencyChange=${handlePeriodicFrequencyChange}
-            nextScheduledAt=${periodicNextScheduledAt}
-            isStreaming=${isStreaming}
-            freshContext=${periodicFreshContext}
-            onFreshContextChange=${setPeriodicFreshContext}
-            maxIterations=${periodicMaxIterations}
-            iterationCount=${periodicIterationCount}
-            onMaxIterationsChange=${handlePeriodicMaxIterationsChange}
-            onPeriodicEnabledChange=${handlePeriodicEnabledChange}
-          />
-        </div>
+      <!-- Single merged card: compact header always visible; body expands on demand. -->
+      <div class="max-w-4xl mx-auto">
+        <${PeriodicFrequencyPanel}
+          isOpen=${periodicEnabled}
+          disabled=${isPeriodicLocked}
+          sessionId=${sessionId}
+          frequency=${periodicFrequency}
+          onFrequencyChange=${handlePeriodicFrequencyChange}
+          nextScheduledAt=${periodicNextScheduledAt}
+          isStreaming=${isStreaming}
+          freshContext=${periodicFreshContext}
+          onFreshContextChange=${setPeriodicFreshContext}
+          maxIterations=${periodicMaxIterations}
+          iterationCount=${periodicIterationCount}
+          onMaxIterationsChange=${handlePeriodicMaxIterationsChange}
+          onPeriodicEnabledChange=${handlePeriodicEnabledChange}
+          prompts=${periodicPrompts}
+          selectedPromptName=${periodicPromptName}
+          onPromptSelect=${handlePeriodicPromptSelect}
+          isPromptAreaVisible=${!isPromptCollapsed}
+          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
+          trigger=${periodicTrigger}
+          delaySeconds=${periodicDelaySeconds}
+          maxDurationSeconds=${periodicMaxDurationSeconds}
+          minDelaySeconds=${5}
+          onTriggerChange=${setPeriodicTrigger}
+          onDelayChange=${setPeriodicDelaySeconds}
+          onMaxDurationChange=${setPeriodicMaxDurationSeconds}
+        />
       </div>
 
       ${hasActionButtons &&

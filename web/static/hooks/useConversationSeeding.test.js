@@ -3,7 +3,7 @@
  */
 
 import { jest } from "@jest/globals";
-import { buildSeedQueueBody, seedConversationWithPrompt, configurePeriodicSchedule, decidePeriodicAction, makePeriodicNow, useConversationSeeding } from "./useConversationSeeding.js";
+import { buildSeedQueueBody, seedConversationWithPrompt, configurePeriodicSchedule, decidePeriodicAction, makePeriodicNow, useConversationSeeding, parseDurationToSeconds } from "./useConversationSeeding.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
 global.window = global.window || {};
@@ -638,5 +638,187 @@ describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
     expect(onPeriodicPrompt).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
     expect(result).toBe("noop");
+  });
+});
+
+// =============================================================================
+// parseDurationToSeconds
+// =============================================================================
+
+describe("parseDurationToSeconds", () => {
+  test("number → clamped to >= 0 seconds", () => {
+    expect(parseDurationToSeconds(120)).toBe(120);
+    expect(parseDurationToSeconds(0)).toBe(0);
+    expect(parseDurationToSeconds(-5)).toBe(0);
+  });
+
+  test("'30s' → 30 seconds", () => {
+    expect(parseDurationToSeconds("30s")).toBe(30);
+  });
+
+  test("'30m' → 1800 seconds", () => {
+    expect(parseDurationToSeconds("30m")).toBe(1800);
+  });
+
+  test("'2h' → 7200 seconds", () => {
+    expect(parseDurationToSeconds("2h")).toBe(7200);
+  });
+
+  test("'1d' → 86400 seconds", () => {
+    expect(parseDurationToSeconds("1d")).toBe(86400);
+  });
+
+  test("case-insensitive: '4H' → 14400", () => {
+    expect(parseDurationToSeconds("4H")).toBe(14400);
+  });
+
+  test("undefined → 0", () => {
+    expect(parseDurationToSeconds(undefined)).toBe(0);
+  });
+
+  test("null → 0", () => {
+    expect(parseDurationToSeconds(null)).toBe(0);
+  });
+
+  test("empty string → 0", () => {
+    expect(parseDurationToSeconds("")).toBe(0);
+  });
+
+  test("invalid string → 0", () => {
+    expect(parseDurationToSeconds("bad")).toBe(0);
+    expect(parseDurationToSeconds("2 hours")).toBe(0);
+    expect(parseDurationToSeconds("1.5h")).toBe(0);
+  });
+});
+
+// =============================================================================
+// configurePeriodicSchedule — trigger/delay/maxDuration fields
+// =============================================================================
+
+describe("configurePeriodicSchedule — trigger/delay/maxDuration fields", () => {
+  const prompt = { name: "my-prompt" };
+
+  function makeFetch(status) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve({}),
+      }),
+    );
+  }
+
+  test("includes trigger, delay_seconds, max_duration_seconds in PUT body", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule(
+      "s1", prompt,
+      { value: 1, unit: "hours", trigger: "onCompletion", delaySeconds: 10, maxDurationSeconds: 3600 },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("onCompletion");
+    expect(body.delay_seconds).toBe(10);
+    expect(body.max_duration_seconds).toBe(3600);
+  });
+
+  test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("schedule");
+    expect(body.delay_seconds).toBe(0);
+    expect(body.max_duration_seconds).toBe(0);
+  });
+
+  test("falls back to prompt.periodic.trigger when periodic.trigger absent", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule(
+      "s1",
+      { name: "p", periodic: { trigger: "onCompletion" } },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("onCompletion");
+  });
+
+  test("falls back to prompt.periodic.delay for delay_seconds when absent from periodic", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule(
+      "s1",
+      { name: "p", periodic: { delay: 15 } },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.delay_seconds).toBe(15);
+  });
+
+  test("parses prompt.periodic.maxDuration string ('2h') into max_duration_seconds", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule(
+      "s1",
+      { name: "p", periodic: { maxDuration: "2h" } },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_duration_seconds).toBe(7200);
+  });
+
+  test("periodic.maxDurationSeconds takes priority over prompt.periodic.maxDuration", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule(
+      "s1",
+      { name: "p", periodic: { maxDuration: "2h" } },
+      { value: 1, unit: "hours", maxDurationSeconds: 300 },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_duration_seconds).toBe(300);
+  });
+});
+
+// =============================================================================
+// makePeriodicNow — trigger/delay/maxDuration fields
+// =============================================================================
+
+describe("makePeriodicNow — trigger/delay/maxDuration fields", () => {
+  function makeFetchSequence(...responses) {
+    let i = 0;
+    return jest.fn(() => {
+      const r = responses[i++] || responses[responses.length - 1];
+      return Promise.resolve(r);
+    });
+  }
+
+  function makeResp(status, data = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(data),
+    };
+  }
+
+  test("includes trigger from prompt.periodic in PUT body", async () => {
+    const prompt = { name: "p", periodic: { value: 1, unit: "hours", trigger: "onCompletion", delay: 10, maxDuration: "1h" } };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("onCompletion");
+    expect(body.delay_seconds).toBe(10);
+    expect(body.max_duration_seconds).toBe(3600);
+  });
+
+  test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
+    const prompt = { name: "p", periodic: { value: 1, unit: "hours" } };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("schedule");
+    expect(body.delay_seconds).toBe(0);
+    expect(body.max_duration_seconds).toBe(0);
   });
 });

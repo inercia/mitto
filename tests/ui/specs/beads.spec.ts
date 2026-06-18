@@ -1166,7 +1166,7 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
 
       // Open the conversation properties side panel; confirm the linked-issue
       // link is present.
-      await page.getByTitle("Session details").click();
+      await page.locator('button[aria-label="Session details"]').click();
       const convPanel = page.locator(CONV_PANEL);
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();

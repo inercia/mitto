@@ -6,6 +6,30 @@ import { secureFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 
 /**
+ * Parse a duration string or number into seconds.
+ * - number → that many seconds (clamped to >= 0)
+ * - string matching "NNu" where u is s/m/h/d (case-insensitive) → converted to seconds
+ * - otherwise (undefined, null, unrecognised string) → 0
+ *
+ * @param {string|number|undefined|null} input
+ * @returns {number}
+ */
+export function parseDurationToSeconds(input) {
+  if (typeof input === "number") return Math.max(0, Math.floor(input));
+  if (typeof input !== "string") return 0;
+  const m = input.trim().match(/^(\d+)\s*([smhd])$/i);
+  if (!m) return 0;
+  const v = parseInt(m[1], 10);
+  switch (m[2].toLowerCase()) {
+    case "s": return v;
+    case "m": return v * 60;
+    case "h": return v * 3600;
+    case "d": return v * 86400;
+    default: return 0;
+  }
+}
+
+/**
  * Decide which periodic action to take based on the target session's state.
  *
  * Returns one of:
@@ -52,6 +76,11 @@ export async function makePeriodicNow(sessionId, prompt, { fetchImpl } = {}) {
   const maxIterations = (typeof p.maxIterations === "number" && p.maxIterations > 0)
     ? p.maxIterations : 0;
 
+  // New trigger/delay/maxDuration fields from prompt periodic defaults.
+  const trigger = p.trigger || "schedule";
+  const delaySeconds = p.delay ?? 0;
+  const maxDurationSeconds = parseDurationToSeconds(p.maxDuration);
+
   const fetch_ = fetchImpl || secureFetch;
 
   // Step 1: configure periodic
@@ -64,6 +93,9 @@ export async function makePeriodicNow(sessionId, prompt, { fetchImpl } = {}) {
         frequency,
         enabled: true,
         max_iterations: maxIterations,
+        trigger,
+        delay_seconds: delaySeconds,
+        max_duration_seconds: maxDurationSeconds,
       }),
     });
     if (!putResp.ok) {
@@ -173,6 +205,12 @@ export async function configurePeriodicSchedule(sessionId, prompt, periodic, { f
     maxIterations = prompt.periodic.maxIterations;
   }
 
+  // New trigger/delay/maxDuration fields: from dialog result, then prompt defaults.
+  const trigger = periodic.trigger || prompt?.periodic?.trigger || "schedule";
+  const delaySeconds = periodic.delaySeconds ?? prompt?.periodic?.delay ?? 0;
+  const maxDurationSeconds = periodic.maxDurationSeconds ??
+    parseDurationToSeconds(prompt?.periodic?.maxDuration);
+
   const fetch_ = fetchImpl || secureFetch;
   try {
     const resp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic`), {
@@ -183,6 +221,9 @@ export async function configurePeriodicSchedule(sessionId, prompt, periodic, { f
         frequency,
         enabled: true,
         max_iterations: maxIterations,
+        trigger,
+        delay_seconds: delaySeconds,
+        max_duration_seconds: maxDurationSeconds,
       }),
     });
 

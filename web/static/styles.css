@@ -299,6 +299,21 @@
   will-change: opacity, transform;
 }
 
+/* Reconnecting banner: keep daisyUI's skeleton-text gradient shimmer but raise
+   the dim baseline text from 20% to 60% opacity so the label stays clearly
+   readable while still shimmering. daisyUI's .skeleton-text gradient lives in an
+   @layer, so this unlayered rule (and its higher 0,2,0 specificity) wins. In
+   browsers without color-mix support, daisyUI's fully-opaque fallback applies
+   and this rule is simply ignored. */
+.skeleton-text.skeleton-text-readable {
+  background-image: linear-gradient(
+    105deg,
+    color-mix(in oklab, var(--color-base-content) 60%, transparent) 0% 40%,
+    var(--color-base-content) 50%,
+    color-mix(in oklab, var(--color-base-content) 60%, transparent) 60% 100%
+  );
+}
+
 /* Keep the sidebar filter-tab bar (Conversations) and the Tasks panel toolbar
    at the same height so the horizontal divider lines between the two
    side-by-side panels align. Both panel headers already share p-4 + text-lg, so

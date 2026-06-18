@@ -183,6 +183,7 @@ import { DeleteDialog } from "./components/DeleteDialog.js";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog.js";
 import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialog.js";
 import { PeriodicScheduleDialog } from "./components/PeriodicScheduleDialog.js";
+import { Tooltip } from "./components/Tooltip.js";
 
 // SettingsDialog, WorkspacesDialog, etc. are all imported from ./components/
 
@@ -2010,14 +2011,19 @@ function App() {
         <div
           class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
         >
-          <button
-            class="md:hidden p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
-            onClick=${() => setShowSidebar(true)}
-            title="Show conversations"
-            aria-label="Show conversations"
+          <${Tooltip}
+            tip="Show conversations"
+            placement="bottom"
+            className="md:hidden"
           >
-            <${MenuIcon} className="w-6 h-6" />
-          </button>
+            <button
+              class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+              onClick=${() => setShowSidebar(true)}
+              aria-label="Show conversations"
+            >
+              <${MenuIcon} className="w-6 h-6" />
+            </button>
+          <//>
           <h1
             class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
               ? "text-mitto-text-muted"
@@ -2039,26 +2045,29 @@ function App() {
             <!-- Conversation actions menu (mirrors the sidebar row menu) -->
             ${activeSessionId
               ? html`
-                  <button
-                    type="button"
-                    onClick=${handleHeaderMenuButtonClick}
-                    class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
-                    title="Conversation actions"
-                    aria-label="Conversation actions"
-                    data-testid="header-conversation-menu"
-                  >
-                    <${EllipsisIcon} className="w-4 h-4" />
-                  </button>
+                  <${Tooltip} tip="Conversation actions" placement="bottom">
+                    <button
+                      type="button"
+                      onClick=${handleHeaderMenuButtonClick}
+                      class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
+                      aria-label="Conversation actions"
+                      data-testid="header-conversation-menu"
+                    >
+                      <${EllipsisIcon} className="w-4 h-4" />
+                    </button>
+                  <//>
                 `
               : null}
             <!-- Unified side panel toggle -->
-            <button
-              onClick=${handleToggleSidePanel}
-              class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-mitto-text-secondary hover:text-mitto-text-200"}"
-              title="Session details"
-            >
-              <${SidePanelIcon} className="w-4 h-4" />
-            </button>
+            <${Tooltip} tip="Session details" placement="bottom">
+              <button
+                onClick=${handleToggleSidePanel}
+                class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-mitto-text-secondary hover:text-mitto-text-200"}"
+                aria-label="Session details"
+              >
+                <${SidePanelIcon} className="w-4 h-4" />
+              </button>
+            <//>
           </div>
         </div>
         ${headerMenu &&
@@ -2130,11 +2139,10 @@ function App() {
         !sessionInfo.gc_suspended &&
         messages.length > 0 &&
         html`
-          <div
-            class="flex items-center justify-center gap-2 py-2 text-sm text-mitto-warning"
-          >
-            <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
-            Reconnecting to AI agent...
+          <div class="flex items-center justify-center py-2 text-sm">
+            <span class="skeleton skeleton-text skeleton-text-readable"
+              >Reconnecting to AI agent...</span
+            >
           </div>
         `}
 

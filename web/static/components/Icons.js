@@ -944,6 +944,24 @@ export function PlayFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Pause filled icon for "pause" action
+ * Shows a filled circular badge with two white vertical bars inside
+ * Similar style to PlayFilledIcon but indicates "pause" action
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PauseFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 24 24">
+      <!-- Filled circle background using currentColor (will be blue/colored) -->
+      <circle cx="12" cy="12" r="11" fill="currentColor" />
+      <!-- Two pause bars in white for contrast against colored circle -->
+      <rect x="8" y="7" width="3" height="10" rx="1" fill="white" />
+      <rect x="13" y="7" width="3" height="10" rx="1" fill="white" />
+    </svg>
+  `;
+}
+
+/**
  * List/no-grouping icon (horizontal lines)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
