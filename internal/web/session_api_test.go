@@ -1987,6 +1987,186 @@ func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
 	}
 }
 
+// putPeriodicForTest is a helper that PUTs a periodic config via the REST handler and
+// returns the decoded response. It fails the test on a non-200 status.
+func putPeriodicForTest(t *testing.T, server *Server, sid string, body PeriodicPromptRequest) session.PeriodicPrompt {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/periodic", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.handleSessionPeriodic(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var got session.PeriodicPrompt
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	return got
+}
+
+// TestHandleSessionPeriodic_OnCompletionRoundTrip verifies that the on-completion trigger,
+// completion delay, and max-duration fields round-trip through the PUT handler. A frequency
+// is not required for the onCompletion trigger.
+func TestHandleSessionPeriodic_OnCompletionRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-oncompletion-roundtrip"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{store: store, eventsManager: NewGlobalEventsManager()}
+
+	got := putPeriodicForTest(t, server, sid, PeriodicPromptRequest{
+		Prompt:             "keep going",
+		Enabled:            true,
+		Trigger:            session.TriggerOnCompletion,
+		DelaySeconds:       30,
+		MaxDurationSeconds: 3600,
+	})
+
+	if got.Trigger != session.TriggerOnCompletion {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
+	}
+	if got.DelaySeconds != 30 {
+		t.Errorf("DelaySeconds = %d, want 30", got.DelaySeconds)
+	}
+	if got.MaxDurationSeconds != 3600 {
+		t.Errorf("MaxDurationSeconds = %d, want 3600", got.MaxDurationSeconds)
+	}
+}
+
+// TestHandleSessionPeriodic_OnCompletionDelayClampedOnPut verifies that a delay below the
+// global floor is clamped up to the floor on write (PUT). With no periodic runner configured,
+// the floor is the package default.
+func TestHandleSessionPeriodic_OnCompletionDelayClampedOnPut(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-oncompletion-clamp-put"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{store: store, eventsManager: NewGlobalEventsManager()}
+
+	got := putPeriodicForTest(t, server, sid, PeriodicPromptRequest{
+		Prompt:       "keep going",
+		Enabled:      true,
+		Trigger:      session.TriggerOnCompletion,
+		DelaySeconds: 1, // below the default floor (5)
+	})
+
+	if got.DelaySeconds != server.periodicDelayFloor() {
+		t.Errorf("DelaySeconds = %d, want clamped to floor %d", got.DelaySeconds, server.periodicDelayFloor())
+	}
+}
+
+// TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields verifies that a partial
+// PATCH updating only max_duration_seconds does not clobber the trigger or delay.
+func TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-oncompletion-patch"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{store: store, eventsManager: NewGlobalEventsManager()}
+
+	// Seed an onCompletion config with a delay and no duration cap.
+	putPeriodicForTest(t, server, sid, PeriodicPromptRequest{
+		Prompt:       "keep going",
+		Enabled:      true,
+		Trigger:      session.TriggerOnCompletion,
+		DelaySeconds: 30,
+	})
+
+	// PATCH only max_duration_seconds.
+	maxDur := 7200
+	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{MaxDurationSeconds: &maxDur})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.handleSessionPeriodic(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Periodic(sid).Get()
+	if err != nil {
+		t.Fatalf("Get periodic after PATCH: %v", err)
+	}
+	if stored.Trigger != session.TriggerOnCompletion {
+		t.Errorf("Trigger after PATCH = %q, want %q (must not be clobbered)", stored.Trigger, session.TriggerOnCompletion)
+	}
+	if stored.DelaySeconds != 30 {
+		t.Errorf("DelaySeconds after PATCH = %d, want 30 (must not be clobbered)", stored.DelaySeconds)
+	}
+	if stored.MaxDurationSeconds != 7200 {
+		t.Errorf("MaxDurationSeconds after PATCH = %d, want 7200", stored.MaxDurationSeconds)
+	}
+}
+
+// TestHandleSessionPeriodic_PatchDelayClamped verifies that a PATCH lowering the delay below
+// the floor on an onCompletion config is clamped up to the floor.
+func TestHandleSessionPeriodic_PatchDelayClamped(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-oncompletion-patch-clamp"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{store: store, eventsManager: NewGlobalEventsManager()}
+
+	putPeriodicForTest(t, server, sid, PeriodicPromptRequest{
+		Prompt:       "keep going",
+		Enabled:      true,
+		Trigger:      session.TriggerOnCompletion,
+		DelaySeconds: 30,
+	})
+
+	belowFloor := 1
+	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{DelaySeconds: &belowFloor})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.handleSessionPeriodic(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Periodic(sid).Get()
+	if err != nil {
+		t.Fatalf("Get periodic after PATCH: %v", err)
+	}
+	if stored.DelaySeconds != server.periodicDelayFloor() {
+		t.Errorf("DelaySeconds after PATCH = %d, want clamped to floor %d", stored.DelaySeconds, server.periodicDelayFloor())
+	}
+}
+
 // TestHandleSessionPeriodic_MakePeriodicDraft verifies the "Make periodic" frontend flow:
 // PUT /api/sessions/{id}/periodic with a draft body (enabled:false, prompt:"(pending)")
 // on an existing top-level session succeeds and stores the draft config.

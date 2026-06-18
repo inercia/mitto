@@ -476,6 +476,15 @@ func (s *Server) UpdateDependencies(deps Dependencies) {
 	}
 }
 
+// periodicDelayFloor returns the configured global floor for the on-completion periodic
+// delay. Falls back to the package default when no config is available.
+func (s *Server) periodicDelayFloor() int {
+	if s.config != nil {
+		return s.config.Conversations.GetMinPeriodicCompletionDelaySeconds()
+	}
+	return config.DefaultMinPeriodicCompletionDelaySeconds
+}
+
 // SetPeriodicRunner sets the periodic runner for triggering periodic runs via MCP tools.
 // It may be called after NewServer since the periodic runner is created after the MCP server.
 func (s *Server) SetPeriodicRunner(runner PeriodicRunner) {
@@ -1159,6 +1168,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'periodic_enabled' to false to create the periodic configuration in a paused state. " +
 			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
+			"Set 'periodic_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven) instead of on a fixed 'schedule'; onCompletion does not require a frequency. " +
+			"For 'onCompletion', set 'periodic_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
+			"Set 'periodic_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
@@ -1227,6 +1239,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"To disable periodic entirely, set 'periodic_enabled' to false. " +
 			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
+			"Set 'periodic_trigger' to 'onCompletion' (event-driven: fire after the agent stops) or 'schedule' (frequency-based, default); onCompletion does not require a frequency. " +
+			"For 'onCompletion', set 'periodic_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
+			"Set 'periodic_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
 
@@ -2677,6 +2692,10 @@ type ConversationStartInput struct {
 	PeriodicEnabled        *bool  `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 	PeriodicFreshContext   *bool  `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	PeriodicMaxIterations  *int   `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
+	// On-completion trigger configuration (optional)
+	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`                  // "schedule" (default) or "onCompletion"
+	PeriodicCompletionDelaySeconds *int   `json:"periodic_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
+	PeriodicMaxDurationSeconds     *int   `json:"periodic_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -2973,30 +2992,44 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var periodicConfigured bool
 	var periodicNextRun string
 	if input.PeriodicPrompt != "" {
-		// Validate frequency value
-		if input.PeriodicFrequencyValue < 1 {
-			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_value must be >= 1 when periodic_prompt is provided")
-		}
-
-		var freqUnit session.FrequencyUnit
-		switch input.PeriodicFrequencyUnit {
-		case "minutes":
-			freqUnit = session.FrequencyMinutes
-		case "hours":
-			freqUnit = session.FrequencyHours
-		case "days":
-			freqUnit = session.FrequencyDays
+		// Resolve the trigger (default schedule). onCompletion is event-driven and does
+		// not require a frequency.
+		trigger := session.PeriodicTrigger(input.PeriodicTrigger)
+		switch trigger {
+		case "", session.TriggerSchedule, session.TriggerOnCompletion:
+			// valid
 		default:
-			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_unit must be 'minutes', 'hours', or 'days'")
+			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_trigger must be 'schedule' or 'onCompletion'")
 		}
+		isOnCompletion := trigger == session.TriggerOnCompletion
 
-		freq := session.Frequency{
-			Value: input.PeriodicFrequencyValue,
-			Unit:  freqUnit,
-			At:    input.PeriodicFrequencyAt,
-		}
-		if err := freq.Validate(); err != nil {
-			return nil, ConversationStartOutput{}, fmt.Errorf("invalid periodic frequency: %v", err)
+		var freq session.Frequency
+		if !isOnCompletion {
+			// Schedule trigger: frequency is required.
+			if input.PeriodicFrequencyValue < 1 {
+				return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_value must be >= 1 when periodic_prompt is provided")
+			}
+
+			var freqUnit session.FrequencyUnit
+			switch input.PeriodicFrequencyUnit {
+			case "minutes":
+				freqUnit = session.FrequencyMinutes
+			case "hours":
+				freqUnit = session.FrequencyHours
+			case "days":
+				freqUnit = session.FrequencyDays
+			default:
+				return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_unit must be 'minutes', 'hours', or 'days'")
+			}
+
+			freq = session.Frequency{
+				Value: input.PeriodicFrequencyValue,
+				Unit:  freqUnit,
+				At:    input.PeriodicFrequencyAt,
+			}
+			if err := freq.Validate(); err != nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf("invalid periodic frequency: %v", err)
+			}
 		}
 
 		enabled := true
@@ -3014,13 +3047,28 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			maxIterations = *input.PeriodicMaxIterations
 		}
 
-		periodic := &session.PeriodicPrompt{
-			Prompt:        input.PeriodicPrompt,
-			Frequency:     freq,
-			Enabled:       enabled,
-			FreshContext:  freshContext,
-			MaxIterations: maxIterations,
+		delaySeconds := 0
+		if input.PeriodicCompletionDelaySeconds != nil {
+			delaySeconds = *input.PeriodicCompletionDelaySeconds
 		}
+
+		maxDurationSeconds := 0
+		if input.PeriodicMaxDurationSeconds != nil {
+			maxDurationSeconds = *input.PeriodicMaxDurationSeconds
+		}
+
+		periodic := &session.PeriodicPrompt{
+			Prompt:             input.PeriodicPrompt,
+			Frequency:          freq,
+			Enabled:            enabled,
+			FreshContext:       freshContext,
+			MaxIterations:      maxIterations,
+			Trigger:            trigger,
+			DelaySeconds:       delaySeconds,
+			MaxDurationSeconds: maxDurationSeconds,
+		}
+		// Clamp the on-completion delay to the global floor (no-op for schedule).
+		periodic.ClampDelay(s.periodicDelayFloor())
 
 		periodicStore := store.Periodic(newSessionID)
 		if err := periodicStore.Set(periodic); err != nil {
@@ -3753,7 +3801,8 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Update periodic configuration if any periodic fields provided
-	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil || input.PeriodicMaxIterations != nil {
+	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil || input.PeriodicMaxIterations != nil ||
+		input.PeriodicTrigger != nil || input.PeriodicCompletionDelaySeconds != nil || input.PeriodicMaxDurationSeconds != nil {
 		periodicStore := store.Periodic(input.ConversationID)
 
 		// Check if this is an update to existing periodic config or a new setup
@@ -3761,53 +3810,74 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		isNew := existErr != nil || existing == nil
 
 		if isNew {
-			// Creating new periodic config — require all mandatory fields
+			// Resolve the trigger (default schedule). onCompletion does not require a frequency.
+			trigger := session.TriggerSchedule
+			if input.PeriodicTrigger != nil {
+				trigger = session.PeriodicTrigger(*input.PeriodicTrigger)
+			}
+			switch trigger {
+			case "", session.TriggerSchedule, session.TriggerOnCompletion:
+				// valid
+			default:
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   "periodic_trigger must be 'schedule' or 'onCompletion'",
+				}, nil
+			}
+			isOnCompletion := trigger == session.TriggerOnCompletion
+
+			// Creating new periodic config — require the prompt always.
 			if input.PeriodicPrompt == nil || *input.PeriodicPrompt == "" {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   "periodic_prompt is required when creating new periodic configuration",
 				}, nil
 			}
-			if input.PeriodicFrequencyValue == nil || *input.PeriodicFrequencyValue < 1 {
-				return nil, ConversationUpdateOutput{
-					Success: false,
-					Error:   "periodic_frequency_value (>= 1) is required when creating new periodic configuration",
-				}, nil
-			}
-			if input.PeriodicFrequencyUnit == nil || *input.PeriodicFrequencyUnit == "" {
-				return nil, ConversationUpdateOutput{
-					Success: false,
-					Error:   "periodic_frequency_unit is required when creating new periodic configuration",
-				}, nil
-			}
 
-			var freqUnit session.FrequencyUnit
-			switch *input.PeriodicFrequencyUnit {
-			case "minutes":
-				freqUnit = session.FrequencyMinutes
-			case "hours":
-				freqUnit = session.FrequencyHours
-			case "days":
-				freqUnit = session.FrequencyDays
-			default:
-				return nil, ConversationUpdateOutput{
-					Success: false,
-					Error:   "periodic_frequency_unit must be 'minutes', 'hours', or 'days'",
-				}, nil
-			}
+			var freq session.Frequency
+			if !isOnCompletion {
+				// Schedule trigger: frequency is mandatory.
+				if input.PeriodicFrequencyValue == nil || *input.PeriodicFrequencyValue < 1 {
+					return nil, ConversationUpdateOutput{
+						Success: false,
+						Error:   "periodic_frequency_value (>= 1) is required when creating new periodic configuration",
+					}, nil
+				}
+				if input.PeriodicFrequencyUnit == nil || *input.PeriodicFrequencyUnit == "" {
+					return nil, ConversationUpdateOutput{
+						Success: false,
+						Error:   "periodic_frequency_unit is required when creating new periodic configuration",
+					}, nil
+				}
 
-			freq := session.Frequency{
-				Value: *input.PeriodicFrequencyValue,
-				Unit:  freqUnit,
-			}
-			if input.PeriodicFrequencyAt != nil {
-				freq.At = *input.PeriodicFrequencyAt
-			}
-			if err := freq.Validate(); err != nil {
-				return nil, ConversationUpdateOutput{
-					Success: false,
-					Error:   fmt.Sprintf("invalid periodic frequency: %v", err),
-				}, nil
+				var freqUnit session.FrequencyUnit
+				switch *input.PeriodicFrequencyUnit {
+				case "minutes":
+					freqUnit = session.FrequencyMinutes
+				case "hours":
+					freqUnit = session.FrequencyHours
+				case "days":
+					freqUnit = session.FrequencyDays
+				default:
+					return nil, ConversationUpdateOutput{
+						Success: false,
+						Error:   "periodic_frequency_unit must be 'minutes', 'hours', or 'days'",
+					}, nil
+				}
+
+				freq = session.Frequency{
+					Value: *input.PeriodicFrequencyValue,
+					Unit:  freqUnit,
+				}
+				if input.PeriodicFrequencyAt != nil {
+					freq.At = *input.PeriodicFrequencyAt
+				}
+				if err := freq.Validate(); err != nil {
+					return nil, ConversationUpdateOutput{
+						Success: false,
+						Error:   fmt.Sprintf("invalid periodic frequency: %v", err),
+					}, nil
+				}
 			}
 
 			enabled := true
@@ -3825,13 +3895,28 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				maxIterations = *input.PeriodicMaxIterations
 			}
 
-			periodic := &session.PeriodicPrompt{
-				Prompt:        *input.PeriodicPrompt,
-				Frequency:     freq,
-				Enabled:       enabled,
-				FreshContext:  freshContext,
-				MaxIterations: maxIterations,
+			delaySeconds := 0
+			if input.PeriodicCompletionDelaySeconds != nil {
+				delaySeconds = *input.PeriodicCompletionDelaySeconds
 			}
+
+			maxDurationSeconds := 0
+			if input.PeriodicMaxDurationSeconds != nil {
+				maxDurationSeconds = *input.PeriodicMaxDurationSeconds
+			}
+
+			periodic := &session.PeriodicPrompt{
+				Prompt:             *input.PeriodicPrompt,
+				Frequency:          freq,
+				Enabled:            enabled,
+				FreshContext:       freshContext,
+				MaxIterations:      maxIterations,
+				Trigger:            trigger,
+				DelaySeconds:       delaySeconds,
+				MaxDurationSeconds: maxDurationSeconds,
+			}
+			// Clamp the on-completion delay to the global floor (no-op for schedule).
+			periodic.ClampDelay(s.periodicDelayFloor())
 
 			if err := periodicStore.Set(periodic); err != nil {
 				return nil, ConversationUpdateOutput{
@@ -3880,7 +3965,31 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				enabled = input.PeriodicEnabled
 			}
 
-			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations); err != nil {
+			// On-completion fields (partial). Convert the trigger string to the typed pointer.
+			var trigger *session.PeriodicTrigger
+			if input.PeriodicTrigger != nil {
+				t := session.PeriodicTrigger(*input.PeriodicTrigger)
+				trigger = &t
+			}
+			delaySeconds := input.PeriodicCompletionDelaySeconds
+
+			// Clamp the on-completion delay to the global floor on write. The effective
+			// trigger is the patched value when provided, otherwise the stored one.
+			if delaySeconds != nil {
+				floor := s.periodicDelayFloor()
+				if *delaySeconds < floor {
+					effTrigger := existing.Trigger
+					if trigger != nil {
+						effTrigger = *trigger
+					}
+					if effTrigger == session.TriggerOnCompletion {
+						clamped := floor
+						delaySeconds = &clamped
+					}
+				}
+			}
+
+			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations, trigger, delaySeconds, input.PeriodicMaxDurationSeconds); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update periodic: %v", err),
@@ -3956,6 +4065,9 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		output.PeriodicFreshContext = p.FreshContext
 		output.PeriodicMaxIterations = p.MaxIterations
 		output.PeriodicIterationCount = p.IterationCount
+		output.PeriodicTrigger = string(p.EffectiveTrigger())
+		output.PeriodicCompletionDelaySeconds = p.DelaySeconds
+		output.PeriodicMaxDurationSeconds = p.MaxDurationSeconds
 		if p.NextScheduledAt != nil {
 			output.PeriodicNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 		}

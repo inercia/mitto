@@ -8528,7 +8528,6 @@ func TestGetConversation_QueuedPrompts_LongMessageTruncated(t *testing.T) {
 	}
 }
 
-
 // setupSendPromptServerWithPrompts creates a server with a sender and target conversation,
 // with the given workspace prompts available via config. Returns store, srv, senderID, targetID.
 func setupSendPromptServerWithPrompts(t *testing.T, prompts []config.WebPrompt) (*session.Store, *Server, string, string) {
@@ -8642,5 +8641,76 @@ func TestSendPrompt_BothEmpty_Error(t *testing.T) {
 	}
 	if !strings.Contains(output.Error, "prompt_name") {
 		t.Errorf("Expected error mentioning 'prompt_name', got: %s", output.Error)
+	}
+}
+
+// TestConversationUpdate_OnCompletionPeriodic verifies the MCP _update tool can create an
+// on-completion periodic conversation (no frequency required) with a completion delay and
+// max-duration cap, and that a partial update clamps the delay to the floor without clobbering
+// the other on-completion fields.
+func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	prompt := "keep iterating"
+	trigger := string(session.TriggerOnCompletion)
+	delay := 30
+	maxDur := 3600
+
+	// Create a new on-completion periodic config via MCP (isNew path, no frequency).
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:                         parentID,
+		ConversationID:                 parentID,
+		PeriodicPrompt:                 &prompt,
+		PeriodicTrigger:                &trigger,
+		PeriodicCompletionDelaySeconds: &delay,
+		PeriodicMaxDurationSeconds:     &maxDur,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+	if out.PeriodicTrigger != string(session.TriggerOnCompletion) {
+		t.Errorf("output PeriodicTrigger = %q, want %q", out.PeriodicTrigger, session.TriggerOnCompletion)
+	}
+	if out.PeriodicCompletionDelaySeconds != 30 {
+		t.Errorf("output PeriodicCompletionDelaySeconds = %d, want 30", out.PeriodicCompletionDelaySeconds)
+	}
+	if out.PeriodicMaxDurationSeconds != 3600 {
+		t.Errorf("output PeriodicMaxDurationSeconds = %d, want 3600", out.PeriodicMaxDurationSeconds)
+	}
+
+	// Verify the stored config persisted the on-completion fields (no frequency needed).
+	stored, err := store.Periodic(parentID).Get()
+	if err != nil {
+		t.Fatalf("Get periodic: %v", err)
+	}
+	if !stored.IsOnCompletion() {
+		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+	}
+	if stored.DelaySeconds != 30 || stored.MaxDurationSeconds != 3600 {
+		t.Errorf("stored delay/maxDur = %d/%d, want 30/3600", stored.DelaySeconds, stored.MaxDurationSeconds)
+	}
+
+	// Partial update: lower the delay below the floor → clamped; max-duration preserved.
+	below := 1
+	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:                         parentID,
+		ConversationID:                 parentID,
+		PeriodicCompletionDelaySeconds: &below,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (patch) error: %v", err)
+	}
+	if !out2.Success {
+		t.Fatalf("patch not successful: %s", out2.Error)
+	}
+	if out2.PeriodicCompletionDelaySeconds != srv.periodicDelayFloor() {
+		t.Errorf("patched delay = %d, want clamped to floor %d", out2.PeriodicCompletionDelaySeconds, srv.periodicDelayFloor())
+	}
+	if out2.PeriodicMaxDurationSeconds != 3600 {
+		t.Errorf("patched maxDur = %d, want preserved 3600", out2.PeriodicMaxDurationSeconds)
 	}
 }

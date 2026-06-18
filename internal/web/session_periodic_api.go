@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -15,6 +16,14 @@ type PeriodicPromptRequest struct {
 	Enabled       bool              `json:"enabled"`
 	FreshContext  bool              `json:"fresh_context,omitempty"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
+	// Trigger selects how the prompt fires: "" or "schedule" (frequency-based, default)
+	// vs "onCompletion" (event-driven, after the agent stops + DelaySeconds).
+	Trigger session.PeriodicTrigger `json:"trigger,omitempty"`
+	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
+	// Clamped to the global floor on write.
+	DelaySeconds int `json:"delay_seconds,omitempty"`
+	// MaxDurationSeconds is the wall-clock cap since iterating started (0 = unlimited).
+	MaxDurationSeconds int `json:"max_duration_seconds,omitempty"`
 }
 
 // PeriodicPromptPatchRequest is the request body for partial updates.
@@ -25,6 +34,19 @@ type PeriodicPromptPatchRequest struct {
 	Enabled       *bool              `json:"enabled,omitempty"`
 	FreshContext  *bool              `json:"fresh_context,omitempty"`
 	MaxIterations *int               `json:"max_iterations,omitempty"`
+	// Trigger, DelaySeconds, MaxDurationSeconds are partial updates for the on-completion fields.
+	Trigger            *session.PeriodicTrigger `json:"trigger,omitempty"`
+	DelaySeconds       *int                     `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                     `json:"max_duration_seconds,omitempty"`
+}
+
+// periodicDelayFloor returns the configured global floor for the on-completion delay.
+// Falls back to the package default when the periodic runner is unavailable (e.g. tests).
+func (s *Server) periodicDelayFloor() int {
+	if s.periodicRunner != nil {
+		return s.periodicRunner.MinPeriodicCompletionDelaySeconds()
+	}
+	return configPkg.DefaultMinPeriodicCompletionDelaySeconds
 }
 
 // handleSessionPeriodic handles periodic prompt operations for a session.
@@ -102,16 +124,22 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 	}
 
 	p := &session.PeriodicPrompt{
-		Prompt:        req.Prompt,
-		PromptName:    req.PromptName,
-		Frequency:     req.Frequency,
-		Enabled:       req.Enabled,
-		FreshContext:  req.FreshContext,
-		MaxIterations: req.MaxIterations,
+		Prompt:             req.Prompt,
+		PromptName:         req.PromptName,
+		Frequency:          req.Frequency,
+		Enabled:            req.Enabled,
+		FreshContext:       req.FreshContext,
+		MaxIterations:      req.MaxIterations,
+		Trigger:            req.Trigger,
+		DelaySeconds:       req.DelaySeconds,
+		MaxDurationSeconds: req.MaxDurationSeconds,
 	}
+	// Clamp the on-completion delay to the global floor on write (no-op for schedule trigger).
+	p.ClampDelay(s.periodicDelayFloor())
 
 	if err := ps.Set(p); err != nil {
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations {
+		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
+			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -155,12 +183,31 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations); err != nil {
+	// Clamp the on-completion delay to the global floor on write. The effective trigger
+	// is the patched value when provided, otherwise the currently-stored trigger.
+	if req.DelaySeconds != nil {
+		floor := s.periodicDelayFloor()
+		if *req.DelaySeconds < floor {
+			effTrigger := session.PeriodicTrigger("")
+			if req.Trigger != nil {
+				effTrigger = *req.Trigger
+			} else if cur, err := ps.Get(); err == nil && cur != nil {
+				effTrigger = cur.Trigger
+			}
+			if effTrigger == session.TriggerOnCompletion {
+				clamped := floor
+				req.DelaySeconds = &clamped
+			}
+		}
+	}
+
+	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds); err != nil {
 		if err == session.ErrPeriodicNotFound {
 			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
 			return
 		}
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations {
+		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
+			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
