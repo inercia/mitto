@@ -27,10 +27,38 @@ prompt: |
 
   ```bash
   bd show ${ISSUE_ID} --long --json     # full description, acceptance criteria, design, metadata
+  bd show ${ISSUE_ID} --children --json # child issues, if this is an epic
   bd dep tree ${ISSUE_ID}               # blockers and what it blocks
   ```
 
   Identify the concrete acceptance criteria (or infer them from the description if none are listed).
+
+  **Note the bead's type.** If its `issue_type` is `epic` (or it has child beads), treat it as an
+  **epic** and follow the epic flow in the next section; otherwise investigate it as a single bead.
+
+  ## Step 1b — If this is an epic: iterate through its children
+
+  An epic is a container: it is **resolved only when all of its child beads are resolved**. Do not
+  judge the epic from its own description alone — its real status lives in its children.
+
+  1. List the epic's children (from `bd show ${ISSUE_ID} --children --json`; use
+     `bd dep tree ${ISSUE_ID}` to see the full hierarchy). If the epic has **no** children, fall back
+     to treating it as a single bead.
+  2. **For each child bead**, run the same investigation as a normal bead — load its detail
+     (`bd show <child-id> --long --json`), then apply **Step 2** (gather codebase evidence) and
+     **Step 3** (per-bead verdict) to it. Recurse into any child that is itself an epic.
+  3. Aggregate into an **epic-level verdict**:
+     - **Fully resolved** — every child is closed or Fully resolved (and any work that stayed in the
+       epic itself is done).
+     - **Partially resolved** — some children are done but others remain Still relevant / Partial.
+     - **Still relevant** — little or no child work is complete.
+     - **Obsolete / Duplicate** — the whole epic's objective no longer applies or duplicates another.
+  4. **Note which children are already resolved.** Any child whose verdict is **Fully resolved** (or
+     **Obsolete** / **Duplicate**) but is **not yet closed** is a candidate to close now — you will
+     offer these to the user in Step 4. Children that are already closed need no action.
+
+  In the rest of this prompt, when investigating an epic, apply each step to **every child** and roll
+  the results up to the epic.
 
   ## Step 2 — Research the bead's status
 
@@ -70,6 +98,10 @@ prompt: |
   - **Relevant code locations & test results**: the key files/symbols and the outcome of any tests
     you ran (or "no tests found").
 
+  For an **epic**, structure the report as a **per-child breakdown** — one line per child bead
+  (`<child-id> — <title>`: verdict + key evidence) — followed by the **epic-level roll-up verdict**
+  described in Step 1b.
+
   Be conservative: when evidence is **ambiguous or unknown**, treat the bead as **still relevant**
   and keep it open. Do not close an `in_progress` bead with active work unless it is a clear
   duplicate.
@@ -93,6 +125,14 @@ prompt: |
 
   When the core is done but edge cases remain, you may include both **"Create follow-up tickets"** and
   **"Start working on it"** so the user can choose to track or tackle the leftover work.
+
+  **For an epic**, decide per child as well as for the epic itself. When one or more children are
+  **already resolved** (Fully resolved / Obsolete / Duplicate) but not yet closed, **offer to close
+  them** — present those children with `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as one
+  checkbox per resolved child (checked by default, each line `<child-id> — <title>`) so the user can
+  pick which to close. Then offer the epic-level action as above (close the epic only once all
+  children are closed, keep it open, or create follow-ups for the remaining children). Only close the
+  children the user approved.
 
   Honour the user's choice exactly. Do not modify anything they did not approve.
 
@@ -134,6 +174,11 @@ prompt: |
   ```bash
   bd close ${ISSUE_ID} --reason "<why, e.g. 'Implemented in abc1234; tests pass' / 'Feature removed, obsolete' / 'Duplicate of bd-5'>"
   ```
+
+  **For an epic**: close it **only once all its children are closed**. First close each
+  already-resolved child the user approved in Step 4 (`bd close <child-id> --reason "..."`), spin off
+  follow-ups for any remaining child work (see below), and only then close the epic itself. If any
+  child is still genuinely open, keep the epic open and record what remains.
 
   **Keep it open**: append an audit note recording what the investigation found and why the bead
   stays open, so the finding is not lost:

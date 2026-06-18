@@ -314,6 +314,15 @@ export function useBeadsIntegration({
   // mobile sidebar drawer stays open and the beads view loads underneath. A
   // direct Tasks/beads-button click leaves it unset so the drawer closes.
   const handleBeadsOpen = useCallback((workingDir, opts) => {
+    // A direct Tasks/beads-button click shows the issue list, not a single
+    // issue. Clear any stale single-issue selection left over from a previous
+    // handleOpenBeadsIssue (the conversation properties panel's linked-issue
+    // link): without this, BeadsView — which unmounts when the main view leaves
+    // "beads" and so resets its applied-nonce ref — would remount with the old
+    // beadsInitialIssueId and a still-non-zero beadsSelectNonce and auto-reopen
+    // that same task on every Tasks click (mitto-17d follow-up).
+    setBeadsInitialIssueId(null);
+    beadsReturnSessionRef.current = null;
     setBeadsWorkingDir(workingDir);
     setMainView("beads");
     if (!opts?.keepSidebarOpen) {
@@ -327,6 +336,11 @@ export function useBeadsIntegration({
   // beads view for this workspace).
   const handleBeadsCreate = useCallback((workingDir) => {
     if (!workingDir) return;
+    // Clear any stale single-issue selection so the create panel opens cleanly
+    // instead of a previously-opened issue re-selecting on remount (see
+    // handleBeadsOpen for the full rationale).
+    setBeadsInitialIssueId(null);
+    beadsReturnSessionRef.current = null;
     setBeadsWorkingDir(workingDir);
     setBeadsCreateNonce((n) => n + 1);
     setMainView("beads");
@@ -339,6 +353,10 @@ export function useBeadsIntegration({
   // beads view re-fetch even when it is already showing this folder.
   const handleBeadsRefresh = useCallback((workingDir) => {
     if (!workingDir) return;
+    // List-oriented action: clear any stale single-issue selection so it isn't
+    // re-opened on remount (see handleBeadsOpen for the full rationale).
+    setBeadsInitialIssueId(null);
+    beadsReturnSessionRef.current = null;
     setBeadsWorkingDir(workingDir);
     setMainView("beads");
     setShowSidebar(false);
@@ -350,6 +368,10 @@ export function useBeadsIntegration({
   // action; the beads view owns the confirmation, cleanup request, and refresh.
   const handleBeadsCleanup = useCallback((workingDir) => {
     if (!workingDir) return;
+    // List-oriented action: clear any stale single-issue selection so it isn't
+    // re-opened on remount (see handleBeadsOpen for the full rationale).
+    setBeadsInitialIssueId(null);
+    beadsReturnSessionRef.current = null;
     setBeadsWorkingDir(workingDir);
     setMainView("beads");
     setShowSidebar(false);
