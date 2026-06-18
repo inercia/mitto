@@ -74,6 +74,40 @@ When external images are enabled:
 
 **Recommendation:** Keep external images disabled unless you specifically need them.
 
+## Periodic Conversation Iteration Limit
+
+Periodic conversations run on a schedule indefinitely by default. To prevent runaway loops, Mitto enforces a two-layer safeguard:
+
+1. **Per-prompt cap** (`max_iterations` on the periodic prompt itself) — set via the API or `mitto_conversation_update`.
+2. **User-configurable default cap** (`max_periodic_iterations` in settings) — applies when no per-prompt cap is set.
+3. **Hardcoded backstop** (`GlobalMaxPeriodicIterations = 1000`) — an absolute ceiling that always applies, even when both the per-prompt cap and user cap are set to 0 (unlimited).
+
+The **effective cap** is the smallest positive value among the three: per-prompt `max_iterations`, the configured `max_periodic_iterations`, and the hardcoded backstop of 1000.
+
+Examples:
+- Per-prompt cap = 0 (unlimited), config cap = 0 (unlimited) → effective cap = 1000 (backstop)
+- Per-prompt cap = 5, config cap = 100 → effective cap = 5
+- Per-prompt cap = 0, config cap = 200 → effective cap = 200
+- Per-prompt cap = 2000, config cap = 50 → effective cap = 50
+
+### Configuration
+
+```yaml
+conversations:
+  max_periodic_iterations: 100  # Default cap for all periodic conversations (default: 100, 0 = unlimited)
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_periodic_iterations` | integer | `100` | Default maximum number of scheduled runs for any periodic conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
+
+**Via Settings UI:**
+
+1. Open Settings (⚙️ button)
+2. Go to the **Conversations** tab
+3. Under **Periodic Conversations**, set **Max Periodic Iterations**
+4. Save your settings
+
 ## Related Documentation
 
 - [Processors](processors.md) - Message transformation (text, command, prompt modes)

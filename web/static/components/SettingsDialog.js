@@ -1094,6 +1094,9 @@ export function SettingsDialog({
   // Max child conversations setting - default 10
   const [maxChildConversations, setMaxChildConversations] = useState(10);
 
+  // Max periodic iterations setting - default 100
+  const [maxPeriodicIterations, setMaxPeriodicIterations] = useState(100);
+
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
   const [defaultFlags, setDefaultFlags] = useState({});
@@ -1524,6 +1527,11 @@ export function SettingsDialog({
         config.conversations?.max_child_conversations ?? 10,
       );
 
+      // Load max periodic iterations setting - default to 100
+      setMaxPeriodicIterations(
+        config.conversations?.max_periodic_iterations ?? 100,
+      );
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -1762,6 +1770,7 @@ export function SettingsDialog({
           enabled: externalImagesEnabled,
         },
         max_child_conversations: maxChildConversations,
+        max_periodic_iterations: maxPeriodicIterations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -3366,6 +3375,41 @@ export function SettingsDialog({
                               value=${maxChildConversations}
                               onChange=${(e) =>
                                 setMaxChildConversations(
+                                  parseInt(e.target.value, 10) || 0,
+                                )}
+                              class="input input-sm w-20 text-center"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Periodic Conversations Limit -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
+                          Periodic Conversations
+                        </h4>
+                        <div
+                          class="p-3"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Max Periodic Iterations
+                              </div>
+                              <div class="text-xs text-mitto-text-muted">
+                                Maximum number of scheduled runs a periodic
+                                conversation performs before it auto-stops. Set to
+                                0 for unlimited (still bounded by a built-in safety
+                                ceiling of 1000).
+                              </div>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              max="1000"
+                              value=${maxPeriodicIterations}
+                              onInput=${(e) =>
+                                setMaxPeriodicIterations(
                                   parseInt(e.target.value, 10) || 0,
                                 )}
                               class="input input-sm w-20 text-center"
