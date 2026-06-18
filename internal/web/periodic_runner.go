@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -84,6 +85,10 @@ type PeriodicRunner struct {
 	// promptResolver resolves a prompt name to its text at execution time.
 	promptResolver PromptResolverFunc
 
+	// maxPeriodicIterations is the user-configured default cap on scheduled
+	// periodic runs. 0 means unlimited; the hardcoded backstop still applies.
+	maxPeriodicIterations int
+
 	// consecutiveFailures tracks how many times in a row a session's periodic
 	// prompt delivery failed due to ACP resume errors. After MaxPeriodicResumeFailures
 	// consecutive failures, the session is automatically archived.
@@ -99,11 +104,12 @@ type PeriodicRunner struct {
 // NewPeriodicRunner creates a new periodic runner.
 func NewPeriodicRunner(store *session.Store, sm *SessionManager, logger *slog.Logger) *PeriodicRunner {
 	return &PeriodicRunner{
-		store:               store,
-		sessionManager:      sm,
-		logger:              logger,
-		pollInterval:        DefaultPollInterval,
-		consecutiveFailures: make(map[string]int),
+		store:                 store,
+		sessionManager:        sm,
+		logger:                logger,
+		pollInterval:          DefaultPollInterval,
+		maxPeriodicIterations: config.DefaultMaxPeriodicIterations,
+		consecutiveFailures:   make(map[string]int),
 	}
 }
 
@@ -156,6 +162,14 @@ func (r *PeriodicRunner) SetArchiveRetentionPeriod(period string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.archiveRetentionPeriod = period
+}
+
+// SetMaxPeriodicIterations sets the user-configured default cap on scheduled
+// periodic runs. 0 means unlimited (still bounded by GlobalMaxPeriodicIterations).
+func (r *PeriodicRunner) SetMaxPeriodicIterations(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxPeriodicIterations = n
 }
 
 // SetPromptResolver sets the function used to resolve prompt names to their text at execution time.
@@ -727,18 +741,33 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 			} else {
 				updated, getErr := periodicStore.Get()
 				if getErr == nil && updated != nil {
-					if updated.ReachedMaxIterations() {
+					r.mu.Lock()
+					cfgCap := r.maxPeriodicIterations
+					r.mu.Unlock()
+					effective := config.EffectiveMaxPeriodicIterations(updated.MaxIterations, cfgCap)
+					perPromptReached := updated.ReachedMaxIterations()
+					if updated.IterationCount >= effective {
 						// Cap reached — disable the periodic prompt so it stops firing.
 						if r.logger != nil {
-							r.logger.Info("Periodic conversation reached max iterations, auto-stopping",
-								"session_id", sessionID,
-								"max_iterations", updated.MaxIterations,
-								"iteration_count", updated.IterationCount)
+							if perPromptReached {
+								r.logger.Info("Periodic conversation reached max iterations, auto-stopping",
+									"session_id", sessionID,
+									"max_iterations", updated.MaxIterations,
+									"iteration_count", updated.IterationCount)
+							} else {
+								// Stopped by the global/config backstop rather than the per-prompt cap.
+								r.logger.Warn("Periodic conversation reached global iteration safeguard, auto-stopping",
+									"session_id", sessionID,
+									"iteration_count", updated.IterationCount,
+									"effective_cap", effective,
+									"config_cap", cfgCap,
+									"backstop", config.GlobalMaxPeriodicIterations)
+							}
 						}
 						disabled := false
 						if disableErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil); disableErr != nil {
 							if r.logger != nil {
-								r.logger.Warn("Failed to disable periodic after reaching max iterations",
+								r.logger.Warn("Failed to disable periodic after reaching iteration cap",
 									"session_id", sessionID,
 									"error", disableErr)
 							}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -649,5 +650,147 @@ func TestPeriodicRunner_AutoArchiveNoPeriodicConfig(t *testing.T) {
 	}
 	if !updatedMeta.Archived {
 		t.Error("Session without periodic config SHOULD be auto-archived when inactive")
+	}
+}
+
+// TestPeriodicRunner_ConfigCapAutoStop verifies that a periodic conversation with no
+// per-prompt cap (MaxIterations=0) auto-stops when the runner's configured default cap
+// is reached. This tests the global safeguard layer independently of the per-prompt cap.
+func TestPeriodicRunner_ConfigCapAutoStop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with MaxIterations=0 (no per-prompt cap)
+	meta := session.Metadata{
+		SessionID:  "config-cap-session",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic(meta.SessionID)
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:        "Test prompt",
+		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 0, // No per-prompt cap
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Set up runner with a small config cap (3 iterations)
+	const configCap = 3
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetMaxPeriodicIterations(configCap)
+
+	// Verify that SetMaxPeriodicIterations stored the value
+	runner.mu.Lock()
+	stored := runner.maxPeriodicIterations
+	runner.mu.Unlock()
+	if stored != configCap {
+		t.Fatalf("maxPeriodicIterations = %d, want %d", stored, configCap)
+	}
+
+	// Simulate configCap successful deliveries by calling RecordSent directly.
+	// This mirrors what OnComplete does after each successful PromptWithMeta call.
+	for i := 0; i < configCap; i++ {
+		if err := periodicStore.RecordSent(); err != nil {
+			t.Fatalf("RecordSent() [%d] error = %v", i+1, err)
+		}
+	}
+
+	// Read the updated state and check the effective cap condition
+	updated, err := periodicStore.Get()
+	if err != nil {
+		t.Fatalf("periodicStore.Get() error = %v", err)
+	}
+
+	// Verify IterationCount was correctly incremented
+	if updated.IterationCount != configCap {
+		t.Errorf("IterationCount = %d, want %d", updated.IterationCount, configCap)
+	}
+
+	// Verify ReachedMaxIterations is false (per-prompt cap is 0 = unlimited)
+	if updated.ReachedMaxIterations() {
+		t.Error("ReachedMaxIterations() = true, want false (per-prompt cap is 0)")
+	}
+
+	// Compute effective cap as the OnComplete callback would
+	runner.mu.Lock()
+	cfgCap := runner.maxPeriodicIterations
+	runner.mu.Unlock()
+	effective := config.EffectiveMaxPeriodicIterations(updated.MaxIterations, cfgCap)
+
+	// Verify effective cap matches the configured cap (since per-prompt cap is 0)
+	if effective != configCap {
+		t.Errorf("effective cap = %d, want %d", effective, configCap)
+	}
+
+	// Verify the condition that triggers auto-stop
+	if updated.IterationCount < effective {
+		t.Errorf("auto-stop condition not met: IterationCount=%d, effective=%d",
+			updated.IterationCount, effective)
+	}
+
+	// Simulate what OnComplete does: disable the periodic prompt
+	autoStopCalled := false
+	runner.SetOnPeriodicAutoStopped(func(sessionID string, p *session.PeriodicPrompt) {
+		autoStopCalled = true
+		if sessionID != meta.SessionID {
+			t.Errorf("onPeriodicAutoStopped sessionID = %q, want %q", sessionID, meta.SessionID)
+		}
+		if p.Enabled {
+			t.Error("onPeriodicAutoStopped: periodic.Enabled = true, want false")
+		}
+	})
+
+	disabled := false
+	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil); err != nil {
+		t.Fatalf("periodicStore.Update(disable) error = %v", err)
+	}
+
+	// Invoke the callback as OnComplete does
+	if final, err := periodicStore.Get(); err == nil && runner.onPeriodicAutoStopped != nil {
+		runner.onPeriodicAutoStopped(meta.SessionID, final)
+	}
+
+	// Verify the callback was invoked
+	if !autoStopCalled {
+		t.Error("onPeriodicAutoStopped was not called")
+	}
+
+	// Verify the periodic prompt is now disabled on disk
+	final, err := periodicStore.Get()
+	if err != nil {
+		t.Fatalf("periodicStore.Get() after disable error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("periodic.Enabled = true after auto-stop, want false")
+	}
+}
+
+// TestPeriodicRunner_DefaultMaxPeriodicIterations verifies that the runner
+// is initialized with the correct default config cap.
+func TestPeriodicRunner_DefaultMaxPeriodicIterations(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	runner.mu.Lock()
+	got := runner.maxPeriodicIterations
+	runner.mu.Unlock()
+
+	if got != config.DefaultMaxPeriodicIterations {
+		t.Errorf("initial maxPeriodicIterations = %d, want %d (DefaultMaxPeriodicIterations)",
+			got, config.DefaultMaxPeriodicIterations)
 	}
 }

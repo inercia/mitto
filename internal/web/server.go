@@ -624,6 +624,13 @@ func NewServer(config Config) (*Server, error) {
 	})
 	s.periodicRunner.SetOnPeriodicAutoStopped(s.BroadcastPeriodicUpdated)
 
+	// Configure the global periodic-iteration safeguard (user default, bounded by backstop).
+	maxPeriodicIter := configPkg.DefaultMaxPeriodicIterations
+	if config.MittoConfig != nil {
+		maxPeriodicIter = config.MittoConfig.Conversations.GetMaxPeriodicIterations()
+	}
+	s.periodicRunner.SetMaxPeriodicIterations(maxPeriodicIter)
+
 	// Configure startup delay for periodic runner to avoid thundering herd.
 	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
 	startupPeriodicDelay := configPkg.DefaultStartupPeriodicDelay
