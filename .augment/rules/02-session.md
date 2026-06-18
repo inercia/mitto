@@ -103,8 +103,8 @@ Stored in `periodic.json` per session. API: `GET/PUT/PATCH/DELETE /api/sessions/
 ```go
 ps := store.Periodic(sessionID)
 ps.Set(&session.PeriodicPrompt{Prompt: "...", Frequency: ..., Enabled: true})
-ps.Update(prompt, promptName, frequency, enabled, freshContext, maxIterations)  // partial update (pointer args, nil = no-op)
-ps.RecordSent()                         // increments iteration_count + updates last_sent_at + next_scheduled_at
+ps.Update(prompt, promptName, frequency, enabled, freshContext, maxIterations, trigger, delaySeconds, maxDurationSeconds)  // partial update (pointer args, nil = no-op)
+ps.RecordSent()                         // increments iteration_count + updates last_sent_at/next_scheduled_at; sets first_run_at on the first call
 ps.TriggerNow(sessionID, resetTimer)    // immediate delivery via periodicRunner
 ```
 
@@ -113,6 +113,12 @@ ps.TriggerNow(sessionID, resetTimer)    // immediate delivery via periodicRunner
 - `IterationCount` (json `iteration_count`) — runs delivered so far; incremented **only** by `RecordSent` (never by `Update`/`Set`, which preserve it).
 - `ReachedMaxIterations()` → true when `MaxIterations > 0 && IterationCount >= MaxIterations`.
 - **Auto-stop**: in `periodic_runner.go` `deliverPrompt`'s `OnComplete`, after `RecordSent` the runner compares `IterationCount` against `config.EffectiveMaxPeriodicIterations(promptMax, configMax)` (smallest positive of prompt cap, config `max_periodic_iterations` default 100, hardcoded `GlobalMaxPeriodicIterations`=1000). When reached it **disables** the periodic (`Update(enabled=false)`) — it is **not** archived/deleted — and broadcasts via the `onPeriodicAutoStopped` callback.
+
+**Trigger / on-completion / maxDuration** (`PeriodicPrompt` fields, added by the on-completion epic):
+- `Trigger` (json `trigger`, "" / `schedule` (default) / `onCompletion`). `EffectiveTrigger()` treats "" as `schedule`; `IsOnCompletion()` is the predicate.
+- `DelaySeconds` (json `delay_seconds`) — for `onCompletion`, seconds to wait after the agent goes idle before firing. `ClampDelay(floor)` raises it to the global floor (`min_periodic_completion_delay_seconds`, default 5); only applied when `IsOnCompletion()`.
+- `MaxDurationSeconds` (json `max_duration_seconds`) + `FirstRunAt` (json `first_run_at`, set on the **first** `RecordSent` only). `ReachedMaxDuration(now)` → true when `MaxDurationSeconds > 0 && FirstRunAt != nil && now.Sub(*FirstRunAt) >= MaxDurationSeconds`.
+- **Event-driven firing** (`periodic_runner.go`): turn completes → `BackgroundSession.onTurnIdle` → `PeriodicRunner.OnConversationIdle` → `armCompletionTimer(delay)` (replaces any pending timer; at most one per session) → after delay `fireOnCompletion` re-validates, then `autoStopIfMaxDurationReached` (disable + `onPeriodicAutoStopped` broadcast if the wall-clock cap is hit) else `TriggerNow(resetTimer=true)`. The delivered run's completion re-arms the next.
 
 **Key rules**:
 - Only top-level/parent sessions may have periodic prompts (child sessions return 400)

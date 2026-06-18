@@ -108,6 +108,25 @@ conversations:
 3. Under **Periodic Conversations**, set **Max Periodic Iterations**
 4. Save your settings
 
+## On-Completion Trigger and Max Duration
+
+Periodic conversations can fire on a fixed schedule (the default) or **after the agent stops responding** (`trigger: onCompletion`). On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
+
+To prevent runaway hot loops, the on-completion `delay` is clamped up to a global floor:
+
+```yaml
+conversations:
+  min_periodic_completion_delay_seconds: 5  # Floor for the onCompletion delay (default: 5)
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `min_periodic_completion_delay_seconds` | integer | `5` | Lower bound (seconds) applied to every on-completion periodic `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
+
+A conversation can also be bounded by **wall-clock time** via the periodic prompt's `maxDuration` (a duration string such as `30m`, `4h`, `1d`). Measured from the first run, once it elapses the conversation auto-stops (the periodic prompt is **disabled**, not deleted) on the next check — for both `schedule` and `onCompletion` triggers. This complements the iteration limit above: a loop stops at whichever bound (max iterations or max duration) is reached first.
+
+See the prompt-side schema in [Periodic Prompts → Triggers](prompts.md#triggers-schedule-vs-on-completion).
+
 ## Related Documentation
 
 - [Processors](processors.md) - Message transformation (text, command, prompt modes)

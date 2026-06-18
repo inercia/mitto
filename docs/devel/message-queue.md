@@ -131,6 +131,53 @@ The `PeriodicRunner` checks all active sessions for due scheduled messages on ea
 
 Scheduled messages display a ⏰ badge with a relative time string (e.g., "in 5 min", "in 2h") in the queue dropdown. The display updates every 30 seconds.
 
+## Periodic Prompts: On-Completion Delivery
+
+Periodic prompts normally fire on a fixed schedule (checked by the `PeriodicRunner` poll loop). A periodic prompt may instead set `trigger: onCompletion`, which fires the next run **after the agent stops responding**, rather than on a clock.
+
+### Delivery model
+
+When a turn completes and a session goes fully idle, `BackgroundSession` invokes the `onTurnIdle` hook, which routes to `PeriodicRunner.OnConversationIdle(sessionID)`. For an enabled `onCompletion` config this arms a one-shot timer for `delay` seconds (clamped up to the global floor `min_periodic_completion_delay_seconds`, default 5). When the timer fires, `fireOnCompletion` re-validates the config, checks the max-duration cap, and delivers via `TriggerNow`. The delivered run's own completion produces another idle transition, which arms the next run — a self-sustaining loop.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant BS as BackgroundSession
+    participant PR as PeriodicRunner
+    participant Store as PeriodicStore
+
+    Agent->>BS: turn completes (stop_reason=end_turn)
+    BS->>PR: onTurnIdle → OnConversationIdle(sessionID)
+    alt enabled onCompletion config
+        PR->>PR: armCompletionTimer(delay clamped to floor)
+        Note over PR: after delay
+        PR->>Store: Get() — re-validate (enabled? onCompletion? archived?)
+        PR->>Store: ReachedMaxDuration(now)?
+        alt maxDuration reached
+            PR->>Store: Update(enabled=false)
+            PR-->>BS: onPeriodicAutoStopped → broadcast periodic_updated
+        else within cap
+            PR->>BS: TriggerNow(resetTimer=true) → deliver run
+            BS->>Agent: prompt
+            Note over BS,Agent: completion re-arms via onTurnIdle
+        end
+    else not an onCompletion loop
+        PR->>PR: cancelCompletionTimer(sessionID)
+    end
+```
+
+### Loop safety
+
+- **Delay floor** — `delay` is clamped up to `min_periodic_completion_delay_seconds` (default 5) so a misconfigured `delay: 0` cannot spin a hot loop.
+- **Single pending timer** — arming replaces (stops) any existing timer for the session, so at most one firing is queued.
+- **Max iterations** — the standard per-run counter still applies; reaching the effective cap disables the prompt.
+- **Max duration** — `maxDuration` is a wall-clock cap from the first run; `fireOnCompletion` checks it before delivering and auto-stops (disables + broadcasts) once exceeded.
+- **Busy / archived guards** — a busy session is skipped (the next idle re-arms); an archived or disabled config drops the timer.
+
+### Interplay with the runner and suspension
+
+The schedule-based poll loop and the on-completion timers are independent paths on the same `PeriodicRunner`. On-completion timers are armed by idle events, not the poll loop, so they are unaffected by the poll interval. A suspended periodic session (Tier-1 GC after `periodic_suspend_timeout`) has no live `BackgroundSession` to emit idle events; the on-completion loop resumes once the session is resumed. See [acp.md](acp.md) for suspension details.
+
 ## Title Generation
 
 ### Architecture

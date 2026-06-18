@@ -502,18 +502,26 @@ convert an existing conversation to periodic, or send a single one-shot run (see
 
 ```yaml
 periodic:
-  value: 1           # number of time units between runs (integer ≥ 1)
-  unit: hours        # minutes | hours | days
+  value: 1           # number of time units between runs (integer ≥ 1); used by trigger: schedule
+  unit: hours        # minutes | hours | days; used by trigger: schedule
   at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
   maxIterations: 10  # optional; 0/absent = unlimited scheduled runs
+  trigger: schedule  # optional — schedule (default) | onCompletion
+  delay: 30          # optional — seconds to wait after the agent stops, before the next onCompletion run
+  maxDuration: "4h"  # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
 ```
 
 | Field           | Required | Description |
 | --------------- | -------- | ----------- |
-| `value`         | Yes      | Number of time units between runs (integer ≥ 1, max 999) |
-| `unit`          | Yes      | `minutes`, `hours`, or `days` |
+| `value`         | Yes¹     | Number of time units between runs (integer ≥ 1, max 999) |
+| `unit`          | Yes¹     | `minutes`, `hours`, or `days` |
 | `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
 | `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
+| `trigger`       | No       | How runs fire: `schedule` (default — frequency-based) or `onCompletion` (fire after the agent stops responding). See [Triggers](#triggers-schedule-vs-on-completion). |
+| `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_periodic_completion_delay_seconds`, default 5). Ignored for `schedule`. |
+| `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
+
+¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion`, which fires off the agent-idle event rather than a fixed period.
 
 **Presence implies opt-in** — omitting the `periodic:` block entirely keeps the prompt as a regular one-time prompt.
 
@@ -556,6 +564,26 @@ The binding cap is the **smallest positive** of:
 
 A `maxIterations` of `0` (or absent) means "unlimited" at the prompt level, but the
 config setting and the backstop still apply.
+
+#### Triggers: schedule vs on-completion
+
+The `trigger` field selects **when** a periodic run fires:
+
+- **`schedule`** (default) — runs fire on a fixed period defined by `value`/`unit`
+  (and optional `at` for daily). This is the classic interval behavior.
+- **`onCompletion`** — the next run is armed **after the agent stops responding**,
+  waiting `delay` seconds first. Each delivered run's completion arms the following
+  one, so the loop is event-driven rather than clock-driven. The `delay` is clamped
+  up to the global floor (`min_periodic_completion_delay_seconds`, default 5 s) to
+  prevent hot loops.
+
+`maxDuration` applies to **both** triggers: it is a wall-clock cap measured from the
+first run. Once exceeded, the periodic prompt is **disabled** (not deleted) on the
+next check, exactly like the [max-iterations auto-stop](#max-iterations-and-auto-stop).
+Combine `maxDuration` with `maxIterations` to bound a loop by either time or count,
+whichever comes first. See
+[On-Completion Trigger and Max Duration](conversations.md#on-completion-trigger-and-max-duration)
+for the server-side floor and defaults.
 
 **Restrictions:**
 - Periodic conversations can only be **top-level** (not child) conversations. Selecting a periodic prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for periodic-on-child.
