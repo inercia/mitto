@@ -56,9 +56,8 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
       class="select select-ghost select-xs max-w-[200px]"
       value=${localValue || ""}
       onInput=${handleInput}
-      disabled=${isStreaming}
       title=${isStreaming
-        ? "Cannot change " + configOption.name.toLowerCase() + " while streaming"
+        ? configOption.name + " will apply to the next prompt"
         : configOption.description || "Select " + configOption.name.toLowerCase()}
     >
       ${configOption.options.map(

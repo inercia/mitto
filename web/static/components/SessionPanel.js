@@ -183,9 +183,8 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
       class="select select-sm w-full"
       value=${localValue || ""}
       onChange=${handleChange}
-      disabled=${isStreaming}
       title=${isStreaming
-        ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
+        ? `${configOption.name} will apply to the next prompt`
         : configOption.description ||
           `Select ${configOption.name.toLowerCase()}`}
     >
