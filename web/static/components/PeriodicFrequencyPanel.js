@@ -738,7 +738,7 @@ export function PeriodicFrequencyPanel({
           <div class="flex-1 min-w-0"></div>
 
           <!-- Glanceable status: trigger-aware label + live countdown to next run -->
-          <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0 hidden sm:flex items-baseline gap-1.5">
+          <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0 flex items-baseline gap-1">
             ${
               isOnCompletion
                 ? html`<span

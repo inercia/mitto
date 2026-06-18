@@ -1354,16 +1354,22 @@ export function SessionPanel({
             </p>`}
             ${periodicConfig.next_scheduled_at &&
             html`
-              <p class="mt-1 text-xs text-mitto-text-500">
-                Next run:
-                ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
-                <${CountdownDisplay}
-                  targetIso=${periodicConfig.next_scheduled_at}
-                  unit=${periodicConfig.frequency?.unit}
-                  active=${isOpen}
-                  className="ml-1.5 text-mitto-text-secondary"
-                />
-              </p>
+              <div class="mt-1 text-xs text-mitto-text-500">
+                <p>
+                  Next run:
+                  ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+                </p>
+                <p
+                  class="mt-1 flex items-baseline gap-1 text-mitto-text-secondary"
+                >
+                  <span>in</span>
+                  <${CountdownDisplay}
+                    targetIso=${periodicConfig.next_scheduled_at}
+                    unit=${periodicConfig.frequency?.unit}
+                    active=${isOpen}
+                  />
+                </p>
+              </div>
             `}
             <p class="mt-1 text-xs text-mitto-text-500">
               ${(periodicConfig.max_iterations ?? 0) > 0
