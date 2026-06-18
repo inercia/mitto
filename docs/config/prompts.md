@@ -585,6 +585,20 @@ conversation to periodic immediately (using the same defaults) and fires the fir
 run. Selecting it on an **already-periodic** conversation just runs it once,
 leaving the schedule unchanged.
 
+### Real-world example: auto-periodic, self-terminating
+
+The builtin **"Iterate until complete"** prompt
+(`config/prompts/builtin/beads-iterate-until-complete.prompt.yaml`) is a real
+auto-periodic example: a `menus: beadsIssues` prompt with a `periodic:` block
+(every 30 minutes, `maxIterations: 20`). Selecting it on a beads issue or epic
+starts a periodic conversation that, on each scheduled run, advances the target
+one concrete increment (for an epic, the next ready child) and logs progress to
+the tracker. Scheduled runs are **non-interactive** (branch on `@mitto:periodic` /
+`@mitto:periodic_forced`; use `mitto_ui_notify` only). When nothing ready remains
+in scope, it **self-terminates** — `mitto_conversation_update(conversation_id:
+"self", periodic_enabled: false)` turns it back into a regular conversation. It is
+the automated sibling of the interactive "Start work" (`beads-issue-work`) prompt.
+
 ## Prompt Arguments
 
 Prompt text supports bash-style `${VAR}` placeholder syntax for argument substitution.

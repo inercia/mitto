@@ -1,0 +1,168 @@
+icon: beads
+name: Iterate until complete
+menus: beadsIssues
+requires: parameters
+description: Auto-periodic — keep advancing this bead toward completion, then self-terminate when nothing ready remains
+backgroundColor: '#C8E6C9'
+group: Tasks
+enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*") && item.status != "closed"'
+periodic:
+  value: 30
+  unit: minutes
+  maxIterations: 20
+prompt: |
+  ## Session Context
+
+  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `@mitto:available_acp_servers`
+  Existing children: `@mitto:mcp_children`
+
+  # Beads: Iterate Until Complete
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  The **target bead** is `${ISSUE_ID}`. This is the **automated, non-interactive**
+  sibling of "Start work": on every scheduled run you advance the target **one
+  concrete increment** toward completion, and when there is **nothing ready left
+  to do in scope**, you remove your own periodic flag and stop.
+
+  ## Interaction Mode — READ THIS FIRST
+
+  This prompt almost always runs **unattended on a schedule**. Check these variables:
+
+  - `@mitto:periodic` = is this a scheduled periodic execution?
+  - `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+
+  **Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND
+  `@mitto:periodic_forced` = "false"):
+  - Use **only** `mitto_ui_notify` — non-blocking notifications.
+  - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
+    Nobody is watching. Never block waiting for input.
+  - When a decision is ambiguous, do **not** guess and do **not** ask — record the
+    question on the bead and defer it (see Step 4).
+
+  **Interactive mode** (`@mitto:periodic` = "false", e.g. the very first send, or
+  `@mitto:periodic_forced` = "true"): a user may be present, so you *may* use the
+  interactive `mitto_ui_*` tools — but the goal is identical: advance the work one
+  increment, or stop cleanly when nothing is ready.
+
+  ## Step 1 — Resolve the target issue for this run
+
+  Load the target and its tree:
+
+  ```bash
+  bd show ${ISSUE_ID} --long --json        # full fields, status, acceptance, design
+  bd dep tree ${ISSUE_ID}                   # blockers and what it blocks
+  bd show ${ISSUE_ID} --children --json     # child beads (is this an epic/parent?)
+  ```
+
+  Decide what to actually work on **this run**:
+
+  - **Normal issue (no children)** → the target *is* `${ISSUE_ID}`.
+  - **Epic / parent (has children)** → an epic is a container, not directly
+    implementable. Pick the **next ready child**: open, not `closed`/`in_progress`,
+    and with **no unresolved blockers**. Map both explicit edges (`blocks` /
+    `depends-on` from `bd dep tree`) and implicit ordering you infer from the
+    children's descriptions (schema/infrastructure/scaffolding first), build a
+    topological order, and choose the first workable child. When several are
+    equally workable, apply common sense — **highest priority, then highest
+    blocking leverage** over its siblings — and proceed with **one**.
+    **Do NOT ask the user** which child; this is automated.
+
+  Treat the issue chosen here as **`<target>`** for the rest of this run.
+
+  ## Step 2 — Only act on READY issues
+
+  Confirm `<target>` is genuinely **ready** (open + unblocked) before doing anything:
+
+  ```bash
+  bd ready --json                           # is <target> in the ready set?
+  bd show <target> --long --json
+  bd dep tree <target>
+  ```
+
+  If `<target>` is **not ready** (blocked, already closed, deferred, or
+  `in_progress` by someone else with active work), **skip it** and look for the
+  next ready issue **within `${ISSUE_ID}`'s scope** (the target issue itself, or —
+  for an epic — its subtree of children). If nothing in scope is ready, go to
+  **Step 5 (stop)**.
+
+  ## Step 3 — Evaluate and advance one increment
+
+  For `<target>`:
+
+  1. Understand what "complete" means — read its **acceptance criteria**, design
+     notes, and any prior `bd comment` history. Assess current status and what is
+     still missing.
+  2. Claim it so others know it is being worked on:
+
+     ```bash
+     bd update <target> --claim
+     ```
+
+  3. Perform the **next concrete increment** of work toward the acceptance
+     criteria. Either do it directly in this conversation, or dispatch it to a
+     child conversation when it is substantial and self-contained:
+     - Reuse a suitable **idle** child from `@mitto:mcp_children` when possible via
+       `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>", prompt: "<self-contained worker prompt>")`.
+     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", title: "${ISSUE_ID} · <increment>", beads_issue: "<target>", acp_server: "<pick from available — faster/cheaper for simple, more capable for complex>", initial_prompt: "<self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
+     - Cap spawning at **one** new child per run to avoid runaway fan-out.
+  4. Log progress on the bead so the tracker reflects what happened:
+
+     ```bash
+     bd comment <target> "Iterate run: <what was advanced this increment / what remains>."
+     ```
+
+  5. If this increment **completes** the acceptance criteria, close it:
+
+     ```bash
+     bd comment <target> "Completed: <what was delivered, verification performed>."
+     bd close <target> --reason "<short summary>"
+     ```
+
+  ## Step 4 — When unclear, ask in the tracker and defer (never guess)
+
+  If requirements are ambiguous, a design decision is needed, or you cannot safely
+  proceed unattended, do **NOT** guess and do **NOT** block on interactive UI.
+  Instead, record the open questions on the bead and drop it out of `ready`:
+
+  ```bash
+  bd comment <target> "Blocked on decision: <the open questions / options considered>."
+  bd update <target> --defer <when>      # e.g. tomorrow / +1d — drops out of `ready`
+  ```
+
+  Then continue to the next ready issue in scope (back to Step 2), or — if nothing
+  ready remains — go to Step 5.
+
+  ## Step 5 — Stop condition: nothing ready left in scope
+
+  When there is **nothing ready** left within `${ISSUE_ID}`'s scope (the issue
+  itself is done/deferred/blocked, and — for an epic — no child is ready), the
+  loop is finished. **Self-terminate**: remove your own periodic flag so this
+  becomes a regular (non-periodic) conversation, and post a final summary.
+
+  ```
+  mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self", periodic_enabled: false)
+  ```
+
+  Then notify the user (works in both modes):
+
+  ```
+  mitto_ui_notify(self_id: "@mitto:session_id", title: "Iterate until complete — done", message: "<what was completed across runs, what was deferred/blocked, and why iteration stopped>", style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+
+  ## Guidelines
+
+  - **One increment per run.** Advance the work a meaningful step, then return —
+    the next scheduled run continues. Do not try to finish everything in one run.
+  - **Stay in scope.** Only ever act on `${ISSUE_ID}` or, for an epic, its subtree.
+    Never wander into unrelated backlog issues.
+  - **Bounded loop.** This conversation is capped by `maxIterations`; the Step 5
+    stop condition is the primary exit. Both must hold the loop in check.
+  - **Silent unless it matters.** On scheduled runs, send a `mitto_ui_notify` only
+    for meaningful milestones (increment completed, issue closed, blocked/deferred,
+    or final stop). Stay quiet for routine no-op runs.
+  - **Always log to the tracker** with `bd comment` so progress is auditable even
+    when you stay silent in the UI.
