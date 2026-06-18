@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -734,6 +735,125 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 	filtered = FilterPromptsSpecificToACP(nil, "auggie")
 	if filtered != nil {
 		t.Errorf("FilterPromptsSpecificToACP(nil) = %v, want nil", filtered)
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_OnCompletion(t *testing.T) {
+	data := []byte(`name: "On Completion Prompt"
+periodic:
+  trigger: onCompletion
+  delay: 10
+  maxDuration: "2h"
+prompt: |
+  Fire after agent stops.
+`)
+
+	prompt, err := ParsePromptFile("on-completion.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Trigger != "onCompletion" {
+		t.Errorf("Periodic.Trigger = %q, want %q", prompt.Periodic.Trigger, "onCompletion")
+	}
+	if prompt.Periodic.Delay != 10 {
+		t.Errorf("Periodic.Delay = %d, want 10", prompt.Periodic.Delay)
+	}
+	if prompt.Periodic.MaxDuration != "2h" {
+		t.Errorf("Periodic.MaxDuration = %q, want %q", prompt.Periodic.MaxDuration, "2h")
+	}
+	// value/unit absent → zero values
+	if prompt.Periodic.Value != 0 {
+		t.Errorf("Periodic.Value = %d, want 0 (not set)", prompt.Periodic.Value)
+	}
+	if prompt.Periodic.Unit != "" {
+		t.Errorf("Periodic.Unit = %q, want empty (not set)", prompt.Periodic.Unit)
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_ScheduleNoTrigger(t *testing.T) {
+	data := []byte(`name: "Schedule Prompt"
+periodic:
+  value: 2
+  unit: hours
+  maxIterations: 5
+prompt: |
+  Run every 2 hours.
+`)
+
+	prompt, err := ParsePromptFile("schedule.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	// Trigger absent → empty string (schedule default)
+	if prompt.Periodic.Trigger != "" {
+		t.Errorf("Periodic.Trigger = %q, want empty (schedule default)", prompt.Periodic.Trigger)
+	}
+	if prompt.Periodic.Value != 2 {
+		t.Errorf("Periodic.Value = %d, want 2", prompt.Periodic.Value)
+	}
+	if prompt.Periodic.Unit != "hours" {
+		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "hours")
+	}
+	if prompt.Periodic.MaxIterations != 5 {
+		t.Errorf("Periodic.MaxIterations = %d, want 5", prompt.Periodic.MaxIterations)
+	}
+	if prompt.Periodic.Delay != 0 {
+		t.Errorf("Periodic.Delay = %d, want 0 (not set)", prompt.Periodic.Delay)
+	}
+	if prompt.Periodic.MaxDuration != "" {
+		t.Errorf("Periodic.MaxDuration = %q, want empty (not set)", prompt.Periodic.MaxDuration)
+	}
+}
+
+func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
+	pf := &PromptFile{
+		Name:    "On Completion",
+		Content: "body",
+		Periodic: &PromptPeriodic{
+			Trigger:     "onCompletion",
+			Delay:       10,
+			MaxDuration: "2h",
+		},
+	}
+
+	wp := pf.ToWebPrompt()
+	if wp.Periodic == nil {
+		t.Fatal("WebPrompt.Periodic = nil, want non-nil")
+	}
+
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+
+	if !strings.Contains(jsonStr, `"trigger":"onCompletion"`) {
+		t.Errorf("JSON missing trigger field; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"delay":10`) {
+		t.Errorf("JSON missing delay field; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"maxDuration":"2h"`) {
+		t.Errorf("JSON missing maxDuration field; got: %s", jsonStr)
+	}
+
+	// Also verify via struct fields.
+	if wp.Periodic.Trigger != "onCompletion" {
+		t.Errorf("WebPrompt.Periodic.Trigger = %q, want %q", wp.Periodic.Trigger, "onCompletion")
+	}
+	if wp.Periodic.Delay != 10 {
+		t.Errorf("WebPrompt.Periodic.Delay = %d, want 10", wp.Periodic.Delay)
+	}
+	if wp.Periodic.MaxDuration != "2h" {
+		t.Errorf("WebPrompt.Periodic.MaxDuration = %q, want %q", wp.Periodic.MaxDuration, "2h")
 	}
 }
 

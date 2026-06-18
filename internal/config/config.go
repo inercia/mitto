@@ -625,6 +625,9 @@ type ConversationsConfig struct {
 	// performs before it auto-stops. nil = use default (DefaultMaxPeriodicIterations);
 	// 0 = unlimited (still bounded by the hardcoded GlobalMaxPeriodicIterations backstop).
 	MaxPeriodicIterations *int `json:"max_periodic_iterations,omitempty" yaml:"max_periodic_iterations,omitempty"`
+	// MinPeriodicCompletionDelaySeconds is the global lower limit (floor) for the
+	// on-completion periodic trigger's delay. nil = use default (DefaultMinPeriodicCompletionDelaySeconds).
+	MinPeriodicCompletionDelaySeconds *int `json:"min_periodic_completion_delay_seconds,omitempty" yaml:"min_periodic_completion_delay_seconds,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -835,6 +838,10 @@ func (c *ConversationsConfig) GetMaxChildConversations() int {
 // for a periodic conversation when no explicit limit is configured.
 const DefaultMaxPeriodicIterations = 100
 
+// DefaultMinPeriodicCompletionDelaySeconds is the default floor (seconds) applied to the
+// on-completion periodic delay to prevent hot loops.
+const DefaultMinPeriodicCompletionDelaySeconds = 5
+
 // GlobalMaxPeriodicIterations is the hardcoded absolute backstop on scheduled runs
 // for any periodic conversation. It can never be exceeded by config.
 const GlobalMaxPeriodicIterations = 1000
@@ -849,6 +856,20 @@ func (c *ConversationsConfig) GetMaxPeriodicIterations() int {
 	v := *c.MaxPeriodicIterations
 	if v > GlobalMaxPeriodicIterations {
 		return GlobalMaxPeriodicIterations
+	}
+	return v
+}
+
+// GetMinPeriodicCompletionDelaySeconds returns the configured floor for the on-completion delay.
+// Safe to call on nil receiver - returns DefaultMinPeriodicCompletionDelaySeconds when unset.
+// A configured value < 0 is treated as 0.
+func (c *ConversationsConfig) GetMinPeriodicCompletionDelaySeconds() int {
+	if c == nil || c.MinPeriodicCompletionDelaySeconds == nil {
+		return DefaultMinPeriodicCompletionDelaySeconds
+	}
+	v := *c.MinPeriodicCompletionDelaySeconds
+	if v < 0 {
+		return 0
 	}
 	return v
 }
@@ -1285,9 +1306,10 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
-		DefaultFlags          map[string]bool `yaml:"default_flags"`
-		MaxChildConversations *int            `yaml:"max_child_conversations"`
-		MaxPeriodicIterations *int            `yaml:"max_periodic_iterations"`
+		DefaultFlags                      map[string]bool `yaml:"default_flags"`
+		MaxChildConversations             *int            `yaml:"max_child_conversations"`
+		MaxPeriodicIterations             *int            `yaml:"max_periodic_iterations"`
+		MinPeriodicCompletionDelaySeconds *int            `yaml:"min_periodic_completion_delay_seconds"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1604,11 +1626,16 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MaxPeriodicIterations = raw.Conversations.MaxPeriodicIterations
 		}
 
+		// Copy min periodic completion delay
+		if raw.Conversations.MinPeriodicCompletionDelaySeconds != nil {
+			cfg.Conversations.MinPeriodicCompletionDelaySeconds = raw.Conversations.MinPeriodicCompletionDelaySeconds
+		}
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
 			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.MaxPeriodicIterations == nil {
+			cfg.Conversations.MaxPeriodicIterations == nil && cfg.Conversations.MinPeriodicCompletionDelaySeconds == nil {
 			cfg.Conversations = nil
 		}
 	}

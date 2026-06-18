@@ -18,22 +18,40 @@ import (
 // (recurring) conversation instead of a one-time one. Presence implies opt-in;
 // the fields provide sensible defaults for the schedule dialog.
 //
-// Example frontmatter:
+// Example frontmatter (schedule-based):
 //
 //	periodic:
 //	  value: 1
 //	  unit: hours          # minutes | hours | days
 //	  at: "09:00"          # optional, only for days (UTC)
 //	  maxIterations: 10    # optional; 0/absent = unlimited scheduled runs
+//
+// Example frontmatter (on-completion trigger):
+//
+//	periodic:
+//	  trigger: onCompletion  # fire after the agent stops responding
+//	  delay: 30              # seconds to wait after agent stops (clamped to floor at consumption)
+//	  maxIterations: 20      # optional safety cap
+//	  maxDuration: "4h"      # optional wall-clock cap; 0/absent = unlimited
 type PromptPeriodic struct {
-	// Value is the number of time units between runs (min 1).
+	// Value is the number of time units between runs (min 1). Used for trigger: schedule (default).
 	Value int `yaml:"value" json:"value"`
-	// Unit is the time unit: "minutes", "hours", or "days".
+	// Unit is the time unit: "minutes", "hours", or "days". Used for trigger: schedule (default).
 	Unit string `yaml:"unit" json:"unit"`
 	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
 	At string `yaml:"at,omitempty" json:"at,omitempty"`
 	// MaxIterations caps the number of scheduled runs when the conversation is made periodic (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
+	// Trigger selects how the periodic run fires: "" or "schedule" (default, frequency-based)
+	// vs "onCompletion" (fire after the agent stops responding + Delay seconds).
+	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
+	// Delay is the number of seconds to wait after the agent stops responding before the
+	// next run. Only meaningful for trigger: onCompletion. Clamped to a global minimum
+	// (default 5s) at the consumption boundary.
+	Delay int `yaml:"delay,omitempty" json:"delay,omitempty"`
+	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
+	// Parsed to seconds at the consumption boundary.
+	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
 }
 
 // PromptFile represents a parsed YAML prompt file.

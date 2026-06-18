@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -316,7 +317,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil, nil)
+	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil)
 	if err != ErrPeriodicNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrPeriodicNotFound", err)
 	}
@@ -333,7 +334,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -347,7 +348,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -358,7 +359,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -382,7 +383,7 @@ func TestPeriodicStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil)
+	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -493,7 +494,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil, nil)
+	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -502,7 +503,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil, nil)
+	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -717,12 +718,269 @@ func TestPeriodicStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 	// Update via partial update — should not touch IterationCount
 	newPrompt := "Updated"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
 	got2, _ := ps.Get()
 	if got2.IterationCount != 1 {
 		t.Errorf("IterationCount after Update() = %d, want 1 (should be unchanged)", got2.IterationCount)
+	}
+}
+
+// --- New tests for trigger type, delay, maxDuration, FirstRunAt ---
+
+func TestPeriodicPrompt_Validate_Trigger(t *testing.T) {
+	validFreq := Frequency{Value: 1, Unit: FrequencyHours}
+	tests := []struct {
+		name    string
+		prompt  PeriodicPrompt
+		wantErr error
+	}{
+		{
+			name:    "valid schedule trigger explicit",
+			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: TriggerSchedule},
+			wantErr: nil,
+		},
+		{
+			name:    "valid empty trigger treated as schedule",
+			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: ""},
+			wantErr: nil,
+		},
+		{
+			name:    "valid onCompletion with no frequency",
+			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion},
+			wantErr: nil,
+		},
+		{
+			name:    "valid onCompletion with delay",
+			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: 10},
+			wantErr: nil,
+		},
+		{
+			name:    "invalid trigger value",
+			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: "weekly"},
+			wantErr: ErrInvalidTrigger,
+		},
+		{
+			name:    "negative DelaySeconds",
+			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: -1},
+			wantErr: ErrInvalidDelay,
+		},
+		{
+			name:    "negative MaxDurationSeconds",
+			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion, MaxDurationSeconds: -1},
+			wantErr: ErrInvalidMaxDuration,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.prompt.Validate()
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Errorf("Validate() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Errorf("Validate() unexpected error = %v", err)
+			}
+		})
+	}
+}
+
+func TestPeriodicPrompt_ClampDelay(t *testing.T) {
+	tests := []struct {
+		name      string
+		trigger   PeriodicTrigger
+		delay     int
+		floor     int
+		wantDelay int
+	}{
+		{name: "onCompletion below floor gets clamped", trigger: TriggerOnCompletion, delay: 2, floor: 5, wantDelay: 5},
+		{name: "onCompletion at floor unchanged", trigger: TriggerOnCompletion, delay: 5, floor: 5, wantDelay: 5},
+		{name: "onCompletion above floor unchanged", trigger: TriggerOnCompletion, delay: 10, floor: 5, wantDelay: 10},
+		{name: "schedule trigger not clamped", trigger: TriggerSchedule, delay: 0, floor: 5, wantDelay: 0},
+		{name: "empty trigger (schedule) not clamped", trigger: "", delay: 1, floor: 5, wantDelay: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &PeriodicPrompt{Trigger: tt.trigger, DelaySeconds: tt.delay}
+			p.ClampDelay(tt.floor)
+			if p.DelaySeconds != tt.wantDelay {
+				t.Errorf("DelaySeconds = %d, want %d", p.DelaySeconds, tt.wantDelay)
+			}
+		})
+	}
+}
+
+func TestPeriodicPrompt_ReachedMaxDuration(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-10 * time.Second)
+	future := now.Add(10 * time.Second)
+
+	tests := []struct {
+		name               string
+		maxDurationSeconds int
+		firstRunAt         *time.Time
+		now                time.Time
+		want               bool
+	}{
+		{name: "zero = unlimited", maxDurationSeconds: 0, firstRunAt: &past, now: now, want: false},
+		{name: "firstRunAt nil", maxDurationSeconds: 5, firstRunAt: nil, now: now, want: false},
+		{name: "elapsed >= cap", maxDurationSeconds: 5, firstRunAt: &past, now: now, want: true},
+		{name: "elapsed < cap", maxDurationSeconds: 30, firstRunAt: &past, now: now, want: false},
+		{name: "not yet started", maxDurationSeconds: 5, firstRunAt: &future, now: now, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &PeriodicPrompt{MaxDurationSeconds: tt.maxDurationSeconds, FirstRunAt: tt.firstRunAt}
+			if got := p.ReachedMaxDuration(tt.now); got != tt.want {
+				t.Errorf("ReachedMaxDuration() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPeriodicStore_RecordSent_SetsFirstRunAt(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if got.FirstRunAt != nil {
+		t.Error("FirstRunAt should be nil before any RecordSent")
+	}
+
+	// First RecordSent sets the anchor.
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() #1 error = %v", err)
+	}
+	got, _ = ps.Get()
+	if got.FirstRunAt == nil {
+		t.Fatal("FirstRunAt should be set after first RecordSent")
+	}
+	firstRunAt := *got.FirstRunAt
+
+	time.Sleep(5 * time.Millisecond)
+
+	// Second RecordSent must NOT change FirstRunAt.
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() #2 error = %v", err)
+	}
+	got, _ = ps.Get()
+	if !got.FirstRunAt.Equal(firstRunAt) {
+		t.Errorf("FirstRunAt changed on second RecordSent: got %v, want %v", got.FirstRunAt, firstRunAt)
+	}
+}
+
+func TestPeriodicStore_FirstRunAtPreservedOnSet(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	ps.Set(p)
+	ps.RecordSent()
+
+	got, _ := ps.Get()
+	firstRunAt := *got.FirstRunAt
+
+	// Replace config via Set — FirstRunAt must survive.
+	p2 := &PeriodicPrompt{
+		Prompt:    "Updated",
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := ps.Set(p2); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got2, _ := ps.Get()
+	if got2.FirstRunAt == nil {
+		t.Fatal("FirstRunAt should be preserved after Set()")
+	}
+	if !got2.FirstRunAt.Equal(firstRunAt) {
+		t.Errorf("FirstRunAt changed after Set(): got %v, want %v", got2.FirstRunAt, firstRunAt)
+	}
+}
+
+func TestPeriodicStore_Update_NewFields(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Update trigger, delay, and maxDuration.
+	trig := TriggerOnCompletion
+	delay := 15
+	maxDur := 3600
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if got.Trigger != TriggerOnCompletion {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, TriggerOnCompletion)
+	}
+	if got.DelaySeconds != 15 {
+		t.Errorf("DelaySeconds = %d, want 15", got.DelaySeconds)
+	}
+	if got.MaxDurationSeconds != 3600 {
+		t.Errorf("MaxDurationSeconds = %d, want 3600", got.MaxDurationSeconds)
+	}
+	// Unrelated fields should be untouched.
+	if got.Prompt != "Test" {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, "Test")
+	}
+
+	// Passing nil for new fields should leave them unchanged.
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update() with all-nil error = %v", err)
+	}
+	got2, _ := ps.Get()
+	if got2.Trigger != TriggerOnCompletion {
+		t.Errorf("Trigger changed on nil update: got %q", got2.Trigger)
+	}
+	if got2.DelaySeconds != 15 {
+		t.Errorf("DelaySeconds changed on nil update: got %d", got2.DelaySeconds)
+	}
+}
+
+func TestPeriodicStore_OnCompletion_NextScheduledAtIsNil(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnCompletion,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if got.NextScheduledAt != nil {
+		t.Errorf("NextScheduledAt should be nil for onCompletion trigger, got %v", got.NextScheduledAt)
 	}
 }

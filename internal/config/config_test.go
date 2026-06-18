@@ -2163,3 +2163,74 @@ conversations:
 		t.Errorf("GetMaxPeriodicIterations() = %d, want 0 (unlimited)", cfg.Conversations.GetMaxPeriodicIterations())
 	}
 }
+
+func TestGetMinPeriodicCompletionDelaySeconds(t *testing.T) {
+	t.Run("nil config returns default", func(t *testing.T) {
+		var c *ConversationsConfig
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != DefaultMinPeriodicCompletionDelaySeconds {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want %d", got, DefaultMinPeriodicCompletionDelaySeconds)
+		}
+	})
+
+	t.Run("nil field returns default", func(t *testing.T) {
+		c := &ConversationsConfig{}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != DefaultMinPeriodicCompletionDelaySeconds {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want %d", got, DefaultMinPeriodicCompletionDelaySeconds)
+		}
+	})
+
+	t.Run("set value returned", func(t *testing.T) {
+		v := 10
+		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != 10 {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", got)
+		}
+	})
+
+	t.Run("negative value treated as zero", func(t *testing.T) {
+		v := -3
+		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != 0 {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 0 (negative → 0)", got)
+		}
+	})
+
+	t.Run("zero is valid (no floor)", func(t *testing.T) {
+		v := 0
+		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != 0 {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 0", got)
+		}
+	})
+}
+
+func TestParse_MinPeriodicCompletionDelaySeconds(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test --acp"
+conversations:
+  min_periodic_completion_delay_seconds: 10
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if cfg.Conversations.MinPeriodicCompletionDelaySeconds == nil {
+		t.Fatal("MinPeriodicCompletionDelaySeconds is nil, want 10")
+	}
+	if *cfg.Conversations.MinPeriodicCompletionDelaySeconds != 10 {
+		t.Errorf("MinPeriodicCompletionDelaySeconds = %d, want 10", *cfg.Conversations.MinPeriodicCompletionDelaySeconds)
+	}
+	if cfg.Conversations.GetMinPeriodicCompletionDelaySeconds() != 10 {
+		t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", cfg.Conversations.GetMinPeriodicCompletionDelaySeconds())
+	}
+}

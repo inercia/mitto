@@ -25,6 +25,22 @@ var (
 	ErrPromptEmpty = errors.New("prompt cannot be empty")
 	// ErrInvalidMaxIterations is returned when max_iterations is negative.
 	ErrInvalidMaxIterations = errors.New("invalid max_iterations: must be >= 0")
+	// ErrInvalidTrigger is returned when the trigger value is not recognised.
+	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, or onCompletion")
+	// ErrInvalidDelay is returned when delay_seconds is negative.
+	ErrInvalidDelay = errors.New("invalid delay_seconds: must be >= 0")
+	// ErrInvalidMaxDuration is returned when max_duration_seconds is negative.
+	ErrInvalidMaxDuration = errors.New("invalid max_duration_seconds: must be >= 0")
+)
+
+// PeriodicTrigger defines how/when a periodic prompt is fired.
+type PeriodicTrigger string
+
+const (
+	// TriggerSchedule is the default trigger: fire based on Frequency.
+	TriggerSchedule PeriodicTrigger = "schedule"
+	// TriggerOnCompletion fires after the agent stops responding (event-driven).
+	TriggerOnCompletion PeriodicTrigger = "onCompletion"
 )
 
 // FrequencyUnit represents the time unit for periodic scheduling.
@@ -124,12 +140,58 @@ type PeriodicPrompt struct {
 	LastSentAt *time.Time `json:"last_sent_at,omitempty"`
 	// NextScheduledAt is the computed next delivery time (nil if not scheduled).
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
+	// Trigger controls how this periodic prompt is fired.
+	// Empty or "schedule" means frequency-based; "onCompletion" means event-driven.
+	Trigger PeriodicTrigger `json:"trigger,omitempty"`
+	// DelaySeconds is the number of seconds to wait after the agent stops responding
+	// before the next run. Only meaningful when Trigger is onCompletion.
+	DelaySeconds int `json:"delay_seconds,omitempty"`
+	// MaxDurationSeconds is the wall-clock cap in seconds since iterating started (0 = unlimited).
+	MaxDurationSeconds int `json:"max_duration_seconds,omitempty"`
+	// FirstRunAt is the elapsed-time anchor: set on the first RecordSent call.
+	// Used by ReachedMaxDuration to compute how long iterating has been running.
+	FirstRunAt *time.Time `json:"first_run_at,omitempty"`
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
 // Returns false when MaxIterations is 0 (unlimited).
 func (p *PeriodicPrompt) ReachedMaxIterations() bool {
 	return p.MaxIterations > 0 && p.IterationCount >= p.MaxIterations
+}
+
+// EffectiveTrigger returns the resolved trigger type.
+// When Trigger is empty, TriggerSchedule (the default) is returned.
+func (p *PeriodicPrompt) EffectiveTrigger() PeriodicTrigger {
+	if p.Trigger == "" {
+		return TriggerSchedule
+	}
+	return p.Trigger
+}
+
+// IsOnCompletion returns true when this periodic prompt uses the onCompletion trigger.
+func (p *PeriodicPrompt) IsOnCompletion() bool {
+	return p.EffectiveTrigger() == TriggerOnCompletion
+}
+
+// ReachedMaxDuration returns true if the elapsed time since the first run exceeds MaxDurationSeconds.
+// Returns false when MaxDurationSeconds is 0 (unlimited) or FirstRunAt is nil (not yet started).
+func (p *PeriodicPrompt) ReachedMaxDuration(now time.Time) bool {
+	if p.MaxDurationSeconds <= 0 || p.FirstRunAt == nil {
+		return false
+	}
+	return now.Sub(*p.FirstRunAt) >= time.Duration(p.MaxDurationSeconds)*time.Second
+}
+
+// ClampDelay ensures DelaySeconds is at least floorSeconds.
+// Only applies when the trigger is onCompletion; schedule prompts are not clamped.
+// The floor value is injected by the caller — this method does NOT hardcode any policy minimum.
+func (p *PeriodicPrompt) ClampDelay(floorSeconds int) {
+	if !p.IsOnCompletion() {
+		return
+	}
+	if p.DelaySeconds < floorSeconds {
+		p.DelaySeconds = floorSeconds
+	}
 }
 
 // Validate checks if the periodic prompt configuration is valid.
@@ -140,7 +202,24 @@ func (p *PeriodicPrompt) Validate() error {
 	if p.MaxIterations < 0 {
 		return ErrInvalidMaxIterations
 	}
-	return p.Frequency.Validate()
+	switch p.Trigger {
+	case "", TriggerSchedule, TriggerOnCompletion:
+		// valid
+	default:
+		return ErrInvalidTrigger
+	}
+	if p.DelaySeconds < 0 {
+		return ErrInvalidDelay
+	}
+	if p.MaxDurationSeconds < 0 {
+		return ErrInvalidMaxDuration
+	}
+	// For schedule trigger (default), Frequency must be valid.
+	// For onCompletion, frequency is not required.
+	if p.EffectiveTrigger() == TriggerSchedule {
+		return p.Frequency.Validate()
+	}
+	return nil
 }
 
 // PeriodicStore manages the periodic prompt for a single session.
@@ -196,9 +275,11 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 		// Preserve immutable/accumulated fields across a replace.
 		// IterationCount is preserved so re-saving config doesn't reset the delivery counter;
 		// the counter only resets if the user explicitly sets it via the API (not supported yet).
+		// FirstRunAt is preserved so the maxDuration elapsed-time anchor is not lost on config replace.
 		p.CreatedAt = existing.CreatedAt
 		p.LastSentAt = existing.LastSentAt
 		p.IterationCount = existing.IterationCount
+		p.FirstRunAt = existing.FirstRunAt
 	} else {
 		// Create: set created_at
 		p.CreatedAt = now
@@ -216,7 +297,7 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int) error {
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -242,6 +323,15 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if maxIterations != nil {
 		existing.MaxIterations = *maxIterations
+	}
+	if trigger != nil {
+		existing.Trigger = *trigger
+	}
+	if delaySeconds != nil {
+		existing.DelaySeconds = *delaySeconds
+	}
+	if maxDurationSeconds != nil {
+		existing.MaxDurationSeconds = *maxDurationSeconds
 	}
 
 	if err := existing.Validate(); err != nil {
@@ -283,6 +373,10 @@ func (ps *PeriodicStore) RecordSent() error {
 	}
 
 	now := time.Now().UTC()
+	// Set the elapsed-time anchor on the very first delivery; preserve it thereafter.
+	if existing.FirstRunAt == nil {
+		existing.FirstRunAt = &now
+	}
 	existing.IterationCount++
 	existing.LastSentAt = &now
 	existing.UpdatedAt = now
@@ -308,8 +402,13 @@ func (ps *PeriodicStore) getUnlocked() (*PeriodicPrompt, error) {
 }
 
 // computeNextScheduledTime calculates when the next prompt should be sent.
+// Returns nil for onCompletion triggers — their next run is armed by the event-driven firing path.
 func (ps *PeriodicStore) computeNextScheduledTime(p *PeriodicPrompt) *time.Time {
 	if !p.Enabled {
+		return nil
+	}
+	// Event-driven triggers do not use a frequency-based schedule.
+	if p.IsOnCompletion() {
 		return nil
 	}
 
