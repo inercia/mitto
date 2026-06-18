@@ -8527,3 +8527,120 @@ func TestGetConversation_QueuedPrompts_LongMessageTruncated(t *testing.T) {
 		t.Error("Expected truncated message to end with '...'")
 	}
 }
+
+
+// setupSendPromptServerWithPrompts creates a server with a sender and target conversation,
+// with the given workspace prompts available via config. Returns store, srv, senderID, targetID.
+func setupSendPromptServerWithPrompts(t *testing.T, prompts []config.WebPrompt) (*session.Store, *Server, string, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	senderID := session.GenerateSessionID()
+	senderMeta := session.Metadata{
+		SessionID:  senderID,
+		Name:       "Sender Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(senderMeta); err != nil {
+		t.Fatalf("Failed to create sender session: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	targetMeta := session.Metadata{
+		SessionID:  targetID,
+		Name:       "Target Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(targetMeta); err != nil {
+		t.Fatalf("Failed to create target session: %v", err)
+	}
+
+	sm := &mockSessionManagerForAutoResume{
+		sessions: map[string]BackgroundSession{
+			senderID: &mockBackgroundSessionForAutoResume{},
+			targetID: &mockBackgroundSessionForAutoResume{},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: sm,
+		Config:         &config.Config{Prompts: prompts},
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(senderID, nil, logger); err != nil {
+		t.Fatalf("Failed to register sender session: %v", err)
+	}
+
+	return store, srv, senderID, targetID
+}
+
+func TestSendPrompt_PromptName_Succeeds(t *testing.T) {
+	store, srv, senderID, targetID := setupSendPromptServerWithPrompts(t, []config.WebPrompt{
+		{Name: "My Task", Prompt: "Please work on ${ISSUE}"},
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         senderID,
+		ConversationID: targetID,
+		PromptName:     "my task", // case-insensitive
+		Arguments:      map[string]string{"ISSUE": "mitto-99"},
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+
+	// Verify the queued message persists PromptName
+	msgs, err := store.Queue(targetID).List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	if msgs[0].PromptName != "my task" {
+		t.Errorf("Expected PromptName 'my task', got %q", msgs[0].PromptName)
+	}
+	if got := msgs[0].Arguments["ISSUE"]; got != "mitto-99" {
+		t.Errorf("Expected ISSUE argument 'mitto-99', got %q", got)
+	}
+}
+
+func TestSendPrompt_BothEmpty_Error(t *testing.T) {
+	_, srv, senderID, targetID := setupSendPromptServerWithPrompts(t, nil)
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         senderID,
+		ConversationID: targetID,
+		Prompt:         "",
+		PromptName:     "",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("Expected failure when both prompt and prompt_name are empty")
+	}
+	if !strings.Contains(output.Error, "prompt_name") {
+		t.Errorf("Expected error mentioning 'prompt_name', got: %s", output.Error)
+	}
+}

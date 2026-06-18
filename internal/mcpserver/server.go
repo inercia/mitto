@@ -1078,6 +1078,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
 			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the prompt text when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. " +
+			"Optionally provide 'prompt_name' to enqueue a predefined workspace prompt by name instead of free text; the name is resolved to its full body at dispatch in the TARGET conversation's context. Provide either 'prompt' (free text) or 'prompt_name'. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -1941,6 +1942,7 @@ type SendPromptToConversationInput struct {
 	Workspace      string            `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
 	ScheduleTime   string            `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
 	Arguments      map[string]string `json:"arguments,omitempty"`     // Optional: ${VAR}/${VAR:-default} substitution values applied to the prompt text when sent
+	PromptName     string            `json:"prompt_name,omitempty"`   // Optional: name of a workspace prompt to send by name (resolved at dispatch in the target conversation's context)
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1985,8 +1987,8 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	if input.ConversationID == "" {
 		return nil, SendPromptOutput{Success: false, Error: "conversation_id is required"}, nil
 	}
-	if input.Prompt == "" {
-		return nil, SendPromptOutput{Success: false, Error: "prompt is required"}, nil
+	if strings.TrimSpace(input.Prompt) == "" && strings.TrimSpace(input.PromptName) == "" {
+		return nil, SendPromptOutput{Success: false, Error: "either 'prompt' or 'prompt_name' is required"}, nil
 	}
 
 	// Check if target conversation exists
@@ -2059,7 +2061,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	queue := store.Queue(input.ConversationID)
 
 	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
+	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, input.PromptName)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
