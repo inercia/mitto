@@ -21,7 +21,6 @@ import { statusBadge as beadsStatusBadge } from "./BeadsView.js";
 import { formatTimeAgo, looksLikeFilePath } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { isNativeApp, getAPIPrefix } from "../utils/index.js";
-import { CountdownDisplay } from "./CountdownDisplay.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (copied from ConversationPropertiesPanel)
@@ -1353,24 +1352,10 @@ export function SessionPanel({
               ${new Date(periodicConfig.last_sent_at).toLocaleString()}
             </p>`}
             ${periodicConfig.next_scheduled_at &&
-            html`
-              <div class="mt-1 text-xs text-mitto-text-500">
-                <p>
-                  Next run:
-                  ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
-                </p>
-                <p
-                  class="mt-1 flex items-baseline gap-1 text-mitto-text-secondary"
-                >
-                  <span>in</span>
-                  <${CountdownDisplay}
-                    targetIso=${periodicConfig.next_scheduled_at}
-                    unit=${periodicConfig.frequency?.unit}
-                    active=${isOpen}
-                  />
-                </p>
-              </div>
-            `}
+            html`<p class="mt-1 text-xs text-mitto-text-500">
+              Next run:
+              ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+            </p>`}
             <p class="mt-1 text-xs text-mitto-text-500">
               ${(periodicConfig.max_iterations ?? 0) > 0
                 ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
