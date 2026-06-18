@@ -3081,3 +3081,60 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 		t.Errorf("ungated prompt missing, got %v", names)
 	}
 }
+
+// TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle verifies that when the
+// frontend submits { "prompt": "(pending)", "prompt_name": "CGW: latest questions", ... }
+// (the draft shape documented at the top of this file), the title generator receives the
+// resolved prompt body rather than the literal "(pending)" placeholder string.
+func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-pending-placeholder-title"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// BackgroundSession with a promptResolver that returns a recognisable body.
+	bs := &BackgroundSession{
+		store:       store,
+		persistedID: sid,
+		workingDir:  tmpDir,
+		promptResolver: func(name, dir string) (string, error) {
+			return "The actual resolved body for " + name, nil
+		},
+	}
+
+	sm := NewSessionManager("", "", false, nil)
+	sm.mu.Lock()
+	sm.sessions[sid] = bs
+	sm.mu.Unlock()
+
+	server := &Server{
+		store:          store,
+		sessionManager: sm,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	putPeriodicForTest(t, server, sid, PeriodicPromptRequest{
+		Prompt:     "(pending)",
+		PromptName: "CGW: latest questions",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	})
+
+	meta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if strings.Contains(strings.ToLower(meta.Name), "pending") {
+		t.Errorf("title must not contain 'pending' when prompt_name is set; got %q", meta.Name)
+	}
+	if !strings.Contains(strings.ToLower(meta.Name), "actual") && !strings.Contains(strings.ToLower(meta.Name), "resolved") {
+		t.Errorf("title should be derived from the resolved prompt body; got %q", meta.Name)
+	}
+}

@@ -3723,12 +3723,13 @@ func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWa
 	return m
 }
 
-func (m *mockBackgroundSessionForWait) IsPrompting() bool             { return m.prompting.Load() }
-func (m *mockBackgroundSessionForWait) GetEventCount() int            { return 0 }
-func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64      { return 0 }
-func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool { return false }
-func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string) {}
-func (m *mockBackgroundSessionForWait) RequestSelfDestruct()          { m.selfDestructCalled.Store(true) }
+func (m *mockBackgroundSessionForWait) IsPrompting() bool                                 { return m.prompting.Load() }
+func (m *mockBackgroundSessionForWait) GetEventCount() int                                { return 0 }
+func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64                          { return 0 }
+func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool                     { return false }
+func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string)                     {}
+func (m *mockBackgroundSessionForWait) TriggerTitleGenerationFromPeriodic(string, string) {}
+func (m *mockBackgroundSessionForWait) RequestSelfDestruct()                              { m.selfDestructCalled.Store(true) }
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -4886,12 +4887,13 @@ type mockBackgroundSessionForAutoResume struct {
 	tryProcessCalled atomic.Bool
 }
 
-func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                          { return false }
-func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                         { return 0 }
-func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                   { return 0 }
-func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool { return true }
-func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)              {}
-func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                       {}
+func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                                 { return false }
+func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                                { return 0 }
+func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                          { return 0 }
+func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool        { return true }
+func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)                     {}
+func (m *mockBackgroundSessionForAutoResume) TriggerTitleGenerationFromPeriodic(string, string) {}
+func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                              {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false

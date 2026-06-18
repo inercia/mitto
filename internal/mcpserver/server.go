@@ -198,6 +198,9 @@ type BackgroundSession interface {
 	// Used by MCP tools and API handlers to generate titles for sessions that received
 	// prompts via paths that don't normally trigger title generation (e.g., periodic config).
 	TriggerTitleGeneration(message string)
+	// TriggerTitleGenerationFromPeriodic picks the best source text (prompt text or prompt
+	// name) for title generation when a periodic config is saved.
+	TriggerTitleGenerationFromPeriodic(prompt, promptName string)
 	// RequestSelfDestruct marks the conversation for deletion once the current turn
 	// completes. Used by the mitto_conversation_delete tool when an agent requests
 	// deletion of its own conversation.
@@ -3093,8 +3096,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 	// If no explicit title was provided and periodic was configured, trigger title
 	// generation from the periodic prompt text so the conversation has a name right away.
+	// ConversationStartInput has no PeriodicPromptName field, so prompt name is passed as "".
 	if input.Title == "" && periodicConfigured && bs != nil {
-		bs.TriggerTitleGeneration(input.PeriodicPrompt)
+		bs.TriggerTitleGenerationFromPeriodic(input.PeriodicPrompt, "")
 	}
 
 	// Build unified conversation details
@@ -4001,23 +4005,21 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 
 		// If the session has no title and a periodic prompt was set, trigger title generation.
 		if input.Name == nil && meta.Name == "" && sm != nil {
-			promptText := ""
-			if input.PeriodicPrompt != nil {
-				promptText = *input.PeriodicPrompt
-			}
-			if promptText == "" {
-				// Get prompt text from the updated periodic config
+			if bs := sm.GetSession(input.ConversationID); bs != nil {
+				var pPrompt, pName string
+				if input.PeriodicPrompt != nil {
+					pPrompt = *input.PeriodicPrompt
+				}
+				// ConversationUpdateInput has no PeriodicPromptName field; read prompt name
+				// from the stored periodic config so the resolver can be used when inline
+				// prompt is empty or the UI placeholder "(pending)".
 				if p, getErr := periodicStore.Get(); getErr == nil && p != nil {
-					promptText = p.Prompt
-					if promptText == "" {
-						promptText = p.PromptName
+					if pPrompt == "" {
+						pPrompt = p.Prompt
 					}
+					pName = p.PromptName
 				}
-			}
-			if promptText != "" {
-				if bs := sm.GetSession(input.ConversationID); bs != nil {
-					bs.TriggerTitleGeneration(promptText)
-				}
+				bs.TriggerTitleGenerationFromPeriodic(pPrompt, pName)
 			}
 		}
 

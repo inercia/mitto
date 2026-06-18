@@ -159,14 +159,8 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 
 	// If the session has no title, trigger title generation from the periodic prompt.
 	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
-		promptText := req.Prompt
-		if promptText == "" {
-			promptText = req.PromptName
-		}
-		if promptText != "" {
-			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
-				bs.TriggerTitleGeneration(promptText)
-			}
+		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+			bs.TriggerTitleGenerationFromPeriodic(req.Prompt, req.PromptName)
 		}
 	}
 
@@ -227,17 +221,13 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 
 	// If the session has no title, trigger title generation from the periodic prompt.
 	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
-		promptText := ""
-		if updated != nil {
-			promptText = updated.Prompt
-			if promptText == "" {
-				promptText = updated.PromptName
+		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+			var pPrompt, pName string
+			if updated != nil {
+				pPrompt = updated.Prompt
+				pName = updated.PromptName
 			}
-		}
-		if promptText != "" {
-			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
-				bs.TriggerTitleGeneration(promptText)
-			}
+			bs.TriggerTitleGenerationFromPeriodic(pPrompt, pName)
 		}
 	}
 
