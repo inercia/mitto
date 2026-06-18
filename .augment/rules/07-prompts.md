@@ -62,44 +62,13 @@ prompt: |
 
 ## Key Types
 
-```go
-type WebPrompt struct {
-    Name            string          `json:"name"`
-    Prompt          string          `json:"prompt"`
-    Description     string          `json:"description,omitempty"`
-    Group           string          `json:"group,omitempty"`
-    BackgroundColor string          `json:"backgroundColor,omitempty"`
-    Icon            string          `json:"icon,omitempty"`      // name in frontend PROMPT_ICONS registry (Icons.js)
-    Source          PromptSource    `json:"source,omitempty"`    // "builtin", "file", "settings", "workspace"
-    Enabled         *bool           `json:"enabled,omitempty"`   // nil = enabled, false = disabled
-    EnabledWhen     string          `json:"-"`                   // CEL expression (server-side filtering only)
-    Periodic        *PromptPeriodic `json:"periodic,omitempty"`  // non-nil = prompt creates a periodic conversation
-}
+`WebPrompt`: Name, Prompt, Description, Group, BackgroundColor, Icon, Source ("builtin"|"file"|"settings"|"workspace"), Enabled (*bool: nil=enabled, false=disabled), EnabledWhen (CEL, server-side only), Periodic (non-nil = periodic conversation).
 
-// PromptPeriodic is the periodic: YAML mapping. Presence = opt-in.
-type PromptPeriodic struct {
-    Value         int    `yaml:"value" json:"value"`                              // number of time units ≥ 1
-    Unit          string `yaml:"unit"  json:"unit"`                               // "minutes" | "hours" | "days"
-    At            string `yaml:"at,omitempty" json:"at,omitempty"`                // HH:MM UTC; only valid for "days"
-    MaxIterations int    `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"` // 0/absent = unlimited
-}
-```
+`PromptPeriodic.MaxIterations`: Caps scheduled runs; effective cap = min(prompt maxIterations, config default 100, hardcoded 1000). Backend auto-disables (not archives) when hit.
 
-**Semantics**: `Value`/`Unit`/`At` are the **default period** applied when a conversation is made periodic (both new-periodic and make-periodic paths). `MaxIterations` caps scheduled runs; the backend auto-stops (disables, not archives) when the **effective cap** is hit — the smallest positive of {prompt `maxIterations`, config `conversations.max_periodic_iterations` (default 100), hardcoded backstop 1000}. See `02-session.md` for the engine-side counting.
+## Merging & Caching
 
-## Merging Functions
-
-`MergePrompts(global, settings, workspace)` — filters disabled. `MergePromptsKeepDisabled(...)` — keeps `enabled:false` entries (for WorkspacesDialog `include_global=true`). Higher-priority source overrides lower by name.
-
-## PromptsCache (`internal/config/prompts_cache.go`)
-
-Caches global file prompts from `MITTO_DIR/prompts/` with auto-refresh on directory changes:
-
-```go
-cache.GetWebPrompts()                      // All global prompts
-cache.GetWebPromptsSpecificToACP("auggie") // Prompts with acps: "auggie"
-cache.ForceReload()                        // Clear cache and reload
-```
+`MergePrompts()` filters disabled; `MergePromptsKeepDisabled()` keeps `enabled:false` for dialogs. PromptsCache auto-refreshes `MITTO_DIR/prompts/` on changes.
 
 ## API Endpoints
 
@@ -111,11 +80,7 @@ cache.ForceReload()                        // Clear cache and reload
 
 ### Toggle-Enabled Logic
 
-When disabling prompt X:
-1. If `.mitto/prompts/X.prompt.yaml` exists → set `enabled: false` in the file
-2. If not → add `{name: X, enabled: false}` to `.mittorc` prompts section
-
-When re-enabling: reverse (remove `enabled: false` from the file or `.mittorc` entry).
+Disable: set `enabled: false` in `.mitto/prompts/X.prompt.yaml` or `.mittorc` prompts section. Re-enable: remove the `enabled: false` entry.
 
 ## Menu-Driven Prompt Sends (Named-Prompt Mechanism)
 
@@ -137,33 +102,25 @@ All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, conversation see
 - **Title generation**: skipped for named-prompt queue items (prompt name is used as the queue label)
 - **Anti-pattern**: Do NOT call `POST /api/sessions/{id}/queue` with a `message` containing the resolved prompt text; send `prompt_name` instead
 
-## MCP Prompt Tools (`internal/mcpserver/prompts.go`)
+## MCP Prompt Tools
 
-Three MCP tools for managing prompts programmatically:
+- `mitto_prompt_list` — List merged prompts (metadata)
+- `mitto_prompt_get` — Get full prompt by name
+- `mitto_prompt_update` — Create/update workspace-local overrides (`.mitto/prompts/<slug>.prompt.yaml`)
 
-| Tool | Purpose |
-|------|---------|
-| `mitto_prompt_list` | List all merged prompts (metadata only, no text) |
-| `mitto_prompt_get` | Get full prompt details by name (case-insensitive) |
-| `mitto_prompt_update` | Create/update workspace-local prompt overrides |
-
-`loadMergedPrompts()` replicates the same 5-layer merge as the REST API. Updates always write to `.mitto/prompts/<slug>.prompt.yaml` (workspace-local override). Enable/disable-only updates use the optimized toggle path (`UpdatePromptFileEnabled` / `SaveWorkspaceRCPromptEnabled`). Name slugification via `config.SlugifyPromptName()`.
+Updates replicate the 5-layer REST API merge. Name slugification via `config.SlugifyPromptName()`.
 
 ## Frontend Architecture
 
-**Anti-pattern**: Never do client-side prompt merging — backend does everything. `predefinedPrompts = workspacePrompts` only. Refresh on: dropdown open, file watcher event, visibility change, 30s interval. Supports `If-Modified-Since` / `Last-Modified` for efficient polling.
+Never merge prompts client-side — backend does all merging. Re-fetch on: dropdown open, file watcher, visibility change, 30s interval. Session-scoped CEL filters (e.g., `session.isChild`) require re-fetch on `activeSessionId` change, not just workspace directory change.
 
-**Session-switch re-fetch**: CEL expressions referencing `session.*` (e.g., `session.isChild`, `parent.exists`) produce different filtered lists per session. The frontend must re-fetch prompts on every `activeSessionId` change, even within the same workspace — not just on workspace directory change. In `app.js`, a dedicated `useEffect([activeSessionId])` calls `fetchWorkspacePrompts(workingDir, true)` when `workingDir === workspacePromptsDir`.
+## Builtin Prompt Content Conventions
 
-## Builtin Prompt Content Conventions (`config/prompts/builtin/`)
-
-- **Template variables**: Use `@mitto:*` placeholders (substituted at send time). Full list in `docs/config/prompts.md#variable-substitution` and `internal/processors/variables.go`.
-- **No hardcoded ACP server names**: Use `@mitto:available_acp_servers`; never hardcode server names.
-- **Generic server selection**: instruct agents to "prefer faster/cheaper for simple tasks, more capable for complex tasks"
-- **Spawn deduplication**: Use `@mitto:mcp_children` (auto-substituted list of MCP-created children with titles) to check for existing child conversations before spawning. Avoids extra `mitto_conversation_list` calls. Include spawn caps per run.
-- **Periodic mode pattern**: Use `@mitto:periodic` and `@mitto:periodic_forced` to branch behavior. Scheduled runs → `mitto_ui_notify` only (no blocking UI). Force-triggered or interactive → may use `mitto_ui_options`/`mitto_ui_form`.
-- **Auto-periodic self-terminating loops**: A `menus: beadsIssues` prompt with a `periodic:` block becomes an auto-periodic conversation when selected on an issue (new-periodic path). Canonical example: `beads-iterate-until-complete.prompt.yaml` (auto-periodic sibling of `beads-issue-work`) — advances the target bead one increment per scheduled run (silent mode → `mitto_ui_notify` only; epic → next ready child; ambiguity → `bd comment` + `bd update --defer`, never guess), and when nothing ready remains in scope it removes its own periodic flag via `mitto_conversation_update(conversation_id: "self", periodic_enabled: false)`. Pair with `periodic.maxIterations` as a loop-safety net.
-- **Cross-session delegation must confirm first**: Agent proposes its best plan based on conversation context; user confirms or overrides via `mitto_ui_options(allow_free_text: true, timeout: 120s)`; abort on timeout. Do NOT force "3–5 options" — a single clear proposal is preferred. Do NOT call `mitto_conversation_get_summary` — the agent already has context.
+- **Template variables**: Use `@mitto:*` placeholders. See `docs/config/prompts.md#variable-substitution`.
+- **No hardcoded servers**: Use `@mitto:available_acp_servers`.
+- **Spawn deduplication**: Use `@mitto:mcp_children` to avoid duplicate children.
+- **Periodic mode**: Use `@mitto:periodic` / `@mitto:periodic_forced` to branch; scheduled runs use `mitto_ui_notify` only (no blocking UI).
+- **Cross-session confirmation**: Propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`, abort on timeout. Single proposal preferred over "3–5 options".
 
 ## enabledWhen Filtering
 
@@ -175,6 +132,4 @@ Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use 
 
 ### Config Save Anti-pattern: Prompt Round-trip
 
-`GET /api/config` returns ALL merged prompts (files + settings). Never round-trip these back via `POST /api/config`:
-- **Frontend**: Set `prompts: []` explicitly in save requests. `SettingsDialog` (line 1883) does this correctly. `WorkspacesDialog` spreading `...config` was a bug — it included file-sourced prompts in the save payload.
-- **Backend**: `buildNewSettings` must filter `req.Prompts` to only keep `Source == PromptSourceSettings` or empty source. Drop `PromptSourceFile` and `PromptSourceBuiltin` before persisting.
+Never round-trip merged prompts back via `POST /api/config` — set `prompts: []` explicitly in save. Backend must filter `req.Prompts` to only keep `Source == PromptSourceSettings`.

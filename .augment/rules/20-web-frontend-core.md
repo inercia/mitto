@@ -85,76 +85,17 @@ App
 
 ## Internal File Viewer URL Pattern
 
-When rendering a value that might be a file path, use `looksLikeFilePath()` and build a viewer URL:
+Use `looksLikeFilePath()` to detect paths, build viewer URL with `workspace UUID` + `path` params.
+
+**Critical**: File link onClick must call **BOTH** `e.preventDefault()` AND `e.stopPropagation()` — omitting the latter causes double viewer windows (global click handler at line 161 in `app.js` fires too).
 
 ```javascript
-import { looksLikeFilePath } from "../lib.js";
-import { getAPIPrefix } from "../utils/index.js";
-
-if (value && looksLikeFilePath(value)) {
-  const apiPrefix = getAPIPrefix();
-  const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
-  const wsPath = window.mittoCurrentWorkspace || "";
-  const relativePath = value.replace(/^\.\//, "");
-  let viewerUrl = null;
-  if (workspaceUUID) {
-    viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
-    if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
-  }
-  // render <a class="file-link" href=${viewerUrl}>
-}
+onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openViewer(viewerUrl); }}
 ```
 
-**Critical**: `app.js` has a global `document.addEventListener("click", ...)` (~line 161) that matches `/viewer.html?` URLs. Component-level onClick handlers on file links MUST call both `e.preventDefault()` AND `e.stopPropagation()` — omitting `stopPropagation()` causes a double viewer window to open.
+## Context Menu Positioning: useLayoutEffect
 
-```javascript
-// CORRECT: prevents bubbling to global handler
-onClick=${(e) => {
-  e.preventDefault();
-  e.stopPropagation();  // required — without this, global handler also fires
-  if (!viewerUrl) return;
-  openViewer(viewerUrl);
-}}
-```
-
-## Context Menu: Clamp Position with useLayoutEffect
-
-To keep a menu on-screen near a window edge, measure it and reposition. Two
-naive approaches both fail:
-
-```javascript
-// BAD: useEffect runs AFTER paint → visible position jump.
-const [pos, setPos] = useState({x, y});
-useEffect(() => setPos(calculatePosition(x, y)), [x, y]);
-
-// BAD: useMemo keyed on a ref never recomputes — refs don't trigger re-renders,
-// so the menu stays at its raw (overflowing) position. Even when an unrelated
-// re-render happens, the memo reads the DOM BEFORE the new content commits, so a
-// menu that grows (e.g. async-loaded items) is measured too short and clips.
-const position = useMemo(() => { /* ...read menuRef.current... */ }, [x, y, menuRef.current]);
-```
-
-```javascript
-// GOOD: useLayoutEffect runs synchronously BEFORE paint → no jump, and measures
-// the committed DOM so growth is handled. Key on item COUNT so it re-runs when
-// content changes; guard setState to avoid a render loop. Clamp top/left ≥ margin
-// and add `max-h-[95vh] overflow-y-auto` so taller-than-viewport menus scroll.
-const [position, setPosition] = useState({x, y});
-useLayoutEffect(() => {
-    const el = menuRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const m = 8;
-    let newX = x, newY = y;
-    if (newX + rect.width > window.innerWidth) newX = window.innerWidth - rect.width - m;
-    if (newY + rect.height > window.innerHeight) newY = window.innerHeight - rect.height - m;
-    newX = Math.max(m, newX); newY = Math.max(m, newY);
-    setPosition((prev) => (prev.x === newX && prev.y === newY ? prev : {x: newX, y: newY}));
-}, [x, y, items.length]);
-```
-
-Arbitrary `vh` max-heights are JIT-generated: only values already in
-`web/static/tailwind.css` (e.g. `60vh`, `70vh`, `95vh`) work without a rebuild.
+Use `useLayoutEffect` (runs BEFORE paint) to clamp position, not `useEffect` or `useMemo` (both measure too late/early). Key on `items.length` to re-run on content changes. Clamp with `Math.max(margin, calculated)` and add `max-h-[95vh] overflow-y-auto` for scrolling.
 
 ## Click Outside Detection
 
@@ -192,8 +133,6 @@ This rule:
 - Does NOT affect keyframe animations (e.g., `.properties-panel` slide), which use `animation` not `transition`
 - Is safe to apply to any drawer except `.drawer-overlay`
 
-## Adding New Session Capabilities to Frontend
+## Adding Session Capabilities
 
-1. **`useWebSocket.js`** — In `case "connected":` handler, add to session.info
-2. **`app.js`** — Pass as prop: `myCapability=${sessionInfo?.my_capability ?? false}`
-3. **Component** — Accept prop with default, use for conditional rendering
+Backend `connected` message → `useWebSocket.js` (add to session.info) → `app.js` (pass as prop) → Component (use).

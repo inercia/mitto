@@ -107,4 +107,5 @@ bd close <id>         # Complete work
 - **Conversation deduplication and ownership**: When multiple conversations could act on the same work item (same PR, branch, or beads issue), respect ownership boundaries. Route fixes or follow-up actions to already-active owning conversations rather than spawning competing fix conversations. This prevents concurrent pushes to the same branch and resource conflicts between agents.
 - **Explicit commit approval required**: NEVER commit code without explicit user instruction to do so. Agents must ask for approval before committing, even if the code is correct and all tests pass. Do not commit at the end of a task unless the user explicitly asks for it.
 - **Explicit beads issue closure**: NEVER close a beads issue without explicit user instruction, even after implementing the work. The user must explicitly approve closing the issue.
+- **Progress tracking with bd comment**: Use `bd comment <id>` to record work progress on beads issues without closing them. This allows intermediate progress updates while awaiting user direction on commits/closure.
 <!-- END USER PREFERENCES -->

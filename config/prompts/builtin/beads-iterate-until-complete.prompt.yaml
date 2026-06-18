@@ -7,9 +7,10 @@ backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*") && item.status != "closed"'
 periodic:
-  value: 30
-  unit: minutes
+  trigger: onCompletion
+  delay: 30
   maxIterations: 20
+  maxDuration: "4h"
 prompt: |
   ## Session Context
 
