@@ -2004,3 +2004,162 @@ func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
 		})
 	}
 }
+
+func TestGetMaxPeriodicIterations(t *testing.T) {
+	t.Run("nil config returns default", func(t *testing.T) {
+		var c *ConversationsConfig
+		got := c.GetMaxPeriodicIterations()
+		if got != DefaultMaxPeriodicIterations {
+			t.Errorf("GetMaxPeriodicIterations() = %d, want %d", got, DefaultMaxPeriodicIterations)
+		}
+	})
+
+	t.Run("nil field returns default", func(t *testing.T) {
+		c := &ConversationsConfig{}
+		got := c.GetMaxPeriodicIterations()
+		if got != DefaultMaxPeriodicIterations {
+			t.Errorf("GetMaxPeriodicIterations() = %d, want %d", got, DefaultMaxPeriodicIterations)
+		}
+	})
+
+	t.Run("set value returned", func(t *testing.T) {
+		v := 50
+		c := &ConversationsConfig{MaxPeriodicIterations: &v}
+		got := c.GetMaxPeriodicIterations()
+		if got != 50 {
+			t.Errorf("GetMaxPeriodicIterations() = %d, want 50", got)
+		}
+	})
+
+	t.Run("value above backstop clamped to backstop", func(t *testing.T) {
+		v := GlobalMaxPeriodicIterations + 500
+		c := &ConversationsConfig{MaxPeriodicIterations: &v}
+		got := c.GetMaxPeriodicIterations()
+		if got != GlobalMaxPeriodicIterations {
+			t.Errorf("GetMaxPeriodicIterations() = %d, want %d (backstop)", got, GlobalMaxPeriodicIterations)
+		}
+	})
+
+	t.Run("zero returns zero (unlimited)", func(t *testing.T) {
+		v := 0
+		c := &ConversationsConfig{MaxPeriodicIterations: &v}
+		got := c.GetMaxPeriodicIterations()
+		if got != 0 {
+			t.Errorf("GetMaxPeriodicIterations() = %d, want 0 (unlimited)", got)
+		}
+	})
+}
+
+func TestEffectiveMaxPeriodicIterations(t *testing.T) {
+	tests := []struct {
+		name      string
+		promptMax int
+		configMax int
+		want      int
+	}{
+		{
+			name:      "both zero → backstop",
+			promptMax: 0,
+			configMax: 0,
+			want:      GlobalMaxPeriodicIterations,
+		},
+		{
+			name:      "prompt cap wins (smallest positive)",
+			promptMax: 5,
+			configMax: 100,
+			want:      5,
+		},
+		{
+			name:      "config cap wins over large prompt cap",
+			promptMax: 2000,
+			configMax: 50,
+			want:      50,
+		},
+		{
+			name:      "config cap wins when prompt is zero",
+			promptMax: 0,
+			configMax: 200,
+			want:      200,
+		},
+		{
+			name:      "prompt cap wins when config is zero",
+			promptMax: 10,
+			configMax: 0,
+			want:      10,
+		},
+		{
+			name:      "both above backstop → backstop",
+			promptMax: 1500,
+			configMax: 2000,
+			want:      GlobalMaxPeriodicIterations,
+		},
+		{
+			name:      "prompt at backstop, config zero → backstop",
+			promptMax: GlobalMaxPeriodicIterations,
+			configMax: 0,
+			want:      GlobalMaxPeriodicIterations,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EffectiveMaxPeriodicIterations(tt.promptMax, tt.configMax)
+			if got != tt.want {
+				t.Errorf("EffectiveMaxPeriodicIterations(%d, %d) = %d, want %d",
+					tt.promptMax, tt.configMax, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_MaxPeriodicIterations(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test --acp"
+conversations:
+  max_periodic_iterations: 42
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if cfg.Conversations.MaxPeriodicIterations == nil {
+		t.Fatal("MaxPeriodicIterations is nil, want 42")
+	}
+	if *cfg.Conversations.MaxPeriodicIterations != 42 {
+		t.Errorf("MaxPeriodicIterations = %d, want 42", *cfg.Conversations.MaxPeriodicIterations)
+	}
+	if cfg.Conversations.GetMaxPeriodicIterations() != 42 {
+		t.Errorf("GetMaxPeriodicIterations() = %d, want 42", cfg.Conversations.GetMaxPeriodicIterations())
+	}
+}
+
+func TestParse_MaxPeriodicIterations_Zero(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test --acp"
+conversations:
+  max_periodic_iterations: 0
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if cfg.Conversations.MaxPeriodicIterations == nil {
+		t.Fatal("MaxPeriodicIterations is nil, want 0")
+	}
+	if *cfg.Conversations.MaxPeriodicIterations != 0 {
+		t.Errorf("MaxPeriodicIterations = %d, want 0", *cfg.Conversations.MaxPeriodicIterations)
+	}
+	if cfg.Conversations.GetMaxPeriodicIterations() != 0 {
+		t.Errorf("GetMaxPeriodicIterations() = %d, want 0 (unlimited)", cfg.Conversations.GetMaxPeriodicIterations())
+	}
+}

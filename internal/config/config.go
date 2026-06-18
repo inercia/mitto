@@ -621,6 +621,10 @@ type ConversationsConfig struct {
 	// workspace auto_children config) are NOT counted toward this limit.
 	// nil means use default (10). 0 means unlimited.
 	MaxChildConversations *int `json:"max_child_conversations,omitempty" yaml:"max_child_conversations,omitempty"`
+	// MaxPeriodicIterations caps the number of scheduled runs a periodic conversation
+	// performs before it auto-stops. nil = use default (DefaultMaxPeriodicIterations);
+	// 0 = unlimited (still bounded by the hardcoded GlobalMaxPeriodicIterations backstop).
+	MaxPeriodicIterations *int `json:"max_periodic_iterations,omitempty" yaml:"max_periodic_iterations,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -825,6 +829,42 @@ func (c *ConversationsConfig) GetMaxChildConversations() int {
 		return DefaultMaxChildConversations
 	}
 	return *c.MaxChildConversations
+}
+
+// DefaultMaxPeriodicIterations is the default user-facing cap on scheduled runs
+// for a periodic conversation when no explicit limit is configured.
+const DefaultMaxPeriodicIterations = 100
+
+// GlobalMaxPeriodicIterations is the hardcoded absolute backstop on scheduled runs
+// for any periodic conversation. It can never be exceeded by config.
+const GlobalMaxPeriodicIterations = 1000
+
+// GetMaxPeriodicIterations returns the configured default max periodic-iterations cap.
+// Safe to call on nil receiver - returns DefaultMaxPeriodicIterations when unset.
+// Returns 0 for unlimited. The returned value is clamped to GlobalMaxPeriodicIterations.
+func (c *ConversationsConfig) GetMaxPeriodicIterations() int {
+	if c == nil || c.MaxPeriodicIterations == nil {
+		return DefaultMaxPeriodicIterations
+	}
+	v := *c.MaxPeriodicIterations
+	if v > GlobalMaxPeriodicIterations {
+		return GlobalMaxPeriodicIterations
+	}
+	return v
+}
+
+// EffectiveMaxPeriodicIterations returns the binding iteration cap for a periodic
+// conversation: the smallest positive of { promptMax, configMax, GlobalMaxPeriodicIterations }.
+// The hardcoded backstop always applies, so the result is always positive.
+func EffectiveMaxPeriodicIterations(promptMax, configMax int) int {
+	effective := GlobalMaxPeriodicIterations
+	if promptMax > 0 && promptMax < effective {
+		effective = promptMax
+	}
+	if configMax > 0 && configMax < effective {
+		effective = configMax
+	}
+	return effective
 }
 
 // MergeProcessors combines global and workspace processors according to precedence rules.
@@ -1247,6 +1287,7 @@ type rawConfig struct {
 		} `yaml:"external_images"`
 		DefaultFlags          map[string]bool `yaml:"default_flags"`
 		MaxChildConversations *int            `yaml:"max_child_conversations"`
+		MaxPeriodicIterations *int            `yaml:"max_periodic_iterations"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1558,10 +1599,16 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MaxChildConversations = raw.Conversations.MaxChildConversations
 		}
 
+		// Copy max periodic iterations
+		if raw.Conversations.MaxPeriodicIterations != nil {
+			cfg.Conversations.MaxPeriodicIterations = raw.Conversations.MaxPeriodicIterations
+		}
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
-			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil {
+			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
+			cfg.Conversations.MaxPeriodicIterations == nil {
 			cfg.Conversations = nil
 		}
 	}
