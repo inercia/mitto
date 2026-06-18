@@ -750,7 +750,7 @@ func TestPeriodicRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil); err != nil {
+	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("periodicStore.Update(disable) error = %v", err)
 	}
 
@@ -792,5 +792,482 @@ func TestPeriodicRunner_DefaultMaxPeriodicIterations(t *testing.T) {
 	if got != config.DefaultMaxPeriodicIterations {
 		t.Errorf("initial maxPeriodicIterations = %d, want %d (DefaultMaxPeriodicIterations)",
 			got, config.DefaultMaxPeriodicIterations)
+	}
+}
+
+// TestPeriodicRunner_MinCompletionDelaySeconds verifies the setter/getter and
+// that the runner is initialized with the correct default.
+func TestPeriodicRunner_MinCompletionDelaySeconds(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	t.Run("default is DefaultMinPeriodicCompletionDelaySeconds", func(t *testing.T) {
+		got := runner.MinPeriodicCompletionDelaySeconds()
+		if got != config.DefaultMinPeriodicCompletionDelaySeconds {
+			t.Errorf("initial minCompletionDelaySeconds = %d, want %d (DefaultMinPeriodicCompletionDelaySeconds)",
+				got, config.DefaultMinPeriodicCompletionDelaySeconds)
+		}
+	})
+
+	t.Run("set and get round-trip", func(t *testing.T) {
+		runner.SetMinPeriodicCompletionDelaySeconds(30)
+		got := runner.MinPeriodicCompletionDelaySeconds()
+		if got != 30 {
+			t.Errorf("MinPeriodicCompletionDelaySeconds() = %d, want 30", got)
+		}
+	})
+
+	t.Run("negative value clamped to zero", func(t *testing.T) {
+		runner.SetMinPeriodicCompletionDelaySeconds(-5)
+		got := runner.MinPeriodicCompletionDelaySeconds()
+		if got != 0 {
+			t.Errorf("MinPeriodicCompletionDelaySeconds() = %d after negative set, want 0", got)
+		}
+	})
+
+	t.Run("zero is accepted", func(t *testing.T) {
+		runner.SetMinPeriodicCompletionDelaySeconds(0)
+		got := runner.MinPeriodicCompletionDelaySeconds()
+		if got != 0 {
+			t.Errorf("MinPeriodicCompletionDelaySeconds() = %d, want 0", got)
+		}
+	})
+}
+
+// countCompletionTimers returns the number of armed on-completion timers, read
+// under the runner's timer mutex so it is safe against concurrent AfterFunc callbacks.
+func countCompletionTimers(r *PeriodicRunner) int {
+	r.completionTimersMu.Lock()
+	defer r.completionTimersMu.Unlock()
+	return len(r.completionTimers)
+}
+
+// newOnCompletionSession creates a session with an enabled onCompletion periodic
+// prompt configured with the given delay.
+func newOnCompletionSession(t *testing.T, store *session.Store, sessionID string, delaySeconds int) {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Periodic(sessionID).Set(&session.PeriodicPrompt{
+		Prompt:       "iterate",
+		Enabled:      true,
+		Trigger:      session.TriggerOnCompletion,
+		DelaySeconds: delaySeconds,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+}
+
+func TestPeriodicRunner_OnConversationIdle_ArmsForOnCompletion(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Long delay so the timer does not fire during the test.
+	newOnCompletionSession(t, store, "s1", 3600)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.OnConversationIdle("s1")
+	defer runner.cancelCompletionTimer("s1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d, want 1", got)
+	}
+}
+
+func TestPeriodicRunner_OnConversationIdle_IgnoresScheduleTrigger(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Periodic("s1").Set(&session.PeriodicPrompt{
+		Prompt:    "x",
+		Enabled:   true,
+		Trigger:   session.TriggerSchedule,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.OnConversationIdle("s1")
+
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Fatalf("completionTimers = %d, want 0 (schedule trigger must not arm)", got)
+	}
+}
+
+func TestPeriodicRunner_OnConversationIdle_CancelsStaleTimer(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Session without any periodic config.
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	// Arm a stale timer, then verify an idle event with no config clears it.
+	runner.armCompletionTimer("s1", time.Hour)
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d after arm, want 1", got)
+	}
+
+	runner.OnConversationIdle("s1")
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Fatalf("completionTimers = %d, want 0 (stale timer must be cancelled)", got)
+	}
+}
+
+func TestPeriodicRunner_OnConversationIdle_ReArmReplaces(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 3600)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	defer runner.cancelCompletionTimer("s1")
+
+	runner.OnConversationIdle("s1")
+	runner.OnConversationIdle("s1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d after re-arm, want 1 (must replace, not stack)", got)
+	}
+}
+
+func TestPeriodicRunner_OnConversationIdle_FiresAfterDelay(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 0)
+
+	// No session manager: firing reaches TriggerNow which errors out, but the
+	// timer entry is cleared once it fires — which is what we assert here.
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetMinPeriodicCompletionDelaySeconds(0)
+	runner.OnConversationIdle("s1")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if countCompletionTimers(runner) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("on-completion timer did not fire within deadline")
+}
+
+func TestPeriodicRunner_OnConversationIdle_FloorOverridesDelay(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Tiny configured delay, but a large global floor must win.
+	newOnCompletionSession(t, store, "s1", 0)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetMinPeriodicCompletionDelaySeconds(3600) // 1h floor
+	runner.OnConversationIdle("s1")
+	defer runner.cancelCompletionTimer("s1")
+
+	// Well within the 1h floor — the timer must not have fired.
+	time.Sleep(200 * time.Millisecond)
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d, want 1 (floor must override the small delay)", got)
+	}
+}
+
+func TestPeriodicRunner_fireOnCompletion_ArchivedNoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 0)
+	// Archive the session.
+	if err := store.UpdateMetadata("s1", func(m *session.Metadata) {
+		m.Archived = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	// Should return early without panicking or arming anything.
+	runner.fireOnCompletion("s1")
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Fatalf("completionTimers = %d, want 0", got)
+	}
+}
+
+func TestPeriodicRunner_OnConversationIdle_NilStore(t *testing.T) {
+	runner := NewPeriodicRunner(nil, nil, nil)
+	// Must not panic with a nil store.
+	runner.OnConversationIdle("x")
+	runner.fireOnCompletion("x")
+}
+
+// newDurationCappedSession creates a session with an enabled onCompletion periodic
+// prompt anchored at firstRunAt, with the given maxDuration (seconds) and maxIterations.
+// firstRunAt may be nil to model a prompt that has not yet run (not yet anchored).
+func newDurationCappedSession(t *testing.T, store *session.Store, sessionID string, firstRunAt *time.Time, maxDurationSeconds, maxIterations int) *session.PeriodicStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Periodic(sessionID)
+	if err := ps.Set(&session.PeriodicPrompt{
+		Prompt:             "iterate",
+		Enabled:            true,
+		Trigger:            session.TriggerOnCompletion,
+		MaxDurationSeconds: maxDurationSeconds,
+		MaxIterations:      maxIterations,
+		FirstRunAt:         firstRunAt,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+	return ps
+}
+
+func TestPeriodicRunner_autoStopIfMaxDurationReached(t *testing.T) {
+	t.Run("reached disables and broadcasts", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		past := time.Now().Add(-2 * time.Hour)
+		ps := newDurationCappedSession(t, store, "s1", &past, 60, 0) // 60s cap, anchored 2h ago
+
+		runner := NewPeriodicRunner(store, nil, nil)
+		var gotID string
+		var gotDisabled, called bool
+		runner.SetOnPeriodicAutoStopped(func(id string, p *session.PeriodicPrompt) {
+			called = true
+			gotID = id
+			gotDisabled = !p.Enabled
+		})
+
+		periodic, err := ps.Get()
+		if err != nil {
+			t.Fatalf("ps.Get() error = %v", err)
+		}
+		if !runner.autoStopIfMaxDurationReached("s1", periodic, ps, time.Now()) {
+			t.Fatal("autoStopIfMaxDurationReached() = false, want true (cap reached)")
+		}
+		if !called || gotID != "s1" || !gotDisabled {
+			t.Errorf("callback: called=%v id=%q disabled=%v, want true/s1/true", called, gotID, gotDisabled)
+		}
+		final, err := ps.Get()
+		if err != nil {
+			t.Fatalf("ps.Get() after stop error = %v", err)
+		}
+		if final.Enabled {
+			t.Error("periodic still enabled after auto-stop, want disabled")
+		}
+	})
+
+	t.Run("maxDuration zero is unlimited", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		past := time.Now().Add(-2 * time.Hour)
+		ps := newDurationCappedSession(t, store, "s1", &past, 0, 0) // 0 = unlimited
+
+		runner := NewPeriodicRunner(store, nil, nil)
+		periodic, _ := ps.Get()
+		if runner.autoStopIfMaxDurationReached("s1", periodic, ps, time.Now()) {
+			t.Fatal("autoStopIfMaxDurationReached() = true, want false (maxDuration=0 is unlimited)")
+		}
+		final, _ := ps.Get()
+		if !final.Enabled {
+			t.Error("periodic disabled, want still enabled (unlimited)")
+		}
+	})
+
+	t.Run("not yet anchored returns false", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		ps := newDurationCappedSession(t, store, "s1", nil, 60, 0) // FirstRunAt nil
+		runner := NewPeriodicRunner(store, nil, nil)
+		periodic, _ := ps.Get()
+		if runner.autoStopIfMaxDurationReached("s1", periodic, ps, time.Now()) {
+			t.Fatal("autoStopIfMaxDurationReached() = true, want false (FirstRunAt nil)")
+		}
+	})
+
+	t.Run("within cap returns false", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		recent := time.Now().Add(-1 * time.Second)
+		ps := newDurationCappedSession(t, store, "s1", &recent, 3600, 0) // 1h cap, 1s elapsed
+		runner := NewPeriodicRunner(store, nil, nil)
+		periodic, _ := ps.Get()
+		if runner.autoStopIfMaxDurationReached("s1", periodic, ps, time.Now()) {
+			t.Fatal("autoStopIfMaxDurationReached() = true, want false (within cap)")
+		}
+	})
+
+	t.Run("nil periodic returns false", func(t *testing.T) {
+		runner := NewPeriodicRunner(nil, nil, nil)
+		if runner.autoStopIfMaxDurationReached("s1", nil, nil, time.Now()) {
+			t.Fatal("autoStopIfMaxDurationReached() = true, want false (nil periodic)")
+		}
+	})
+
+	t.Run("duration cap wins while iterations remain", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		past := time.Now().Add(-2 * time.Hour)
+		// maxIterations=10 (count=0, plenty left) but maxDuration=60s is exceeded.
+		ps := newDurationCappedSession(t, store, "s1", &past, 60, 10)
+		runner := NewPeriodicRunner(store, nil, nil)
+		periodic, _ := ps.Get()
+		if periodic.ReachedMaxIterations() {
+			t.Fatal("precondition failed: ReachedMaxIterations() = true, want false")
+		}
+		if !runner.autoStopIfMaxDurationReached("s1", periodic, ps, time.Now()) {
+			t.Fatal("autoStopIfMaxDurationReached() = false, want true (duration cap wins)")
+		}
+		final, _ := ps.Get()
+		if final.Enabled {
+			t.Error("periodic still enabled, want disabled (duration cap reached first)")
+		}
+	})
+}
+
+// TestPeriodicRunner_fireOnCompletion_MaxDurationAutoStops verifies the on-completion
+// firing path auto-stops (without delivering) once the wall-clock cap is exceeded.
+func TestPeriodicRunner_fireOnCompletion_MaxDurationAutoStops(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	past := time.Now().Add(-2 * time.Hour)
+	ps := newDurationCappedSession(t, store, "s1", &past, 60, 0)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	called := false
+	runner.SetOnPeriodicAutoStopped(func(id string, p *session.PeriodicPrompt) { called = true })
+
+	runner.fireOnCompletion("s1")
+
+	final, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("fireOnCompletion did not auto-stop on maxDuration, periodic still enabled")
+	}
+	if !called {
+		t.Error("onPeriodicAutoStopped not called from fireOnCompletion")
+	}
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0", got)
+	}
+}
+
+// TestPeriodicRunner_RunOnce_MaxDurationAutoStops verifies the schedule (poll) path
+// auto-stops a due periodic once the wall-clock cap is exceeded, before any delivery
+// or session resume. With a nil session manager, reaching the cap must neither deliver
+// nor error — it disables the config and broadcasts the auto-stop.
+func TestPeriodicRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "sched", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic("sched")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:             "Test prompt",
+		Frequency:          session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:            true,
+		Trigger:            session.TriggerSchedule,
+		MaxDurationSeconds: 60,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Force the periodic due (past NextScheduledAt) and anchored 2h ago so the cap is exceeded.
+	got, _ := periodicStore.Get()
+	pastDue := time.Now().UTC().Add(-1 * time.Hour)
+	anchor := time.Now().UTC().Add(-2 * time.Hour)
+	got.NextScheduledAt = &pastDue
+	got.FirstRunAt = &anchor
+	periodicPath := store.SessionDir("sched") + "/periodic.json"
+	if err := writeTestPeriodicFile(periodicPath, got); err != nil {
+		t.Fatalf("writeTestPeriodicFile() error = %v", err)
+	}
+
+	// Empty session manager: GetSession returns nil safely. The duration check in
+	// checkSession fires before any resume attempt, so nothing is delivered.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	runner := NewPeriodicRunner(store, sm, nil)
+	called := false
+	runner.SetOnPeriodicAutoStopped(func(id string, p *session.PeriodicPrompt) { called = true })
+
+	delivered, skipped, errored := runner.RunOnce()
+	if delivered != 0 || skipped != 0 || errored != 0 {
+		t.Errorf("RunOnce() = (%d, %d, %d), want (0, 0, 0) (auto-stop, no delivery)", delivered, skipped, errored)
+	}
+	if !called {
+		t.Error("onPeriodicAutoStopped not called from schedule path")
+	}
+	final, _ := periodicStore.Get()
+	if final.Enabled {
+		t.Error("schedule-path periodic still enabled after maxDuration, want disabled")
 	}
 }

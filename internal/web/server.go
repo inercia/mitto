@@ -636,6 +636,13 @@ func NewServer(config Config) (*Server, error) {
 	}
 	s.periodicRunner.SetMaxPeriodicIterations(maxPeriodicIter)
 
+	// Configure the global floor for the on-completion periodic trigger's delay.
+	minCompletionDelay := configPkg.DefaultMinPeriodicCompletionDelaySeconds
+	if config.MittoConfig != nil {
+		minCompletionDelay = config.MittoConfig.Conversations.GetMinPeriodicCompletionDelaySeconds()
+	}
+	s.periodicRunner.SetMinPeriodicCompletionDelaySeconds(minCompletionDelay)
+
 	// Configure startup delay for periodic runner to avoid thundering herd.
 	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
 	startupPeriodicDelay := configPkg.DefaultStartupPeriodicDelay
@@ -686,6 +693,9 @@ func NewServer(config Config) (*Server, error) {
 	s.periodicRunner.SetPromptResolver(promptResolverFunc)
 	if s.sessionManager != nil {
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
+		// Wire event-driven on-completion periodic firing: sessions notify the runner
+		// when they go idle so it can arm the next onCompletion run.
+		s.sessionManager.SetOnConversationIdle(s.periodicRunner.OnConversationIdle)
 	}
 
 	s.periodicRunner.Start()

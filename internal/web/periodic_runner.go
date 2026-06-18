@@ -89,11 +89,21 @@ type PeriodicRunner struct {
 	// periodic runs. 0 means unlimited; the hardcoded backstop still applies.
 	maxPeriodicIterations int
 
+	// minCompletionDelaySeconds is the global floor applied to the on-completion
+	// periodic trigger's delay, preventing hot loops.
+	minCompletionDelaySeconds int
+
 	// consecutiveFailures tracks how many times in a row a session's periodic
 	// prompt delivery failed due to ACP resume errors. After MaxPeriodicResumeFailures
 	// consecutive failures, the session is automatically archived.
 	consecutiveFailures   map[string]int
 	consecutiveFailuresMu sync.Mutex
+
+	// completionTimers holds the armed one-shot timers for onCompletion periodic
+	// conversations, keyed by session ID. Arming a new timer replaces (stops) any
+	// existing one, so at most one firing is pending per session.
+	completionTimers   map[string]*time.Timer
+	completionTimersMu sync.Mutex
 
 	mu      sync.Mutex
 	running bool
@@ -104,12 +114,14 @@ type PeriodicRunner struct {
 // NewPeriodicRunner creates a new periodic runner.
 func NewPeriodicRunner(store *session.Store, sm *SessionManager, logger *slog.Logger) *PeriodicRunner {
 	return &PeriodicRunner{
-		store:                 store,
-		sessionManager:        sm,
-		logger:                logger,
-		pollInterval:          DefaultPollInterval,
-		maxPeriodicIterations: config.DefaultMaxPeriodicIterations,
-		consecutiveFailures:   make(map[string]int),
+		store:                     store,
+		sessionManager:            sm,
+		logger:                    logger,
+		pollInterval:              DefaultPollInterval,
+		maxPeriodicIterations:     config.DefaultMaxPeriodicIterations,
+		minCompletionDelaySeconds: config.DefaultMinPeriodicCompletionDelaySeconds,
+		consecutiveFailures:       make(map[string]int),
+		completionTimers:          make(map[string]*time.Timer),
 	}
 }
 
@@ -172,6 +184,25 @@ func (r *PeriodicRunner) SetMaxPeriodicIterations(n int) {
 	r.maxPeriodicIterations = n
 }
 
+// SetMinPeriodicCompletionDelaySeconds sets the global floor for the on-completion
+// periodic trigger's delay. Values < 0 are clamped to 0.
+func (r *PeriodicRunner) SetMinPeriodicCompletionDelaySeconds(n int) {
+	if n < 0 {
+		n = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.minCompletionDelaySeconds = n
+}
+
+// MinPeriodicCompletionDelaySeconds returns the current floor for the on-completion
+// periodic trigger's delay in seconds.
+func (r *PeriodicRunner) MinPeriodicCompletionDelaySeconds() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.minCompletionDelaySeconds
+}
+
 // SetPromptResolver sets the function used to resolve prompt names to their text at execution time.
 func (r *PeriodicRunner) SetPromptResolver(resolver PromptResolverFunc) {
 	r.promptResolver = resolver
@@ -209,6 +240,14 @@ func (r *PeriodicRunner) Stop() {
 	close(r.stopCh)
 	doneCh := r.doneCh
 	r.mu.Unlock()
+
+	// Cancel any pending on-completion timers so they don't fire after shutdown.
+	r.completionTimersMu.Lock()
+	for id, t := range r.completionTimers {
+		t.Stop()
+		delete(r.completionTimers, id)
+	}
+	r.completionTimersMu.Unlock()
 
 	// Wait for the poll loop to finish
 	<-doneCh
@@ -296,6 +335,114 @@ func (r *PeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
 
 	// Deliver the prompt
 	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore, resetTimer, true)
+}
+
+// OnConversationIdle is invoked when a session's agent has stopped and the session
+// is fully idle (no queued work). For conversations configured with the onCompletion
+// trigger it arms a one-shot timer that delivers the next run after the configured
+// delay (clamped to the global minimum floor). For any other configuration it cancels
+// a possibly-stale timer and returns.
+func (r *PeriodicRunner) OnConversationIdle(sessionID string) {
+	if r.store == nil {
+		return
+	}
+
+	periodicStore := r.store.Periodic(sessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnCompletion() {
+		// Not an active onCompletion loop — drop any timer left over from a prior config.
+		r.cancelCompletionTimer(sessionID)
+		return
+	}
+
+	r.mu.Lock()
+	floor := r.minCompletionDelaySeconds
+	r.mu.Unlock()
+
+	delaySeconds := periodic.DelaySeconds
+	if delaySeconds < floor {
+		delaySeconds = floor
+	}
+	delay := time.Duration(delaySeconds) * time.Second
+
+	r.armCompletionTimer(sessionID, delay)
+
+	if r.logger != nil {
+		r.logger.Debug("Armed on-completion periodic timer",
+			"session_id", sessionID,
+			"delay_seconds", delaySeconds)
+	}
+}
+
+// armCompletionTimer schedules fireOnCompletion after delay, replacing (and stopping)
+// any timer already pending for the session so only one firing is queued.
+func (r *PeriodicRunner) armCompletionTimer(sessionID string, delay time.Duration) {
+	r.completionTimersMu.Lock()
+	defer r.completionTimersMu.Unlock()
+	if existing, ok := r.completionTimers[sessionID]; ok {
+		existing.Stop()
+	}
+	r.completionTimers[sessionID] = time.AfterFunc(delay, func() {
+		r.fireOnCompletion(sessionID)
+	})
+}
+
+// cancelCompletionTimer stops and removes any pending on-completion timer for the session.
+func (r *PeriodicRunner) cancelCompletionTimer(sessionID string) {
+	r.completionTimersMu.Lock()
+	defer r.completionTimersMu.Unlock()
+	if existing, ok := r.completionTimers[sessionID]; ok {
+		existing.Stop()
+		delete(r.completionTimers, sessionID)
+	}
+}
+
+// fireOnCompletion delivers the next onCompletion periodic run. It re-validates the
+// session and periodic configuration (the conversation may have been archived, disabled,
+// or reconfigured during the delay) and then delivers via TriggerNow. A busy session is
+// skipped — the next idle transition re-arms the timer.
+func (r *PeriodicRunner) fireOnCompletion(sessionID string) {
+	// Drop our timer handle; it has fired.
+	r.completionTimersMu.Lock()
+	delete(r.completionTimers, sessionID)
+	r.completionTimersMu.Unlock()
+
+	if r.store == nil {
+		return
+	}
+
+	meta, err := r.store.GetMetadata(sessionID)
+	if err != nil || meta.Archived {
+		return
+	}
+
+	periodicStore := r.store.Periodic(sessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnCompletion() {
+		return
+	}
+
+	// Auto-stop if the wall-clock maxDuration cap is reached before delivering.
+	if r.autoStopIfMaxDurationReached(sessionID, periodic, periodicStore, time.Now()) {
+		return
+	}
+
+	// Deliver via the standard immediate path with resetTimer=true so the iteration
+	// counter advances and the max-iteration auto-stop applies. The delivered prompt's
+	// completion produces another idle transition, which re-arms the next run.
+	if err := r.TriggerNow(sessionID, true); err != nil {
+		if r.logger == nil {
+			return
+		}
+		if errors.Is(err, ErrSessionBusy) {
+			r.logger.Debug("On-completion periodic firing skipped, session busy",
+				"session_id", sessionID)
+		} else {
+			r.logger.Warn("On-completion periodic firing failed",
+				"session_id", sessionID,
+				"error", err)
+		}
+	}
 }
 
 // pollLoop is the main polling loop that checks for due prompts.
@@ -522,6 +669,11 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 		return 0, 0, 0
 	}
 
+	// Auto-stop if the wall-clock maxDuration cap is reached before delivering.
+	if r.autoStopIfMaxDurationReached(sessionID, periodic, periodicStore, now) {
+		return 0, 0, 0
+	}
+
 	// Prompt is due - calculate how overdue it is
 	scheduledAt := *periodic.NextScheduledAt
 	overdueBy := now.Sub(scheduledAt)
@@ -665,6 +817,46 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 	return 1, 0, 0
 }
 
+// autoStopIfMaxDurationReached checks whether the periodic conversation has exceeded
+// its wall-clock maxDuration cap (elapsed time since FirstRunAt). When the cap is
+// reached it disables the periodic config (without archiving) and broadcasts the
+// auto-stop via onPeriodicAutoStopped, mirroring the max-iterations auto-stop. It
+// returns true to signal the caller to skip delivery. Returns false when the cap is
+// unlimited, not yet anchored (FirstRunAt nil), or not reached — delivery may proceed.
+func (r *PeriodicRunner) autoStopIfMaxDurationReached(sessionID string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, now time.Time) bool {
+	if periodic == nil || !periodic.ReachedMaxDuration(now) {
+		return false
+	}
+
+	if r.logger != nil {
+		var elapsed time.Duration
+		if periodic.FirstRunAt != nil {
+			elapsed = now.Sub(*periodic.FirstRunAt).Round(time.Second)
+		}
+		r.logger.Info("Periodic conversation reached max duration, auto-stopping",
+			"session_id", sessionID,
+			"max_duration_seconds", periodic.MaxDurationSeconds,
+			"elapsed", elapsed)
+	}
+
+	disabled := false
+	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to disable periodic after reaching max duration",
+				"session_id", sessionID,
+				"error", err)
+		}
+		return true
+	}
+	if r.onPeriodicAutoStopped != nil {
+		// Re-read so the broadcast reflects Enabled=false / NextScheduledAt=nil.
+		if final, err := periodicStore.Get(); err == nil {
+			r.onPeriodicAutoStopped(sessionID, final)
+		}
+	}
+	return true
+}
+
 // deliverPrompt sends the periodic prompt to the session.
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
@@ -765,7 +957,7 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 							}
 						}
 						disabled := false
-						if disableErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil); disableErr != nil {
+						if disableErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); disableErr != nil {
 							if r.logger != nil {
 								r.logger.Warn("Failed to disable periodic after reaching iteration cap",
 									"session_id", sessionID,

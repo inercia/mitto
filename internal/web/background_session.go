@@ -171,6 +171,11 @@ type BackgroundSession struct {
 	// deletion (close ACP, remove from disk, broadcast) via SessionManager.
 	onSelfDestruct func(sessionID string)
 
+	// onTurnIdle is called after a turn completes and the session is fully idle
+	// (turn succeeded and no further queued message was dispatched). Used to arm
+	// the on-completion periodic timer.
+	onTurnIdle func(sessionID string)
+
 	// isChildPrompting checks if a child session is currently prompting.
 	// Set by SessionManager to enable children.promptingCount CEL context.
 	isChildPrompting func(childSessionID string) bool
@@ -327,6 +332,10 @@ type BackgroundSessionConfig struct {
 	// It should permanently delete the conversation (and its children).
 	OnSelfDestruct func(sessionID string)
 
+	// OnTurnIdle is called after a turn completes and the session is fully idle.
+	// Used to drive event-driven on-completion periodic firing via the runner.
+	OnTurnIdle func(sessionID string)
+
 	// GlobalMCPServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	// If nil, per-session MCP server is used as fallback (legacy behavior).
@@ -389,6 +398,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onConfigChanged:         cfg.OnConfigOptionChanged,
 		onTitleGenerated:        cfg.OnTitleGenerated,
 		onSelfDestruct:          cfg.OnSelfDestruct,
+		onTurnIdle:              cfg.OnTurnIdle,
 		acpCommand:              cfg.ACPCommand,          // Store for restart
 		acpCwd:                  cfg.ACPCwd,              // Store for restart
 		serverEnv:               cfg.Env,                 // Store for restart
@@ -3869,6 +3879,11 @@ retryAfterRestart:
 				"observer_count", observerCount)
 		}
 
+		// sessionIdle becomes true only on the success path when the turn ended and
+		// no further queued message was dispatched. It gates the on-completion periodic
+		// idle hook invoked after OnComplete below.
+		sessionIdle := false
+
 		if err != nil {
 			if bs.logger != nil {
 				bs.logger.Error("prompt_failed",
@@ -4003,6 +4018,7 @@ retryAfterRestart:
 			// dispatched is true when another queued turn was started (the session is
 			// not yet idle); it gates agentIdle after-phase processors below.
 			dispatched := bs.processNextQueuedMessage()
+			sessionIdle = !dispatched
 
 			// Retry title generation if session still has no title.
 			// This catches failed initial attempts (e.g. context deadline exceeded)
@@ -4049,6 +4065,13 @@ retryAfterRestart:
 		// so the caller can accurately track the final outcome (nil = success, non-nil = failure).
 		if meta.OnComplete != nil {
 			meta.OnComplete(err)
+		}
+
+		// Notify the on-completion periodic hook once the agent has stopped and the
+		// session is fully idle. Fired after OnComplete so any iteration accounting
+		// (RecordSent / auto-stop) is applied before the next run is armed.
+		if sessionIdle && bs.onTurnIdle != nil {
+			bs.onTurnIdle(bs.persistedID)
 		}
 
 		// Self-destruct: if the agent requested deletion of its own conversation

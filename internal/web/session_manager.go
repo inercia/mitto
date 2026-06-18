@@ -163,6 +163,10 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptResolver PromptResolverFunc
 
+	// onConversationIdle is invoked when a session's agent stops and the session is
+	// idle. Wired to the periodic runner to drive event-driven on-completion firing.
+	onConversationIdle func(sessionID string)
+
 	// resumeSemaphore limits the number of sessions that can simultaneously resume their
 	// ACP process (start the OS subprocess and/or call LoadSession/NewSession).
 	// Initialized as a buffered channel of size maxConcurrentSessionResumes.
@@ -1044,6 +1048,15 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolverFunc) {
 	sm.promptResolver = resolver
 }
 
+// SetOnConversationIdle registers the callback invoked when a session goes idle after
+// a turn. It is wired to the periodic runner's OnConversationIdle to drive event-driven
+// on-completion periodic firing.
+func (sm *SessionManager) SetOnConversationIdle(cb func(sessionID string)) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.onConversationIdle = cb
+}
+
 // resolveWorkspaceACPLocked resolves the effective ACP command, cwd, and env for a workspace.
 // Resolution priority:
 //  1. ACPCommandOverride (per-workspace user override) — for command only
@@ -1709,6 +1722,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
 		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
 		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
+		OnTurnIdle: func(sessionID string) {
+			sm.mu.RLock()
+			cb := sm.onConversationIdle
+			sm.mu.RUnlock()
+			if cb != nil {
+				cb(sessionID)
+			}
+		},
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -2291,6 +2312,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
 		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
 		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
+		OnTurnIdle: func(sessionID string) {
+			sm.mu.RLock()
+			cb := sm.onConversationIdle
+			sm.mu.RUnlock()
+			if cb != nil {
+				cb(sessionID)
+			}
+		},
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
