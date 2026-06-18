@@ -2067,7 +2067,7 @@ ${activeUIPrompt.text || ""}</textarea
                           <!-- Free text input (if allowed) -->
                           ${activeUIPrompt.allowFreeText &&
                           html`
-                            <div class="px-4 py-3">
+                            <div class="px-4 py-3 flex items-center gap-2">
                               <input
                                 type="text"
                                 value=${freeTextInput}
@@ -2088,8 +2088,38 @@ ${activeUIPrompt.text || ""}</textarea
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
                                 "Type a custom response..."}
-                                class="w-full bg-transparent text-sm text-mitto-text-secondary outline-none"
+                                class="flex-1 min-w-0 bg-transparent text-sm text-mitto-text-secondary outline-none"
                               />
+                              <button
+                                type="button"
+                                onClick=${() => {
+                                  if (freeTextInput.trim()) {
+                                    handleUIPromptAnswer(
+                                      "free_text",
+                                      freeTextInput.trim(),
+                                      freeTextInput.trim(),
+                                    );
+                                    setFreeTextInput("");
+                                  }
+                                }}
+                                disabled=${!freeTextInput.trim()}
+                                class="btn btn-primary btn-square btn-sm shrink-0"
+                                title="Send response"
+                              >
+                                <svg
+                                  class="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                                  />
+                                </svg>
+                              </button>
                             </div>
                           `}
                         </div>
