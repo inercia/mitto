@@ -251,6 +251,7 @@ function App() {
     mcpTools,
     ensureResumed,
     isCreatingSession,
+    creatingWorkingDirs,
   } = useWebSocket({ onActiveSessionRemovedRef });
 
   const { showToast, dismissToast, toasts } = useToast();
@@ -2315,6 +2316,7 @@ function App() {
             onMakePeriodic=${handleMakePeriodic}
             onMakeNonPeriodic=${handleMakeNonPeriodic}
             isCreatingSession=${isCreatingSession}
+            creatingWorkingDirs=${creatingWorkingDirs}
           />
           <!-- Resize handle on right edge (desktop: drag to resize sidebarWidth) -->
           <div

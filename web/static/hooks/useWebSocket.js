@@ -316,9 +316,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   const [eventsConnected, setEventsConnected] = useState(false);
 
-  // True while a session-creation request is in-flight or an auto-retry is pending.
-  // Used to show a spinner on the "New Conversation" button and prevent duplicate clicks.
-  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // Set of workingDir strings with an in-flight session-creation request or pending auto-retry.
+  // Used to show a per-folder spinner on the "+" button and prevent duplicate clicks.
+  const [creatingWorkingDirs, setCreatingWorkingDirs] = useState(() => new Set());
+
+  // Derived: true if ANY folder has an in-flight create (for non-folder consumers).
+  const isCreatingSession = creatingWorkingDirs.size > 0;
 
   // Multi-session state: { sessionId: { messages: [], info: {}, lastSeq: 0, isStreaming: false, ws: WebSocket } }
   const [sessions, setSessions] = useState({});
@@ -4533,16 +4536,19 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         _sessionCreationRetryTimer = null;
       }
 
-      // Mark creation as in-flight so the button shows a spinner.
-      setIsCreatingSession(true);
+      // Support both old (name string) and new (options object) signatures
+      const opts = typeof options === "string" ? { name: options } : options;
+      // Capture the working dir early so all clear sites use the same value.
+      const wd = opts.workingDir || "";
+
+      // Mark creation as in-flight so the targeted folder button shows a spinner.
+      setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.add(wd); return s; });
 
       try {
-        // Support both old (name string) and new (options object) signatures
-        const opts = typeof options === "string" ? { name: options } : options;
 
         const sessionBody = {
           name: opts.name || "",
-          working_dir: opts.workingDir || "",
+          working_dir: wd,
           acp_server: opts.acpServer || "",
           beads_issue: opts.beadsIssue || "",
           initial_prompt_name: opts.initialPromptName || "",
@@ -4603,14 +4609,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           // Other errors, or retry limit exhausted — clear busy state.
           _sessionCreationRetryCount = 0;
           _sessionCreationPendingOpts = null;
-          setIsCreatingSession(false);
+          setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.delete(wd); return s; });
           return { error: errorMessage, errorCode };
         }
 
         // Success — reset all retry state and clear busy indicator.
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
-        setIsCreatingSession(false);
+        setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.delete(wd); return s; });
 
         const data = await response.json();
         const sessionId = data.session_id;
@@ -4657,7 +4663,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // Network/fetch error — clear busy state
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
-        setIsCreatingSession(false);
+        setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.delete(wd); return s; });
         console.error(`[createNewSession] Network error:`, err);
         return { error: err.message || "Network error" };
       }
@@ -6017,6 +6023,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     forceReset,
     newSession,
     isCreatingSession,
+    creatingWorkingDirs,
     switchSession,
     setActiveSessionId,
     loadSession,

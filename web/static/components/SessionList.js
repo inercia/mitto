@@ -201,7 +201,8 @@ export function SessionList({
   onSendPromptToConversation,
   onMakePeriodic, // Called with (session) to convert a regular session to periodic
   onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
-  isCreatingSession = false, // True while a new-conversation request is in-flight or retrying
+  isCreatingSession = false, // True while ANY new-conversation request is in-flight or retrying
+  creatingWorkingDirs = new Set(), // Set of workingDirs with an in-flight create request
 }) {
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
@@ -1108,26 +1109,29 @@ export function SessionList({
                       class="badge badge-sm badge-ghost shrink-0 tabular-nums"
                       >${totalSessions}</span
                     >
-                    <button
-                      type="button"
-                      onClick=${(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (!isCreatingSession)
-                          handleNewSessionInFolder(folder.workingDir, e);
-                      }}
-                      class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
-                        ? "cursor-wait opacity-60"
-                        : ""}"
-                      title=${isCreatingSession
-                        ? "Creating conversation\u2026"
-                        : `New conversation in ${folder.label}`}
-                      disabled=${isCreatingSession}
-                    >
-                      ${isCreatingSession
-                        ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
-                        : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                    </button>
+                    ${(() => {
+                      const folderCreating = creatingWorkingDirs.has(folder.workingDir);
+                      return html`<button
+                        type="button"
+                        onClick=${(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (!folderCreating)
+                            handleNewSessionInFolder(folder.workingDir, e);
+                        }}
+                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${folderCreating
+                          ? "cursor-wait opacity-60"
+                          : ""}"
+                        title=${folderCreating
+                          ? "Creating conversation\u2026"
+                          : `New conversation in ${folder.label}`}
+                        disabled=${folderCreating}
+                      >
+                        ${folderCreating
+                          ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
+                          : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                      </button>`;
+                    })()}
                     ${folder.workingDir &&
                     html`
                       <button
