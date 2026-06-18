@@ -267,7 +267,7 @@ prompt: |
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
-| `periodic`        | No       | mapping  | Opt-in periodic mode — presence means selecting this prompt from a menu creates a **new recurring conversation** instead of a one-time seed. See [below](#periodic-prompts). |
+| `periodic`        | No       | mapping  | Opt-in periodic mode — presence makes the prompt behave **context-sensitively** when selected (start a new recurring conversation, convert an existing one to periodic, or send a single one-shot run). See [below](#periodic-prompts). |
 | `prompt`          | Yes\*\*  | string   | The prompt body text, written as a YAML literal block scalar (`\|`). |
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.prompt.yaml` →
@@ -492,7 +492,11 @@ prompt: |
 
 ## Periodic Prompts
 
-A prompt can declare that selecting it from a menu should **create a new recurring (periodic) conversation** instead of a one-time seed. This is opt-in: presence of the `periodic:` mapping enables the behavior.
+A prompt can declare a `periodic:` mapping to opt into **periodic mode**. How a
+periodic-declaring prompt behaves when selected is **context-sensitive** — it
+depends on the conversation it targets. It can start a new recurring conversation,
+convert an existing conversation to periodic, or send a single one-shot run (see
+[Behavior](#behavior) below).
 
 ### Periodic Fields
 
@@ -509,22 +513,52 @@ periodic:
 | `value`         | Yes      | Number of time units between runs (integer ≥ 1, max 999) |
 | `unit`          | Yes      | `minutes`, `hours`, or `days` |
 | `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
-| `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited. |
+| `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
 
 **Presence implies opt-in** — omitting the `periodic:` block entirely keeps the prompt as a regular one-time prompt.
 
+The `value` / `unit` / `at` fields double as the **default period** applied
+whenever a conversation is made periodic (see [Default period](#default-period)).
+
 ### Behavior
 
-When a user selects a periodic-declaring prompt from any menu:
+A periodic-declaring prompt is **context-sensitive**: what happens when you select
+it depends on the conversation it targets. The decision is made by
+`decidePeriodicAction` (see `web/static/hooks/useConversationSeeding.js`).
 
-1. A **frequency dialog** (`PeriodicScheduleDialog`) opens, pre-filled from the prompt's `periodic` defaults. The user can adjust `value`, `unit`, and — for daily schedules — the `at` time.
-2. On confirm, the frontend:
-   - Creates a **new conversation** (no queue seed, no `initial_prompt_name`).
-   - PUTs `/api/sessions/{id}/periodic` with `{ prompt_name, frequency: { value, unit, at? }, enabled: true }`.
-3. The new conversation is periodic from the start — the scheduler fires the named prompt on the declared schedule.
+| Context | What happens |
+| ------- | ------------ |
+| **No active conversation** (selecting the prompt to start fresh) | A **frequency dialog** (`PeriodicScheduleDialog`) opens, pre-filled from the prompt's `periodic` defaults (period, `at`, and **max runs**). On confirm, a **new periodic conversation** is created (no queue seed) and `PUT /api/sessions/{id}/periodic` configures the named prompt on the declared schedule. |
+| **Regular (running, non-periodic, top-level) conversation** | The conversation is made **immediately periodic** using the prompt's declared defaults — **no dialog** — and the **first run fires right away** (PUT periodic, then `POST /api/sessions/{id}/periodic/run-now`). The scheduled prompt is now this prompt. |
+| **Already-periodic conversation, or a child conversation** | The prompt contents are sent **once** (a one-shot enqueue) and the conversation's configured periodic prompt, schedule, and iteration cap are **left untouched**. |
+
+#### Default period
+
+The `value` / `unit` / `at` fields are the **default period** applied whenever a
+conversation is made periodic — both when creating a new periodic conversation
+(pre-filled into the dialog, where the user may adjust them) and when converting a
+regular conversation (`makePeriodicNow` uses them directly, without showing the
+dialog).
+
+#### Max iterations and auto-stop
+
+`maxIterations` caps the number of **scheduled runs** before the conversation
+auto-stops. The periodic engine counts each delivered run (`iteration_count`) and,
+when the cap is reached, **disables** the periodic prompt so it stops firing. The
+prompt is **not** deleted or archived — you can re-enable it at any time.
+
+The binding cap is the **smallest positive** of:
+
+- the prompt's `maxIterations`,
+- the server's `conversations.max_periodic_iterations` setting (default `100`,
+  `0` = unlimited), and
+- a hardcoded absolute backstop of `1000`.
+
+A `maxIterations` of `0` (or absent) means "unlimited" at the prompt level, but the
+config setting and the backstop still apply.
 
 **Restrictions:**
-- Periodic conversations can only be **top-level** (not child) conversations. The UI silently skips periodic prompts on child conversations; the backend also returns HTTP 400 for periodic-on-child.
+- Periodic conversations can only be **top-level** (not child) conversations. Selecting a periodic prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for periodic-on-child.
 - The `at` field is only sent for `unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
 
 ### Example
@@ -543,9 +577,13 @@ prompt: |
   summarize what the team completed yesterday and plans for today.
 ```
 
-Selecting **Daily Standup** from a conversation's context menu opens a dialog
-pre-filled with "every 1 day at 09:00". Confirming creates a periodic conversation
-that runs this prompt daily at 09:00 UTC.
+Selecting **Daily Standup** with **no active conversation** opens a dialog
+pre-filled with "every 1 day at 09:00" and "max runs 0 (unlimited)"; confirming
+creates a new periodic conversation that runs this prompt daily at 09:00 UTC.
+Selecting it on a **regular running conversation** instead converts that
+conversation to periodic immediately (using the same defaults) and fires the first
+run. Selecting it on an **already-periodic** conversation just runs it once,
+leaving the schedule unchanged.
 
 ## Prompt Arguments
 

@@ -85,6 +85,8 @@ type PromptPeriodic struct {
 }
 ```
 
+**Semantics**: `Value`/`Unit`/`At` are the **default period** applied when a conversation is made periodic (both new-periodic and make-periodic paths). `MaxIterations` caps scheduled runs; the backend auto-stops (disables, not archives) when the **effective cap** is hit — the smallest positive of {prompt `maxIterations`, config `conversations.max_periodic_iterations` (default 100), hardcoded backstop 1000}. See `02-session.md` for the engine-side counting.
+
 ## Merging Functions
 
 `MergePrompts(global, settings, workspace)` — filters disabled. `MergePromptsKeepDisabled(...)` — keeps `enabled:false` entries (for WorkspacesDialog `include_global=true`). Higher-priority source overrides lower by name.
@@ -123,9 +125,13 @@ All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, conversation see
   - `seedConversationWithPrompt(sessionId, prompt, {arguments})` → POST `{prompt_name, arguments}` to existing session queue
   - `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic?})` — two paths:
     - **No `periodic`**: POST `{initial_prompt_name, arguments}` to `POST /api/sessions` (atomic create+seed, existing behavior)
-    - **With `periodic: { value, unit, at? }`**: POST `POST /api/sessions` without `initial_prompt_name`, then PUT `/api/sessions/{id}/periodic` with `{ prompt_name, frequency, enabled: true }`. `at` (UTC HH:MM) included only for `unit === "days"`.
-  - `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl?})` — standalone PUT helper (also exported for testing)
-- **Periodic menu branching**: menus check `prompt.periodic` (non-null). If set and session is not a child → open `PeriodicScheduleDialog` (pre-filled from defaults) → on confirm call `startConversationWithPrompt` with `periodic`. Child conversations: silently skip (backend 400s too).
+    - **With `periodic: { value, unit, at?, maxIterations? }`**: POST `POST /api/sessions` without `initial_prompt_name`, then PUT `/api/sessions/{id}/periodic` with `{ prompt_name, frequency, enabled: true, max_iterations }`. `at` (UTC HH:MM) included only for `unit === "days"`.
+  - `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl?})` — standalone PUT helper (also exported for testing). Resolves `max_iterations` from the dialog value, then the prompt default; positive sent as-is, `0` = unlimited.
+  - `makePeriodicNow(sessionId, prompt, {fetchImpl?})` — convert a regular conversation to periodic: PUT periodic (prompt's declared defaults + `max_iterations`), then `POST /api/sessions/{id}/periodic/run-now` (`reset_timer: true`) to fire the first run. No dialog.
+- **Periodic menu branching (context-aware)**: when `prompt.periodic` is non-null, the app dispatcher (`handleSendPromptToConversation` in `app.js`) calls `decidePeriodicAction(session)` and branches:
+  - `"new-periodic"` (no session) → open `PeriodicScheduleDialog` (pre-filled from defaults, incl. **max runs**) → on confirm call `startConversationWithPrompt` with `periodic`.
+  - `"make-periodic"` (regular running, non-periodic, non-child) → call `makePeriodicNow` (no dialog; uses prompt defaults + fires first run).
+  - `"one-shot"` (already periodic — `periodic_enabled || periodic_configured` — **or** a child) → `seedConversationWithPrompt` once; periodic config untouched. Backend 400s on periodic-for-child too.
 - **ChatInput**: `handlePredefinedPrompt` → `onSend("", [], [], { promptName })` — never sends the full prompt text
 - **Backend resolution**: name resolved to full text at dispatch via `resolvePromptByName()` in the **target conversation's** workspace context (not at enqueue time); `arguments` substitution (`${VAR}`/`${VAR:-default}`) applied at the same point
 - **Title generation**: skipped for named-prompt queue items (prompt name is used as the queue label)
