@@ -36,6 +36,11 @@ type ACPProcessManager struct {
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
+	// auxCreateMu holds per-key creation locks (guarded by auxMu).
+	// Lets different (workspace, purpose) pairs create concurrently while
+	// same-key callers serialize, eliminating the need to hold auxMu across
+	// slow NewSession and SetSessionModel RPCs. (mitto-w19)
+	auxCreateMu map[auxSessionKey]*sync.Mutex
 
 	// Global context for all managed processes.
 	ctx context.Context
@@ -212,6 +217,7 @@ func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessM
 	return &ACPProcessManager{
 		processes:   make(map[string]*SharedACPProcess),
 		auxSessions: make(map[auxSessionKey]*auxiliarySessionState),
+		auxCreateMu: make(map[auxSessionKey]*sync.Mutex),
 		ctx:         ctx,
 		logger:      logger,
 	}
@@ -666,25 +672,52 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 }
 
 // getOrCreateAuxiliarySession returns an existing auxiliary session or creates a new one.
-// The entire function holds auxMu to prevent a TOCTOU race where two concurrent callers
-// both observe a missing entry and each create a duplicate session.
-// Auxiliary sessions are created rarely (prewarm + on-demand), so holding the lock during
-// creation is acceptable.
+//
+// Locking design (mitto-w19): auxMu is held ONLY briefly around map reads/writes, never
+// across the slow NewSession or SetSessionModel RPCs. A per-(workspace,purpose) createMu
+// (stored in auxCreateMu, itself guarded by auxMu) serialises concurrent creators of the
+// SAME key while allowing different keys to create in parallel.
+//
+// Lock-ordering rule: NEVER acquire auxMu while holding createMu for an extended section;
+// only brief auxMu critical sections (map lookup / store) are taken while createMu is held.
+// GetProcess acquires m.mu internally and must run without auxMu held — this is safe and
+// preserves the existing auxMu → mu ordering.
 func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, workspaceUUID, purpose string) (*auxiliarySessionState, error) {
 	key := auxSessionKey{
 		workspaceUUID: workspaceUUID,
 		purpose:       purpose,
 	}
 
+	// ── First check: return early if the session already exists ──────────────────
 	m.auxMu.Lock()
-	defer m.auxMu.Unlock()
-
-	// Check if session already exists (double-check under lock).
 	if state, ok := m.auxSessions[key]; ok {
+		m.auxMu.Unlock()
 		return state, nil
 	}
+	// Get-or-create the per-key creation mutex while still under auxMu.
+	createMu, ok := m.auxCreateMu[key]
+	if !ok {
+		createMu = &sync.Mutex{}
+		m.auxCreateMu[key] = createMu
+	}
+	m.auxMu.Unlock()
 
-	// Need to create a new auxiliary session.
+	// ── Serialize concurrent creators of the same key ─────────────────────────────
+	// Different keys can create in parallel; same-key callers wait here.
+	createMu.Lock()
+	defer createMu.Unlock()
+
+	// ── Second check: another goroutine may have finished while we waited ─────────
+	m.auxMu.Lock()
+	if state, ok := m.auxSessions[key]; ok {
+		m.auxMu.Unlock()
+		return state, nil
+	}
+	m.auxMu.Unlock()
+
+	// ── Everything below runs WITHOUT any lock held ───────────────────────────────
+	// (only createMu is held — the per-key serializer, not the global auxMu)
+
 	// Auxiliary sessions always use the main workspace process.
 	// Note: This assumes the process was already created by a user session.
 	// If not, this will fail - auxiliary sessions require an existing workspace process.
@@ -721,6 +754,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			}
 		}
 	}
+
 	// Guard: honour an explicitly-cancelled caller (e.g. shutdown signal) without
 	// forwarding a drained deadline into the RPC.  This is a quick non-blocking
 	// check only; the actual RPC uses a fresh budget below (mitto-rlk).
@@ -729,14 +763,13 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 
 	// Derive a fresh budget from m.ctx (manager lifetime), NOT from the caller ctx.
-	// auxMu serialises all callers of this function; when several auxiliary sessions
-	// are created back-to-back (e.g. four prewarm goroutines), each prior NewSession
-	// RPC consumes wall time while holding auxMu.  If a dead/slow MCP server makes
-	// those RPCs burn their full deadline (~10 s each), the caller ctx can arrive
-	// here already expired — producing rpc_ms=0, ctx_already_expired=true.
-	// Using m.ctx as the base gives every NewSession call its full 30-second window
-	// regardless of how long earlier sessions took.  m.ctx is cancelled on manager
-	// shutdown, so this never hangs indefinitely.  (mitto-rlk)
+	// With the per-key createMu design (mitto-w19), different keys create concurrently
+	// so there is no global serialization to drain the caller ctx. However, same-key
+	// callers still serialize on createMu, so the guard above and this fresh budget
+	// from m.ctx remain important: if a dead/slow MCP server burns the full 30 s window
+	// for a prior same-key caller, the next same-key caller's ctx may arrive near
+	// expiry. Using m.ctx gives every NewSession call its full 30-second window.
+	// m.ctx is cancelled on manager shutdown, so this never hangs indefinitely. (mitto-rlk)
 	newCtx, newCancel := context.WithTimeout(m.ctx, 30*time.Second)
 	defer newCancel()
 	sessionHandle, err := process.NewSession(newCtx, auxCwd, mcpServers)
@@ -820,14 +853,21 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 	process.RegisterSession(acp.SessionId(sessionHandle.SessionID), callbacks)
 
-	// Create and store the auxiliary session state.
-	// auxMu is already held for the duration of this function.
+	// Store the result under a brief auxMu lock.
+	// Defensive double-check: if an entry somehow already exists (shouldn't happen
+	// given createMu, but be safe), return the existing one to avoid duplicates.
 	state := &auxiliarySessionState{
 		sessionID: sessionHandle.SessionID,
 		client:    client,
 		lastUsed:  time.Now(),
 	}
+	m.auxMu.Lock()
+	if existing, ok := m.auxSessions[key]; ok {
+		m.auxMu.Unlock()
+		return existing, nil
+	}
 	m.auxSessions[key] = state
+	m.auxMu.Unlock()
 
 	if m.logger != nil {
 		m.logger.Info("Created auxiliary session",

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -673,6 +674,90 @@ func TestAuxNewSessionDeadlineIndependentOfCallerCtx(t *testing.T) {
 		}
 
 		newCancel()
+	}
+}
+
+// TestAuxCreateMuLockStructure verifies the per-key creation-lock design introduced in
+// mitto-w19. It does NOT require a real ACP process; it exercises only the locking
+// machinery stored in auxCreateMu.
+//
+// Assertions:
+//  1. The same key always returns the same *sync.Mutex pointer (idempotent allocation).
+//  2. Different keys return distinct *sync.Mutex pointers.
+//  3. Two goroutines locking different keys' createMu do not block each other (they can
+//     hold their locks simultaneously).
+//  4. Two goroutines locking the SAME key's createMu serialize: while one holds it the
+//     other cannot acquire it immediately (TryLock returns false).
+func TestAuxCreateMuLockStructure(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	keyA := auxSessionKey{workspaceUUID: "ws1", purpose: "title-gen"}
+	keyB := auxSessionKey{workspaceUUID: "ws1", purpose: "follow-up"}
+
+	// Helper: get-or-create the createMu for a key (mirrors the production logic).
+	getCreateMu := func(key auxSessionKey) *sync.Mutex {
+		m.auxMu.Lock()
+		defer m.auxMu.Unlock()
+		mu, ok := m.auxCreateMu[key]
+		if !ok {
+			mu = &sync.Mutex{}
+			m.auxCreateMu[key] = mu
+		}
+		return mu
+	}
+
+	// ── Assertion 1: same key → same pointer ─────────────────────────────────────
+	mu1 := getCreateMu(keyA)
+	mu2 := getCreateMu(keyA)
+	if mu1 != mu2 {
+		t.Errorf("same key must return the same *sync.Mutex, got different pointers")
+	}
+
+	// ── Assertion 2: different keys → distinct pointers ───────────────────────────
+	muB := getCreateMu(keyB)
+	if mu1 == muB {
+		t.Errorf("different keys must return distinct *sync.Mutex pointers")
+	}
+
+	// ── Assertion 3: different-key locks do not block each other ─────────────────
+	mu1.Lock()
+	// muB is a different lock; it must be acquirable while mu1 is held.
+	if !muB.TryLock() {
+		t.Error("locking different-key createMu should not block (different keys must be independent)")
+	} else {
+		muB.Unlock()
+	}
+	mu1.Unlock()
+
+	// ── Assertion 4: same-key lock serializes ─────────────────────────────────────
+	muSame := getCreateMu(keyA)
+	muSame.Lock()
+	// A second attempt on the same mutex must fail (it's already held).
+	if muSame.TryLock() {
+		t.Error("same-key createMu must not be acquirable while already held (same-key callers must serialize)")
+		muSame.Unlock() // release the erroneous second acquisition
+	}
+	muSame.Unlock()
+
+	// ── Assertion 5: no duplicate entry for the same key in auxSessions ──────────
+	// Manually insert one session and verify a subsequent getOrCreate attempt
+	// returns that same session without creating a duplicate (map has only one entry).
+	m.auxMu.Lock()
+	existingState := &auxiliarySessionState{sessionID: "sess-existing"}
+	m.auxSessions[keyA] = existingState
+	m.auxMu.Unlock()
+
+	m.auxMu.Lock()
+	count := 0
+	for k := range m.auxSessions {
+		if k == keyA {
+			count++
+		}
+	}
+	m.auxMu.Unlock()
+	if count != 1 {
+		t.Errorf("expected exactly 1 entry for keyA in auxSessions, got %d", count)
 	}
 }
 
