@@ -973,7 +973,11 @@ func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.L
 		return
 	}
 
-	m.auxMu.Lock()
+	// Non-blocking: if auxMu is held (a prewarm/aux-create is in progress), skip —
+	// we must never block the caller behind a slow getOrCreateAuxiliarySession.
+	if !m.auxMu.TryLock() {
+		return
+	}
 	key := auxSessionKey{workspaceUUID, auxiliary.PurposeTitleGen}
 	_, exists := m.auxSessions[key]
 	m.auxMu.Unlock()

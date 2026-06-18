@@ -1690,16 +1690,18 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	sharedProcess := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
 	sharedProcessDuration := time.Since(sharedProcessStart)
 
+	// Capture timing before the prewarm goroutine so create latency is not inflated.
+	configDuration := time.Since(createStart)
+
 	// Ensure auxiliary sessions (title-gen, follow-up, etc.) are pre-warmed for
 	// this workspace. Pre-warming runs when a shared process is first created, but
 	// auxiliary sessions can be lost (server restart, process recreation, idle
 	// reaping). Without this, title generation on the first prompt can block for
 	// minutes waiting for a NewSession RPC while the agent does extended thinking.
+	// Run in a goroutine so create never blocks on prewarm.
 	if sharedProcess != nil && sm.acpProcessManager != nil {
-		sm.acpProcessManager.EnsurePrewarmed(workspaceUUID, sm.logger)
+		go sm.acpProcessManager.EnsurePrewarmed(workspaceUUID, sm.logger)
 	}
-
-	configDuration := time.Since(createStart)
 
 	// Build pruning configuration from global settings (with default)
 	pruneConfig := sm.buildPruneConfig()
