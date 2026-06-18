@@ -14,6 +14,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Message Queue](message-queue.md)** — Queue architecture, automatic title generation, REST API, and WebSocket notifications
 
+- **[Prompt Menus & Dispatch](prompts.md)** — How prompts are surfaced across menus (`menus` routing, `enabledWhen` contexts, `requires`), and how they start in existing vs new conversations via named-prompt dispatch
+
 - **[Web Interface](web-interface.md)** — Browser-based UI architecture, REST API, streaming response handling, responsive design
 
 - **[WebSocket Documentation](websockets/)** — Protocol specification, message types, sequence numbers, synchronization, reconnection handling, and multi-client support (authoritative reference for all real-time communication)
@@ -56,6 +58,8 @@ This directory contains technical documentation for developers working on Mitto.
 | Session settings    | [Session Management](session-management.md)            | Advanced Settings                                     |
 | Queue API           | [Message Queue](message-queue.md)                      | REST API                                              |
 | Queue titles        | [Message Queue](message-queue.md)                      | Title Generation                                      |
+| Prompt menus        | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                               |
+| Prompt dispatch     | [Prompt Menus & Dispatch](prompts.md)                  | The two start behaviors, deferred resolution          |
 | REST endpoints      | [Web Interface](web-interface.md)                      | REST API Endpoints                                    |
 | Streaming pipeline  | [Web Interface](web-interface.md)                      | Streaming Response Handling                           |
 | WebSocket protocol  | [WebSocket Docs](websockets/protocol-spec.md)          | All message types and formats                         |
