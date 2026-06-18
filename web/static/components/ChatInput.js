@@ -363,6 +363,8 @@ export function ChatInput({
   });
   const [periodicNextScheduledAt, setPeriodicNextScheduledAt] = useState(null);
   const [periodicFreshContext, setPeriodicFreshContext] = useState(false);
+  const [periodicMaxIterations, setPeriodicMaxIterations] = useState(0);
+  const [periodicIterationCount, setPeriodicIterationCount] = useState(0);
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -394,6 +396,8 @@ export function ChatInput({
     setPeriodicPromptName("");
     setPeriodicFrequency({ value: 1, unit: "hours" });
     setPeriodicNextScheduledAt(null);
+    setPeriodicMaxIterations(0);
+    setPeriodicIterationCount(0);
   }, [sessionId]);
 
   // Reset combo box selection and free text input when UI prompt changes
@@ -459,6 +463,8 @@ export function ChatInput({
           // Update prompt name and fresh context from config
           setPeriodicPromptName(config.prompt_name || "");
           setPeriodicFreshContext(config.fresh_context === true);
+          setPeriodicMaxIterations(config.max_iterations ?? 0);
+          setPeriodicIterationCount(config.iteration_count ?? 0);
           // Set lock state based on the enabled field
           const isLocked = config.enabled === true;
           setIsPeriodicLocked(isLocked);
@@ -487,6 +493,8 @@ export function ChatInput({
         periodicEnabled: newPeriodicEnabled,
         frequency,
         nextScheduledAt,
+        iterationCount,
+        maxIterations,
       } = event.detail;
       // Only update if this is for our session
       if (updatedSessionId !== sessionId) return;
@@ -495,6 +503,8 @@ export function ChatInput({
       if (frequency) {
         setPeriodicFrequency(frequency);
       }
+      if (iterationCount !== undefined) setPeriodicIterationCount(iterationCount);
+      if (maxIterations !== undefined) setPeriodicMaxIterations(maxIterations);
 
       // If periodic config was deleted (not configured), reset state
       if (periodicConfigured === false) {
@@ -524,6 +534,8 @@ export function ChatInput({
           .then((config) => {
             setPeriodicPromptName(config.prompt_name || "");
             setPeriodicFreshContext(config.fresh_context === true);
+            setPeriodicMaxIterations(config.max_iterations ?? 0);
+            setPeriodicIterationCount(config.iteration_count ?? 0);
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
@@ -918,6 +930,19 @@ export function ChatInput({
     },
     [],
   );
+
+  // Handle max iterations change from the PeriodicFrequencyPanel
+  const handlePeriodicMaxIterationsChange = useCallback((newValue) => {
+    setPeriodicMaxIterations(newValue);
+  }, []);
+
+  // Handle pause/resume toggle from the PeriodicFrequencyPanel
+  const handlePeriodicEnabledChange = useCallback((newEnabled) => {
+    setIsPeriodicLocked(newEnabled);
+    if (!newEnabled) {
+      setPeriodicNextScheduledAt(null);
+    }
+  }, []);
 
   // Handle slash command selection
   const handleSlashCommandSelect = useCallback(
@@ -2170,6 +2195,10 @@ ${activeUIPrompt.text || ""}</textarea
             isStreaming=${isStreaming}
             freshContext=${periodicFreshContext}
             onFreshContextChange=${setPeriodicFreshContext}
+            maxIterations=${periodicMaxIterations}
+            iterationCount=${periodicIterationCount}
+            onMaxIterationsChange=${handlePeriodicMaxIterationsChange}
+            onPeriodicEnabledChange=${handlePeriodicEnabledChange}
           />
         </div>
       </div>

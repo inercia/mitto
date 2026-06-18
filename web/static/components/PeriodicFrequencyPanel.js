@@ -64,14 +64,18 @@ function localToUtcTime(localTime) {
  * PeriodicFrequencyPanel component - displays and edits periodic frequency settings
  * @param {Object} props
  * @param {boolean} props.isOpen - Whether the panel is visible (shown when periodic is enabled)
- * @param {boolean} props.disabled - Whether the panel is read-only (true when periodic is locked)
+ * @param {boolean} props.disabled - Whether the panel is read-only (true when periodic is locked/active)
  * @param {string} props.sessionId - Current session ID
  * @param {Object} props.frequency - Current frequency config { value, unit, at } (at is in UTC)
  * @param {Function} props.onFrequencyChange - Callback when frequency is updated
  * @param {string} props.nextScheduledAt - ISO timestamp of next scheduled run
- * @param {boolean} props.isStreaming - Whether the agent is currently responding (disables immediate delivery)
+ * @param {boolean} props.isStreaming - Whether the agent is currently responding
  * @param {boolean} props.freshContext - Whether each run starts with a fresh agent context
  * @param {Function} props.onFreshContextChange - Callback when freshContext is toggled
+ * @param {number} props.maxIterations - Maximum number of runs (0 = unlimited)
+ * @param {number} props.iterationCount - Number of runs delivered so far
+ * @param {Function} props.onMaxIterationsChange - Callback when max iterations is updated
+ * @param {Function} props.onPeriodicEnabledChange - Callback when periodic is paused/resumed
  */
 export function PeriodicFrequencyPanel({
   isOpen,
@@ -83,6 +87,10 @@ export function PeriodicFrequencyPanel({
   isStreaming = false,
   freshContext = false,
   onFreshContextChange,
+  maxIterations = 0,
+  iterationCount = 0,
+  onMaxIterationsChange,
+  onPeriodicEnabledChange,
 }) {
   // Local state for editing
   const [localValue, setLocalValue] = useState(frequency.value || 1);
@@ -101,6 +109,10 @@ export function PeriodicFrequencyPanel({
   const [resetTimer, setResetTimer] = useState(true);
   // Error dialog state (for showing errors like "session busy")
   const [errorMessage, setErrorMessage] = useState(null);
+  // Local max iterations (synced from props)
+  const [localMaxIterations, setLocalMaxIterations] = useState(maxIterations);
+  // Saving enabled state (pause/resume)
+  const [isSavingEnabled, setIsSavingEnabled] = useState(false);
 
   // Calculate estimated next run time based on frequency
   const calculateNextRun = useCallback((value, unit) => {
@@ -145,6 +157,11 @@ export function PeriodicFrequencyPanel({
       setResetTimer(true);
     }
   }, [showConfirmDialog]);
+
+  // Sync localMaxIterations from props (server-authoritative updates)
+  useEffect(() => {
+    setLocalMaxIterations(maxIterations);
+  }, [maxIterations]);
 
   // Save frequency to backend
   // Note: newAt is in LOCAL time, needs to be converted to UTC before sending
@@ -239,14 +256,11 @@ export function PeriodicFrequencyPanel({
     }
   }, [localValue, localUnit, localAt, frequency.at, saveFrequency]);
 
-  // Handle click on the periodic icon when locked - show confirmation dialog
+  // Handle click on the run-now button - show confirmation dialog
   const handleIconClick = useCallback(() => {
-    // Only allow clicking when locked (disabled=true), not already triggering,
-    // and the agent is not currently responding
-    if (!disabled || isTriggering || !sessionId || isStreaming) return;
-    // Show the confirmation dialog
+    if (isTriggering || !sessionId || isStreaming) return;
     setShowConfirmDialog(true);
-  }, [disabled, isTriggering, sessionId, isStreaming]);
+  }, [isTriggering, sessionId, isStreaming]);
 
   // Handle confirmation of immediate delivery
   const handleConfirmImmediateDelivery = useCallback(async () => {
@@ -328,6 +342,61 @@ export function PeriodicFrequencyPanel({
     [sessionId, onFreshContextChange],
   );
 
+  // Handle max iterations input change
+  const handleMaxIterationsChange = useCallback((e) => {
+    setLocalMaxIterations(Math.max(0, parseInt(e.target.value, 10) || 0));
+  }, []);
+
+  // Save max iterations on blur
+  const handleMaxIterationsBlur = useCallback(async () => {
+    if (!sessionId || localMaxIterations === maxIterations) return;
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ max_iterations: localMaxIterations }),
+        },
+      );
+      if (response.ok) {
+        if (onMaxIterationsChange) onMaxIterationsChange(localMaxIterations);
+      } else {
+        console.error("Failed to update max_iterations");
+        setLocalMaxIterations(maxIterations);
+      }
+    } catch (err) {
+      console.error("Failed to update max_iterations:", err);
+      setLocalMaxIterations(maxIterations);
+    }
+  }, [sessionId, localMaxIterations, maxIterations, onMaxIterationsChange]);
+
+  // Handle pause/resume toggle
+  const handlePauseResume = useCallback(async () => {
+    if (!sessionId || isSavingEnabled) return;
+    const newEnabled = !disabled;
+    setIsSavingEnabled(true);
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: newEnabled }),
+        },
+      );
+      if (response.ok) {
+        if (onPeriodicEnabledChange) onPeriodicEnabledChange(newEnabled);
+      } else {
+        console.error("Failed to update periodic enabled");
+      }
+    } catch (err) {
+      console.error("Failed to update periodic enabled:", err);
+    } finally {
+      setIsSavingEnabled(false);
+    }
+  }, [sessionId, disabled, isSavingEnabled, onPeriodicEnabledChange]);
+
   // Panel classes - part of normal document flow (not absolute positioned)
   // This ensures it pushes the conversation area up instead of overlaying it
   // Uses lighter background for better readability and contrast
@@ -337,10 +406,7 @@ export function PeriodicFrequencyPanel({
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
   }`;
 
-  // Open height: when locked (single row) match the prompt selector's fixed 44px
-  // so both side-by-side boxes have identical height. When editing (fresh-context
-  // row is shown) the panel grows to fit both rows.
-  const panelStyle = isOpen ? (disabled ? "height: 44px;" : "") : "height: 0px;";
+  const panelStyle = isOpen ? "" : "height: 0px;";
 
   // Format next scheduled time for display (uses local state for immediate feedback)
   const nextTimeDisplay = localNextScheduledAt
@@ -393,41 +459,24 @@ export function PeriodicFrequencyPanel({
       style="${panelStyle}"
       data-testid="periodic-frequency-panel"
     >
-      <div
-        class="${disabled ? "h-full" : "h-11"} px-4 flex items-center gap-3 text-sm"
-      >
-        <!-- Periodic icon - clickable when locked to trigger immediate delivery -->
-        <!-- Disabled when agent is streaming (isStreaming) or already triggering -->
-        ${disabled
-          ? html`
-              <button
-                type="button"
-                onClick=${handleIconClick}
-                disabled=${isTriggering || isStreaming}
-                class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${isTriggering ||
-                isStreaming
-                  ? "opacity-50 cursor-not-allowed"
-                  : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-                title=${isStreaming
-                  ? "Wait for agent to finish responding"
-                  : "Click to run this periodic prompt now"}
-                data-testid="periodic-run-now-button"
-              >
-                ${isTriggering
-                  ? html`<span class="loading loading-spinner w-4 h-4 text-mitto-accent dark:text-mitto-accent-400"></span>`
-                  : html`<${PlayFilledIcon}
-                      className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400"
-                    />`}
-              </button>
-            `
-          : html`<${PeriodicFilledIcon}
-              className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400 shrink-0"
-            />`}
+      <!-- Row 1: run-now button + frequency controls + next time -->
+      <div class="h-11 px-4 flex items-center gap-3 text-sm">
+        <!-- Run-now button (always visible) -->
+        <button
+          type="button"
+          onClick=${handleIconClick}
+          disabled=${isTriggering || isStreaming}
+          class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${isTriggering || isStreaming ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+          title=${isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
+          data-testid="periodic-run-now-button"
+        >
+          ${isTriggering
+            ? html`<span class="loading loading-spinner w-4 h-4 text-mitto-accent dark:text-mitto-accent-400"></span>`
+            : html`<${PlayFilledIcon} className="w-4 h-4 text-mitto-accent dark:text-mitto-accent-400" />`}
+        </button>
 
         <!-- Run every label -->
-        <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-          >Run every</span
-        >
+        <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0">Run every</span>
 
         <!-- Numeric input -->
         <input
@@ -458,18 +507,14 @@ export function PeriodicFrequencyPanel({
         <!-- Time picker (only shown for daily schedules) -->
         ${localUnit === "days" &&
         html`
-          <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-            >at</span
-          >
+          <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0">at</span>
           <input
             type="time"
             value=${localAt}
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
             disabled=${isSaving}
-            class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
-              ? "opacity-50 cursor-not-allowed"
-              : ""}"
+            class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving ? "opacity-50 cursor-not-allowed" : ""}"
             placeholder="HH:MM"
           />
         `}
@@ -490,26 +535,55 @@ export function PeriodicFrequencyPanel({
         html`<span class="loading loading-spinner w-4 h-4 text-mitto-accent"></span>`}
       </div>
 
-      <!-- Fresh context option (only shown when not locked / editing is allowed) -->
-      ${!disabled &&
-      html`
-        <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-mitto-border dark:border-mitto-border-2 pt-2">
-          <input
-            type="checkbox"
-            id="fresh-context-checkbox-${sessionId}"
-            checked=${freshContext}
-            onInput=${handleFreshContextChange}
-            class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
-            data-testid="fresh-context-checkbox"
-          />
-          <label
-            for="fresh-context-checkbox-${sessionId}"
-            class="text-mitto-text-muted dark:text-mitto-text-300 cursor-pointer select-none"
-          >
-            Start each run with a fresh context
-          </label>
-        </div>
-      `}
+      <!-- Row 2: fresh-context toggle (always) + pause/resume button -->
+      <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-mitto-border dark:border-mitto-border-2 pt-2">
+        <input
+          type="checkbox"
+          id="fresh-context-checkbox-${sessionId}"
+          checked=${freshContext}
+          onInput=${handleFreshContextChange}
+          class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
+          data-testid="fresh-context-checkbox"
+        />
+        <label
+          for="fresh-context-checkbox-${sessionId}"
+          class="text-mitto-text-muted dark:text-mitto-text-300 cursor-pointer select-none flex-1"
+        >
+          Start each run with a fresh context
+        </label>
+        <button
+          type="button"
+          onClick=${handlePauseResume}
+          disabled=${isSavingEnabled}
+          class="btn btn-xs btn-soft shrink-0 ${isSavingEnabled ? "opacity-50" : ""}"
+          data-testid="periodic-pause-resume-button"
+        >
+          ${isSavingEnabled
+            ? html`<span class="loading loading-spinner w-3 h-3"></span>`
+            : (disabled ? "Pause" : "Resume")}
+        </button>
+      </div>
+
+      <!-- Row 3: Max runs -->
+      <div class="px-4 pb-2 flex items-center gap-3 text-sm border-t border-mitto-border dark:border-mitto-border-2 pt-2">
+        <span class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0">Max runs</span>
+        <input
+          type="number"
+          min="0"
+          max="9999"
+          value=${localMaxIterations}
+          onInput=${handleMaxIterationsChange}
+          onBlur=${handleMaxIterationsBlur}
+          class="input input-sm w-20 text-center shrink-0"
+          data-testid="periodic-panel-max-iterations"
+        />
+        <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0">(0 = unlimited)</span>
+        <div class="flex-1"></div>
+        <!-- Run progress -->
+        ${maxIterations > 0
+          ? html`<span class="text-xs text-mitto-text-500 shrink-0">Run ${iterationCount} of ${maxIterations}</span>`
+          : html`<span class="text-xs text-mitto-text-500 shrink-0">${iterationCount} run${iterationCount !== 1 ? "s" : ""} · unlimited</span>`}
+      </div>
     </div>
   `;
 }

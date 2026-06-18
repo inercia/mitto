@@ -1097,6 +1097,8 @@ export function SettingsDialog({
   // Max periodic iterations setting - default 100
   const [maxPeriodicIterations, setMaxPeriodicIterations] = useState(100);
 
+  const [periodicBehaviorExpanded, setPeriodicBehaviorExpanded] = useState(false);
+
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
   const [defaultFlags, setDefaultFlags] = useState({});
@@ -3238,41 +3240,75 @@ export function SettingsDialog({
                         </div>
                       </div>
 
-                      <!-- Suspend Settings -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Suspend Settings
-                        </h4>
+                      <!-- Periodic Behavior (collapse) -->
+                      <div
+                        data-testid="periodic-behavior-collapse"
+                        class="collapse collapse-arrow ${periodicBehaviorExpanded ? "collapse-open" : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2"
+                      >
                         <div
-                          class="p-3"
+                          class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
+                          onClick=${() => setPeriodicBehaviorExpanded(!periodicBehaviorExpanded)}
                         >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Suspend periodic conversations
+                          <span class="text-sm font-medium">Periodic Behavior</span>
+                        </div>
+                        <div class="collapse-content px-0">
+                          ${periodicBehaviorExpanded &&
+                          html`
+                          <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
+                            <div class="flex items-center justify-between">
+                              <div>
+                                <div class="font-medium text-sm">
+                                  Suspend periodic conversations
+                                </div>
+                                <div class="text-xs text-mitto-text-muted">
+                                  Automatically suspend idle periodic conversations
+                                  when their next run is farther away than this
+                                  timeout. Saves memory by stopping ACP and MCP
+                                  processes. Conversations resume transparently
+                                  when focused.
+                                </div>
                               </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Automatically suspend idle periodic conversations
-                                when their next run is farther away than this
-                                timeout. Saves memory by stopping ACP and MCP
-                                processes. Conversations resume transparently
-                                when focused.
-                              </div>
+                              <select
+                                value=${periodicSuspendTimeout}
+                                onInput=${(e) =>
+                                  setPeriodicSuspendTimeout(e.target.value)}
+                                class="select select-sm"
+                              >
+                                <option value="">After 30 minutes</option>
+                                <option value="15m">After 15 minutes</option>
+                                <option value="30m">After 30 minutes</option>
+                                <option value="1h">After 1 hour</option>
+                                <option value="2h">After 2 hours</option>
+                                <option value="disabled">Disabled</option>
+                              </select>
                             </div>
-                            <select
-                              value=${periodicSuspendTimeout}
-                              onInput=${(e) =>
-                                setPeriodicSuspendTimeout(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="">After 30 minutes</option>
-                              <option value="15m">After 15 minutes</option>
-                              <option value="30m">After 30 minutes</option>
-                              <option value="1h">After 1 hour</option>
-                              <option value="2h">After 2 hours</option>
-                              <option value="disabled">Disabled</option>
-                            </select>
+                            <div class="flex items-center justify-between">
+                              <div>
+                                <div class="font-medium text-sm">
+                                  Max Periodic Iterations
+                                </div>
+                                <div class="text-xs text-mitto-text-muted">
+                                  Maximum number of scheduled runs a periodic
+                                  conversation performs before it auto-stops. Set to
+                                  0 for unlimited (still bounded by a built-in safety
+                                  ceiling of 1000).
+                                </div>
+                              </div>
+                              <input
+                                type="number"
+                                min="0"
+                                max="1000"
+                                value=${maxPeriodicIterations}
+                                onInput=${(e) =>
+                                  setMaxPeriodicIterations(
+                                    parseInt(e.target.value, 10) || 0,
+                                  )}
+                                class="input input-sm w-20 text-center"
+                              />
+                            </div>
+                            <!-- Future: default period control -->
                           </div>
+                          `}
                         </div>
                       </div>
 
@@ -3383,40 +3419,6 @@ export function SettingsDialog({
                         </div>
                       </div>
 
-                      <!-- Periodic Conversations Limit -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Periodic Conversations
-                        </h4>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Max Periodic Iterations
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Maximum number of scheduled runs a periodic
-                                conversation performs before it auto-stops. Set to
-                                0 for unlimited (still bounded by a built-in safety
-                                ceiling of 1000).
-                              </div>
-                            </div>
-                            <input
-                              type="number"
-                              min="0"
-                              max="1000"
-                              value=${maxPeriodicIterations}
-                              onInput=${(e) =>
-                                setMaxPeriodicIterations(
-                                  parseInt(e.target.value, 10) || 0,
-                                )}
-                              class="input input-sm w-20 text-center"
-                            />
-                          </div>
-                        </div>
-                      </div>
 
                       <!-- Default Flags for New Conversations -->
                       ${availableFlags.length > 0 &&

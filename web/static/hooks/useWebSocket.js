@@ -4153,6 +4153,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   periodic_enabled: msg.data.periodic_configured,
                   next_scheduled_at: msg.data.next_scheduled_at || null,
                   periodic_frequency: msg.data.frequency || null,
+                  periodic_iteration_count: msg.data.iteration_count ?? null,
+                  periodic_max_iterations: msg.data.max_iterations ?? null,
                 }
               : s,
           ),
@@ -4171,6 +4173,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 periodic_enabled: msg.data.periodic_configured,
                 next_scheduled_at: msg.data.next_scheduled_at || null,
                 periodic_frequency: msg.data.frequency || null,
+                periodic_iteration_count: msg.data.iteration_count ?? null,
+                periodic_max_iterations: msg.data.max_iterations ?? null,
               },
             },
           };
@@ -4188,6 +4192,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               frequency: msg.data.frequency,
               nextScheduledAt: msg.data.next_scheduled_at,
               freshContext: msg.data.fresh_context,
+              iterationCount: msg.data.iteration_count,
+              maxIterations: msg.data.max_iterations,
             },
           }),
         );

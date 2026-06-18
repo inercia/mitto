@@ -423,6 +423,8 @@ export function ConversationPropertiesPanel({
         frequency,
         nextScheduledAt,
         freshContext,
+        iterationCount,
+        maxIterations,
       } = event.detail || {};
       if (updatedSessionId !== sessionId) return;
 
@@ -444,6 +446,8 @@ export function ConversationPropertiesPanel({
                 typeof freshContext === "boolean"
                   ? freshContext
                   : prev.fresh_context,
+              ...(iterationCount !== undefined && { iteration_count: iterationCount }),
+              ...(maxIterations !== undefined && { max_iterations: maxIterations }),
             }
           : prev,
       );
@@ -1069,6 +1073,11 @@ export function ConversationPropertiesPanel({
                 </span>
               </p>
             `}
+            <p class="mt-1 text-xs text-mitto-text-500">
+              ${(periodicConfig.max_iterations ?? 0) > 0
+                ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
+                : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+            </p>
             <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
             <div class="mt-3 flex items-center gap-2 text-sm">
               <input

@@ -1052,6 +1052,11 @@ export function SessionPanel({
                 <span class="text-mitto-text-secondary ml-1">(${formatRelativeTime(periodicConfig.next_scheduled_at)})</span>
               </p>
             `}
+            <p class="mt-1 text-xs text-mitto-text-500">
+              ${(periodicConfig.max_iterations ?? 0) > 0
+                ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
+                : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+            </p>
           </div>
         `}
 
