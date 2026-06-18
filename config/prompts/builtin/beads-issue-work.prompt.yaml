@@ -1,7 +1,10 @@
 icon: beads
 name: Start work
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: Plan this bead and spawn parallel Mitto conversations to implement it
 backgroundColor: '#B2DFDB'
 group: Tasks

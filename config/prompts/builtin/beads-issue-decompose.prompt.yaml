@@ -1,7 +1,10 @@
 icon: beads
 name: Decompose issue
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: Break this bead into child beads with dependencies and create them automatically
 backgroundColor: '#D1C4E9'
 group: Tasks

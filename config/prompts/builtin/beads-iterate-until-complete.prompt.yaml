@@ -1,7 +1,10 @@
 icon: beads
 name: Iterate until complete
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: Auto-periodic — keep advancing this bead toward completion, then self-terminate when nothing ready remains
 backgroundColor: '#C8E6C9'
 group: Tasks

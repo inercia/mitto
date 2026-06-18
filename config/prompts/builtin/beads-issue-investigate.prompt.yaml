@@ -1,7 +1,10 @@
 icon: beads
 name: Investigate more
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
 backgroundColor: '#B3E5FC'
 group: Tasks

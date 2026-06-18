@@ -1,7 +1,10 @@
 icon: beads
 name: Show status
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: Fact-check this bead's implementation status against the codebase
 backgroundColor: '#F0F4C3'
 group: Tasks

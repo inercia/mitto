@@ -1,7 +1,10 @@
 icon: beads
 name: Recalculate dependencies
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: 'Map and wire this bead''s relationships: what blocks it, what it blocks, related beads, and its parent'
 backgroundColor: '#FFCCBC'
 group: Tasks

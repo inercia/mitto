@@ -1,7 +1,10 @@
 icon: beads
 name: Check if resolved
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: Check if this bead is done, obsolete, or a duplicate, then close it, keep it open, or spin off follow-ups
 backgroundColor: '#C5E1A5'
 group: Tasks

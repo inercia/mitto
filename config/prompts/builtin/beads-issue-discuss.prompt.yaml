@@ -1,7 +1,10 @@
 icon: beads
 name: Discuss & Refine
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
 description: 'Discuss and refine a bead: resolve pending decisions, assess its quality, and sharpen it until it is ready to work on — capturing the rationale back into the tracker'
 backgroundColor: '#F8BBD0'
 group: Tasks
