@@ -85,6 +85,12 @@ type MockACPServer struct {
 	// Controlled by env var MOCK_SET_MODEL_DELAY_MS (default 0 = no delay).
 	setModelDelayMs int
 
+	// newSessionFailFirst: the first N session/new requests return a JSON-RPC error whose
+	// message contains "timeout" to exercise the deferred-handshake retry path (mitto-8uz).
+	// Controlled by env var MOCK_NEW_SESSION_FAIL_FIRST (default 0 = no failures injected).
+	newSessionFailFirst int
+	newSessionCallCount int
+
 	// rpcOrderFile: when set (env var MOCK_RPC_ORDER_FILE), the server appends one
 	// line per relevant inbound RPC ("prompt", "set_model", "set_mode") in arrival
 	// order, as "<method>\t<detail>". Used by deferred-config tests to assert the
@@ -141,6 +147,14 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 	if v := os.Getenv("MOCK_SET_MODEL_DELAY_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			server.setModelDelayMs = n
+		}
+	}
+
+	// MOCK_NEW_SESSION_FAIL_FIRST: inject failures for the first N session/new requests.
+	// Used by TestDeferredHandshake* to exercise the retry path in PromptWithMeta (mitto-8uz).
+	if v := os.Getenv("MOCK_NEW_SESSION_FAIL_FIRST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.newSessionFailFirst = n
 		}
 	}
 

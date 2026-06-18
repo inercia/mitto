@@ -86,6 +86,15 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
 
+	// Failure injection: the first N session/new calls return a JSON-RPC error whose
+	// message contains "timeout" so the transient-retry check in PromptWithMeta matches it.
+	// No session is created — the retry must redo the full handshake (mitto-8uz).
+	s.newSessionCallCount++
+	if s.newSessionCallCount <= s.newSessionFailFirst {
+		s.log("Injecting session/new failure %d/%d", s.newSessionCallCount, s.newSessionFailFirst)
+		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
+	}
+
 	// Use Cwd (new format) or fallback to WorkingDirectory (legacy)
 	workdir := params.Cwd
 	if workdir == "" {

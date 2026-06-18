@@ -3730,14 +3730,49 @@ retryAfterRestart:
 		// this when the client opened the conversation; completeDeferredHandshake is
 		// idempotent and a no-op in that case.
 		if bs.sharedProcess != nil {
-			if err := bs.completeDeferredHandshake(); err != nil {
+			const maxHandshakeAttempts = 3
+			var handshakeErr error
+			for attempt := 1; attempt <= maxHandshakeAttempts; attempt++ {
+				handshakeErr = bs.completeDeferredHandshake()
+				if handshakeErr == nil {
+					break
+				}
+				errStr := strings.ToLower(handshakeErr.Error())
+				transient := strings.Contains(errStr, "deadline") ||
+					strings.Contains(errStr, "timeout") ||
+					strings.Contains(errStr, "timed out")
+				if !transient || attempt == maxHandshakeAttempts {
+					break
+				}
+				if bs.logger != nil {
+					bs.logger.Warn("Deferred session/new transient failure, retrying",
+						"session_id", bs.persistedID,
+						"attempt", attempt,
+						"error", handshakeErr)
+				}
+				time.Sleep(time.Duration(attempt) * time.Second)
+			}
+			if handshakeErr != nil {
 				if bs.logger != nil {
 					bs.logger.Error("Deferred session/new failed",
 						"session_id", bs.persistedID,
-						"error", err)
+						"error", handshakeErr)
+				}
+				friendlyMsg := "Could not start the agent session: " + formatACPError(handshakeErr) + " Please resend your message."
+				if bs.recorder != nil {
+					seq := bs.getNextSeq()
+					if recErr := bs.recorder.RecordEventWithSeq(session.Event{
+						Seq:       seq,
+						Type:      session.EventTypeError,
+						Timestamp: time.Now(),
+						Data:      session.ErrorData{Message: friendlyMsg},
+					}); recErr != nil && bs.logger != nil {
+						bs.logger.Error("Failed to persist deferred handshake error", "error", recErr)
+					}
+					bs.refreshNextSeq()
 				}
 				bs.notifyObservers(func(o SessionObserver) {
-					o.OnError("Could not start the agent session: " + err.Error() + ". Please try again.")
+					o.OnError(friendlyMsg)
 				})
 				bs.promptMu.Lock()
 				bs.isPrompting = false
