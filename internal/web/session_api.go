@@ -1209,6 +1209,17 @@ func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Reques
 	var enabledCtx *config.PromptEnabledContext
 	if sessionID != "" {
 		enabledCtx = s.buildPromptEnabledContext(sessionID)
+		// The dir query param is authoritative for the workspace these prompts
+		// belong to. The session only supplies session.*/permissions.*/parent.*/
+		// children.* (approach B); its working dir may differ from the requested
+		// dir (e.g. the Tasks/beads view is opened for one project while the
+		// active conversation is in another, or a worktree). Override the
+		// workspace/ACP/tools namespaces so dir-based gates (dirExists/fileExists
+		// via workspace.folder), tools.hasPattern, and acp.* evaluate against the
+		// requested dir, not the session's folder (mitto-gns follow-up).
+		if enabledCtx != nil {
+			s.applyWorkspaceNamespace(enabledCtx, workingDir)
+		}
 	}
 	if enabledCtx == nil && query.Get("enabled_context") == "workspace" {
 		enabledCtx = s.buildWorkspacePromptEnabledContext(workingDir)
@@ -1707,17 +1718,19 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 	return filtered
 }
 
-// buildWorkspacePromptEnabledContext creates a session-less PromptEnabledContext
-// from the cheaply-available workspace/ACP/tools namespaces and compile-time
-// default permission flags. Used by the beads menu paths when no active session
-// is available (see handleWorkspacePromptsGET, mitto-gns): it lets enabledWhen
-// gates like commandExists("bd")/dirExists(".beads")/tools.hasPattern still be
-// evaluated. Callers set ctx.Item afterwards for per-row item.* gating.
-func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.PromptEnabledContext {
-	ctx := &config.PromptEnabledContext{}
-
-	// Workspace context
+// applyWorkspaceNamespace populates the workspace/ACP/tools namespaces of ctx
+// from workingDir, replacing any values already set. These namespaces describe
+// the workspace the prompts being evaluated belong to (the `dir` query param),
+// which drives dir-based gates (dirExists/fileExists via workspace.folder),
+// tools.hasPattern, and acp.*. It is shared by buildWorkspacePromptEnabledContext
+// and the session-aware path in handleWorkspacePromptsGET, where the requested
+// dir — not the active session's folder — is authoritative for these gates.
+func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, workingDir string) {
+	// Workspace context (reset so no session-derived values leak through).
 	ctx.Workspace.Folder = workingDir
+	ctx.Workspace.UUID = ""
+	ctx.Workspace.Name = ""
+	ctx.Workspace.HasUserDataSchema = false
 	var acpServerName string
 	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
 		ctx.Workspace.UUID = ws.UUID
@@ -1732,6 +1745,9 @@ func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.P
 
 	// ACP context
 	ctx.ACP.Name = acpServerName
+	ctx.ACP.Type = ""
+	ctx.ACP.Tags = nil
+	ctx.ACP.AutoApprove = false
 	if acpServerName != "" && s.config.MittoConfig != nil {
 		if srv, err := s.config.MittoConfig.GetServer(acpServerName); err == nil {
 			ctx.ACP.Type = srv.GetType()
@@ -1744,6 +1760,8 @@ func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.P
 	}
 
 	// Tools context (workspace-level cache; may be empty if not yet fetched)
+	ctx.Tools.Available = false
+	ctx.Tools.Names = nil
 	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
 		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
 			ctx.Tools.Available = true
@@ -1752,6 +1770,20 @@ func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.P
 			}
 		}
 	}
+}
+
+// buildWorkspacePromptEnabledContext creates a session-less PromptEnabledContext
+// from the cheaply-available workspace/ACP/tools namespaces and compile-time
+// default permission flags. Used by the beads menu paths when no active session
+// is available (see handleWorkspacePromptsGET, mitto-gns): it lets enabledWhen
+// gates like commandExists("bd")/dirExists(".beads")/tools.hasPattern still be
+// evaluated. Callers set ctx.Item afterwards for per-row item.* gating.
+func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.PromptEnabledContext {
+	ctx := &config.PromptEnabledContext{}
+
+	// Workspace / ACP / tools namespaces describe the workspace these prompts
+	// belong to (the requested dir).
+	s.applyWorkspaceNamespace(ctx, workingDir)
 
 	// Permissions: use compile-time defaults (no session to override from)
 	ctx.Permissions.CanDoIntrospection = session.GetFlagDefault(session.FlagCanDoIntrospection)

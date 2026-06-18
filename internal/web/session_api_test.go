@@ -2810,3 +2810,94 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 		t.Errorf("filtered request: Always Hidden should be filtered out, got %v", names2)
 	}
 }
+
+// TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession is a regression test
+// for the beads-menu bug where dir-based enabledWhen gates (dirExists/fileExists)
+// were evaluated against the active session's working dir instead of the dir
+// query param. The frontend always appends &session_id=<activeConversation>, so
+// when that conversation lived in a folder without ".beads" the gate
+// dirExists(".beads") evaluated false and every beads prompt was filtered out —
+// leaving the per-issue context menu empty. The fix makes the requested dir
+// authoritative for the workspace namespace (applyWorkspaceNamespace), so the
+// gate evaluates against the dir param even with a session_id present.
+func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
+	// beadsDir is the workspace the prompts belong to (has .beads); otherDir is
+	// the active session's working dir (no .beads).
+	beadsDir := t.TempDir()
+	otherDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(beadsDir, ".beads"), 0755); err != nil {
+		t.Fatalf("create .beads: %v", err)
+	}
+	rcContent := `prompts:
+  - name: "Beads Gated"
+    prompt: "x"
+    enabledWhen: 'dirExists(".beads")'
+  - name: "Ungated"
+    prompt: "y"
+`
+	if err := os.WriteFile(filepath.Join(beadsDir, ".mittorc"), []byte(rcContent), 0644); err != nil {
+		t.Fatalf("write .mittorc: %v", err)
+	}
+
+	storeDir := t.TempDir()
+	store, err := session.NewStore(storeDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Active conversation lives in otherDir, which has no .beads.
+	if err := store.Create(session.Metadata{
+		SessionID:  "active-session",
+		ACPServer:  "test-server",
+		WorkingDir: otherDir,
+		Name:       "Active elsewhere",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	decode := func(t *testing.T, body []byte) []string {
+		t.Helper()
+		var resp struct {
+			Prompts []config.WebPrompt `json:"prompts"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("decode response: %v (body=%s)", err, string(body))
+		}
+		var names []string
+		for _, p := range resp.Prompts {
+			names = append(names, p.Name)
+		}
+		return names
+	}
+	hasName := func(names []string, want string) bool {
+		for _, n := range names {
+			if n == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// dir=beadsDir (has .beads) but session_id points at otherDir (no .beads).
+	// The dir-gated prompt must still be returned because dir is authoritative.
+	url := "/api/workspace-prompts?dir=" + beadsDir + "&enabled_context=workspace&session_id=active-session"
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	w := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	names := decode(t, w.Body.Bytes())
+	if !hasName(names, "Beads Gated") {
+		t.Errorf("dir-gated prompt was filtered out: dirExists(\".beads\") evaluated against the session's folder instead of the dir param; got %v", names)
+	}
+	if !hasName(names, "Ungated") {
+		t.Errorf("ungated prompt missing, got %v", names)
+	}
+}
