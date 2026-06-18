@@ -309,6 +309,16 @@
   height: 2.5rem;
 }
 
+/* Beads dependency-type <select> (Dependencies section): keep it compact so the
+   issue id/title next to it isn't squeezed. daisyUI's .select defaults to
+   width: clamp(3rem, 20rem, 100%), which on narrow panels expands to ~full
+   width and steals the row. This rule is intentionally unlayered so it beats
+   daisyUI's layered .select width regardless of cascade-layer order. */
+.beads-dep-type-select {
+  width: 8rem;
+  flex: 0 0 auto;
+}
+
 /* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
 .filter-tab-streaming {
   position: relative;

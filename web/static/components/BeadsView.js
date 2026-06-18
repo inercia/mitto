@@ -1172,7 +1172,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           ${createDeps.map(d => html`
             <div key=${d.id} class="flex items-center gap-1.5">
               <select
-                class="select select-xs"
+                class="select select-xs beads-dep-type-select"
                 value=${d.type || "blocks"}
                 disabled=${submitting}
                 onInput=${e => setCreateDeps(prev => prev.map(x => x.id === d.id ? { ...x, type: e.target.value } : x))}
@@ -1193,7 +1193,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
           `)}
           <div class="flex items-center gap-1.5 pt-1">
             <select
-              class="select select-xs"
+              class="select select-xs beads-dep-type-select"
               value=${createNewDepType}
               disabled=${submitting}
               onInput=${e => setCreateNewDepType(e.target.value)}
@@ -1236,7 +1236,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             ${deps.map(d => html`
               <div key=${d.id} class="flex items-center gap-1.5">
                 <select
-                  class="select select-xs"
+                  class="select select-xs beads-dep-type-select"
                   value=${d.dependency_type || "blocks"}
                   disabled=${depsBusy}
                   onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
@@ -1262,7 +1262,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, onC
             `)}
             <div class="flex items-center gap-1.5 pt-1">
               <select
-                class="select select-xs"
+                class="select select-xs beads-dep-type-select"
                 value=${newDepType}
                 disabled=${depsBusy}
                 onInput=${e => setNewDepType(e.target.value)}
