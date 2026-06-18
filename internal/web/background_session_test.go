@@ -4200,6 +4200,244 @@ func TestMatchConstraintOption(t *testing.T) {
 	}
 }
 
+// TestMatchPreferredModels tests the glob-based model preference matcher.
+func TestMatchPreferredModels(t *testing.T) {
+	models := &acp.UnstableSessionModelState{
+		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
+		AvailableModels: []acp.UnstableModelInfo{
+			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+			{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		patterns []string
+		want     string
+	}{
+		{
+			name:     "exact match by model id",
+			patterns: []string{"claude-opus-4-6"},
+			want:     "claude-opus-4-6",
+		},
+		{
+			name:     "exact match by display name (case insensitive)",
+			patterns: []string{"Sonnet 4.6"},
+			want:     "claude-sonnet-4-6",
+		},
+		{
+			name:     "glob * matches by model id",
+			patterns: []string{"*sonnet*"},
+			want:     "claude-sonnet-4-6",
+		},
+		{
+			name:     "glob * matches by display name",
+			patterns: []string{"*Opus*"},
+			want:     "claude-opus-4-6",
+		},
+		{
+			name:     "case insensitive glob",
+			patterns: []string{"*HAIKU*"},
+			want:     "claude-haiku-4-5",
+		},
+		{
+			name:     "first pattern wins (preference order)",
+			patterns: []string{"*opus*", "*sonnet*"},
+			want:     "claude-opus-4-6",
+		},
+		{
+			name:     "second pattern wins when first has no match",
+			patterns: []string{"*nonexistent*", "*haiku*"},
+			want:     "claude-haiku-4-5",
+		},
+		{
+			name:     "no match returns empty string",
+			patterns: []string{"*nonexistent*", "*missing*"},
+			want:     "",
+		},
+		{
+			name:     "empty patterns returns empty string",
+			patterns: []string{},
+			want:     "",
+		},
+		{
+			name:     "nil patterns returns empty string",
+			patterns: nil,
+			want:     "",
+		},
+		{
+			name:     "match by gpt name",
+			patterns: []string{"gpt-*"},
+			want:     "gpt-4o",
+		},
+		{
+			name:     "match display name GPT-4o case insensitive",
+			patterns: []string{"gpt-4o"},
+			want:     "gpt-4o",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchPreferredModels(tt.patterns, models)
+			if got != tt.want {
+				t.Errorf("matchPreferredModels(%v) = %q, want %q", tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchPreferredModels_NilModels ensures the function handles nil model state.
+func TestMatchPreferredModels_NilModels(t *testing.T) {
+	got := matchPreferredModels([]string{"*sonnet*"}, nil)
+	if got != "" {
+		t.Errorf("matchPreferredModels with nil models = %q, want %q", got, "")
+	}
+}
+
+// TestSetAgentModels_InitializesBaseline verifies that setAgentModels initializes
+// baselineModel from the agent's reported current model when no persisted value exists.
+func TestSetAgentModels_InitializesBaseline(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+
+	models := &acp.UnstableSessionModelState{
+		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
+		AvailableModels: []acp.UnstableModelInfo{
+			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+		},
+	}
+
+	bs.setAgentModels(models)
+
+	bs.modelMu.Lock()
+	baseline := bs.baselineModel
+	bs.modelMu.Unlock()
+
+	if baseline != "claude-sonnet-4-6" {
+		t.Errorf("baselineModel = %q, want %q", baseline, "claude-sonnet-4-6")
+	}
+}
+
+// TestSetAgentModels_DoesNotOverwriteExistingBaseline ensures that a second call to
+// setAgentModels does not overwrite an already-established baselineModel.
+func TestSetAgentModels_DoesNotOverwriteExistingBaseline(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	bs.modelMu.Lock()
+	bs.baselineModel = "claude-opus-4-6" // pre-set
+	bs.modelMu.Unlock()
+
+	models := &acp.UnstableSessionModelState{
+		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
+		AvailableModels: []acp.UnstableModelInfo{
+			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+			{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
+		},
+	}
+
+	bs.setAgentModels(models)
+
+	bs.modelMu.Lock()
+	baseline := bs.baselineModel
+	bs.modelMu.Unlock()
+
+	if baseline != "claude-opus-4-6" {
+		t.Errorf("baselineModel = %q, want %q (should not be overwritten)", baseline, "claude-opus-4-6")
+	}
+}
+
+// TestRestoreBaselineIfOverride_NoOp verifies that restoreBaselineIfOverride does nothing
+// when overrideActive is false.
+func TestRestoreBaselineIfOverride_NoOp(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.modelMu.Lock()
+	bs.overrideActive = false
+	bs.baselineModel = "claude-sonnet-4-6"
+	bs.modelMu.Unlock()
+
+	// No ACP connection — if setActiveModelOnly were called, it would panic/error.
+	// The function should return early without trying to make any ACP call.
+	bs.restoreBaselineIfOverride()
+
+	bs.modelMu.Lock()
+	override := bs.overrideActive
+	bs.modelMu.Unlock()
+
+	if override {
+		t.Error("overrideActive should remain false after no-op restore")
+	}
+}
+
+// TestRestoreBaselineIfOverride_ClearsOverrideFlag verifies that overrideActive is cleared
+// even when agentModels is nil (no ACP connection available).
+func TestRestoreBaselineIfOverride_ClearsOverrideFlag(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.modelMu.Lock()
+	bs.overrideActive = true
+	bs.baselineModel = "claude-sonnet-4-6"
+	bs.modelMu.Unlock()
+	// agentModels is nil → function returns after clearing the flag
+
+	bs.restoreBaselineIfOverride()
+
+	bs.modelMu.Lock()
+	override := bs.overrideActive
+	bs.modelMu.Unlock()
+
+	if override {
+		t.Error("overrideActive should be cleared after restoreBaselineIfOverride")
+	}
+}
+
+// TestProcessNextQueuedMessage_RestoresBaselineOnDrain verifies that when the queue is
+// empty, restoreBaselineIfOverride is called (override cleared).
+func TestProcessNextQueuedMessage_RestoresBaselineOnDrain(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-drain"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+	}
+	bs.modelMu.Lock()
+	bs.overrideActive = true
+	bs.baselineModel = "claude-sonnet-4-6"
+	bs.modelMu.Unlock()
+	// agentModels is nil → restoreBaselineIfOverride won't make an ACP call
+
+	result := bs.processNextQueuedMessage()
+	if result {
+		t.Error("processNextQueuedMessage should return false for empty queue")
+	}
+
+	bs.modelMu.Lock()
+	override := bs.overrideActive
+	bs.modelMu.Unlock()
+
+	if override {
+		t.Error("overrideActive should be cleared after queue drains")
+	}
+}
+
 // TestBuildACPProcessEnv verifies env-layering for ACP subprocess startup.
 // Layering: os.Environ() < server-specific Env < MITTO_* vars.
 func TestBuildACPProcessEnv(t *testing.T) {

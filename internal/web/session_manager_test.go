@@ -465,6 +465,16 @@ func TestSessionManager_ResumeSession_OrphanedServer_RescuesWithFolderWorkspace(
 	if err != nil && strings.Contains(err.Error(), "empty command") {
 		t.Errorf("ResumeSession should have rescued the orphaned conversation with the folder workspace, but got empty-command error: %v", err)
 	}
+
+	// After a successful rescue, the stored ACP server name must be persisted so
+	// the next resume resolves directly (no repeated orphaned-rescue WARN).
+	updated, err := store.GetMetadata("orphaned-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after rescue failed: %v", err)
+	}
+	if updated.ACPServer != "new-server" {
+		t.Errorf("expected rescued metadata acp_server to be persisted as %q, got %q", "new-server", updated.ACPServer)
+	}
 }
 
 func TestSessionManager_ResumeSession_OrphanedServer_NoWorkspace_Fails(t *testing.T) {

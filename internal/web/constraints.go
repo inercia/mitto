@@ -1,6 +1,7 @@
 package web
 
 import (
+	"path"
 	"regexp"
 	"strings"
 
@@ -73,4 +74,30 @@ func matchConstraintOption(constraint *config.ACPServerConstraint, options []Ses
 		}
 	}
 	return matchedValue
+}
+
+// matchPreferredModels finds the first model that matches any pattern in patterns.
+// Matching is case-insensitive glob against both ModelId and Name; first pattern in
+// preference order wins. Returns the matching ModelId, or "" if nothing matches.
+func matchPreferredModels(patterns []string, models *acp.UnstableSessionModelState) string {
+	if len(patterns) == 0 || models == nil {
+		return ""
+	}
+	for _, pattern := range patterns {
+		patternLower := strings.ToLower(pattern)
+		for _, m := range models.AvailableModels {
+			if globMatchCI(patternLower, string(m.ModelId)) || globMatchCI(patternLower, m.Name) {
+				return string(m.ModelId)
+			}
+		}
+	}
+	return ""
+}
+
+// globMatchCI reports whether the already-lowercased pattern matches s (case-insensitive).
+// Uses path.Match semantics: '*' matches any non-'/' sequence, '?' matches one character.
+// Model IDs and display names never contain '/', so '*' effectively matches anything.
+func globMatchCI(patternLower, s string) bool {
+	matched, _ := path.Match(patternLower, strings.ToLower(s))
+	return matched
 }

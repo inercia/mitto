@@ -108,6 +108,11 @@ type PromptFile struct {
 	// dialog. The "at" field is in HH:MM UTC and is only valid for the "days" unit.
 	Periodic *PromptPeriodic `yaml:"periodic,omitempty" json:"periodic,omitempty"`
 
+	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
+	// available model IDs and display names. The first match wins. Empty/absent means use
+	// the session's baseline model.
+	PreferredModels []string `yaml:"preferredModels,omitempty" json:"preferredModels,omitempty"`
+
 	// Content is the prompt body text, stored under the "prompt" key in the YAML file.
 	Content string `yaml:"prompt" json:"prompt"`
 
@@ -157,6 +162,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
 		Periodic:        p.Periodic,
+		PreferredModels: p.PreferredModels,
 	}
 }
 

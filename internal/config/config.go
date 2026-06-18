@@ -121,6 +121,11 @@ type WebPrompt struct {
 	// a periodic (recurring) conversation instead of a one-time seed. The fields
 	// provide default schedule values for the schedule dialog.
 	Periodic *PromptPeriodic `json:"periodic,omitempty"`
+	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
+	// available model IDs and display names. The first match wins. Empty/absent means use
+	// the session's baseline model. This field is carried through PromptMeta to enable
+	// per-prompt model selection without mutating the user's model preference.
+	PreferredModels []string `json:"preferredModels,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.

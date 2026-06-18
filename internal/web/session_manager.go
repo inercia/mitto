@@ -163,6 +163,10 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptResolver PromptResolverFunc
 
+	// preferredModelsResolver resolves a named workspace prompt to its preferredModels list.
+	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
+	preferredModelsResolver func(name, workingDir string) []string
+
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the periodic runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
@@ -1048,6 +1052,14 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolverFunc) {
 	sm.promptResolver = resolver
 }
 
+// SetPreferredModelsResolver sets the function used to resolve a prompt name to its preferredModels list.
+// The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, workingDir string) []string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.preferredModelsResolver = resolver
+}
+
 // SetOnConversationIdle registers the callback invoked when a session goes idle after
 // a turn. It is wired to the periodic runner's OnConversationIdle to drive event-driven
 // on-completion periodic firing.
@@ -1697,31 +1709,32 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
-		PersistedID:         "",  // Empty = generate fresh
-		CreationCtx:         ctx, // Propagate caller's context for the initial NewSession RPC
-		ACPCommand:          acpCommand,
-		ACPCwd:              acpCwd,
-		Env:                 acpEnv,
-		ACPServer:           acpServer,
-		WorkingDir:          workingDir,
-		AutoApprove:         autoApprove,
-		Logger:              sm.logger,
-		Store:               store,
-		SessionName:         name,
-		ProcessorManager:    procMgr,
-		QueueConfig:         queueConfig,
-		Runner:              r,
-		ActionButtonsConfig: actionButtonsConfig,
-		FileLinksConfig:     fileLinksConfig,
-		APIPrefix:           sm.apiPrefix,
-		WorkspaceUUID:       workspaceUUID,
-		MittoConfig:         sm.mittoConfig,   // Pass config for default flags
-		AvailableACPServers: availableServers, // Pre-computed workspace server list
-		GlobalMCPServer:     sm.mcpServer,
-		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
+		PersistedID:             "",  // Empty = generate fresh
+		CreationCtx:             ctx, // Propagate caller's context for the initial NewSession RPC
+		ACPCommand:              acpCommand,
+		ACPCwd:                  acpCwd,
+		Env:                     acpEnv,
+		ACPServer:               acpServer,
+		WorkingDir:              workingDir,
+		AutoApprove:             autoApprove,
+		Logger:                  sm.logger,
+		Store:                   store,
+		SessionName:             name,
+		ProcessorManager:        procMgr,
+		QueueConfig:             queueConfig,
+		Runner:                  r,
+		ActionButtonsConfig:     actionButtonsConfig,
+		FileLinksConfig:         fileLinksConfig,
+		APIPrefix:               sm.apiPrefix,
+		WorkspaceUUID:           workspaceUUID,
+		MittoConfig:             sm.mittoConfig,   // Pass config for default flags
+		AvailableACPServers:     availableServers, // Pre-computed workspace server list
+		GlobalMCPServer:         sm.mcpServer,
+		AuxiliaryManager:        sm.auxiliaryManager,
+		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
+		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:          sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver: sm.preferredModelsResolver, // Named prompt resolver (resolves prompt name → preferredModels)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -2112,6 +2125,20 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 									"rescued_acp_server", rescueWs.ACPServer)
 							}
 							acpServer = rescueWs.ACPServer
+							// Persist the rescued ACP server name so the next resume resolves
+							// directly instead of re-rescuing (and re-emitting the orphaned WARN)
+							// on every periodic/queue sweep. Best-effort: a failure here does not
+							// block the resume itself.
+							if store != nil {
+								if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+									m.ACPServer = rescueWs.ACPServer
+								}); err != nil && sm.logger != nil {
+									sm.logger.Warn("Failed to persist rescued ACP server name to metadata",
+										"session_id", sessionID,
+										"rescued_acp_server", rescueWs.ACPServer,
+										"error", err)
+								}
+							}
 						} else {
 							// Nothing to rescue with — no workspace for this folder.
 							// Leave the command empty; resume will fail with a clear error.
@@ -2287,31 +2314,32 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		// there is no request context to propagate. The 25s timeout in creationRPCCtx()
 		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
 		// agent is busy.
-		PersistedID:         sessionID,
-		ACPCommand:          acpCommand,
-		ACPCwd:              acpCwd,
-		Env:                 acpEnv,
-		ACPServer:           acpServer,
-		ACPSessionID:        acpSessionID,
-		WorkingDir:          workingDir,
-		AutoApprove:         autoApprove,
-		Logger:              sm.logger,
-		Store:               store,
-		SessionName:         sessionName,
-		ProcessorManager:    procMgr,
-		QueueConfig:         queueConfig,
-		Runner:              r,
-		ActionButtonsConfig: actionButtonsConfig,
-		FileLinksConfig:     fileLinksConfig,
-		APIPrefix:           sm.apiPrefix,
-		WorkspaceUUID:       workspaceUUID,
-		MittoConfig:         sm.mittoConfig,         // Pass config for default flags
-		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
-		GlobalMCPServer:     sm.mcpServer,
-		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess,     // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:      sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
+		PersistedID:             sessionID,
+		ACPCommand:              acpCommand,
+		ACPCwd:                  acpCwd,
+		Env:                     acpEnv,
+		ACPServer:               acpServer,
+		ACPSessionID:            acpSessionID,
+		WorkingDir:              workingDir,
+		AutoApprove:             autoApprove,
+		Logger:                  sm.logger,
+		Store:                   store,
+		SessionName:             sessionName,
+		ProcessorManager:        procMgr,
+		QueueConfig:             queueConfig,
+		Runner:                  r,
+		ActionButtonsConfig:     actionButtonsConfig,
+		FileLinksConfig:         fileLinksConfig,
+		APIPrefix:               sm.apiPrefix,
+		WorkspaceUUID:           workspaceUUID,
+		MittoConfig:             sm.mittoConfig,         // Pass config for default flags
+		AvailableACPServers:     resumeAvailableServers, // Pre-computed workspace server list
+		GlobalMCPServer:         sm.mcpServer,
+		AuxiliaryManager:        sm.auxiliaryManager,
+		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
+		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:          sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver: sm.preferredModelsResolver, // Named prompt resolver (resolves prompt name → preferredModels)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle

@@ -206,6 +206,14 @@ type BackgroundSession struct {
 	onConfigChanged func(sessionID string, configID, value string) // Called when any config option changes
 	usesLegacyModes bool                                           // True if using legacy modes API (not configOptions)
 
+	// pendingConfig holds config changes (configID→value) recorded while the agent
+	// is prompting. The real ACP RPC is deferred and issued on the prompting→idle
+	// transition (flushPendingConfig), ordered before the next queued message is
+	// dispatched. Last-write-wins per configID. Guarded by pendingConfigMu; lock
+	// order is promptMu → pendingConfigMu (never the reverse).
+	pendingConfigMu sync.Mutex
+	pendingConfig   map[string]string
+
 	// Global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	globalMcpServer *mcpserver.Server
@@ -264,6 +272,16 @@ type BackgroundSession struct {
 	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
 	// When nil, PromptMeta.PromptName resolution is skipped.
 	promptResolver PromptResolverFunc
+
+	// preferredModelsResolver resolves a prompt name to its preferredModels list.
+	// Used in PromptWithMeta to auto-select models for named prompts without a
+	// PreferredModels field already set in PromptMeta.
+	preferredModelsResolver func(name, workingDir string) []string
+
+	// Model preference override tracking (guarded by modelMu).
+	modelMu        sync.Mutex // Protects baselineModel and overrideActive
+	baselineModel  string     // User's intended model; never mutated by per-prompt overrides
+	overrideActive bool       // True when active session model differs from baselineModel
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -357,6 +375,11 @@ type BackgroundSessionConfig struct {
 	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
 	PromptResolver PromptResolverFunc
 
+	// PreferredModelsResolver resolves a named workspace prompt to its preferredModels list.
+	// When set and PromptMeta.PreferredModels is empty, the list is resolved from the
+	// prompt name in PromptWithMeta before the per-prompt model-switching logic runs.
+	PreferredModelsResolver func(name, workingDir string) []string
+
 	// IsChildPrompting checks if a child session's agent is currently responding.
 	// Used to populate children.promptingCount in the CEL context for enabledWhen.
 	IsChildPrompting func(childSessionID string) bool
@@ -399,15 +422,16 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onTitleGenerated:        cfg.OnTitleGenerated,
 		onSelfDestruct:          cfg.OnSelfDestruct,
 		onTurnIdle:              cfg.OnTurnIdle,
-		acpCommand:              cfg.ACPCommand,          // Store for restart
-		acpCwd:                  cfg.ACPCwd,              // Store for restart
-		serverEnv:               cfg.Env,                 // Store for restart
-		globalMcpServer:         cfg.GlobalMCPServer,     // Global MCP server for session registration
-		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
-		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
-		promptResolver:          cfg.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
-		isChildPrompting:        cfg.IsChildPrompting,    // Callback to check if a child session is prompting
-		creationCtx:             cfg.CreationCtx,         // Context for initial ACP session creation RPC only
+		acpCommand:              cfg.ACPCommand,              // Store for restart
+		acpCwd:                  cfg.ACPCwd,                  // Store for restart
+		serverEnv:               cfg.Env,                     // Store for restart
+		globalMcpServer:         cfg.GlobalMCPServer,         // Global MCP server for session registration
+		auxiliaryManager:        cfg.AuxiliaryManager,        // Workspace-scoped auxiliary manager
+		availableACPServers:     cfg.AvailableACPServers,     // Pre-computed workspace server list
+		promptResolver:          cfg.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
+		preferredModelsResolver: cfg.PreferredModelsResolver, // Named prompt resolver (resolves name → preferredModels)
+		isChildPrompting:        cfg.IsChildPrompting,        // Callback to check if a child session is prompting
+		creationCtx:             cfg.CreationCtx,             // Context for initial ACP session creation RPC only
 	}
 
 	// Look up ACP server constraints from config
@@ -422,6 +446,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Initialize the deferred-config store
+	bs.pendingConfig = make(map[string]string)
 
 	// Initialize activity timestamp
 	bs.lastActivityAt.Store(time.Now().UnixNano())
@@ -601,15 +628,16 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onConfigChanged:         config.OnConfigOptionChanged,
 		onTitleGenerated:        config.OnTitleGenerated,
 		onSelfDestruct:          config.OnSelfDestruct,
-		acpCommand:              config.ACPCommand,          // Store for restart
-		acpCwd:                  config.ACPCwd,              // Store for restart
-		serverEnv:               config.Env,                 // Store for restart
-		globalMcpServer:         config.GlobalMCPServer,     // Global MCP server for session registration
-		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
-		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
-		promptResolver:          config.PromptResolver,      // Named prompt resolver (resolves name → text at send time)
-		isChildPrompting:        config.IsChildPrompting,    // Callback to check if a child session is prompting
-		creationCtx:             config.CreationCtx,         // Context for initial ACP session creation RPC only
+		acpCommand:              config.ACPCommand,              // Store for restart
+		acpCwd:                  config.ACPCwd,                  // Store for restart
+		serverEnv:               config.Env,                     // Store for restart
+		globalMcpServer:         config.GlobalMCPServer,         // Global MCP server for session registration
+		auxiliaryManager:        config.AuxiliaryManager,        // Workspace-scoped auxiliary manager
+		availableACPServers:     config.AvailableACPServers,     // Pre-computed workspace server list
+		promptResolver:          config.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
+		preferredModelsResolver: config.PreferredModelsResolver, // Named prompt resolver (resolves name → preferredModels)
+		isChildPrompting:        config.IsChildPrompting,        // Callback to check if a child session is prompting
+		creationCtx:             config.CreationCtx,             // Context for initial ACP session creation RPC only
 	}
 
 	// Look up ACP server constraints from config
@@ -624,6 +652,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Initialize the deferred-config store
+	bs.pendingConfig = make(map[string]string)
 
 	// Initialize activity timestamp
 	bs.lastActivityAt.Store(time.Now().UnixNano())
@@ -3152,6 +3183,11 @@ type PromptMeta struct {
 	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that
 	// pasted shell/code containing ${...} is never corrupted.
 	Arguments map[string]string
+	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
+	// available model IDs and display names. The first match wins; absent/empty uses the
+	// session's baseline model. When empty and PromptName is set, the list is resolved
+	// from the prompt definition via preferredModelsResolver inside PromptWithMeta.
+	PreferredModels []string
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -3714,6 +3750,45 @@ retryAfterRestart:
 			}
 		}
 
+		// Per-prompt model preference: ensure the correct model is active before sending.
+		// Implements set-if-different: only one SetSessionModel call per model change,
+		// never per-prompt (lazy). No-match and absent preferredModels both resolve to
+		// baseline so a prior override is always cleared when not reused.
+		if bs.agentModels != nil {
+			preferredModels := meta.PreferredModels
+			if len(preferredModels) == 0 && meta.PromptName != "" && bs.preferredModelsResolver != nil {
+				preferredModels = bs.preferredModelsResolver(meta.PromptName, bs.workingDir)
+			}
+
+			bs.modelMu.Lock()
+			baseline := bs.baselineModel
+			bs.modelMu.Unlock()
+
+			desired := baseline // default: use user's baseline
+			isOverride := false
+			if len(preferredModels) > 0 {
+				if matched := matchPreferredModels(preferredModels, bs.agentModels); matched != "" {
+					desired = matched
+					isOverride = true
+				}
+				// no match → desired stays as baseline (prevents override leakage)
+			}
+
+			currentModel := string(bs.agentModels.CurrentModelId)
+			if desired != "" && desired != currentModel {
+				setCtx, setCancel := context.WithTimeout(bs.ctx, 15*time.Second)
+				if setErr := bs.setActiveModelOnly(setCtx, desired); setErr != nil && bs.logger != nil {
+					bs.logger.Warn("Failed to apply model preference",
+						"model", desired, "error", setErr)
+				}
+				setCancel()
+			}
+
+			bs.modelMu.Lock()
+			bs.overrideActive = isOverride
+			bs.modelMu.Unlock()
+		}
+
 		// Declare all variables that are live across the retryPrompt goto target
 		// here, before the label, so that Go's "no jumping over declarations" rule
 		// is satisfied. They are assigned (not declared) inside the loop body.
@@ -3999,6 +4074,9 @@ retryAfterRestart:
 				//   queue; the keepalive-driven TryProcessQueuedMessage will retry
 				//   once the session becomes idle and the delay has elapsed.
 				if !isContextTooLargeError(err) && !isRateLimitError(err) {
+					// Apply any config changes deferred during this turn before
+					// dispatching the next queued message.
+					bs.flushPendingConfig()
 					bs.processNextQueuedMessage()
 				}
 			}
@@ -4013,6 +4091,10 @@ retryAfterRestart:
 			bs.notifyObservers(func(o SessionObserver) {
 				o.OnPromptComplete(eventCount)
 			})
+
+			// Apply any config changes deferred during this turn before dispatching
+			// the next queued message, so the queued prompt runs under the new config.
+			bs.flushPendingConfig()
 
 			// Process next queued message if queue processing is enabled.
 			// dispatched is true when another queued turn was started (the session is
@@ -4586,15 +4668,22 @@ func (bs *BackgroundSession) Cancel() error {
 	}
 
 	// Send cancel notification to ACP agent (best effort)
+	var cancelErr error
 	if bs.sharedProcess != nil {
-		return bs.sharedProcess.Cancel(bs.ctx, acp.SessionId(bs.acpID))
+		cancelErr = bs.sharedProcess.Cancel(bs.ctx, acp.SessionId(bs.acpID))
+	} else if bs.acpConn != nil {
+		cancelErr = bs.acpConn.Cancel(bs.ctx, acp.CancelNotification{
+			SessionId: acp.SessionId(bs.acpID),
+		})
 	}
-	if bs.acpConn == nil {
-		return nil
+
+	// Apply any config changes deferred during the cancelled turn now that the
+	// session is idle.
+	if wasPrompting {
+		bs.flushPendingConfig()
 	}
-	return bs.acpConn.Cancel(bs.ctx, acp.CancelNotification{
-		SessionId: acp.SessionId(bs.acpID),
-	})
+
+	return cancelErr
 }
 
 // ForceReset forcefully resets the session's prompting state.
@@ -4632,6 +4721,10 @@ func (bs *BackgroundSession) ForceReset() {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnPromptComplete(eventCount)
 	})
+
+	// Apply any config changes deferred during the reset turn now that the session
+	// is idle (best effort; the RPC fails fast if the agent connection is dead).
+	bs.flushPendingConfig()
 
 	if bs.logger != nil {
 		bs.logger.Warn("Session forcefully reset due to unresponsive agent")
@@ -4677,11 +4770,13 @@ func (bs *BackgroundSession) hasImmediateQueuedMessages() bool {
 func (bs *BackgroundSession) processNextQueuedMessage() bool {
 	// Check if queue processing is enabled
 	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
+		bs.restoreBaselineIfOverride()
 		return false
 	}
 
 	// Get the queue for this session
 	if bs.store == nil {
+		bs.restoreBaselineIfOverride()
 		return false
 	}
 	queue := bs.store.Queue(bs.persistedID)
@@ -4689,7 +4784,8 @@ func (bs *BackgroundSession) processNextQueuedMessage() bool {
 	// Pop the next message from the queue
 	msg, err := queue.Pop()
 	if err != nil {
-		// Queue is empty or error - nothing to do
+		// Queue is empty: restore the baseline model if a per-prompt override is active.
+		bs.restoreBaselineIfOverride()
 		return false
 	}
 
@@ -5415,6 +5511,22 @@ func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelStat
 	bs.configOptions = append(filtered, modelOption)
 	bs.configMu.Unlock()
 
+	// Initialize baselineModel from persisted metadata (survive suspend/resume) or from the
+	// agent's reported current model. Only set when empty so a prior call isn't overwritten.
+	// applyConfigConstraints (called async below) will update baseline via SetConfigOption
+	// if a constraint selects a different model.
+	bs.modelMu.Lock()
+	if bs.baselineModel == "" {
+		baseline := string(models.CurrentModelId)
+		if bs.store != nil && bs.persistedID != "" {
+			if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil && meta.BaselineModel != "" {
+				baseline = meta.BaselineModel
+			}
+		}
+		bs.baselineModel = baseline
+	}
+	bs.modelMu.Unlock()
+
 	// Apply any ACP server constraints for the model category
 	go bs.applyConfigConstraints(ConfigOptionCategoryModel)
 }
@@ -5580,17 +5692,93 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 		return fmt.Errorf("invalid value for %s: %s", configID, value)
 	}
 
+	// While the agent is prompting, defer the real ACP RPC to the prompting→idle
+	// transition (flushPendingConfig). We still reflect the new value optimistically
+	// in local state and broadcast it so the UI updates immediately. Last-write-wins
+	// per configID. The isPrompting check and the pending-store write are performed
+	// under promptMu (with pendingConfigMu nested) so a change racing turn-end is not
+	// silently dropped: the completion path flips isPrompting under the same promptMu
+	// before flushing, so either we record the pending value before the flip (flush
+	// will drain it) or we observe the post-flip idle state and apply immediately.
+	bs.promptMu.Lock()
+	if bs.isPrompting {
+		bs.pendingConfigMu.Lock()
+		bs.pendingConfig[configID] = value
+		bs.pendingConfigMu.Unlock()
+		bs.promptMu.Unlock()
+
+		// Optimistically reflect the pending value locally and broadcast it.
+		bs.configMu.Lock()
+		for i := range bs.configOptions {
+			if bs.configOptions[i].ID == configID {
+				bs.configOptions[i].CurrentValue = value
+				break
+			}
+		}
+		bs.configMu.Unlock()
+
+		bs.persistConfigValue(configID, value)
+
+		if bs.logger != nil {
+			bs.logger.Info("Config option change deferred while prompting",
+				"config_id", configID,
+				"value", value)
+		}
+
+		// User-originated model change: update baseline immediately so that the restore-on-idle
+		// path targets the new model, not the previously selected one.
+		if found.Category == ConfigOptionCategoryModel {
+			bs.modelMu.Lock()
+			bs.baselineModel = value
+			bs.overrideActive = false
+			bs.modelMu.Unlock()
+			bs.persistBaselineModel(value)
+		}
+
+		if bs.onConfigChanged != nil {
+			bs.onConfigChanged(bs.persistedID, configID, value)
+		}
+
+		return nil
+	}
+	bs.promptMu.Unlock()
+
+	// Idle: a fresh immediate change supersedes any value still parked in the pending
+	// store from a just-finished turn, so it cannot be overwritten by a later flush.
+	bs.pendingConfigMu.Lock()
+	delete(bs.pendingConfig, configID)
+	bs.pendingConfigMu.Unlock()
+
+	return bs.applyConfigOption(ctx, configID, value)
+}
+
+// applyConfigOption issues the real ACP RPC for a config change, then updates local
+// state, persists, and broadcasts. The value must already be validated by the caller.
+// It is used both for the immediate (idle) path and the deferred flush path.
+func (bs *BackgroundSession) applyConfigOption(ctx context.Context, configID, value string) error {
+	bs.configMu.RLock()
+	category := ""
+	for i := range bs.configOptions {
+		if bs.configOptions[i].ID == configID {
+			category = bs.configOptions[i].Category
+			break
+		}
+	}
+	bs.configMu.RUnlock()
+
 	// Determine how to set the value based on the category and API availability
-	if found.Category == ConfigOptionCategoryMode && bs.usesLegacyModes {
+	if category == ConfigOptionCategoryMode && bs.usesLegacyModes {
 		// Use legacy SetSessionMode API
 		var err error
 		if bs.sharedProcess != nil {
 			err = bs.sharedProcess.SetSessionMode(ctx, acp.SessionId(bs.acpID), value)
-		} else {
+		} else if bs.acpConn != nil {
 			_, err = bs.acpConn.SetSessionMode(ctx, acp.SetSessionModeRequest{
 				SessionId: acp.SessionId(bs.acpID),
 				ModeId:    acp.SessionModeId(value),
 			})
+		} else {
+			return fmt.Errorf("no ACP connection")
 		}
 		if err != nil {
 			if bs.logger != nil {
@@ -5601,7 +5789,7 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 			}
 			return fmt.Errorf("failed to set %s: %w", configID, err)
 		}
-	} else if found.Category == ConfigOptionCategoryModel {
+	} else if category == ConfigOptionCategoryModel {
 		// Use UNSTABLE SetSessionModel API
 		var err error
 		if bs.sharedProcess != nil {
@@ -5628,6 +5816,15 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 		if bs.agentModels != nil {
 			bs.agentModels.CurrentModelId = acp.UnstableModelId(value)
 		}
+
+		// User-originated model change: update baseline so restore-on-idle targets the
+		// right model. This covers both the immediate path and the deferred-flush path
+		// (flushPendingConfig calls applyConfigOption after the prompt goroutine exits).
+		bs.modelMu.Lock()
+		bs.baselineModel = value
+		bs.overrideActive = false
+		bs.modelMu.Unlock()
+		bs.persistBaselineModel(value)
 	} else {
 		// Future: Use SetConfigOption API when available in SDK
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
@@ -5660,6 +5857,36 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 	return nil
 }
 
+// flushPendingConfig issues the real ACP RPC for any config changes that were
+// deferred while the agent was prompting. It runs on the prompting→idle transition,
+// BEFORE the next queued message is dispatched, so the queued prompt runs under the
+// new configuration. Last-write-wins per configID (one value per option).
+func (bs *BackgroundSession) flushPendingConfig() {
+	bs.pendingConfigMu.Lock()
+	if len(bs.pendingConfig) == 0 {
+		bs.pendingConfigMu.Unlock()
+		return
+	}
+	pending := bs.pendingConfig
+	bs.pendingConfig = make(map[string]string)
+	bs.pendingConfigMu.Unlock()
+
+	// SetSessionModel can be slow; mirror the 30s budget used by the handler.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for configID, value := range pending {
+		if err := bs.applyConfigOption(ctx, configID, value); err != nil {
+			if bs.logger != nil {
+				bs.logger.Error("Failed to flush deferred config option",
+					"config_id", configID,
+					"value", value,
+					"error", err)
+			}
+		}
+	}
+}
+
 // persistConfigValue saves a config option value to metadata.
 func (bs *BackgroundSession) persistConfigValue(configID, value string) {
 	if bs.store == nil {
@@ -5677,6 +5904,89 @@ func (bs *BackgroundSession) persistConfigValue(configID, value string) {
 		}
 	}
 	// Future: For other config options, store in a ConfigValues map
+}
+
+// persistBaselineModel persists the user's intended model to metadata so it survives
+// suspend/resume cycles.
+func (bs *BackgroundSession) persistBaselineModel(value string) {
+	if bs.store == nil {
+		return
+	}
+	if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+		m.BaselineModel = value
+	}); err != nil && bs.logger != nil {
+		bs.logger.Warn("Failed to persist baseline model", "model", value, "error", err)
+	}
+}
+
+// setActiveModelOnly issues a SetSessionModel ACP call and updates local state, but does
+// NOT update baselineModel or overrideActive. Used exclusively for per-prompt model
+// overrides driven by preferredModels frontmatter.
+func (bs *BackgroundSession) setActiveModelOnly(ctx context.Context, modelID string) error {
+	var err error
+	if bs.sharedProcess != nil {
+		err = bs.sharedProcess.SetSessionModel(ctx, acp.SessionId(bs.acpID), modelID)
+	} else if bs.acpConn != nil {
+		_, err = bs.acpConn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
+			SessionId: acp.SessionId(bs.acpID),
+			ModelId:   acp.UnstableModelId(modelID),
+		})
+	} else {
+		return fmt.Errorf("no ACP connection")
+	}
+	if err != nil {
+		return fmt.Errorf("failed to set model: %w", err)
+	}
+
+	// Update agentModels and local config option state (mirrors applyConfigOption for model).
+	if bs.agentModels != nil {
+		bs.agentModels.CurrentModelId = acp.UnstableModelId(modelID)
+	}
+	bs.configMu.Lock()
+	for i := range bs.configOptions {
+		if bs.configOptions[i].Category == ConfigOptionCategoryModel {
+			bs.configOptions[i].CurrentValue = modelID
+			break
+		}
+	}
+	bs.configMu.Unlock()
+
+	if bs.onConfigChanged != nil {
+		bs.onConfigChanged(bs.persistedID, ConfigOptionCategoryModel, modelID)
+	}
+	return nil
+}
+
+// restoreBaselineIfOverride restores the session model to baselineModel when an override
+// is active (set by a prior preferredModels prompt). Called in processNextQueuedMessage
+// when the queue drains so the UI always reflects the user's intended model while idle.
+func (bs *BackgroundSession) restoreBaselineIfOverride() {
+	bs.modelMu.Lock()
+	if !bs.overrideActive {
+		bs.modelMu.Unlock()
+		return
+	}
+	baseline := bs.baselineModel
+	bs.overrideActive = false
+	bs.modelMu.Unlock()
+
+	if baseline == "" || bs.agentModels == nil {
+		return
+	}
+	if string(bs.agentModels.CurrentModelId) == baseline {
+		return // Already at baseline, no RPC needed
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if setErr := bs.setActiveModelOnly(ctx, baseline); setErr != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("Failed to restore baseline model after queue drain",
+				"baseline", baseline, "error", setErr)
+		}
+	} else if bs.logger != nil {
+		bs.logger.Info("Restored baseline model after queue drain", "model", baseline)
+	}
 }
 
 // isContextTooLargeError returns true if the error indicates the AI model
