@@ -244,6 +244,38 @@ prompt: |
 	}
 }
 
+func TestParsePromptFile_WithPeriodic_MaxIterations(t *testing.T) {
+	data := []byte(`name: "Capped"
+periodic:
+  value: 1
+  unit: hours
+  maxIterations: 5
+prompt: |
+  do thing
+`)
+
+	prompt, err := ParsePromptFile("capped.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.MaxIterations != 5 {
+		t.Errorf("Periodic.MaxIterations = %d, want 5", prompt.Periodic.MaxIterations)
+	}
+
+	// Verify ToWebPrompt carries the MaxIterations field.
+	wp := prompt.ToWebPrompt()
+	if wp.Periodic == nil {
+		t.Fatal("WebPrompt.Periodic = nil, want non-nil after ToWebPrompt()")
+	}
+	if wp.Periodic.MaxIterations != 5 {
+		t.Errorf("WebPrompt.Periodic.MaxIterations = %d, want 5", wp.Periodic.MaxIterations)
+	}
+}
+
 func TestParsePromptFile_NoPeriodic(t *testing.T) {
 	data := []byte(`name: "One-time Prompt"
 prompt: |

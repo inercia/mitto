@@ -22,8 +22,9 @@ import (
 //
 //	periodic:
 //	  value: 1
-//	  unit: hours   # minutes | hours | days
-//	  at: "09:00"   # optional, only for days (UTC)
+//	  unit: hours          # minutes | hours | days
+//	  at: "09:00"          # optional, only for days (UTC)
+//	  maxIterations: 10    # optional; 0/absent = unlimited scheduled runs
 type PromptPeriodic struct {
 	// Value is the number of time units between runs (min 1).
 	Value int `yaml:"value" json:"value"`
@@ -31,6 +32,8 @@ type PromptPeriodic struct {
 	Unit string `yaml:"unit" json:"unit"`
 	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
 	At string `yaml:"at,omitempty" json:"at,omitempty"`
+	// MaxIterations caps the number of scheduled runs when the conversation is made periodic (0 / absent = unlimited).
+	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
 }
 
 // PromptFile represents a parsed YAML prompt file.

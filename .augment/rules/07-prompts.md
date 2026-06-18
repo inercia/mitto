@@ -78,9 +78,10 @@ type WebPrompt struct {
 
 // PromptPeriodic is the periodic: YAML mapping. Presence = opt-in.
 type PromptPeriodic struct {
-    Value int    `yaml:"value" json:"value"`          // number of time units ≥ 1
-    Unit  string `yaml:"unit"  json:"unit"`           // "minutes" | "hours" | "days"
-    At    string `yaml:"at,omitempty" json:"at,omitempty"` // HH:MM UTC; only valid for "days"
+    Value         int    `yaml:"value" json:"value"`                              // number of time units ≥ 1
+    Unit          string `yaml:"unit"  json:"unit"`                               // "minutes" | "hours" | "days"
+    At            string `yaml:"at,omitempty" json:"at,omitempty"`                // HH:MM UTC; only valid for "days"
+    MaxIterations int    `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"` // 0/absent = unlimited
 }
 ```
 

@@ -501,13 +501,15 @@ periodic:
   value: 1           # number of time units between runs (integer ≥ 1)
   unit: hours        # minutes | hours | days
   at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
+  maxIterations: 10  # optional; 0/absent = unlimited scheduled runs
 ```
 
-| Field   | Required | Description |
-| ------- | -------- | ----------- |
-| `value` | Yes      | Number of time units between runs (integer ≥ 1, max 999) |
-| `unit`  | Yes      | `minutes`, `hours`, or `days` |
-| `at`    | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
+| Field           | Required | Description |
+| --------------- | -------- | ----------- |
+| `value`         | Yes      | Number of time units between runs (integer ≥ 1, max 999) |
+| `unit`          | Yes      | `minutes`, `hours`, or `days` |
+| `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
+| `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited. |
 
 **Presence implies opt-in** — omitting the `periodic:` block entirely keeps the prompt as a regular one-time prompt.
 
