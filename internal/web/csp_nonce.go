@@ -161,7 +161,7 @@ func (w *cspNonceResponseWriter) setCSPHeader(includeNonce bool) {
 		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; " +
 		"img-src " + imgSrc + "; " +
 		"font-src 'self' https://fonts.gstatic.com; " +
-		"connect-src 'self' ws: wss:; " +
+		"connect-src 'self' ws: wss: https://esm.sh; " +
 		"worker-src 'self'; " +
 		"frame-ancestors 'none'; " +
 		"base-uri 'self'; " +
