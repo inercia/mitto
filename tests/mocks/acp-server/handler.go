@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+// recordRPCOrder appends a single line ("<method>\t<detail>") to the RPC-order file
+// when MOCK_RPC_ORDER_FILE is set. The write is a single O_APPEND syscall so lines
+// from concurrent mock processes (e.g. an auxiliary title-generation session sharing
+// the same file) cannot interleave. Errors are logged but never fatal.
+func (s *MockACPServer) recordRPCOrder(method, detail string) {
+	if s.rpcOrderFile == "" {
+		return
+	}
+	f, err := os.OpenFile(s.rpcOrderFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		s.log("Failed to open RPC order file %s: %v", s.rpcOrderFile, err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.WriteString(method + "\t" + detail + "\n"); err != nil {
+		s.log("Failed to write RPC order file %s: %v", s.rpcOrderFile, err)
+	}
+}
+
 func (s *MockACPServer) handleMessage(line string) error {
 	var req JSONRPCRequest
 	if err := json.Unmarshal([]byte(line), &req); err != nil {
@@ -171,6 +190,7 @@ func (s *MockACPServer) handleSetSessionMode(req JSONRPCRequest) error {
 
 	// Update the current mode
 	s.currentMode = params.ModeID
+	s.recordRPCOrder("set_mode", params.ModeID)
 	s.log("Session mode changed: %s -> %s", s.sessionID, s.currentMode)
 
 	// Send success response
@@ -235,6 +255,7 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 
 	// Update the current model
 	s.currentModel = params.ModelId
+	s.recordRPCOrder("set_model", params.ModelId)
 	s.log("Session model changed: %s -> %s", s.sessionID, s.currentModel)
 
 	// Send success response
@@ -289,6 +310,7 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 	}
 
 	s.log("Prompt received (session=%s): %s", params.SessionID, message)
+	s.recordRPCOrder("prompt", message)
 
 	// Route notifications to the correct session.
 	// When multiple sessions share this ACP process (e.g. main + auxiliary sessions),

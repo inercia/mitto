@@ -84,6 +84,14 @@ type MockACPServer struct {
 	// setModelDelayMs: time.Sleep before responding to set_model, simulating slowness.
 	// Controlled by env var MOCK_SET_MODEL_DELAY_MS (default 0 = no delay).
 	setModelDelayMs int
+
+	// rpcOrderFile: when set (env var MOCK_RPC_ORDER_FILE), the server appends one
+	// line per relevant inbound RPC ("prompt", "set_model", "set_mode") in arrival
+	// order, as "<method>\t<detail>". Used by deferred-config tests to assert the
+	// relative ordering of prompts and config RPCs. Each line is written with a
+	// single O_APPEND write so concurrent mock processes sharing the file (e.g. an
+	// auxiliary title-generation session) cannot interleave within a line.
+	rpcOrderFile string
 }
 
 // Default modes provided by the mock server
@@ -135,6 +143,9 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 			server.setModelDelayMs = n
 		}
 	}
+
+	// MOCK_RPC_ORDER_FILE: append-only log of inbound RPC arrival order.
+	server.rpcOrderFile = os.Getenv("MOCK_RPC_ORDER_FILE")
 
 	server.loadScenarios()
 	return server
