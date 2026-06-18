@@ -928,11 +928,13 @@ export function SessionList({
         const hasChildren =
           session.children && session.children.length > 0;
         const parentKey = `parent:${session.session_id}`;
-        // Children auto-expand when the parent (or one of its children) is the
-        // focused conversation — there is no manual expand/collapse toggle.
+        // Children are collapsed by default and expand only when the user clicks
+        // the child-count badge. The manual choice is tracked (and persisted) via
+        // sidebarExpandedGroups; we never auto-expand based on the active session.
         const childrenExpanded = hasChildren
-          ? activeSessionId === session.session_id ||
-            session.children.some((c) => c.session_id === activeSessionId)
+          ? parentKey in sidebarExpandedGroups
+            ? sidebarExpandedGroups[parentKey]
+            : false
           : false;
         const hasChildStreaming =
           hasChildren &&

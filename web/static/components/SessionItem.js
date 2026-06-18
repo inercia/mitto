@@ -536,15 +536,30 @@ export function SessionItem({
               hasChildren &&
               childCount > 0 &&
               html`
-                <!-- Children count — a plain count-number badge. The "v"
-                     chevron toggle is rendered after the "..." menu so the
-                     trailing controls read <num> ... v, matching folder
-                     groups (<num> + ... v). -->
+                <!-- Children count — a clickable count-number badge. Clicking it
+                     toggles the nested child conversations (children are collapsed
+                     by default and never auto-expand). -->
                 <span
-                  class="badge badge-sm badge-ghost shrink-0 tabular-nums ${isActive
+                  role="button"
+                  tabindex="0"
+                  onClick=${(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (onToggleExpand) onToggleExpand();
+                  }}
+                  onKeyDown=${(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (onToggleExpand) onToggleExpand();
+                    }
+                  }}
+                  class="badge badge-sm badge-ghost shrink-0 tabular-nums cursor-pointer ${isActive
                     ? "bg-mitto-accent-fg text-mitto-accent"
                     : ""}"
-                  title="${childCount} child conversation${childCount === 1
+                  aria-expanded=${isExpanded}
+                  title="${isExpanded ? "Collapse" : "Expand"} ${childCount} child conversation${childCount ===
+                  1
                     ? ""
                     : "s"}"
                   >${childCount}</span
