@@ -76,20 +76,42 @@ func matchConstraintOption(constraint *config.ACPServerConstraint, options []Ses
 	return matchedValue
 }
 
-// matchPreferredModels finds the first model that matches any pattern in patterns.
-// Matching is case-insensitive glob against both ModelId and Name; first pattern in
-// preference order wins. Returns the matching ModelId, or "" if nothing matches.
-func matchPreferredModels(patterns []string, models *acp.UnstableSessionModelState) string {
+// selectPreferredModel resolves an ordered list of case-insensitive glob patterns to the
+// model id the session should run with. Patterns are walked in preference order and, for
+// each pattern, the currently active model is checked FIRST: when it already matches the
+// pattern it is kept as-is (returning the current id) so no needless SetSessionModel RPC is
+// issued. Only when the active model does not match does the function fall back to the first
+// other available model matching that pattern. Patterns that match no available model are
+// skipped, so resolution continues with the next preference. Matching is glob against both
+// ModelId and Name. Returns "" when nothing matches, signalling the caller to fall back to
+// the session baseline.
+func selectPreferredModel(patterns []string, models *acp.UnstableSessionModelState) string {
 	if len(patterns) == 0 || models == nil {
 		return ""
 	}
+	current := string(models.CurrentModelId)
+	// Resolve the current model's display name for name-based matching.
+	var currentName string
+	for _, m := range models.AvailableModels {
+		if string(m.ModelId) == current {
+			currentName = m.Name
+			break
+		}
+	}
 	for _, pattern := range patterns {
 		patternLower := strings.ToLower(pattern)
+		// Prefer keeping the active model when it already matches this preference.
+		if current != "" && (globMatchCI(patternLower, current) ||
+			(currentName != "" && globMatchCI(patternLower, currentName))) {
+			return current
+		}
+		// Otherwise switch to the first other available model matching this preference.
 		for _, m := range models.AvailableModels {
 			if globMatchCI(patternLower, string(m.ModelId)) || globMatchCI(patternLower, m.Name) {
 				return string(m.ModelId)
 			}
 		}
+		// Pattern matched nothing → fall through to the next preference.
 	}
 	return ""
 }

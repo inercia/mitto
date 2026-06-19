@@ -3829,17 +3829,20 @@ retryAfterRestart:
 			baseline := bs.baselineModel
 			bs.modelMu.Unlock()
 
+			currentModel := string(bs.agentModels.CurrentModelId)
 			desired := baseline // default: use user's baseline
-			isOverride := false
 			if len(preferredModels) > 0 {
-				if matched := matchPreferredModels(preferredModels, bs.agentModels); matched != "" {
-					desired = matched
-					isOverride = true
+				// Walk preferences in order, checking the active model first at each pattern
+				// so a model that already satisfies a preference is kept (no needless switch).
+				if resolved := selectPreferredModel(preferredModels, bs.agentModels); resolved != "" {
+					desired = resolved
 				}
 				// no match → desired stays as baseline (prevents override leakage)
 			}
 
-			currentModel := string(bs.agentModels.CurrentModelId)
+			// An override is in effect whenever the model we will run with differs from the
+			// user's baseline; that's what restore-on-idle keys off.
+			isOverride := desired != "" && desired != baseline
 			if desired != "" && desired != currentModel {
 				setCtx, setCancel := context.WithTimeout(bs.ctx, 15*time.Second)
 				if setErr := bs.setActiveModelOnly(setCtx, desired); setErr != nil && bs.logger != nil {

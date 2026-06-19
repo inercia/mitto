@@ -4201,100 +4201,136 @@ func TestMatchConstraintOption(t *testing.T) {
 	}
 }
 
-// TestMatchPreferredModels tests the glob-based model preference matcher.
-func TestMatchPreferredModels(t *testing.T) {
-	models := &acp.UnstableSessionModelState{
-		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
-		AvailableModels: []acp.UnstableModelInfo{
-			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
-			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
-			{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
-			{ModelId: "gpt-4o", Name: "GPT-4o"},
-		},
+// TestSelectPreferredModel tests the per-prompt model resolver. For each pattern in
+// preference order the active (current) model is checked first, so a model that already
+// satisfies a preference is kept instead of switching to another model matching the same
+// pattern. Patterns matching no available model are skipped.
+func TestSelectPreferredModel(t *testing.T) {
+	newModels := func(current string) *acp.UnstableSessionModelState {
+		return &acp.UnstableSessionModelState{
+			CurrentModelId: acp.UnstableModelId(current),
+			AvailableModels: []acp.UnstableModelInfo{
+				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
+				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+				{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
+				{ModelId: "gpt-4o", Name: "GPT-4o"},
+			},
+		}
 	}
 
 	tests := []struct {
 		name     string
 		patterns []string
+		current  string
 		want     string
 	}{
 		{
-			name:     "exact match by model id",
+			name:     "exact match by model id (switch from current)",
 			patterns: []string{"claude-opus-4-6"},
+			current:  "claude-sonnet-4-6",
 			want:     "claude-opus-4-6",
 		},
 		{
-			name:     "exact match by display name (case insensitive)",
+			name:     "match by display name (switch from current)",
 			patterns: []string{"Sonnet 4.6"},
+			current:  "claude-opus-4-6",
 			want:     "claude-sonnet-4-6",
 		},
 		{
-			name:     "glob * matches by model id",
+			name:     "current matches the only preferred pattern → keep current",
 			patterns: []string{"*sonnet*"},
+			current:  "claude-sonnet-4-6",
 			want:     "claude-sonnet-4-6",
 		},
 		{
-			name:     "glob * matches by display name",
+			name:     "current matches pattern by display name → keep current",
 			patterns: []string{"*Opus*"},
+			current:  "claude-opus-4-6",
 			want:     "claude-opus-4-6",
 		},
 		{
-			name:     "case insensitive glob",
-			patterns: []string{"*HAIKU*"},
+			name:     "current matches broad pattern → keep current, not first listed",
+			patterns: []string{"claude-*"},
+			current:  "claude-sonnet-4-6",
+			want:     "claude-sonnet-4-6",
+		},
+		{
+			name:     "current matches broad pattern (opus) → keep current, not haiku",
+			patterns: []string{"*claude*"},
+			current:  "claude-opus-4-6",
+			want:     "claude-opus-4-6",
+		},
+		{
+			name:     "current does not match broad pattern → first available match",
+			patterns: []string{"claude-*"},
+			current:  "gpt-4o",
 			want:     "claude-haiku-4-5",
 		},
 		{
-			name:     "first pattern wins (preference order)",
+			name:     "higher-priority pattern wins over current matching a lower one → switch",
 			patterns: []string{"*opus*", "*sonnet*"},
+			current:  "claude-sonnet-4-6",
 			want:     "claude-opus-4-6",
 		},
 		{
-			name:     "second pattern wins when first has no match",
+			name:     "current matches the highest-priority pattern → keep current",
+			patterns: []string{"*opus*", "*sonnet*"},
+			current:  "claude-opus-4-6",
+			want:     "claude-opus-4-6",
+		},
+		{
+			name:     "first pattern matches none, current matches second → keep current",
 			patterns: []string{"*nonexistent*", "*haiku*"},
+			current:  "claude-haiku-4-5",
 			want:     "claude-haiku-4-5",
 		},
 		{
-			name:     "no match returns empty string",
+			name:     "first pattern matches none, current does not match second → switch",
+			patterns: []string{"*nonexistent*", "*haiku*"},
+			current:  "claude-sonnet-4-6",
+			want:     "claude-haiku-4-5",
+		},
+		{
+			name:     "no pattern matches anything → empty (use baseline)",
 			patterns: []string{"*nonexistent*", "*missing*"},
+			current:  "claude-sonnet-4-6",
 			want:     "",
 		},
 		{
-			name:     "empty patterns returns empty string",
+			name:     "empty patterns → empty",
 			patterns: []string{},
+			current:  "claude-sonnet-4-6",
 			want:     "",
 		},
 		{
-			name:     "nil patterns returns empty string",
+			name:     "nil patterns → empty",
 			patterns: nil,
+			current:  "claude-sonnet-4-6",
 			want:     "",
 		},
 		{
-			name:     "match by gpt name",
+			name:     "match by gpt name (switch from current)",
 			patterns: []string{"gpt-*"},
-			want:     "gpt-4o",
-		},
-		{
-			name:     "match display name GPT-4o case insensitive",
-			patterns: []string{"gpt-4o"},
+			current:  "claude-sonnet-4-6",
 			want:     "gpt-4o",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := matchPreferredModels(tt.patterns, models)
+			got := selectPreferredModel(tt.patterns, newModels(tt.current))
 			if got != tt.want {
-				t.Errorf("matchPreferredModels(%v) = %q, want %q", tt.patterns, got, tt.want)
+				t.Errorf("selectPreferredModel(%v, current=%q) = %q, want %q",
+					tt.patterns, tt.current, got, tt.want)
 			}
 		})
 	}
 }
 
-// TestMatchPreferredModels_NilModels ensures the function handles nil model state.
-func TestMatchPreferredModels_NilModels(t *testing.T) {
-	got := matchPreferredModels([]string{"*sonnet*"}, nil)
-	if got != "" {
-		t.Errorf("matchPreferredModels with nil models = %q, want %q", got, "")
+// TestSelectPreferredModel_NilModels ensures the function handles nil model state.
+func TestSelectPreferredModel_NilModels(t *testing.T) {
+	if got := selectPreferredModel([]string{"*sonnet*"}, nil); got != "" {
+		t.Errorf("selectPreferredModel with nil models = %q, want %q", got, "")
 	}
 }
 
