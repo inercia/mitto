@@ -145,6 +145,10 @@ export function PeriodicFrequencyPanel({
   onPromptSelect,
   isPromptAreaVisible = false,
   onTogglePromptArea,
+  // Expand/collapse of the settings body (controlled by parent so it stays
+  // mutually exclusive with the prompt composition area).
+  expanded = false,
+  onToggleExpanded,
   // On-completion trigger fields
   trigger = "schedule",
   delaySeconds = 5,
@@ -184,8 +188,6 @@ export function PeriodicFrequencyPanel({
   );
   // Saving enabled state (pause/resume)
   const [isSavingEnabled, setIsSavingEnabled] = useState(false);
-  // Expand/collapse the settings body (collapsed by default to reduce clutter)
-  const [expanded, setExpanded] = useState(false);
 
   // Calculate estimated next run time based on frequency
   const calculateNextRun = useCallback((value, unit) => {
@@ -763,7 +765,7 @@ export function PeriodicFrequencyPanel({
           <!-- Expand/collapse chevron button -->
           <button
             type="button"
-            onClick=${() => setExpanded((v) => !v)}
+            onClick=${onToggleExpanded}
             class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
             title=${expanded ? "Collapse settings" : "Expand settings"}
             data-testid="periodic-expand-toggle"

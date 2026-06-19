@@ -287,6 +287,10 @@ export function ChatInput({
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
   const prevCollapsedBeforeUIRef = useRef(false);
+  // Expand/collapse state for the periodic settings body (chevron). Lifted here so
+  // it stays mutually exclusive with the prompt composition area: only one may be
+  // expanded at a time.
+  const [periodicExpanded, setPeriodicExpanded] = useState(false);
 
   // Resize handle for UI prompt panels (textbox, form, options)
   const {
@@ -2112,16 +2116,20 @@ ${activeUIPrompt.text || ""}</textarea
                                 onInput=${(e) =>
                                   setFreeTextInput(e.target.value)}
                                 onKeyDown=${(e) => {
-                                  if (
-                                    e.key === "Enter" &&
-                                    freeTextInput.trim()
-                                  ) {
-                                    handleUIPromptAnswer(
-                                      "free_text",
-                                      freeTextInput.trim(),
-                                      freeTextInput.trim(),
-                                    );
-                                    setFreeTextInput("");
+                                  if (e.key === "Enter") {
+                                    // Consume the Enter keypress so it doesn't
+                                    // propagate to the native layer (WKWebView),
+                                    // which beeps on unhandled keys in inputs
+                                    // that aren't inside a <form>.
+                                    e.preventDefault();
+                                    if (freeTextInput.trim()) {
+                                      handleUIPromptAnswer(
+                                        "free_text",
+                                        freeTextInput.trim(),
+                                        freeTextInput.trim(),
+                                      );
+                                      setFreeTextInput("");
+                                    }
                                   }
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
@@ -2199,7 +2207,21 @@ ${activeUIPrompt.text || ""}</textarea
           selectedPromptName=${periodicPromptName}
           onPromptSelect=${handlePeriodicPromptSelect}
           isPromptAreaVisible=${!isPromptCollapsed}
-          onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
+          onTogglePromptArea=${() =>
+            setIsPromptCollapsed((v) => {
+              const nextCollapsed = !v;
+              // Expanding the prompt area collapses the periodic properties.
+              if (!nextCollapsed) setPeriodicExpanded(false);
+              return nextCollapsed;
+            })}
+          expanded=${periodicExpanded}
+          onToggleExpanded=${() =>
+            setPeriodicExpanded((v) => {
+              const next = !v;
+              // Expanding the periodic properties collapses the prompt area.
+              if (next) setIsPromptCollapsed(true);
+              return next;
+            })}
           trigger=${periodicTrigger}
           delaySeconds=${periodicDelaySeconds}
           maxDurationSeconds=${periodicMaxDurationSeconds}
