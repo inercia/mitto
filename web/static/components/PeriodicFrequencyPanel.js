@@ -725,15 +725,18 @@ export function PeriodicFrequencyPanel({
             }
           </button>
 
-          <!-- Inline prompt selector (trigger + dropdown; dropdown opens above) -->
-          <${PeriodicPromptSelector}
-            prompts=${prompts}
-            selectedPromptName=${selectedPromptName}
-            disabled=${false}
-            onSelect=${onPromptSelect}
-            isPromptAreaVisible=${isPromptAreaVisible}
-            onTogglePromptArea=${onTogglePromptArea}
-          />
+          <!-- Inline prompt selector (header placement). Hidden on phones — a
+               full-width copy is rendered in the expanded body below. -->
+          <div class="hidden md:block min-w-0">
+            <${PeriodicPromptSelector}
+              prompts=${prompts}
+              selectedPromptName=${selectedPromptName}
+              disabled=${false}
+              onSelect=${onPromptSelect}
+              isPromptAreaVisible=${isPromptAreaVisible}
+              onTogglePromptArea=${onTogglePromptArea}
+            />
+          </div>
 
           <!-- Flex spacer -->
           <div class="flex-1 min-w-0"></div>
@@ -755,30 +758,34 @@ export function PeriodicFrequencyPanel({
                       ></span>`
                     : "Save"}
                 </button>`
-              : html`<${Fragment}>
-                  <span
-                    class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0 flex items-baseline gap-1"
-                  >
-                    ${
-                      isOnCompletion
-                        ? html`<span
-                            >after agent
-                            finishes${localDelay > 0
-                              ? ` · +${localDelay}s`
-                              : ""}</span
-                          >`
-                        : html`<${Fragment}><span>${freqLabel}</span>${
+              : html`<div class="flex items-center gap-1.5 shrink-0">
+                  ${isOnCompletion
+                    ? html`<span
+                        class="badge badge-sm badge-ghost whitespace-nowrap"
+                        >after agent
+                        finishes${localDelay > 0
+                          ? ` · +${localDelay}s`
+                          : ""}</span
+                      >`
+                    : html`<${Fragment}>
+                          <span
+                            class="badge badge-sm badge-ghost whitespace-nowrap"
+                            >${freqLabel}</span
+                          >
+                          ${
                             countdownDisplay &&
-                            html`<span aria-hidden="true">·</span
-                              >${countdownDisplay}`
-                          }</${Fragment}>`
-                    }
+                            html`<span
+                              class="badge badge-sm badge-ghost font-mono whitespace-nowrap"
+                              >${countdownDisplay}</span
+                            >`
+                          }
+                        </${Fragment}>`}
+                  <span class="hidden md:block shrink-0">
+                    <span class="badge badge-sm badge-ghost whitespace-nowrap"
+                      >${runCountLabel}</span
+                    >
                   </span>
-                  <span
-                    class="text-xs text-mitto-text-500 shrink-0 hidden md:block"
-                    >${runCountLabel}</span
-                  >
-                </${Fragment}>`
+                </div>`
           }
 
           <!-- Expand/collapse chevron button -->
@@ -808,6 +815,23 @@ export function PeriodicFrequencyPanel({
               : "max-h-0 opacity-0 overflow-hidden pointer-events-none"
           }"
         >
+          <!-- Mobile-only prompt selector: the header selector is hidden on
+               phones, so surface it full-width at the top of the expanded
+               properties (distinct testids keep Playwright locators unique). -->
+          <div class="md:hidden flex items-center gap-2 px-4 pt-2 pb-2">
+            <${PeriodicPromptSelector}
+              prompts=${prompts}
+              selectedPromptName=${selectedPromptName}
+              disabled=${false}
+              onSelect=${onPromptSelect}
+              isPromptAreaVisible=${isPromptAreaVisible}
+              onTogglePromptArea=${onTogglePromptArea}
+              fullWidth=${true}
+              idPrefix="periodic-prompt-selector-mobile"
+              toggleTestId="periodic-toggle-prompt-area-mobile"
+            />
+          </div>
+
           <!-- Trigger tabs: Schedule | On completion -->
           <div class="tabs tabs-border px-4 pt-2">
             <input

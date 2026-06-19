@@ -27,7 +27,7 @@ import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
-import { flattenPrompts } from "../utils/prompts.js";
+import { flattenPrompts, getMissingPromptParameters } from "../utils/prompts.js";
 
 /**
  * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
@@ -109,7 +109,7 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
- * @param {boolean} props.periodicEnabled - Whether periodic prompts are enabled (disables queue buttons)
+ * @param {boolean} props.periodicConfigured - Whether a periodic config exists (shows editor, disables queue buttons)
  * @param {Function} [props.onPeriodicPrompt] - Called with (prompt) when a periodic-flagged prompt is selected. Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
@@ -140,7 +140,7 @@ export function ChatInput({
   showQueueDropdown = false,
   actionButtons = [],
   availableCommands = [],
-  periodicEnabled = false,
+  periodicConfigured = false,
   onPeriodicPrompt,
   agentSupportsImages = false,
   acpReady = true,
@@ -154,6 +154,7 @@ export function ChatInput({
   onSetConfigOption,
   contextUsage = null,
   tokenUsage = null,
+  onOpenPromptParamDialog,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -408,7 +409,7 @@ export function ChatInput({
     setPeriodicMaxDurationSeconds(0);
     // Collapse the periodic properties body by default when switching
     // conversations (the prompt composition area is collapsed separately by
-    // the periodicEnabled effect below).
+    // the periodicConfigured effect below).
     setPeriodicExpanded(false);
   }, [sessionId]);
 
@@ -434,15 +435,15 @@ export function ChatInput({
         prevCollapsedBeforeUIRef.current = prev;
         return true;
       });
-    } else if (!periodicEnabled) {
+    } else if (!periodicConfigured) {
       // Restore previous collapsed state when MCP UI dismisses
       setIsPromptCollapsed(prevCollapsedBeforeUIRef.current);
     }
-  }, [activeUIPrompt?.requestId, periodicEnabled]);
+  }, [activeUIPrompt?.requestId, periodicConfigured]);
 
-  // Fetch periodic config when periodic is enabled for this session
+  // Fetch periodic config when periodic is configured for this session
   useEffect(() => {
-    if (!periodicEnabled || !sessionId) {
+    if (!periodicConfigured || !sessionId) {
       setIsPeriodicLocked(false);
       setPeriodicPrompt("");
       setPeriodicPromptName("");
@@ -500,7 +501,7 @@ export function ChatInput({
     };
 
     fetchPeriodicConfig();
-  }, [periodicEnabled, sessionId]);
+  }, [periodicConfigured, sessionId]);
 
   // Listen for periodic config updates from other clients via WebSocket
   useEffect(() => {
@@ -776,6 +777,9 @@ export function ChatInput({
             if (textareaRef.current) {
               textareaRef.current.style.height = "auto";
             }
+            // In periodic conversations, hide the composition area after a
+            // successful enqueue; the user re-opens it via the Mitto bubble.
+            if (periodicConfigured) setIsPromptCollapsed(true);
           }
         } catch (err) {
           console.error("Failed to add to queue:", err);
@@ -806,6 +810,9 @@ export function ChatInput({
         if (textareaRef.current) {
           textareaRef.current.style.height = "auto";
         }
+        // In periodic conversations, hide the composition area after a
+        // successful send; the user re-opens it via the Mitto bubble.
+        if (periodicConfigured) setIsPromptCollapsed(true);
       } catch (err) {
         // Failed - show error and keep text for retry
         console.error("Failed to send message:", err);
@@ -843,6 +850,9 @@ export function ChatInput({
           if (textareaRef.current) {
             textareaRef.current.style.height = "auto";
           }
+          // In periodic conversations, hide the composition area after a
+          // successful enqueue; the user re-opens it via the Mitto bubble.
+          if (periodicConfigured) setIsPromptCollapsed(true);
         }
       } catch (err) {
         console.error("Failed to add to queue:", err);
@@ -1136,8 +1146,19 @@ export function ChatInput({
       return;
     }
 
-    // Default: send prompt immediately by name
+    // Default: send prompt immediately by name.
+    // When the prompt declares parameters the "prompts" menu cannot auto-fill,
+    // open the parameter dialog so the user can supply them.  On submit the
+    // options.arguments map is passed to onSend, which routes through the queue
+    // API so the backend can apply ${VAR} substitution.
     if (onSend && prompt.name) {
+      const missing = getMissingPromptParameters(prompt, "prompts");
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+          onSend("", [], [], { promptName: prompt.name, arguments: userArgs });
+        });
+        return;
+      }
       onSend("", [], [], { promptName: prompt.name });
     }
   };
@@ -2194,7 +2215,7 @@ ${activeUIPrompt.text || ""}</textarea
       <!-- Single merged card: compact header always visible; body expands on demand. -->
       <div class="max-w-4xl mx-auto">
         <${PeriodicFrequencyPanel}
-          isOpen=${periodicEnabled}
+          isOpen=${periodicConfigured}
           disabled=${isPeriodicLocked}
           sessionId=${sessionId}
           frequency=${periodicFrequency}
@@ -2240,7 +2261,7 @@ ${activeUIPrompt.text || ""}</textarea
       !isStreaming &&
       !isReadOnly &&
       !noSession &&
-      !periodicEnabled &&
+      !periodicConfigured &&
       !isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
@@ -2403,7 +2424,7 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && (periodicEnabled || hasActiveUIPrompt)) &&
+      ${!(isPromptCollapsed && (periodicConfigured || hasActiveUIPrompt)) &&
       html`
         <div class="max-w-4xl mx-auto chat-input-container">
           <div class="chat-input-box" ref=${dropupRef}>
@@ -2662,20 +2683,20 @@ ${activeUIPrompt.text || ""}</textarea
                 <button
                   type="button"
                   onClick=${() => {
-                    if (!periodicEnabled && onToggleQueue) onToggleQueue();
+                    if (!periodicConfigured && onToggleQueue) onToggleQueue();
                   }}
-                  disabled=${periodicEnabled}
+                  disabled=${periodicConfigured}
                   data-queue-toggle
                   class="chat-input-action relative"
-                  style="${showQueueDropdown && !periodicEnabled ? "background: #2563eb !important; color: white !important;" : ""}"
-                  title=${periodicEnabled
+                  style="${showQueueDropdown && !periodicConfigured ? "background: #2563eb !important; color: white !important;" : ""}"
+                  title=${periodicConfigured
                     ? "Queue disabled for periodic sessions"
                     : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
                   </svg>
-                  ${!periodicEnabled && html`<span
+                  ${!periodicConfigured && html`<span
                     class="absolute -top-1 -right-1 pointer-events-none"
                     style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
                   >${queueLength}</span>`}
@@ -2784,9 +2805,9 @@ ${activeUIPrompt.text || ""}</textarea
                 <button
                   type="button"
                   onClick=${handleAddToQueueClick}
-                  disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicEnabled}
+                  disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicConfigured}
                   class="chat-input-action"
-                  title=${periodicEnabled ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
+                  title=${periodicConfigured ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
