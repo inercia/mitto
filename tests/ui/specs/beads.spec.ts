@@ -1183,6 +1183,34 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
       await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
       await expect(page.getByText(LONG_TITLE)).toHaveCount(0);
 
+      // The standalone viewer opens expanded (fullscreen) but exposes a toggle
+      // so it can be collapsed to the docked strip. The dock-mode Drawer drives
+      // its width via the --dock-w CSS var on the .drawer-dock root: 100% when
+      // fullscreen, 40rem when collapsed. getByTitle uses exact:true so
+      // "Fullscreen" never substring-matches "Exit fullscreen".
+      const drawerRoot = page.locator(
+        'div.drawer-dock:has(h2:has-text("Short issue"))',
+      );
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
+      const collapseBtn = issuePanel.getByTitle("Exit fullscreen", {
+        exact: true,
+      });
+      await expect(collapseBtn).toBeVisible();
+
+      // Collapse: the panel shrinks to the 40rem docked strip and the toggle
+      // flips to the expand state ("Fullscreen").
+      await collapseBtn.click();
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
+      const expandBtn = issuePanel.getByTitle("Fullscreen", { exact: true });
+      await expect(expandBtn).toBeVisible();
+
+      // Expand again: back to fullscreen, toggle returns to "Exit fullscreen".
+      await expandBtn.click();
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
+      await expect(
+        issuePanel.getByTitle("Exit fullscreen", { exact: true }),
+      ).toBeVisible();
+
       // Close the detail panel → returns to the originating conversation with
       // its properties panel re-opened (not left on the beads list).
       await issuePanel.getByTitle("Close", { exact: true }).click();
