@@ -16,6 +16,7 @@ const { useState, useRef, useEffect, useLayoutEffect, useCallback } =
  * @param {Object} deps
  * @param {Array} deps.messages - Current conversation messages.
  * @param {string|null} deps.activeSessionId - Focused conversation id.
+ * @param {string} deps.mainView - Active main view ("conversation" | "beads" | "beadsIssue" | "dashboard").
  * @param {boolean} deps.isStreaming - Whether the agent is actively streaming.
  * @param {boolean} deps.isLoadingMore - Whether older messages are loading (prepend).
  * @param {Object} deps.messagesContainerRef - Ref to the scrollable container.
@@ -25,6 +26,7 @@ const { useState, useRef, useEffect, useLayoutEffect, useCallback } =
 export function useScrollManagement({
   messages,
   activeSessionId,
+  mainView,
   isStreaming,
   isLoadingMore,
   messagesContainerRef,
@@ -82,6 +84,33 @@ export function useScrollManagement({
       setIsUserAtBottom(true);
       setHasNewMessages(false);
     }
+  }, []);
+
+  // Position the messages container at the visual bottom instantly (bypassing CSS
+  // scroll-behavior: smooth) and mark the user as at-bottom. Shared by the
+  // session-switch and conversation-view-reentry effects below, both of which
+  // need to land at the bottom BEFORE paint with no animation.
+  // With flex-col-reverse on the inner wrapper, scrollHeight is the visual bottom.
+  const scrollToBottomInstant = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    // Temporarily disable smooth scrolling to make scroll instant
+    const originalBehavior = container.style.scrollBehavior;
+    container.style.scrollBehavior = "auto";
+    const beforeScrollTop = container.scrollTop;
+    container.scrollTop = container.scrollHeight; // scrollHeight = visual bottom
+    if (window.__debug?.scroll)
+      console.log("[scroll] scrollToBottomInstant:", {
+        beforeScrollTop,
+        afterScrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        clientHeight: container.clientHeight,
+      });
+    // Restore original behavior after the scroll completes
+    container.style.scrollBehavior = originalBehavior;
+    // Explicitly set state since scroll event may not fire if position doesn't change
+    setIsUserAtBottom(true);
+    setHasNewMessages(false);
   }, []);
 
   // Handle scroll events to track user's scroll position.
@@ -159,30 +188,6 @@ export function useScrollManagement({
   // This prevents any visible "jump" - the content appears already at the bottom
   useLayoutEffect(() => {
     const currentLength = messages.length;
-    const container = messagesContainerRef.current;
-
-    // Helper to scroll to bottom instantly (bypassing CSS scroll-behavior: smooth)
-    // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
-    const scrollToBottomInstant = () => {
-      if (!container) return;
-      // Temporarily disable smooth scrolling to make scroll instant
-      const originalBehavior = container.style.scrollBehavior;
-      container.style.scrollBehavior = "auto";
-      const beforeScrollTop = container.scrollTop;
-      container.scrollTop = container.scrollHeight; // scrollHeight = visual bottom
-      if (window.__debug?.scroll)
-        console.log("[scroll] scrollToBottomInstant:", {
-          beforeScrollTop,
-          afterScrollTop: container.scrollTop,
-          scrollHeight: container.scrollHeight,
-          clientHeight: container.clientHeight,
-        });
-      // Restore original behavior after the scroll completes
-      container.style.scrollBehavior = originalBehavior;
-      // Explicitly set state since scroll event may not fire if position doesn't change
-      setIsUserAtBottom(true);
-      setHasNewMessages(false);
-    };
 
     // Detect session switch (activeSessionId changed)
     const sessionSwitched = prevActiveSessionIdRef.current !== activeSessionId;
@@ -208,7 +213,28 @@ export function useScrollManagement({
       scrollToBottomInstant();
       return;
     }
-  }, [messages, activeSessionId]);
+  }, [messages, activeSessionId, scrollToBottomInstant]);
+
+  // Re-entering the conversation view (e.g. after closing the Beads issue viewer)
+  // remounts the messages container as a brand-new element WITHOUT changing
+  // activeSessionId, so the session-switch effect above does not fire and the
+  // fresh container would otherwise stay at its default top position. Treat a
+  // transition back into the conversation view like a focus: position at the
+  // bottom instantly BEFORE paint so the user returns to the latest message they
+  // were viewing (mirrors the session-switch behavior).
+  const prevMainViewRef = useRef(mainView);
+  useLayoutEffect(() => {
+    const prev = prevMainViewRef.current;
+    prevMainViewRef.current = mainView;
+    if (mainView !== "conversation" || prev === "conversation") return;
+    if (messages.length > 0) {
+      scrollToBottomInstant();
+    } else {
+      // Messages not loaded yet — defer to the session-switch effect, which
+      // scrolls once they arrive.
+      sessionJustSwitchedRef.current = true;
+    }
+  }, [mainView, messages, scrollToBottomInstant]);
 
   // Detect when "load more" (prepend) completes - restore scroll position and skip auto-scroll
   // Uses useLayoutEffect to run BEFORE browser paint, preventing visual jump

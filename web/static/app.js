@@ -963,6 +963,7 @@ function App() {
     useScrollManagement({
       messages,
       activeSessionId,
+      mainView,
       isStreaming,
       isLoadingMore,
       messagesContainerRef,
