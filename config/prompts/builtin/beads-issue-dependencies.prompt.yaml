@@ -1,5 +1,5 @@
 icon: beads
-name: Recalculate dependencies
+name: Recalculate issue dependencies
 menus: beadsIssues
 parameters:
   - name: ISSUE_ID
