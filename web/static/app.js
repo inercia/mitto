@@ -1796,7 +1796,7 @@ function App() {
   });
 
   return html`
-    <div class="drawer md:drawer-open h-screen-safe">
+    <div class="drawer md:drawer-open h-screen-safe sidebar-shell">
       <!-- Drawer toggle: Preact-controlled via showSidebar (mobile) + md:drawer-open (desktop) -->
       <input
         type="checkbox"
@@ -1807,8 +1807,11 @@ function App() {
         tabIndex=${-1}
         aria-hidden="true"
       />
-      <!-- drawer-content: ALL page content (header, messages, input, dialogs) -->
-      <div class="drawer-content flex flex-col h-full">
+      <!-- drawer-content: ALL page content (header, messages, input, dialogs).
+           position:relative so the dock-mode SessionPanel (an absolutely
+           positioned right-edge overlay) is confined to this content area
+           (right of the sidebar) rather than the whole viewport. -->
+      <div class="drawer-content flex flex-col h-full relative">
       <!-- Delete Dialog -->
       <${DeleteDialog}
         isOpen=${deleteDialog.isOpen}
@@ -1827,6 +1830,12 @@ function App() {
         workspaces=${workspaceDialog.filteredWorkspaces || workspaces}
         onSelect=${handleWorkspaceSelect}
         onCancel=${() => setWorkspaceDialog({ isOpen: false })}
+        onCreateWorkspace=${configReadonly
+          ? null
+          : () => {
+              setWorkspaceDialog({ isOpen: false });
+              handleShowWorkspaces();
+            }}
       />
 
       <!-- Agent Discovery Dialog (first-run when no ACP servers configured) -->
@@ -2219,7 +2228,11 @@ function App() {
       </div>
       `}
 
-      <!-- Unified Session Panel (fixed overlay on right) -->
+      <!-- Unified Session Panel: docks to the right edge of drawer-content as a
+           confined overlay (Drawer dock mode + styles.css), so it does NOT
+           reflow the conversation (messages keep full width); on phones it
+           covers the whole view. Self-gates on showSidePanel; only relevant in
+           conversation view. -->
       <${SessionPanel}
         isOpen=${showSidePanel}
         onClose=${handleCloseSidePanel}

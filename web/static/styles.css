@@ -1266,6 +1266,83 @@ a.mailto-link:hover {
   background-color: transparent;
 }
 
+/* Dock (mitto-cdf): a right (end) drawer that docks to the right edge of its
+   nearest positioned ancestor (drawer-content) and is confined to the PANEL's
+   own width — NOT a full-area overlay — with no dimming backdrop. Because the
+   conversation content to the panel's LEFT is never under a composited layer,
+   the WebKit/Chromium backing-store drop that blanked the content on
+   pointer-move cannot occur.
+   We dock the .drawer ROOT (not the .drawer-side) so it never spans the left,
+   and force display:block on BOTH the root and the side: daisyUI's .drawer is
+   display:grid and its .drawer-side is a content-sized grid item, so a
+   width:100% on the side would resolve against that ~20rem grid track instead
+   of the root (leaving the panel narrow on phones). As a plain block the side
+   fills the root, and the root takes a definite height from top:0/bottom:0
+   (read off drawer-content). Out of flow, so the conversation does not reflow.
+   Unlayered so it wins over daisyUI's layered defaults. */
+.drawer-dock {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: auto; /* dock the whole drawer to the right edge */
+  display: block; /* not daisyUI's grid (which would content-size the side) */
+  /* Docked panel-strip width on desktop. Configurable per consumer via the
+     --dock-w / --dock-maxw CSS vars (Drawer rootStyle); defaults suit the
+     conversation panel. The beads viewer sets a wider strip with a % cap. */
+  width: var(--dock-w, 20rem);
+  max-width: var(--dock-maxw, 100%);
+}
+
+.drawer-dock > .drawer-side {
+  position: relative; /* in-flow within the docked root (override daisyUI fixed) */
+  inset: auto;
+  display: block; /* not grid */
+  width: 100%; /* fill the docked root */
+  height: 100%;
+}
+
+/* No backdrop in dock mode (close via Escape or the panel's own controls). */
+.drawer-dock > .drawer-side > .drawer-overlay {
+  display: none;
+}
+
+/* Phones: a narrow right strip is poor UX and still leaves a visible,
+   blank-prone sliver of conversation, so cover the whole viewport instead —
+   nothing is visible underneath to blank. The block root/side (above) then
+   fill the viewport and the panel (w-full) follows. */
+@media (max-width: 767.98px) {
+  .drawer-dock {
+    position: fixed;
+    inset: 0; /* full viewport cover on phones */
+    width: auto; /* override --dock-w: fill the viewport */
+    max-width: none; /* override --dock-maxw cap (e.g. beads' 85%) */
+  }
+}
+
+/* Left nav sidebar on phones (mitto-cdf): the conversations sidebar is the
+   top-level daisyUI drawer (.sidebar-shell, start side). On phones daisyUI
+   renders its .drawer-side as a position:fixed full-viewport layer, but the
+   panel child is only a fixed-width strip (the inline sidebarWidth px), leaving
+   a sliver of conversation visible on the right under the transparent
+   .drawer-overlay backdrop. Moving the pointer over that backdrop drops the
+   visible conversation's backing store and blanks it — the same
+   WebKit/Chromium compositing bug fixed for the end/dock panels. Cover the
+   whole viewport with the panel (nothing visible underneath to blank) and drop
+   the backdrop, mirroring the dock panels' phone behaviour above; the sidebar's
+   own md:hidden Close (X) button still dismisses it without an outside tap.
+   Desktop (md:drawer-open) is unaffected: this only applies below the md
+   breakpoint, where the sidebar is in-flow and pushes content. Unlayered so it
+   wins over daisyUI's layered defaults AND the inline px width. */
+@media (max-width: 767.98px) {
+  .sidebar-shell > .drawer-side > :not(.drawer-overlay) {
+    width: 100% !important; /* override the inline sidebarWidth px on phones */
+  }
+  .sidebar-shell > .drawer-side > .drawer-overlay {
+    display: none; /* no dimming layer over visible conversation content */
+  }
+}
+
 /* Fix (mitto-0ho): the Beads description/create CodeMirror editor sometimes
    paints fully blank when clicked. Same WKWebView/Safari backing-store drop as
    .beads-table-scroll above: the editor's real scroll layer (.cm-scroller,

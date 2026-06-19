@@ -695,12 +695,21 @@ export function SessionPanel({
 
   return html`
     <${Fragment}>
+      <!-- Session panel docked to the right edge of drawer-content. Drawer
+           "dock" mode confines the .drawer-side to the panel's own width (not a
+           full-area overlay) and drops the dimming backdrop, so the visible
+           conversation to its LEFT is never under a composited layer — that was
+           what dropped the GPU backing store and blanked the content on
+           pointer-move (mitto-cdf). The conversation does NOT reflow; on phones
+           the panel covers the whole view (w-full). Close via the X or Escape. -->
       <${Drawer}
+        dock
         side="end"
         isClosing=${isClosing}
         onClose=${handleClose}
-        widthClass="w-80"
-        panelClass="bg-mitto-sidebar border-l border-mitto-border-1 h-full flex flex-col"
+        widthClass="w-full"
+        panelClass="bg-mitto-sidebar border-l border-mitto-border-1 h-full flex flex-col overflow-hidden"
+        testid="session-panel"
       >
         <!-- Header -->
         <div
@@ -1347,14 +1356,24 @@ export function SessionPanel({
               <span>${formatFrequency(periodicConfig.frequency)}</span>
             </div>
             ${periodicConfig.last_sent_at &&
-            html`<p class="mt-1 text-xs text-mitto-text-500">
+            html`<p
+              class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
+            >
               <strong>Last run:</strong>
-              ${new Date(periodicConfig.last_sent_at).toLocaleString()}
+              <span
+                >${new Date(periodicConfig.last_sent_at).toLocaleString()}</span
+              >
             </p>`}
             ${periodicConfig.next_scheduled_at &&
-            html`<p class="mt-1 text-xs text-mitto-text-500">
+            html`<p
+              class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
+            >
               <strong>Next run:</strong>
-              ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+              <span
+                >${new Date(
+                  periodicConfig.next_scheduled_at,
+                ).toLocaleString()}</span
+              >
             </p>`}
             <p class="mt-1 text-xs text-mitto-text-500">
               ${(periodicConfig.max_iterations ?? 0) > 0
