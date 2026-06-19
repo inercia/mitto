@@ -579,23 +579,23 @@ func (s *Server) getOrCreateCollector(parentSessionID string) *childReportCollec
 	return collector
 }
 
-// resolveSelfID resolves the provided session_id to a real session ID.
-// It uses a two-phase lookup:
-//  1. Direct lookup: If session_id matches a registered session, return it immediately.
-//     This handles the case where the caller provides the actual session ID directly
-//     (e.g., from mitto_conversation_get_current or external MCP clients like Auggie).
-//  2. Correlation lookup: If not found directly, wait for the ACP layer to register
-//     a correlation mapping (session_id -> real_session_id). This handles the case
-//     where the caller provides a random identifier and the ACP layer intercepts
-//     the tool call to register the mapping.
+// resolveSelfIDWithMCP resolves self_id using a three-phase lookup, in this order:
+//  1. Direct lookup: If inputSessionID matches a registered session, return immediately.
+//  2. MCP session cache: If req carries an MCP session ID cached from a prior get_current,
+//     return the cached Mitto session immediately — avoids the 5s wait for repeat calls.
+//  3. Correlation lookup: Wait up to pendingRequestTimeout for the ACP layer to register
+//     a mapping. Needed for the genuine first get_current correlation race.
+//
+// Phase 2 (cache) is intentionally placed before Phase 3 (wait) so that repeat calls
+// from the same MCP client resolve instantly instead of stalling for 5 seconds.
 //
 // Returns the resolved session ID, or empty string if resolution fails.
-func (s *Server) resolveSelfID(inputSessionID string) string {
+func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRequest) string {
 	if inputSessionID == "" {
 		return ""
 	}
 
-	// Phase 1: Direct lookup - check if inputSessionID is already a registered session
+	// Phase 1: Direct lookup - check if inputSessionID is already a registered session.
 	if reg := s.getSession(inputSessionID); reg != nil {
 		s.logger.Debug("Session resolved via direct lookup",
 			"input_session_id", inputSessionID,
@@ -603,8 +603,25 @@ func (s *Server) resolveSelfID(inputSessionID string) string {
 		return inputSessionID
 	}
 
-	// Phase 2: Correlation lookup - wait for ACP layer to register the mapping
-	// This is the original mechanism for agents that route through Mitto's ACP connection
+	// Phase 2 (before Phase 3): MCP session ID cache lookup.
+	// After a successful get_current call, the MCP session → Mitto session mapping
+	// is cached. Checking this before WaitForPendingRequest avoids the 5s stall
+	// for repeat calls from the same MCP client.
+	if req != nil && req.Session != nil {
+		mcpSessionID := req.Session.ID()
+		if cached := s.lookupMCPSession(mcpSessionID); cached != "" {
+			s.logger.Debug("Session resolved via MCP session cache",
+				"input_session_id", inputSessionID,
+				"mcp_session_id", mcpSessionID,
+				"resolved_session_id", cached,
+			)
+			return cached
+		}
+	}
+
+	// Phase 3: Correlation lookup - wait for ACP layer to register the mapping.
+	// This is needed for the genuine first get_current correlation race where the
+	// ACP layer intercepts the tool call and registers the session ID mapping.
 	realSessionID := s.WaitForPendingRequest(inputSessionID)
 	if realSessionID != "" {
 		s.logger.Debug("Session resolved via correlation lookup",
@@ -795,7 +812,9 @@ func (s *Server) WaitForPendingRequest(requestID string) string {
 		time.Sleep(pendingRequestPollInterval)
 	}
 
-	s.logger.Warn("Pending request not found within timeout",
+	// Expected, recoverable fallback: resolution may still succeed via the MCP-session
+	// cache (Phase 2 in resolveSelfIDWithMCP) or direct lookup. Do not pollute WARN logs.
+	s.logger.Debug("Pending request not found within timeout",
 		"request_id", requestID,
 		"timeout", pendingRequestTimeout,
 	)
@@ -847,34 +866,6 @@ func (s *Server) lookupMCPSession(mcpSessionID string) string {
 	s.mcpSessionMapMu.RLock()
 	defer s.mcpSessionMapMu.RUnlock()
 	return s.mcpSessionMap[mcpSessionID]
-}
-
-// resolveSelfIDWithMCP resolves self_id with an additional Phase 3: MCP session ID lookup.
-// This should be used by tool handlers that have access to the MCP request.
-func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRequest) string {
-	// Phase 1 + Phase 2 (existing)
-	result := s.resolveSelfID(inputSessionID)
-	if result != "" {
-		return result
-	}
-
-	// Phase 3: MCP session ID lookup
-	// After a successful get_current call, the MCP session → Mitto session mapping
-	// is cached. This handles subsequent calls from the same MCP client even if
-	// self_id is wrong or the correlation mechanism fails.
-	if req != nil && req.Session != nil {
-		mcpSessionID := req.Session.ID()
-		if cached := s.lookupMCPSession(mcpSessionID); cached != "" {
-			s.logger.Debug("Session resolved via MCP session cache",
-				"input_session_id", inputSessionID,
-				"mcp_session_id", mcpSessionID,
-				"resolved_session_id", cached,
-			)
-			return cached
-		}
-	}
-
-	return ""
 }
 
 // permissionError returns a formatted error for tools that require a specific flag.

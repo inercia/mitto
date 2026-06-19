@@ -4337,6 +4337,55 @@ func TestResolveSelfIDWithMCP_Phase3CacheFallback(t *testing.T) {
 	}
 }
 
+func TestResolveSelfIDWithMCP_CacheResolvesBeforeWait(t *testing.T) {
+	// This test verifies that the MCP session cache lookup (Phase 2) occurs before the
+	// 5s WaitForPendingRequest (Phase 3) in resolveSelfIDWithMCP, so repeat calls from
+	// the same MCP client resolve instantly instead of stalling.
+	//
+	// A full end-to-end timing proof is not feasible: constructing a *mcp.ServerSession
+	// with a real session ID requires the full MCP SDK transport layer (all fields are
+	// unexported). Instead we verify:
+	//   (a) The cache lookup (Phase 2 mechanism) works and completes instantly.
+	//   (b) With nil req (Phase 2 skipped), Phase 3 still resolves correctly when a
+	//       pending request is pre-registered — proving the reorder didn't break Phase 3.
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{Store: store},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// (a) Phase 2: MCP session cache lookup is instant.
+	srv.cacheMCPSession("mcp-session-xyz", "mitto-session-abc")
+	start := time.Now()
+	cached := srv.lookupMCPSession("mcp-session-xyz")
+	elapsed := time.Since(start)
+
+	if cached != "mitto-session-abc" {
+		t.Errorf("Expected cache hit mitto-session-abc, got: %s", cached)
+	}
+	if elapsed >= 100*time.Millisecond {
+		t.Errorf("Cache lookup took too long (%v); expected < 100ms", elapsed)
+	}
+
+	// (b) Phase 3 (nil req → Phase 2 skipped): pre-register a pending request so
+	// WaitForPendingRequest returns immediately without the 5s timeout delay.
+	srv.RegisterPendingRequest("init", "mitto-session-xyz")
+	result := srv.resolveSelfIDWithMCP("init", nil)
+	if result != "mitto-session-xyz" {
+		t.Errorf("Expected Phase 3 correlation to resolve mitto-session-xyz, got: %s", result)
+	}
+}
+
 // =============================================================================
 // childReportCollector Unit Tests
 // =============================================================================
