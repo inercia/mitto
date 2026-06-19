@@ -1079,6 +1079,68 @@ func TestRecorder_RecordUserPromptWithImages(t *testing.T) {
 	}
 }
 
+// TestRecorder_RecordUserPromptComplete_ArgumentCount tests that RecordUserPromptComplete
+// persists the ArgumentCount field correctly, and that the convenience wrappers default to 0.
+func TestRecorder_RecordUserPromptComplete_ArgumentCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record a named prompt with arguments.
+	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 3); err != nil {
+		t.Fatalf("RecordUserPromptComplete failed: %v", err)
+	}
+
+	// Record an ad-hoc prompt via the wrapper — should default to 0.
+	if err := recorder.RecordUserPrompt("plain message"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	// events[0] = session_start, events[1] = named prompt, events[2] = plain prompt
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	// Verify named prompt event has argument_count=3.
+	namedEvent := events[1]
+	if namedEvent.Type != EventTypeUserPrompt {
+		t.Fatalf("events[1] type = %q, want %q", namedEvent.Type, EventTypeUserPrompt)
+	}
+	namedDataMap, ok := namedEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data is %T, want map[string]interface{}", namedEvent.Data)
+	}
+	// JSON numbers unmarshal as float64.
+	argCount, _ := namedDataMap["argument_count"].(float64)
+	if int(argCount) != 3 {
+		t.Errorf("argument_count = %v, want 3", namedDataMap["argument_count"])
+	}
+
+	// Verify plain prompt event has no argument_count (omitempty → absent or zero).
+	plainEvent := events[2]
+	plainDataMap, ok := plainEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[2].Data is %T, want map[string]interface{}", plainEvent.Data)
+	}
+	if v, exists := plainDataMap["argument_count"]; exists && v != nil {
+		if f, ok := v.(float64); ok && f != 0 {
+			t.Errorf("plain prompt argument_count = %v, want absent/0", v)
+		}
+	}
+}
+
 // TestRecorder_EndIsIdempotent tests that calling End() multiple times is safe
 // and only records a single session_end event.
 func TestRecorder_EndIsIdempotent(t *testing.T) {

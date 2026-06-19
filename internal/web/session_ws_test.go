@@ -949,3 +949,77 @@ func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 		t.Errorf("getServerMaxSeq() = %d, want 27 (25 messages + 2 system events)", got)
 	}
 }
+
+// TestSessionWSClient_OnUserPrompt_ArgumentCount verifies that the WS user_prompt
+// payload includes argument_count when the prompt had arguments, and omits it otherwise.
+func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
+	tests := []struct {
+		name          string
+		promptName    string
+		argumentCount int
+		wantArgCount  bool
+	}{
+		{
+			name:          "with arguments",
+			promptName:    "deploy-prompt",
+			argumentCount: 3,
+			wantArgCount:  true,
+		},
+		{
+			name:          "no arguments",
+			promptName:    "plain-prompt",
+			argumentCount: 0,
+			wantArgCount:  false,
+		},
+		{
+			name:          "ad-hoc prompt no arguments",
+			promptName:    "",
+			argumentCount: 0,
+			wantArgCount:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockWS := newMockWSConn()
+			client := &SessionWSClient{
+				sessionID: "test-session",
+				clientID:  "client-1",
+				wsConn:    &WSConn{send: mockWS.send},
+			}
+
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount)
+
+			// Read from the send channel (same pattern as TestSessionWSClient_OnAvailableCommandsUpdated)
+			select {
+			case msgBytes := <-mockWS.send:
+				var msg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msgBytes, &msg); err != nil {
+					t.Fatalf("failed to unmarshal message: %v", err)
+				}
+				if msg.Type != WSMsgTypeUserPrompt {
+					t.Errorf("message type = %q, want %q", msg.Type, WSMsgTypeUserPrompt)
+				}
+				argCountVal, hasArgCount := msg.Data["argument_count"]
+				if tc.wantArgCount {
+					if !hasArgCount {
+						t.Errorf("expected argument_count in payload, got none")
+					} else if int(argCountVal.(float64)) != tc.argumentCount {
+						t.Errorf("argument_count = %v, want %d", argCountVal, tc.argumentCount)
+					}
+				} else {
+					if hasArgCount && argCountVal != nil {
+						if f, ok := argCountVal.(float64); ok && f != 0 {
+							t.Errorf("expected argument_count absent/0, got %v", argCountVal)
+						}
+					}
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Error("expected user_prompt message on send channel but got none")
+			}
+		})
+	}
+}

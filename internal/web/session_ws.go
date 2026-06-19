@@ -2371,7 +2371,8 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // senderID identifies which client sent the prompt (for deduplication).
 // promptName is the name of the workspace prompt used (empty for ad-hoc prompts).
 // seq is the sequence number for this user prompt event.
-func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
+// argumentCount is the number of ${VAR} arguments substituted (0 for ad-hoc or no-arg named prompts).
+func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
 	// Always deliver user_prompt to the client — do NOT skip based on lastSentSeq.
 	// Unlike streamed agent_message chunks, user_prompt is a one-shot event.
 	// The frontend's alreadyExists check (by seq) handles dedup if events_loaded
@@ -2410,6 +2411,9 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	}
 	if promptName != "" {
 		data["prompt_name"] = promptName
+	}
+	if argumentCount > 0 {
+		data["argument_count"] = argumentCount
 	}
 	c.sendMessage(WSMsgTypeUserPrompt, data)
 }

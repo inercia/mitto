@@ -482,6 +482,32 @@ describe("convertEventsToMessages", () => {
     expect(result[0].text).toBe("Hello");
   });
 
+  test("converts user_prompt with argument_count", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "Hello", prompt_name: "my-prompt", argument_count: 3 },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].argumentCount).toBe(3);
+    expect(result[0].promptName).toBe("my-prompt");
+  });
+
+  test("user_prompt without argument_count has undefined argumentCount", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "plain" },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result[0].argumentCount).toBeUndefined();
+  });
+
   test("converts agent_message event", () => {
     const events = [
       {

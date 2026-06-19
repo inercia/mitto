@@ -430,7 +430,7 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
-func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
+func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
 	// No-op for tests
 }
 
@@ -1979,7 +1979,7 @@ func (o *trackingObserver) OnPlan(seq int64, entries []PlanEntry)             {}
 func (o *trackingObserver) OnFileWrite(seq int64, path string, size int)      {}
 func (o *trackingObserver) OnFileRead(seq int64, path string, size int)       {}
 func (o *trackingObserver) OnPromptComplete(eventCount int)                   {}
-func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
+func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
 }
 func (o *trackingObserver) OnError(message string)                                   {}
 func (o *trackingObserver) OnQueueUpdated(queueLength int, action, messageID string) {}

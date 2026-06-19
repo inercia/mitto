@@ -126,11 +126,12 @@ type Event struct {
 
 // UserPromptData contains data for a user prompt event.
 type UserPromptData struct {
-	Message    string     `json:"message"`
-	Images     []ImageRef `json:"images,omitempty"`
-	Files      []FileRef  `json:"files,omitempty"`
-	PromptID   string     `json:"prompt_id,omitempty"`   // Client-generated ID for delivery confirmation
-	PromptName string     `json:"prompt_name,omitempty"` // Name of the workspace prompt used (for UI rendering)
+	Message       string     `json:"message"`
+	Images        []ImageRef `json:"images,omitempty"`
+	Files         []FileRef  `json:"files,omitempty"`
+	PromptID      string     `json:"prompt_id,omitempty"`      // Client-generated ID for delivery confirmation
+	PromptName    string     `json:"prompt_name,omitempty"`    // Name of the workspace prompt used (for UI rendering)
+	ArgumentCount int        `json:"argument_count,omitempty"` // Number of arguments substituted (>0 only for named prompts with ${VAR} args)
 }
 
 // AgentMessageData contains data for an agent message event.

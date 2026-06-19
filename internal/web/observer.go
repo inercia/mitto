@@ -102,7 +102,8 @@ type SessionObserver interface {
 	// fileIDs contains IDs of any attached files.
 	// promptName is the name of the workspace prompt used (empty string for ad-hoc prompts).
 	// seq is the sequence number for this user prompt event.
-	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string)
+	// argumentCount is the number of ${VAR} arguments substituted (0 for ad-hoc or no-arg named prompts).
+	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int)
 
 	// OnError is called when an error occurs.
 	OnError(message string)

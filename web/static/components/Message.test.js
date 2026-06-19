@@ -172,3 +172,39 @@ describe("isModelErrorThought", () => {
     });
   });
 });
+
+// =============================================================================
+// Argument Count Badge Visibility Logic Tests
+// =============================================================================
+
+/**
+ * Mirror of the NamedPromptPill argument count badge condition from Message.js.
+ * The badge is shown when message.argumentCount is a positive integer.
+ */
+function shouldShowArgCountBadge(message) {
+  return message.argumentCount > 0;
+}
+
+describe("NamedPromptPill argument count badge", () => {
+  test("shows badge when argumentCount > 0", () => {
+    expect(shouldShowArgCountBadge({ argumentCount: 1 })).toBe(true);
+    expect(shouldShowArgCountBadge({ argumentCount: 3 })).toBe(true);
+    expect(shouldShowArgCountBadge({ argumentCount: 10 })).toBe(true);
+  });
+
+  test("does not show badge when argumentCount is 0", () => {
+    expect(shouldShowArgCountBadge({ argumentCount: 0 })).toBe(false);
+  });
+
+  test("does not show badge when argumentCount is undefined", () => {
+    expect(shouldShowArgCountBadge({ argumentCount: undefined })).toBe(false);
+  });
+
+  test("does not show badge when argumentCount is absent", () => {
+    expect(shouldShowArgCountBadge({})).toBe(false);
+  });
+
+  test("does not show badge when argumentCount is null", () => {
+    expect(shouldShowArgCountBadge({ argumentCount: null })).toBe(false);
+  });
+});

@@ -2555,6 +2555,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           sender_id,
           is_prompting,
           prompt_name,
+          argument_count,
         } = msg.data;
         console.log("user_prompt received:", {
           seq,
@@ -2736,6 +2737,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               fromOtherClient: true,
               seq, // Include seq for ordering and deduplication
               promptName: prompt_name || undefined,
+              argumentCount: argument_count || undefined,
             };
             // Add image references if present, constructing full image objects
             // with URLs so the Message component can render them immediately

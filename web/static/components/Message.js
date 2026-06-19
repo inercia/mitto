@@ -55,6 +55,8 @@ function formatMessageTime(timestamp) {
 /**
  * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
  * Displayed right-aligned (like user messages) with an icon and the prompt name.
+ * When the prompt was sent with arguments (argumentCount > 0), a small numeric
+ * badge is shown indicating how many arguments were substituted.
  */
 function NamedPromptPill({ message }) {
   const timeStr = formatMessageTime(message.timestamp);
@@ -80,6 +82,12 @@ function NamedPromptPill({ message }) {
           />
         </svg>
         <span class="text-sm font-medium">${message.promptName}</span>
+        ${message.argumentCount > 0 &&
+        html`<span
+          class="badge badge-sm"
+          data-testid="prompt-arg-count"
+          title="${message.argumentCount} argument(s)"
+        >${message.argumentCount}</span>`}
       </div>
     </div>
   `;

@@ -357,21 +357,21 @@ func (m *replayTestObserver) OnFileWrite(_ int64, path string, size int) {
 func (m *replayTestObserver) OnPermission(_ context.Context, _ acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
 }
-func (m *replayTestObserver) OnPromptComplete(_ int)                                        {}
-func (m *replayTestObserver) OnActionButtons(_ []ActionButton)                              {}
-func (m *replayTestObserver) OnAvailableCommandsUpdated(_ []AvailableCommand)               {}
-func (m *replayTestObserver) OnUserPrompt(_ int64, _, _, _ string, _, _ []string, _ string) {}
-func (m *replayTestObserver) OnError(_ string)                                              {}
-func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)                             {}
-func (m *replayTestObserver) OnQueueReordered(_ []session.QueuedMessage)                    {}
-func (m *replayTestObserver) OnQueueMessageSending(_ string)                                {}
-func (m *replayTestObserver) OnQueueMessageSent(_ string)                                   {}
-func (m *replayTestObserver) OnACPStopped(_ string)                                         {}
-func (m *replayTestObserver) OnACPStarted()                                                 {}
-func (m *replayTestObserver) OnUIPrompt(_ UIPromptRequest)                                  {}
-func (m *replayTestObserver) OnUIPromptDismiss(_ string, _ string)                          {}
-func (m *replayTestObserver) OnNotification(_ UINotifyRequest)                              {}
-func (m *replayTestObserver) OnContextUsageUpdate(_ int, _ int)                             {}
+func (m *replayTestObserver) OnPromptComplete(_ int)                                               {}
+func (m *replayTestObserver) OnActionButtons(_ []ActionButton)                                     {}
+func (m *replayTestObserver) OnAvailableCommandsUpdated(_ []AvailableCommand)                      {}
+func (m *replayTestObserver) OnUserPrompt(_ int64, _, _, _ string, _, _ []string, _ string, _ int) {}
+func (m *replayTestObserver) OnError(_ string)                                                     {}
+func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)                                    {}
+func (m *replayTestObserver) OnQueueReordered(_ []session.QueuedMessage)                           {}
+func (m *replayTestObserver) OnQueueMessageSending(_ string)                                       {}
+func (m *replayTestObserver) OnQueueMessageSent(_ string)                                          {}
+func (m *replayTestObserver) OnACPStopped(_ string)                                                {}
+func (m *replayTestObserver) OnACPStarted()                                                        {}
+func (m *replayTestObserver) OnUIPrompt(_ UIPromptRequest)                                         {}
+func (m *replayTestObserver) OnUIPromptDismiss(_ string, _ string)                                 {}
+func (m *replayTestObserver) OnNotification(_ UINotifyRequest)                                     {}
+func (m *replayTestObserver) OnContextUsageUpdate(_ int, _ int)                                    {}
 
 func TestBufferedEvent_ReplayTo(t *testing.T) {
 	observer := &replayTestObserver{}
@@ -816,7 +816,7 @@ func (o *testReplayObserver) OnPlan(seq int64, entries []PlanEntry)             
 func (o *testReplayObserver) OnFileWrite(seq int64, path string, size int)      {}
 func (o *testReplayObserver) OnFileRead(seq int64, path string, size int)       {}
 func (o *testReplayObserver) OnPromptComplete(eventCount int)                   {}
-func (o *testReplayObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
+func (o *testReplayObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
 }
 func (o *testReplayObserver) OnError(message string) {}
 func (o *testReplayObserver) OnQueueUpdated(queueLength int, action string, messageID string) {

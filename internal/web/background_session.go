@@ -3256,11 +3256,15 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		message = resolved
 	}
 
+	// Capture argument count before substitution (count is the number of distinct
+	// ${VAR} arguments provided, not the number of substitution sites in the text).
+	argCount := len(meta.Arguments)
+
 	// Apply bash-like ${VAR}/${VAR:-default} argument substitution when the caller
 	// supplied an arguments map. Done here (the single chokepoint for all entry
 	// paths) and before persistence/broadcast so the transcript shows the
 	// substituted text. Guarded on len > 0 so ad-hoc messages are untouched.
-	if len(meta.Arguments) > 0 {
+	if argCount > 0 {
 		message = processors.SubstituteArguments(message, meta.Arguments)
 	}
 
@@ -3510,7 +3514,7 @@ retryAfterRestart:
 	// The prompt ID is included so clients can clear pending prompts on reconnect
 	var userPromptSeq int64
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 		// Get the seq that was assigned to the user prompt (it's the current event count)
@@ -3526,7 +3530,7 @@ retryAfterRestart:
 		fileIDStrings[i] = f.ID
 	}
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount)
 	})
 
 	// Build the actual prompt to send to ACP.

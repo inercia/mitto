@@ -148,22 +148,23 @@ func (r *Recorder) Resume() error {
 
 // RecordUserPrompt records a user prompt event.
 func (r *Recorder) RecordUserPrompt(message string) error {
-	return r.RecordUserPromptComplete(message, nil, nil, "", "")
+	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0)
 }
 
 // RecordUserPromptWithImages records a user prompt event with optional image references.
 func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef) error {
-	return r.RecordUserPromptComplete(message, images, nil, "", "")
+	return r.RecordUserPromptComplete(message, images, nil, "", "", 0)
 }
 
-// RecordUserPromptComplete records a user prompt event with optional image/file references, prompt ID, and prompt name.
+// RecordUserPromptComplete records a user prompt event with optional image/file references, prompt ID, prompt name, and argument count.
 // The promptID is a client-generated ID used for delivery confirmation on reconnect.
 // The promptName is the name of the workspace prompt used (for UI rendering); empty string means no named prompt.
-func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string) error {
+// The argumentCount is the number of ${VAR} arguments substituted; 0 means no arguments (ad-hoc or no-arg named prompt).
+func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int) error {
 	return r.recordEvent(Event{
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName},
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
 	})
 }
 
