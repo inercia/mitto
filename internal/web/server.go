@@ -628,6 +628,7 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastSessionArchived(sessionID, true)
 	})
 	s.periodicRunner.SetOnPeriodicAutoStopped(s.BroadcastPeriodicUpdated)
+	s.periodicRunner.SetOnPeriodicUpdated(s.BroadcastPeriodicUpdated)
 
 	// Configure the global periodic-iteration safeguard (user default, bounded by backstop).
 	maxPeriodicIter := configPkg.DefaultMaxPeriodicIterations

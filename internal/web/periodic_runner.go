@@ -47,6 +47,11 @@ type AutoArchiveCallback func(sessionID string)
 // It should broadcast the updated periodic state to all WebSocket clients.
 type PeriodicAutoStoppedCallback func(sessionID string, periodic *session.PeriodicPrompt)
 
+// PeriodicUpdatedCallback is called when a periodic conversation's schedule advances after a delivery.
+// It should broadcast the updated periodic state (including the new next_scheduled_at) to all
+// WebSocket clients so the countdown resets.
+type PeriodicUpdatedCallback func(sessionID string, periodic *session.PeriodicPrompt)
+
 // PromptResolverFunc resolves a prompt name to its full text for a given working directory.
 type PromptResolverFunc func(promptName string, workingDir string) (string, error)
 
@@ -79,6 +84,10 @@ type PeriodicRunner struct {
 
 	// onPeriodicAutoStopped is called when a periodic conversation is disabled after reaching max iterations.
 	onPeriodicAutoStopped PeriodicAutoStoppedCallback
+
+	// onPeriodicUpdated is called when a periodic conversation's schedule advances after a delivery,
+	// so clients can reset the countdown to the new next-run time.
+	onPeriodicUpdated PeriodicUpdatedCallback
 
 	// autoArchiveAfter, when > 0, causes sessions inactive for this long to be archived.
 	autoArchiveAfter time.Duration
@@ -177,6 +186,11 @@ func (r *PeriodicRunner) SetOnAutoArchive(callback AutoArchiveCallback) {
 // SetOnPeriodicAutoStopped sets the callback for when a periodic conversation is auto-stopped after reaching max iterations.
 func (r *PeriodicRunner) SetOnPeriodicAutoStopped(callback PeriodicAutoStoppedCallback) {
 	r.onPeriodicAutoStopped = callback
+}
+
+// SetOnPeriodicUpdated sets the callback for when a periodic conversation's schedule advances after a delivery.
+func (r *PeriodicRunner) SetOnPeriodicUpdated(callback PeriodicUpdatedCallback) {
+	r.onPeriodicUpdated = callback
 }
 
 // SetArchiveRetentionPeriod sets the retention period for archived session cleanup.
@@ -1046,10 +1060,17 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 								r.onPeriodicAutoStopped(sessionID, final)
 							}
 						}
-					} else if r.logger != nil && updated.NextScheduledAt != nil {
-						r.logger.Debug("Periodic schedule updated after delivery",
-							"session_id", sessionID,
-							"next_scheduled_at", updated.NextScheduledAt)
+					} else {
+						// Schedule advanced normally — notify clients so the countdown resets
+						// to the freshly computed next-run time.
+						if r.onPeriodicUpdated != nil {
+							r.onPeriodicUpdated(sessionID, updated)
+						}
+						if r.logger != nil && updated.NextScheduledAt != nil {
+							r.logger.Debug("Periodic schedule updated after delivery",
+								"session_id", sessionID,
+								"next_scheduled_at", updated.NextScheduledAt)
+						}
 					}
 				}
 			}
