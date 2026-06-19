@@ -10,6 +10,7 @@ import {
   menuSatisfies,
   collectPromptArguments,
   getMissingPromptParameters,
+  autofillConversationMenuArgs,
 } from "./prompts.js";
 
 // =============================================================================
@@ -274,6 +275,69 @@ describe("collectPromptArguments", () => {
   test("returns empty object when typeValues is empty", () => {
     const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
     expect(collectPromptArguments(prompt, {})).toEqual({});
+  });
+});
+
+// =============================================================================
+// autofillConversationMenuArgs Tests
+// =============================================================================
+
+describe("autofillConversationMenuArgs", () => {
+  const childParamPrompt = {
+    parameters: [{ name: "TARGET_CONVERSATION", type: "childSessionId" }],
+  };
+
+  test("returns {} when hostSessionId is missing", () => {
+    expect(autofillConversationMenuArgs(childParamPrompt, "", [])).toEqual({});
+  });
+
+  test("returns {} when prompt has no parameters", () => {
+    expect(autofillConversationMenuArgs({}, "host-1", [])).toEqual({});
+  });
+
+  test("fills a childSessionId param when host has exactly one child", () => {
+    const sessions = [
+      { session_id: "child-1", parent_session_id: "host-1" },
+      { session_id: "other", parent_session_id: "host-2" },
+    ];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+    ).toEqual({ TARGET_CONVERSATION: "child-1" });
+  });
+
+  test("does not fill when host has multiple children", () => {
+    const sessions = [
+      { session_id: "child-1", parent_session_id: "host-1" },
+      { session_id: "child-2", parent_session_id: "host-1" },
+    ];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+    ).toEqual({});
+  });
+
+  test("does not fill when host has no children", () => {
+    const sessions = [{ session_id: "child-1", parent_session_id: "host-2" }];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+    ).toEqual({});
+  });
+
+  test("ignores archived children when counting", () => {
+    const sessions = [
+      { session_id: "child-1", parent_session_id: "host-1" },
+      { session_id: "child-2", parent_session_id: "host-1", archived: true },
+    ];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+    ).toEqual({ TARGET_CONVERSATION: "child-1" });
+  });
+
+  test("does not fill non-childSessionId param types", () => {
+    const prompt = {
+      parameters: [{ name: "TARGET", type: "sessionId" }],
+    };
+    const sessions = [{ session_id: "child-1", parent_session_id: "host-1" }];
+    expect(autofillConversationMenuArgs(prompt, "host-1", sessions)).toEqual({});
   });
 });
 

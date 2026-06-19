@@ -126,6 +126,35 @@ export function collectPromptArguments(prompt, typeValues) {
 }
 
 /**
+ * Auto-fill prompt arguments from the conversation-menu host context.
+ *
+ * The conversation menu acts on a specific host conversation, so a
+ * `childSessionId` parameter can be filled automatically when that host has
+ * exactly one (non-archived) child — otherwise the user picks via the dialog,
+ * scoped to the host's children. No other types are auto-supplied here.
+ *
+ * @param {Object} prompt        - prompt object with optional `parameters`
+ * @param {string} hostSessionId - the conversation the menu acts on
+ * @param {Array}  sessions      - all known sessions (each may have parent_session_id)
+ * @returns {Object}             - arguments map (paramName -> value), possibly empty
+ */
+export function autofillConversationMenuArgs(prompt, hostSessionId, sessions) {
+  const result = {};
+  if (!hostSessionId) return result;
+  for (const { name, type } of promptParameters(prompt)) {
+    if (type === "childSessionId") {
+      const children = (sessions || []).filter(
+        (s) => s && !s.archived && s.parent_session_id === hostSessionId,
+      );
+      if (children.length === 1) {
+        result[name] = children[0].session_id;
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * Calculate a contrasting text color (black or white) for a given background.
  * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
  * @returns {string} - "#000000", "#FFFFFF", or a default gray when no color

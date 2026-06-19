@@ -165,7 +165,7 @@ import {
 } from "./constants.js";
 
 // Import prompt utilities
-import { promptMenus, getMissingPromptParameters } from "./utils/prompts.js";
+import { promptMenus, getMissingPromptParameters, autofillConversationMenuArgs } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
 import {
@@ -1722,6 +1722,7 @@ function App() {
             setPromptParamDialog({
               prompt,
               parameters: missing,
+              hostSessionId: sessionId,
               onSubmit: async (userArgs) => {
                 const result = await seedConversationWithPrompt(sessionId, prompt, { arguments: userArgs });
                 if (result.success) {
@@ -1769,14 +1770,21 @@ function App() {
       // Non-periodic prompt: enqueue the named prompt to the existing conversation.
       const sessionId = session?.session_id;
       if (!sessionId) return;
-      // Check whether any parameters cannot be auto-supplied by the conversation menu.
-      const missing = getMissingPromptParameters(prompt, "conversation");
+      // Auto-fill what the host conversation can supply (e.g. a lone child for a
+      // childSessionId param), then prompt the user only for what remains.
+      const autoArgs = autofillConversationMenuArgs(prompt, sessionId, allSessions);
+      const missing = getMissingPromptParameters(prompt, "conversation").filter(
+        (p) => autoArgs[p.name] === undefined,
+      );
       if (missing.length > 0) {
         setPromptParamDialog({
           prompt,
           parameters: missing,
+          hostSessionId: sessionId,
           onSubmit: async (userArgs) => {
-            const result = await seedConversationWithPrompt(sessionId, prompt, { arguments: userArgs });
+            const result = await seedConversationWithPrompt(sessionId, prompt, {
+              arguments: { ...autoArgs, ...userArgs },
+            });
             if (result.success) {
               showToast({
                 style: "success",
@@ -1794,7 +1802,11 @@ function App() {
         });
         return;
       }
-      const result = await seedConversationWithPrompt(sessionId, prompt);
+      const result = await seedConversationWithPrompt(
+        sessionId,
+        prompt,
+        Object.keys(autoArgs).length > 0 ? { arguments: autoArgs } : undefined,
+      );
       if (result.success) {
         showToast({
           style: "success",
@@ -1809,7 +1821,7 @@ function App() {
         });
       }
     },
-    [seedConversationWithPrompt, startConversationWithPrompt, showToast, focusSession, setPromptParamDialog],
+    [seedConversationWithPrompt, startConversationWithPrompt, showToast, focusSession, setPromptParamDialog, allSessions],
   );
 
   // ----- Chat header conversation menu -----
@@ -2047,11 +2059,16 @@ function App() {
         onCancel=${() => setPeriodicScheduleDialog(null)}
       />
 
-      <!-- Prompt Parameter Dialog: opened when a beadsIssues prompt has params the menu cannot auto-fill -->
+      <!-- Prompt Parameter Dialog: opened when a menu (beads, conversation, or
+           the ChatInput dropup) has prompt params it cannot auto-fill. The
+           conversation menu sets hostSessionId to the right-clicked conversation
+           so a childSessionId picker is scoped to its children; other surfaces
+           fall back to the active session. -->
       <${PromptParameterDialog}
         isOpen=${promptParamDialog !== null}
         parameters=${promptParamDialog?.parameters || []}
         workingDir=${beadsWorkingDir}
+        hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
         title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
         onClose=${() => setPromptParamDialog(null)}
         onSubmit=${(args) => { promptParamDialog?.onSubmit?.(args); setPromptParamDialog(null); }}
