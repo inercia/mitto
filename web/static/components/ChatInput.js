@@ -406,6 +406,10 @@ export function ChatInput({
     setPeriodicTrigger("schedule");
     setPeriodicDelaySeconds(5);
     setPeriodicMaxDurationSeconds(0);
+    // Collapse the periodic properties body by default when switching
+    // conversations (the prompt composition area is collapsed separately by
+    // the periodicEnabled effect below).
+    setPeriodicExpanded(false);
   }, [sessionId]);
 
   // Reset combo box selection and free text input when UI prompt changes

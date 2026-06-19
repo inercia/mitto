@@ -1,7 +1,7 @@
 // Mitto Web Interface - Periodic Frequency Panel Component
 // Single merged card: compact header (always visible) + collapsible body (settings).
 
-const { useState, useEffect, useCallback, useMemo, html, Fragment } =
+const { useState, useEffect, useCallback, useMemo, useRef, html, Fragment } =
   window.preact;
 
 import {
@@ -17,6 +17,13 @@ import { CountdownDisplay } from "./CountdownDisplay.js";
 
 /** Minimum delay for on-completion trigger (seconds). Used for client-side clamp helper text. */
 const MIN_COMPLETION_DELAY_SECONDS = 5;
+
+/**
+ * Schedules that repeat more frequently than this (in seconds) are considered
+ * "too frequent" for an unbounded periodic conversation and trigger the
+ * dangerous-config warning on save. 5 minutes.
+ */
+const DANGEROUS_FREQUENCY_SECONDS = 5 * 60;
 
 /**
  * Convert a numeric value + unit string into total seconds.
@@ -171,12 +178,16 @@ export function PeriodicFrequencyPanel({
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  // Dangerous-config confirmation dialog state (shown on Save for new, unbounded periodics)
+  const [showDangerDialog, setShowDangerDialog] = useState(false);
   // Reset timer checkbox state (default true = reset the countdown after manual run)
   const [resetTimer, setResetTimer] = useState(true);
   // Error dialog state (for showing errors like "session busy")
   const [errorMessage, setErrorMessage] = useState(null);
   // Local max iterations (synced from props)
   const [localMaxIterations, setLocalMaxIterations] = useState(maxIterations);
+  // Local fresh-context (staged; synced from props)
+  const [localFreshContext, setLocalFreshContext] = useState(freshContext);
   // On-completion trigger local state
   const [localTrigger, setLocalTrigger] = useState(trigger || "schedule");
   const [localDelay, setLocalDelay] = useState(delaySeconds || minDelaySeconds);
@@ -188,6 +199,8 @@ export function PeriodicFrequencyPanel({
   );
   // Saving enabled state (pause/resume)
   const [isSavingEnabled, setIsSavingEnabled] = useState(false);
+  // Tracks previous expanded value to detect collapse (for discarding staged edits)
+  const prevExpandedRef = useRef(expanded);
 
   // Calculate estimated next run time based on frequency
   const calculateNextRun = useCallback((value, unit) => {
@@ -238,6 +251,11 @@ export function PeriodicFrequencyPanel({
     setLocalMaxIterations(maxIterations);
   }, [maxIterations]);
 
+  // Sync localFreshContext from props (server-authoritative updates)
+  useEffect(() => {
+    setLocalFreshContext(freshContext);
+  }, [freshContext]);
+
   // Sync trigger/delay/maxDuration from props (server-authoritative updates)
   useEffect(() => {
     setLocalTrigger(trigger || "schedule");
@@ -251,58 +269,178 @@ export function PeriodicFrequencyPanel({
     setLocalMaxDurUnit(unit);
   }, [maxDurationSeconds]);
 
+  // Discard staged edits when the settings body collapses without saving.
+  // Reverts every local field back to the server-authoritative props.
+  useEffect(() => {
+    const wasExpanded = prevExpandedRef.current;
+    prevExpandedRef.current = expanded;
+    if (wasExpanded && !expanded) {
+      setLocalValue(frequency.value || 1);
+      setLocalUnit(frequency.unit || "hours");
+      setLocalAt(utcToLocalTime(frequency.at) || "");
+      setLocalFreshContext(freshContext);
+      setLocalMaxIterations(maxIterations);
+      setLocalTrigger(trigger || "schedule");
+      setLocalDelay(delaySeconds || minDelaySeconds);
+      const { value, unit } = secondsToValueUnit(maxDurationSeconds);
+      setLocalMaxDurValue(value);
+      setLocalMaxDurUnit(unit);
+    }
+  }, [
+    expanded,
+    frequency.value,
+    frequency.unit,
+    frequency.at,
+    freshContext,
+    maxIterations,
+    trigger,
+    delaySeconds,
+    minDelaySeconds,
+    maxDurationSeconds,
+  ]);
+
   // Derived: whether this periodic is in on-completion mode
   const isOnCompletion = localTrigger === "onCompletion";
 
-  // Save frequency to backend
-  // Note: newAt is in LOCAL time, needs to be converted to UTC before sending
-  const saveFrequency = useCallback(
-    async (newValue, newUnit, newAtLocal) => {
-      if (!sessionId || isSaving) return;
+  // A "new" periodic conversation is one that has never delivered a run yet
+  // (iteration_count is incremented only on actual delivery). Safety pre-fills
+  // and the dangerous-config warning apply only while it is still new — once it
+  // has started running we respect whatever the user has configured.
+  const isNewPeriodic = iterationCount === 0;
 
-      // Immediately update local next run time estimate
-      setLocalNextScheduledAt(calculateNextRun(newValue, newUnit));
-
-      setIsSaving(true);
-      try {
-        const payload = {
-          frequency: {
-            value: newValue,
-            unit: newUnit,
-          },
-        };
-        // Only include 'at' for daily schedules - convert local time to UTC
-        if (newUnit === "days" && newAtLocal) {
-          payload.frequency.at = localToUtcTime(newAtLocal);
-        }
-
-        const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          },
-        );
-
-        if (response.ok) {
-          const data = await response.json();
-          // Update with server-authoritative next scheduled time
-          setLocalNextScheduledAt(data.next_scheduled_at);
-          if (onFrequencyChange) {
-            onFrequencyChange(data.frequency, data.next_scheduled_at);
-          }
-        } else {
-          console.error("Failed to update frequency");
-        }
-      } catch (err) {
-        console.error("Failed to update frequency:", err);
-      } finally {
-        setIsSaving(false);
-      }
-    },
-    [sessionId, isSaving, onFrequencyChange, calculateNextRun],
+  // Staged config has no upper bound on runs or wall-clock time.
+  const stagedHasNoLimits = useMemo(
+    () =>
+      localMaxIterations <= 0 &&
+      valueUnitToSeconds(localMaxDurValue, localMaxDurUnit) <= 0,
+    [localMaxIterations, localMaxDurValue, localMaxDurUnit],
   );
+
+  // Staged cadence is "dangerous": fires after every agent completion, or
+  // repeats more frequently than DANGEROUS_FREQUENCY_SECONDS on a schedule.
+  const stagedHasDangerousCadence = useMemo(() => {
+    if (localTrigger === "onCompletion") return true;
+    return (
+      valueUnitToSeconds(localValue, localUnit) < DANGEROUS_FREQUENCY_SECONDS
+    );
+  }, [localTrigger, localValue, localUnit]);
+
+  // Warn before saving a brand-new periodic conversation that could loop
+  // indefinitely (dangerous cadence with no run/time limit).
+  const needsDangerWarning =
+    isNewPeriodic && stagedHasDangerousCadence && stagedHasNoLimits;
+
+  // Human-readable reason shown in the dangerous-config confirmation dialog.
+  const dangerReason = isOnCompletion
+    ? "it starts again every time the agent finishes"
+    : `it repeats every ${localValue} ${localUnit}`;
+  const dangerMessage =
+    `This periodic conversation has no limit on the number of runs or total ` +
+    `time, and ${dangerReason}. It could keep running indefinitely. ` +
+    `Set a "Max runs" or "Max time" limit, or save anyway?`;
+
+  // Persist all staged settings in a single PATCH. Invoked by handleSaveAll
+  // (directly, or after the dangerous-config warning is confirmed).
+  const performSave = useCallback(async () => {
+    if (!sessionId || isSaving) return;
+
+    // Optimistic next-run estimate for schedule mode (server value overrides below)
+    if (localTrigger !== "onCompletion") {
+      setLocalNextScheduledAt(calculateNextRun(localValue, localUnit));
+    }
+
+    setIsSaving(true);
+    try {
+      const clampedDelay = Math.max(minDelaySeconds, localDelay);
+      const maxDurSecs = valueUnitToSeconds(localMaxDurValue, localMaxDurUnit);
+      const payload = {
+        trigger: localTrigger,
+        frequency: { value: localValue, unit: localUnit },
+        fresh_context: localFreshContext,
+        max_iterations: localMaxIterations,
+        delay_seconds: clampedDelay,
+        max_duration_seconds: maxDurSecs,
+      };
+      // Only include 'at' for daily schedules - convert local time to UTC
+      if (localUnit === "days" && localAt) {
+        payload.frequency.at = localToUtcTime(localAt);
+      }
+
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const t = data.trigger || "schedule";
+        const serverDelay = data.delay_seconds ?? clampedDelay;
+        // Update with server-authoritative values
+        setLocalNextScheduledAt(data.next_scheduled_at);
+        setLocalTrigger(t);
+        setLocalDelay(serverDelay);
+        // Propagate to parent so props stay in sync
+        onFrequencyChange?.(data.frequency, data.next_scheduled_at);
+        onFreshContextChange?.(data.fresh_context ?? localFreshContext);
+        onMaxIterationsChange?.(data.max_iterations ?? localMaxIterations);
+        onTriggerChange?.(t);
+        onDelayChange?.(serverDelay);
+        onMaxDurationChange?.(data.max_duration_seconds ?? maxDurSecs);
+      } else {
+        console.error("Failed to save periodic settings");
+      }
+    } catch (err) {
+      console.error("Failed to save periodic settings:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    sessionId,
+    isSaving,
+    localTrigger,
+    localValue,
+    localUnit,
+    localAt,
+    localFreshContext,
+    localMaxIterations,
+    localDelay,
+    localMaxDurValue,
+    localMaxDurUnit,
+    minDelaySeconds,
+    calculateNextRun,
+    onFrequencyChange,
+    onFreshContextChange,
+    onMaxIterationsChange,
+    onTriggerChange,
+    onDelayChange,
+    onMaxDurationChange,
+  ]);
+
+  // Save entry point (Save button). For a brand-new periodic conversation with
+  // a dangerous, unbounded cadence, confirm first; otherwise persist directly.
+  const handleSaveAll = useCallback(() => {
+    if (isSaving) return;
+    if (needsDangerWarning) {
+      setShowDangerDialog(true);
+      return;
+    }
+    performSave();
+  }, [isSaving, needsDangerWarning, performSave]);
+
+  // Confirm saving despite the dangerous-config warning.
+  const handleConfirmDanger = useCallback(() => {
+    setShowDangerDialog(false);
+    performSave();
+  }, [performSave]);
+
+  // Dismiss the dangerous-config warning without saving.
+  const handleCancelDanger = useCallback(() => {
+    setShowDangerDialog(false);
+  }, []);
 
   // Handle value change
   const handleValueChange = useCallback((e) => {
@@ -311,41 +449,19 @@ export function PeriodicFrequencyPanel({
     setLocalValue(clampedValue);
   }, []);
 
-  // Handle value blur - save on blur
-  const handleValueBlur = useCallback(() => {
-    if (localValue !== frequency.value) {
-      saveFrequency(localValue, localUnit, localAt);
+  // Handle unit change (staged; clears 'at' when switching away from days)
+  const handleUnitChange = useCallback((e) => {
+    const newUnit = e.target.value;
+    setLocalUnit(newUnit);
+    if (newUnit !== "days") {
+      setLocalAt("");
     }
-  }, [localValue, localUnit, localAt, frequency.value, saveFrequency]);
-
-  // Handle unit change - save immediately
-  const handleUnitChange = useCallback(
-    (e) => {
-      const newUnit = e.target.value;
-      setLocalUnit(newUnit);
-      // Clear 'at' if switching away from days
-      const newAt = newUnit === "days" ? localAt : "";
-      if (newUnit !== "days") {
-        setLocalAt("");
-      }
-      saveFrequency(localValue, newUnit, newAt);
-    },
-    [localValue, localAt, saveFrequency],
-  );
+  }, []);
 
   // Handle time change
   const handleAtChange = useCallback((e) => {
     setLocalAt(e.target.value);
   }, []);
-
-  // Handle time blur - save on blur
-  // Compare local time with the converted UTC time from props
-  const handleAtBlur = useCallback(() => {
-    const propsAtLocal = utcToLocalTime(frequency.at);
-    if (localUnit === "days" && localAt !== propsAtLocal) {
-      saveFrequency(localValue, localUnit, localAt);
-    }
-  }, [localValue, localUnit, localAt, frequency.at, saveFrequency]);
 
   // Handle click on the run-now button - show confirmation dialog
   const handleIconClick = useCallback(() => {
@@ -404,173 +520,44 @@ export function PeriodicFrequencyPanel({
     setErrorMessage(null);
   }, []);
 
-  // Handle fresh context toggle
-  const handleFreshContextChange = useCallback(
-    async (e) => {
-      const newValue = e.target.checked;
-      if (!sessionId) return;
-      try {
-        const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fresh_context: newValue }),
-          },
-        );
-        if (response.ok) {
-          const data = await response.json();
-          if (onFreshContextChange) {
-            onFreshContextChange(data.fresh_context ?? newValue);
-          }
-        } else {
-          console.error("Failed to update fresh_context");
-        }
-      } catch (err) {
-        console.error("Failed to update fresh_context:", err);
-      }
-    },
-    [sessionId, onFreshContextChange],
-  );
+  // Handle fresh context toggle (staged)
+  const handleFreshContextChange = useCallback((e) => {
+    setLocalFreshContext(e.target.checked);
+  }, []);
 
-  // Handle max iterations input change
+  // Handle max iterations input change (staged)
   const handleMaxIterationsChange = useCallback((e) => {
     setLocalMaxIterations(Math.max(0, parseInt(e.target.value, 10) || 0));
   }, []);
 
-  // Save max iterations on blur
-  const handleMaxIterationsBlur = useCallback(async () => {
-    if (!sessionId || localMaxIterations === maxIterations) return;
-    try {
-      const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ max_iterations: localMaxIterations }),
-        },
-      );
-      if (response.ok) {
-        if (onMaxIterationsChange) onMaxIterationsChange(localMaxIterations);
-      } else {
-        console.error("Failed to update max_iterations");
-        setLocalMaxIterations(maxIterations);
-      }
-    } catch (err) {
-      console.error("Failed to update max_iterations:", err);
-      setLocalMaxIterations(maxIterations);
-    }
-  }, [sessionId, localMaxIterations, maxIterations, onMaxIterationsChange]);
-
-  // Save trigger type to backend
-  const saveTrigger = useCallback(
-    async (newTrigger) => {
-      if (!sessionId) return;
-      try {
-        const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ trigger: newTrigger }),
-          },
+  // Handle trigger tab selection (staged). Switching to on-completion pre-fills
+  // reasonable defaults (5 runs, 1h max time) when those limits are currently unset.
+  const handleTriggerSelect = useCallback(
+    (newTrigger) => {
+      setLocalTrigger(newTrigger);
+      if (newTrigger === "onCompletion") {
+        // Always enforce the minimum on-completion delay.
+        setLocalDelay((prev) =>
+          Math.max(minDelaySeconds, prev || minDelaySeconds),
         );
-        if (response.ok) {
-          const data = await response.json();
-          const t = data.trigger || "schedule";
-          setLocalTrigger(t);
-          setLocalDelay(data.delay_seconds ?? localDelay);
-          setLocalNextScheduledAt(data.next_scheduled_at);
-          onTriggerChange?.(t);
-          // Keep parent frequency in sync (nextScheduledAt may have changed)
-          onFrequencyChange?.(data.frequency, data.next_scheduled_at);
-        } else {
-          console.error("Failed to update trigger");
+        // Pre-fill safety limits (5 runs, 1h max time) only for brand-new
+        // periodic conversations; never override an established config.
+        if (isNewPeriodic) {
+          setLocalMaxIterations((prev) => (prev > 0 ? prev : 5));
+          if (valueUnitToSeconds(localMaxDurValue, localMaxDurUnit) === 0) {
+            setLocalMaxDurValue(1);
+            setLocalMaxDurUnit("hours");
+          }
         }
-      } catch (err) {
-        console.error("Failed to update trigger:", err);
       }
     },
-    [sessionId, localDelay, onTriggerChange, onFrequencyChange],
+    [isNewPeriodic, localMaxDurValue, localMaxDurUnit, minDelaySeconds],
   );
 
-  // Save on-completion delay to backend (clamps to minDelaySeconds first)
-  const saveDelay = useCallback(async () => {
-    if (!sessionId) return;
-    const clamped = Math.max(minDelaySeconds, localDelay);
-    if (clamped !== localDelay) setLocalDelay(clamped);
-    if (clamped === delaySeconds) return; // No change vs server
-    try {
-      const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ delay_seconds: clamped }),
-        },
-      );
-      if (response.ok) {
-        const data = await response.json();
-        const serverDelay = data.delay_seconds ?? clamped;
-        setLocalDelay(serverDelay);
-        onDelayChange?.(serverDelay);
-      } else {
-        console.error("Failed to update delay_seconds");
-        setLocalDelay(delaySeconds); // Revert on error
-      }
-    } catch (err) {
-      console.error("Failed to update delay_seconds:", err);
-      setLocalDelay(delaySeconds);
-    }
-  }, [sessionId, localDelay, delaySeconds, minDelaySeconds, onDelayChange]);
-
-  // Save max-duration to backend (0 = unlimited).
-  // Accepts optional value/unit overrides so the unit select can call immediately
-  // on onChange before the state update propagates.
-  const saveMaxDuration = useCallback(
-    async (valueOverride, unitOverride) => {
-      if (!sessionId) return;
-      const v = valueOverride !== undefined ? valueOverride : localMaxDurValue;
-      const u = unitOverride !== undefined ? unitOverride : localMaxDurUnit;
-      const secs = valueUnitToSeconds(v, u);
-      if (secs === maxDurationSeconds) return; // No change vs server
-      try {
-        const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ max_duration_seconds: secs }),
-          },
-        );
-        if (response.ok) {
-          const data = await response.json();
-          onMaxDurationChange?.(data.max_duration_seconds ?? secs);
-        } else {
-          console.error("Failed to update max_duration_seconds");
-        }
-      } catch (err) {
-        console.error("Failed to update max_duration_seconds:", err);
-      }
-    },
-    [
-      sessionId,
-      localMaxDurValue,
-      localMaxDurUnit,
-      maxDurationSeconds,
-      onMaxDurationChange,
-    ],
-  );
-
-  // Handle max-duration unit change — update state and persist immediately
-  const handleMaxDurUnitChange = useCallback(
-    (e) => {
-      const newUnit = e.target.value;
-      setLocalMaxDurUnit(newUnit);
-      saveMaxDuration(localMaxDurValue, newUnit);
-    },
-    [localMaxDurValue, saveMaxDuration],
-  );
+  // Clamp the on-completion delay to the minimum on blur (staged)
+  const handleDelayBlur = useCallback(() => {
+    setLocalDelay((prev) => Math.max(minDelaySeconds, prev));
+  }, [minDelaySeconds]);
 
   // Handle pause/resume toggle
   const handlePauseResume = useCallback(async () => {
@@ -675,6 +662,18 @@ export function PeriodicFrequencyPanel({
         onCancel=${handleCloseErrorDialog}
       />
 
+      <!-- Dangerous-config warning: new, unbounded, high-frequency/on-completion -->
+      <${ConfirmDialog}
+        isOpen=${showDangerDialog}
+        title="Are you sure?"
+        message=${dangerMessage}
+        confirmLabel="Save anyway"
+        cancelLabel="Cancel"
+        confirmVariant="danger"
+        onConfirm=${handleConfirmDanger}
+        onCancel=${handleCancelDanger}
+      />
+
       <div
         class="${panelClasses}"
         style="${panelStyle}"
@@ -739,27 +738,47 @@ export function PeriodicFrequencyPanel({
           <!-- Flex spacer -->
           <div class="flex-1 min-w-0"></div>
 
-          <!-- Glanceable status: trigger-aware label + live countdown to next run -->
-          <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0 flex items-baseline gap-1">
-            ${
-              isOnCompletion
-                ? html`<span
-                    >after agent
-                    finishes${localDelay > 0 ? ` · +${localDelay}s` : ""}</span
-                  >`
-                : html`<${Fragment}><span>${freqLabel}</span>${countdownDisplay && html`<span aria-hidden="true">·</span>${countdownDisplay}`}</${Fragment}>`
-            }
-          </span>
-
-          <!-- Run count -->
-          <span class="text-xs text-mitto-text-500 shrink-0 hidden md:block">${runCountLabel}</span>
-
-          <!-- Saving indicator -->
+          <!-- While expanded: staged-edit Save button replaces the glance status.
+               While collapsed: trigger-aware label + live countdown + run count. -->
           ${
-            isSaving &&
-            html`<span
-              class="loading loading-spinner w-4 h-4 text-mitto-accent shrink-0"
-            ></span>`
+            expanded
+              ? html`<button
+                  type="button"
+                  onClick=${handleSaveAll}
+                  disabled=${isSaving}
+                  class="btn btn-primary btn-sm shrink-0"
+                  data-testid="periodic-save-button"
+                >
+                  ${isSaving
+                    ? html`<span
+                        class="loading loading-spinner w-4 h-4"
+                      ></span>`
+                    : "Save"}
+                </button>`
+              : html`<${Fragment}>
+                  <span
+                    class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0 flex items-baseline gap-1"
+                  >
+                    ${
+                      isOnCompletion
+                        ? html`<span
+                            >after agent
+                            finishes${localDelay > 0
+                              ? ` · +${localDelay}s`
+                              : ""}</span
+                          >`
+                        : html`<${Fragment}><span>${freqLabel}</span>${
+                            countdownDisplay &&
+                            html`<span aria-hidden="true">·</span
+                              >${countdownDisplay}`
+                          }</${Fragment}>`
+                    }
+                  </span>
+                  <span
+                    class="text-xs text-mitto-text-500 shrink-0 hidden md:block"
+                    >${runCountLabel}</span
+                  >
+                </${Fragment}>`
           }
 
           <!-- Expand/collapse chevron button -->
@@ -798,7 +817,7 @@ export function PeriodicFrequencyPanel({
               aria-label="Schedule"
               class="tab text-sm"
               checked=${localTrigger === "schedule"}
-              onChange=${() => saveTrigger("schedule")}
+              onChange=${() => handleTriggerSelect("schedule")}
               data-testid="periodic-trigger-tab-schedule"
             />
             <input
@@ -808,7 +827,7 @@ export function PeriodicFrequencyPanel({
               aria-label="On completion"
               class="tab text-sm"
               checked=${localTrigger === "onCompletion"}
-              onChange=${() => saveTrigger("onCompletion")}
+              onChange=${() => handleTriggerSelect("onCompletion")}
               data-testid="periodic-trigger-tab-oncompletion"
             />
           </div>
@@ -830,7 +849,7 @@ export function PeriodicFrequencyPanel({
                         setLocalDelay(
                           Math.max(0, parseInt(e.target.value, 10) || 0),
                         )}
-                      onBlur=${saveDelay}
+                      onBlur=${handleDelayBlur}
                       class="input input-sm w-20 shrink-0 text-center"
                       data-testid="periodic-delay-input"
                     />
@@ -853,7 +872,6 @@ export function PeriodicFrequencyPanel({
                       max="999"
                       value=${localValue}
                       onInput=${handleValueChange}
-                      onBlur=${handleValueBlur}
                       disabled=${isSaving}
                       class="input input-sm w-16 shrink-0 text-center"
                     />
@@ -882,7 +900,6 @@ export function PeriodicFrequencyPanel({
                         type="time"
                         value=${localAt}
                         onInput=${handleAtChange}
-                        onBlur=${handleAtBlur}
                         disabled=${isSaving}
                         class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
                           ? "opacity-50 cursor-not-allowed"
@@ -898,7 +915,7 @@ export function PeriodicFrequencyPanel({
             <input
               type="checkbox"
               id="fresh-context-checkbox-${sessionId}"
-              checked=${freshContext}
+              checked=${localFreshContext}
               onInput=${handleFreshContextChange}
               class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
               data-testid="fresh-context-checkbox"
@@ -920,7 +937,6 @@ export function PeriodicFrequencyPanel({
               max="9999"
               value=${localMaxIterations}
               onInput=${handleMaxIterationsChange}
-              onBlur=${handleMaxIterationsBlur}
               class="input input-sm w-20 text-center shrink-0"
               data-testid="periodic-panel-max-iterations"
             />
@@ -952,13 +968,12 @@ export function PeriodicFrequencyPanel({
               max="9999"
               value=${localMaxDurValue}
               onInput=${(e) => setLocalMaxDurValue(Math.max(0, parseInt(e.target.value, 10) || 0))}
-              onBlur=${() => saveMaxDuration()}
               class="input input-sm w-20 text-center shrink-0"
               data-testid="periodic-max-duration-value"
             />
             <select
               value=${localMaxDurUnit}
-              onChange=${handleMaxDurUnitChange}
+              onChange=${(e) => setLocalMaxDurUnit(e.target.value)}
               class="select select-sm shrink-0 w-24"
               data-testid="periodic-max-duration-unit"
             >
