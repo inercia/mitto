@@ -717,19 +717,29 @@ a:hover {
   border: none !important;
 }
 
-/* Sidebar action buttons ("+" / "..." on project group headers, and the
-   per-conversation "..." button) opt back in to a subtle circular outline
-   (paired with .btn-circle) so they read as discrete round buttons. The
-   --size override shrinks them below daisyUI's btn-xs (1.5rem) to a compact,
-   uniform 1.25rem circle. Also applies to the per-row action buttons in the
-   beads issue list. */
+/* Sidebar action buttons ("+" / "..." on project group headers, the Tasks
+   node, and the per-conversation "..." button, plus the per-row action
+   buttons in the beads issue list). The --size override shrinks them below
+   daisyUI's btn-xs (1.5rem) to a compact, uniform 1.25rem circle. */
 .menu button.sidebar-group-action,
 .beads-table-scroll button.sidebar-group-action {
-  border: 1px solid var(--mitto-border-2) !important;
   --size: 1.25rem;
   width: 1.25rem;
   height: 1.25rem;
   min-height: 1.25rem;
+}
+
+/* Conversations tree action buttons ("+" / "..." on group/Tasks headers and
+   the per-conversation "...") drop the circular outline for a flatter look
+   (they inherit border: none from the general .menu button rule above). */
+.menu button.sidebar-group-action {
+  border: none !important;
+}
+
+/* The beads issue list keeps a subtle circular outline so its round buttons
+   read as discrete controls within the table. */
+.beads-table-scroll button.sidebar-group-action {
+  border: 1px solid var(--mitto-border-2) !important;
 }
 
 /* "Select Workspace" dialog: cap the height so it never fills the whole
