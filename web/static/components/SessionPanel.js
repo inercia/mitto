@@ -259,6 +259,26 @@ export function SessionPanel({
     setTimeout(() => onClose(), 150);
   }, [onClose]);
 
+  // Close the panel when the user clicks outside of it (e.g. on the conversation
+  // to its left). Dock mode (mitto-cdf) deliberately has no dimming backdrop — a
+  // composited full-area overlay over the conversation dropped its GPU backing
+  // store on pointer-move — so outside clicks are detected with a document
+  // listener (no DOM overlay) instead. Clicks inside the docked panel, or inside
+  // any modal dialog (the confirm dialog renders as a viewport-covering .modal
+  // sibling), are ignored so those surfaces keep working. On phones the docked
+  // panel covers the whole view, so there is no "outside" to click.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onDocMouseDown = (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest(".drawer-dock") || t.closest(".modal")) return;
+      handleClose();
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [isOpen, handleClose]);
+
   // --- Properties tab state ---
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState("");
@@ -701,7 +721,9 @@ export function SessionPanel({
            conversation to its LEFT is never under a composited layer — that was
            what dropped the GPU backing store and blanked the content on
            pointer-move (mitto-cdf). The conversation does NOT reflow; on phones
-           the panel covers the whole view (w-full). Close via the X or Escape. -->
+           the panel covers the whole view (w-full). Close via the X, Escape, or
+           a click outside the panel (handled by a document mousedown listener
+           above, since dock mode has no backdrop overlay). -->
       <${Drawer}
         dock
         side="end"
@@ -1328,6 +1350,7 @@ export function SessionPanel({
                         sessionInfo.beads_issue,
                         sessionInfo.working_dir,
                         sessionId,
+                        { reopenProperties: true },
                       )}
                     title="Open beads issue ${sessionInfo.beads_issue}"
                   >

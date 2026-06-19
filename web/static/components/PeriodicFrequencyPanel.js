@@ -178,6 +178,8 @@ export function PeriodicFrequencyPanel({
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  // Restore-periodic confirmation dialog state (shown when re-enabling a paused schedule)
+  const [showRestoreDialog, setShowRestoreDialog] = useState(false);
   // Dangerous-config confirmation dialog state (shown on Save for new, unbounded periodics)
   const [showDangerDialog, setShowDangerDialog] = useState(false);
   // Reset timer checkbox state (default true = reset the countdown after manual run)
@@ -585,6 +587,49 @@ export function PeriodicFrequencyPanel({
     }
   }, [sessionId, disabled, isSavingEnabled, onPeriodicEnabledChange]);
 
+  // Handle click on the play button while paused - show restore confirmation
+  const handleRestoreClick = useCallback(() => {
+    if (isSavingEnabled || !sessionId) return;
+    setShowRestoreDialog(true);
+  }, [isSavingEnabled, sessionId]);
+
+  // Handle confirmation of restoring (re-enabling) the periodic schedule
+  const handleConfirmRestore = useCallback(async () => {
+    if (!sessionId) return;
+    setIsSavingEnabled(true);
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: true }),
+        },
+      );
+      if (response.ok) {
+        if (onPeriodicEnabledChange) onPeriodicEnabledChange(true);
+        setShowRestoreDialog(false);
+      } else {
+        console.error("Failed to restore periodic schedule");
+        setErrorMessage(
+          "Failed to restore the periodic schedule. Please try again.",
+        );
+      }
+    } catch (err) {
+      console.error("Failed to restore periodic schedule:", err);
+      setErrorMessage(
+        "Failed to restore the periodic schedule. Please try again.",
+      );
+    } finally {
+      setIsSavingEnabled(false);
+    }
+  }, [sessionId, onPeriodicEnabledChange]);
+
+  // Handle cancellation of the restore confirmation dialog
+  const handleCancelRestore = useCallback(() => {
+    if (!isSavingEnabled) setShowRestoreDialog(false);
+  }, [isSavingEnabled]);
+
   // Panel classes - part of normal document flow (not absolute positioned).
   // overflow-visible allows the prompt-selector dropdown to escape the card boundary upward.
   const panelClasses = `periodic-frequency-panel w-full bg-mitto-surface-hover dark:bg-mitto-surface-3/95 backdrop-blur-sm border border-mitto-border dark:border-mitto-border-2 rounded-lg overflow-visible transition-all duration-300 ease-out ${
@@ -594,6 +639,11 @@ export function PeriodicFrequencyPanel({
   }`;
 
   const panelStyle = isOpen ? "" : "height: 0px;";
+
+  // The `disabled` prop is true when periodic is ACTIVE/enabled. When the schedule has
+  // been paused (e.g. the conversation disabled its own periodic via MCP), the
+  // play button restores the schedule and the pause button is greyed out.
+  const periodicPaused = !disabled;
 
   // Format next scheduled time for display (uses local state for immediate feedback)
   const nextTimeDisplay = localNextScheduledAt
@@ -651,6 +701,19 @@ export function PeriodicFrequencyPanel({
         </label>
       </${ConfirmDialog}>
 
+      <!-- Confirmation dialog for restoring a paused periodic schedule -->
+      <${ConfirmDialog}
+        isOpen=${showRestoreDialog}
+        title="Restore periodic schedule"
+        message="Do you want to restore the periodic schedule for this conversation?"
+        confirmLabel="Restore"
+        cancelLabel="Cancel"
+        confirmVariant="primary"
+        isLoading=${isSavingEnabled}
+        onConfirm=${handleConfirmRestore}
+        onCancel=${handleCancelRestore}
+      />
+
       <!-- Error dialog for showing errors -->
       <${ConfirmDialog}
         isOpen=${errorMessage !== null}
@@ -681,17 +744,18 @@ export function PeriodicFrequencyPanel({
       >
         <!-- HEADER: always visible when isOpen (single ~44px row) -->
         <div class="h-11 px-3 flex items-center gap-2 text-sm">
-          <!-- Run-now button -->
+          <!-- Play button: runs the prompt now when periodic is active, or
+               restores (re-enables) the schedule when periodic is paused. -->
           <button
             type="button"
-            onClick=${handleIconClick}
-            disabled=${isTriggering || isStreaming}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${isTriggering || isStreaming ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            title=${isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
+            onClick=${periodicPaused ? handleRestoreClick : handleIconClick}
+            disabled=${periodicPaused ? isSavingEnabled : isTriggering || isStreaming}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(periodicPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            title=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
             data-testid="periodic-run-now-button"
           >
             ${
-              isTriggering
+              (periodicPaused ? isSavingEnabled : isTriggering)
                 ? html`<span
                     class="loading loading-spinner w-4 h-4 text-mitto-text-secondary"
                   ></span>`
@@ -701,33 +765,31 @@ export function PeriodicFrequencyPanel({
             }
           </button>
 
-          <!-- Pause/Resume button (icon-only, sits next to Run-now) -->
+          <!-- Pause button: pauses periodic runs when active; greyed out when
+               already paused (use the play button to restore the schedule). -->
           <button
             type="button"
             onClick=${handlePauseResume}
-            disabled=${isSavingEnabled}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            title=${disabled ? "Pause periodic runs" : "Resume periodic runs"}
+            disabled=${periodicPaused || isSavingEnabled}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${periodicPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            title=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
             data-testid="periodic-pause-resume-button"
           >
             ${
-              isSavingEnabled
+              !periodicPaused && isSavingEnabled
                 ? html`<span
                     class="loading loading-spinner w-4 h-4 text-mitto-text-secondary"
                   ></span>`
-                : disabled
-                  ? html`<${PauseFilledIcon}
-                      className="w-4 h-4 text-mitto-text-secondary"
-                    />`
-                  : html`<${PlayFilledIcon}
-                      className="w-4 h-4 text-mitto-text-secondary"
-                    />`
+                : html`<${PauseFilledIcon}
+                    className="w-4 h-4 text-mitto-text-secondary"
+                  />`
             }
           </button>
 
-          <!-- Inline prompt selector (header placement). Hidden on phones — a
-               full-width copy is rendered in the expanded body below. -->
-          <div class="hidden md:block min-w-0">
+          <!-- Inline prompt selector + Mitto bubble (header placement). Always
+               visible across breakpoints so the prompt stays reachable without
+               expanding the properties section. -->
+          <div class="min-w-0">
             <${PeriodicPromptSelector}
               prompts=${prompts}
               selectedPromptName=${selectedPromptName}
@@ -742,7 +804,9 @@ export function PeriodicFrequencyPanel({
           <div class="flex-1 min-w-0"></div>
 
           <!-- While expanded: staged-edit Save button replaces the glance status.
-               While collapsed: trigger-aware label + live countdown + run count. -->
+               While collapsed: trigger-aware label + live countdown + run count.
+               The glance status is md+ only — on phones the next-run info is
+               surfaced inside the expanded properties body instead. -->
           ${
             expanded
               ? html`<button
@@ -758,33 +822,34 @@ export function PeriodicFrequencyPanel({
                       ></span>`
                     : "Save"}
                 </button>`
-              : html`<div class="flex items-center gap-1.5 shrink-0">
-                  ${isOnCompletion
-                    ? html`<span
-                        class="badge badge-sm badge-ghost whitespace-nowrap"
-                        >after agent
-                        finishes${localDelay > 0
-                          ? ` · +${localDelay}s`
-                          : ""}</span
-                      >`
-                    : html`<${Fragment}>
-                          <span
-                            class="badge badge-sm badge-ghost whitespace-nowrap"
-                            >${freqLabel}</span
-                          >
-                          ${
-                            countdownDisplay &&
-                            html`<span
-                              class="badge badge-sm badge-ghost font-mono whitespace-nowrap"
-                              >${countdownDisplay}</span
-                            >`
-                          }
-                        </${Fragment}>`}
-                  <span class="hidden md:block shrink-0">
-                    <span class="badge badge-sm badge-ghost whitespace-nowrap"
+              : html`<div class="hidden md:block shrink-0">
+                  <div class="flex items-center gap-1.5">
+                    ${isOnCompletion
+                      ? html`<span
+                          class="badge badge-sm badge-ghost whitespace-nowrap"
+                          >after agent
+                          finishes${localDelay > 0
+                            ? ` · +${localDelay}s`
+                            : ""}</span
+                        >`
+                      : html`<${Fragment}>
+                            <span
+                              class="badge badge-sm badge-ghost whitespace-nowrap"
+                              >${freqLabel}</span
+                            >
+                            ${
+                              countdownDisplay &&
+                              html`<span
+                                class="badge badge-sm badge-ghost font-mono whitespace-nowrap"
+                                >${countdownDisplay}</span
+                              >`
+                            }
+                          </${Fragment}>`}
+                    <span
+                      class="badge badge-sm badge-ghost whitespace-nowrap"
                       >${runCountLabel}</span
                     >
-                  </span>
+                  </div>
                 </div>`
           }
 
@@ -815,21 +880,37 @@ export function PeriodicFrequencyPanel({
               : "max-h-0 opacity-0 overflow-hidden pointer-events-none"
           }"
         >
-          <!-- Mobile-only prompt selector: the header selector is hidden on
-               phones, so surface it full-width at the top of the expanded
-               properties (distinct testids keep Playwright locators unique). -->
-          <div class="md:hidden flex items-center gap-2 px-4 pt-2 pb-2">
-            <${PeriodicPromptSelector}
-              prompts=${prompts}
-              selectedPromptName=${selectedPromptName}
-              disabled=${false}
-              onSelect=${onPromptSelect}
-              isPromptAreaVisible=${isPromptAreaVisible}
-              onTogglePromptArea=${onTogglePromptArea}
-              fullWidth=${true}
-              idPrefix="periodic-prompt-selector-mobile"
-              toggleTestId="periodic-toggle-prompt-area-mobile"
-            />
+          <!-- Mobile-only next-run info: the header glance status is hidden on
+               phones, so surface the trigger label + live countdown here at the
+               top of the expanded properties instead. On md+ this info lives in
+               the header status row. -->
+          <div
+            class="md:hidden flex items-center gap-1.5 px-4 pt-2 pb-2 text-sm"
+            data-testid="periodic-next-run-info-mobile"
+          >
+            ${
+              isOnCompletion
+                ? html`<span
+                    class="badge badge-sm badge-ghost whitespace-nowrap"
+                    >after agent
+                    finishes${localDelay > 0 ? ` · +${localDelay}s` : ""}</span
+                  >`
+                : html`<${Fragment}>
+                    <span class="badge badge-sm badge-ghost whitespace-nowrap"
+                      >${freqLabel}</span
+                    >
+                    ${localNextScheduledAt &&
+                    html`<span
+                      class="badge badge-sm badge-ghost font-mono whitespace-nowrap"
+                      ><${CountdownDisplay}
+                        targetIso=${localNextScheduledAt}
+                        unit=${localUnit}
+                        active=${isOpen && expanded}
+                        title=${nextTimeDisplay ? `Next: ${nextTimeDisplay}` : ""}
+                      /></span
+                    >`}
+                  </${Fragment}>`
+            }
           </div>
 
           <!-- Trigger tabs: Schedule | On completion -->
