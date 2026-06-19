@@ -1,4 +1,4 @@
-icon: beads
+icon: play
 name: Start working on ready
 menus: prompts, beadsList
 description: Review ready (not-in-progress) beads, present a prioritized recommendation, claim the chosen one, then analyze and plan it in this conversation and dispatch the implementation work to child conversations

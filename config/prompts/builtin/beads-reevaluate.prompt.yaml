@@ -1,4 +1,4 @@
-icon: beads
+icon: refresh
 name: Reevaluate all issues
 menus: prompts, beadsList
 description: Reevaluate priority, dependencies, and importance of all beads — close any already-completed ones, delegate deeper evaluation to child conversations when needed — then propose changes and surface what to do now

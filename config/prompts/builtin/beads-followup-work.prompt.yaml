@@ -1,4 +1,4 @@
-icon: beads
+icon: search
 name: Identify follow-up work
 menus: prompts, conversations
 description: Review the conversation for incomplete work, follow-up items, and edge cases, organize them (grouping related items under epics — new or existing), and file them as beads

@@ -1,4 +1,4 @@
-icon: beads
+icon: list
 name: Overview
 menus: prompts, beadsList
 description: 'Read-only health snapshot of the whole tracker: ready, blocked, in-progress, stale, and dependency cycles'

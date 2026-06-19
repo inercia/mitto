@@ -1,4 +1,4 @@
-icon: beads
+icon: check
 name: Close if issue completed
 description: Check the conversation's beads issue and, if all its requirements are done, close it and self-destruct
 menus: conversation

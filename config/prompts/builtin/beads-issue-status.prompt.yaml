@@ -1,4 +1,4 @@
-icon: beads
+icon: list
 name: Show status
 menus: beadsIssues
 parameters:

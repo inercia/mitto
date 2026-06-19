@@ -1,4 +1,4 @@
-icon: beads
+icon: layers
 name: Group in Epics
 menus: beadsList
 description: Review ungrouped open beads, propose high-confidence epic groupings for review, and (after confirmation) create the epics and reparent the member issues
