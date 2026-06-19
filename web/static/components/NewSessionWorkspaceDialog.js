@@ -39,7 +39,7 @@ function setFolderExpansionState(folderId, expanded) {
   }
 }
 
-export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
+export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCancel, onCreateWorkspace }) {
   const [filterText, setFilterText] = useState("");
   const [expandedFolders, setExpandedFolders] = useState({});
   const filterInputRef = useRef(null);
@@ -332,6 +332,22 @@ export function NewSessionWorkspaceDialog({ isOpen, workspaces, onSelect, onCanc
               },
             )}
       </div>
+
+      ${onCreateWorkspace &&
+      html`
+        <div
+          class="mt-3 pt-2 border-t border-mitto-border text-xs text-mitto-text-muted"
+        >
+          Don't see your workspace?${" "}
+          <button
+            type="button"
+            onClick=${onCreateWorkspace}
+            class="text-mitto-accent hover:text-mitto-accent-400 hover:underline font-medium"
+          >
+            Create one first
+          </button>.
+        </div>
+      `}
     </${Modal}>
   `;
 }
