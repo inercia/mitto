@@ -581,6 +581,28 @@ a.url-link:hover {
   color: #93c5fd;
 }
 
+/* Beads issue links - inserted by linkifyBeadsRefs */
+a.beads-link {
+  color: #a78bfa; /* Purple accent to distinguish from file/URL links */
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+a.beads-link:hover {
+  color: #c4b5fd;
+  text-decoration-style: solid;
+}
+
+.light a.beads-link {
+  color: #7c3aed;
+}
+
+.light a.beads-link:hover {
+  color: #6d28d9;
+}
+
 /* Mailto links */
 a.mailto-link {
   color: #f472b6; /* Pink for email links */

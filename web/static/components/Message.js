@@ -19,6 +19,8 @@ import {
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
 import { CopyIcon, CheckIcon } from "./Icons.js";
+import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
+import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 
 /**
  * Check if a thought message appears to be reporting an upstream model/API error.
@@ -358,14 +360,13 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     // Ref for table wrapping in user markdown content
     const userMessageRef = useRef(null);
 
-    // Wrap tables in scrollable containers for horizontal scrolling on narrow screens
+    // Wrap tables and linkify beads IDs in user markdown content
     useEffect(() => {
       if (userMessageRef.current && useMarkdown) {
         const tables = userMessageRef.current.querySelectorAll(
           "table:not(.table-wrapper table)",
         );
         tables.forEach((table) => {
-          // Skip if already wrapped
           if (table.parentElement?.classList.contains("table-wrapper")) {
             return;
           }
@@ -374,7 +375,18 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           table.parentNode.insertBefore(wrapper, table);
           wrapper.appendChild(table);
         });
+        const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+        linkifyBeadsRefs(userMessageRef.current, ids, meta);
       }
+
+      const onBeadsUpdated = () => {
+        if (userMessageRef.current && useMarkdown) {
+          const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+          linkifyBeadsRefs(userMessageRef.current, ids, meta);
+        }
+      };
+      window.addEventListener("beads-ids-updated", onBeadsUpdated);
+      return () => window.removeEventListener("beads-ids-updated", onBeadsUpdated);
     }, [renderedHtml, useMarkdown]);
 
     const [userCopied, setUserCopied] = useState(false);
@@ -462,7 +474,6 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           "table:not(.table-wrapper table)",
         );
         tables.forEach((table) => {
-          // Skip if already wrapped
           if (table.parentElement?.classList.contains("table-wrapper")) {
             return;
           }
@@ -476,7 +487,20 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         if (typeof window.renderMermaidDiagrams === "function") {
           window.renderMermaidDiagrams(agentMessageRef.current);
         }
+
+        // Linkify beads IDs
+        const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+        linkifyBeadsRefs(agentMessageRef.current, ids, meta);
       }
+
+      const onBeadsUpdated = () => {
+        if (agentMessageRef.current) {
+          const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+          linkifyBeadsRefs(agentMessageRef.current, ids, meta);
+        }
+      };
+      window.addEventListener("beads-ids-updated", onBeadsUpdated);
+      return () => window.removeEventListener("beads-ids-updated", onBeadsUpdated);
     }, [message.html]);
 
     const [agentCopied, setAgentCopied] = useState(false);

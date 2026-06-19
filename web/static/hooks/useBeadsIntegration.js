@@ -69,6 +69,11 @@ export function useBeadsIntegration({
   // a ref so it survives re-renders without re-triggering effects; cleared once
   // the return is performed (or when the open did not originate from a panel).
   const beadsReturnSessionRef = useRef(null);
+  // Whether closing the standalone issue viewer should re-open the originating
+  // conversation's properties panel. Only set when the viewer was opened from
+  // that panel's "Linked beads issue" link — auto-detected links in the
+  // conversation body return to the conversation without popping the panel.
+  const beadsReturnOpenPropertiesRef = useRef(false);
 
   // Map a beads issue ID → the most recently updated conversation linked to it.
   // The beads view uses this to render issue IDs as links that open the
@@ -418,14 +423,19 @@ export function useBeadsIntegration({
     setBeadsCleanupNonce((n) => n + 1);
   }, []);
 
-  // Open the standalone issue viewer for a specific issue (used by the conversation
-  // properties panel's linked-issue link). The nonce bump lets BeadsIssueView
-  // re-fetch even when the same issue is opened again. `originSessionId` is the
-  // conversation the link was clicked from; it is remembered so closing the
-  // viewer returns there (see handleReturnFromBeadsIssue).
-  const handleOpenBeadsIssue = useCallback((issueId, workingDir, originSessionId) => {
+  // Open the standalone issue viewer for a specific issue. Two entry points use
+  // it: the conversation properties panel's "Linked beads issue" link, and
+  // auto-detected beads links in the conversation body. The nonce bump lets
+  // BeadsIssueView re-fetch even when the same issue is opened again.
+  // `originSessionId` is the conversation the link was clicked from; it is
+  // remembered so closing the viewer returns there (see
+  // handleReturnFromBeadsIssue). Pass `opts.reopenProperties` (true only for the
+  // properties-panel link) to re-open that panel on close; auto-detected body
+  // links omit it so closing just returns to the conversation.
+  const handleOpenBeadsIssue = useCallback((issueId, workingDir, originSessionId, opts) => {
     if (!issueId || !workingDir) return;
     beadsReturnSessionRef.current = originSessionId || null;
+    beadsReturnOpenPropertiesRef.current = !!(opts && opts.reopenProperties);
     setBeadsWorkingDir(workingDir);
     setBeadsInitialIssueId(issueId);
     setBeadsSelectNonce((n) => n + 1);
@@ -434,19 +444,25 @@ export function useBeadsIntegration({
     setShowSidePanel(false);
   }, []);
 
-  // Return to the conversation an issue was opened from, re-opening its
-  // properties panel. Called by BeadsView when the detail panel that was opened
-  // via the linked-issue link is closed. No-op when the beads view was not
-  // entered from a conversation (e.g. the Tasks button), so a normal close just
-  // leaves the user on the beads list as before.
+  // Return to the conversation an issue was opened from. Called by BeadsView when
+  // the standalone detail panel is closed. The properties panel is re-opened only
+  // when the viewer was opened from that panel's linked-issue link
+  // (reopenProperties); auto-detected body links just return to the conversation
+  // without popping the panel. No-op when the beads view was not entered from a
+  // conversation (e.g. the Tasks button), so a normal close just leaves the user
+  // on the beads list as before.
   const handleReturnFromBeadsIssue = useCallback(() => {
     const origin = beadsReturnSessionRef.current;
+    const reopenProperties = beadsReturnOpenPropertiesRef.current;
     beadsReturnSessionRef.current = null;
+    beadsReturnOpenPropertiesRef.current = false;
     if (!origin) return;
     switchSession(origin);
     setMainView("conversation");
-    setSidePanelTab("properties");
-    setShowSidePanel(true);
+    if (reopenProperties) {
+      setSidePanelTab("properties");
+      setShowSidePanel(true);
+    }
   }, [switchSession, setMainView, setSidePanelTab, setShowSidePanel]);
 
   return {

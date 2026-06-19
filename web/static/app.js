@@ -86,6 +86,7 @@ import {
   useAgentPlan,
   useWorkspacePrompts,
   useBeadsIntegration,
+  useBeadsKnownIds,
   useSessionNavigation,
   useConversationMenu,
   useConversationSeeding,
@@ -446,6 +447,22 @@ function App() {
   // Conversation seeding: send a named prompt to an existing conversation via queue,
   // or create a new (optionally periodic) conversation seeded with a named prompt.
   const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+  // Fetch and cache known beads issue IDs for the active session's workspace.
+  // Dispatches "beads-ids-updated" to re-linkify already-rendered messages.
+  useBeadsKnownIds(sessionInfo?.working_dir);
+
+  // Expose a global so globalHandlers.js can open the beads issue viewer when
+  // a linkified beads ID is clicked in a conversation message.
+  useEffect(() => {
+    window.mittoOpenBeadsIssue = (id) =>
+      handleOpenBeadsIssue(
+        id,
+        sessionInfo?.working_dir || window.mittoCurrentWorkspace || "",
+        activeSessionId,
+      );
+    return () => { delete window.mittoOpenBeadsIssue; };
+  }, [handleOpenBeadsIssue, activeSessionId, sessionInfo?.working_dir]);
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
