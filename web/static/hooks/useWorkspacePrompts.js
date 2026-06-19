@@ -29,12 +29,12 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
     useState(null); // Last-Modified header for conditional requests
 
   // Predefined prompts: prompts whose `menus` list includes "prompts" (the ChatInput dropup).
+  // Parameters that the "prompts" menu cannot auto-fill are collected via the
+  // PromptParameterDialog when the user selects such a prompt (mitto-hcf.3).
   const predefinedPrompts = useMemo(
     () =>
       workspacePrompts.filter(
-        (p) =>
-          promptMenus(p).includes("prompts") &&
-          menuSatisfies(p, "prompts"),
+        (p) => promptMenus(p).includes("prompts"),
       ),
     [workspacePrompts],
   );
@@ -80,11 +80,13 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
         if (!res.ok) return [];
         const data = await res.json();
         const all = data?.prompts || [];
+        // Parameters that the "conversation" menu cannot auto-fill are collected
+        // via the PromptParameterDialog when the user selects such a prompt
+        // (mitto-hcf.3). No menuSatisfies gate — all params can be user-filled.
         return all.filter(
           (p) =>
             p &&
-            promptMenus(p).includes("conversation") &&
-            menuSatisfies(p, "conversation"),
+            promptMenus(p).includes("conversation"),
         );
       } catch (err) {
         console.error(

@@ -164,7 +164,7 @@ import {
 } from "./constants.js";
 
 // Import prompt utilities
-import { promptMenus } from "./utils/prompts.js";
+import { promptMenus, getMissingPromptParameters } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
 import {
@@ -178,6 +178,7 @@ import { DeleteDialog } from "./components/DeleteDialog.js";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog.js";
 import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialog.js";
 import { PeriodicScheduleDialog } from "./components/PeriodicScheduleDialog.js";
+import { PromptParameterDialog } from "./components/PromptParameterDialog.js";
 import { Tooltip } from "./components/Tooltip.js";
 
 // SettingsDialog, WorkspacesDialog, etc. are all imported from ./components/
@@ -365,6 +366,9 @@ function App() {
   // Periodic schedule dialog: opened when a periodic prompt is selected from any menu.
   // Shape: null | { prompt, onSchedule: async ({ value, unit, at? }) => void }
   const [periodicScheduleDialog, setPeriodicScheduleDialog] = useState(null);
+  // Prompt parameter dialog: opened when a beadsIssues prompt has parameters that
+  // the menu cannot auto-fill. Shape: null | { prompt, parameters, onSubmit }
+  const [promptParamDialog, setPromptParamDialog] = useState(null);
   // Workspace prompts: fetch/cache, predefined (dropup) subset, and per-session helpers.
   // (Extracted to hooks/useWorkspacePrompts.js)
   const {
@@ -435,6 +439,7 @@ function App() {
     setShowSidePanel,
     setSidePanelTab,
     onOpenPeriodicDialog: (prompt, onSchedule) => setPeriodicScheduleDialog({ prompt, onSchedule }),
+    onOpenPromptParamDialog: (prompt, parameters, onSubmit) => setPromptParamDialog({ prompt, parameters, onSubmit }),
     activeSessionId,
   });
 
@@ -1347,16 +1352,34 @@ function App() {
     setShowSidePanel(true);
   }, []);
 
-  // Wrapper for sendPrompt that tracks messages for plan expiration
+  // Wrapper for sendPrompt that tracks messages for plan expiration.
+  // When a named prompt is dispatched with user-supplied arguments (from the
+  // PromptParameterDialog), route through the queue API so the backend can
+  // apply ${VAR} substitution — the WebSocket prompt path does not forward
+  // arguments. All other sends go through the normal WebSocket path.
   const handleSendPrompt = useCallback(
     async (message, images = [], files = [], options = {}) => {
       // Track this message for plan expiration before sending
       trackUserMessageForPlanExpiration(activeSessionId);
 
+      // Named prompt with user arguments → queue API (supports ${VAR} substitution)
+      if (
+        options.promptName &&
+        options.arguments &&
+        Object.keys(options.arguments).length > 0 &&
+        activeSessionId
+      ) {
+        return seedConversationWithPrompt(
+          activeSessionId,
+          { name: options.promptName },
+          { arguments: options.arguments },
+        );
+      }
+
       // Call the original sendPrompt
       return sendPrompt(message, images, files, options);
     },
-    [sendPrompt, trackUserMessageForPlanExpiration, activeSessionId],
+    [sendPrompt, seedConversationWithPrompt, trackUserMessageForPlanExpiration, activeSessionId],
   );
 
   // Handler for prompts dropdown open - refreshes workspace prompts (which now include all sources)
@@ -1572,8 +1595,9 @@ function App() {
 
   // Convert an existing regular conversation to a periodic one by creating a
   // draft periodic config (enabled:false). The periodic_updated WebSocket event
-  // will flip session.periodic_enabled=true, moving it to the periodic category
-  // and revealing the inline periodic editor in ChatInput automatically.
+  // sets periodic_configured=true (reveals the inline periodic editor in ChatInput)
+  // while periodic_enabled stays false (conversation remains in the Conversations
+  // group). The user must explicitly enable scheduling to move it to Periodic group.
   const handleMakePeriodic = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
@@ -1614,7 +1638,8 @@ function App() {
 
   // Remove the periodic config from a conversation, reverting it to a regular one.
   // DELETE /api/sessions/{id}/periodic broadcasts periodic_updated (nil), which
-  // flips session.periodic_enabled=false and hides the inline periodic editor.
+  // sets both periodic_configured=false (hides the inline periodic editor) and
+  // periodic_enabled=false (moves conversation back to the Conversations group).
   const handleMakeNonPeriodic = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
@@ -1674,6 +1699,22 @@ function App() {
           // Already-periodic or child conversation: enqueue a single run without touching config.
           const sessionId = session?.session_id;
           if (!sessionId) return;
+          const missing = getMissingPromptParameters(prompt, "conversation");
+          if (missing.length > 0) {
+            setPromptParamDialog({
+              prompt,
+              parameters: missing,
+              onSubmit: async (userArgs) => {
+                const result = await seedConversationWithPrompt(sessionId, prompt, { arguments: userArgs });
+                if (result.success) {
+                  showToast({ style: "success", title: `Sent "${prompt.name}" to conversation`, duration: 3000 });
+                } else {
+                  showToast({ style: "warning", title: "Failed to send prompt", duration: 4000 });
+                }
+              },
+            });
+            return;
+          }
           const result = await seedConversationWithPrompt(sessionId, prompt);
           if (result.success) {
             showToast({ style: "success", title: `Sent "${prompt.name}" to conversation`, duration: 3000 });
@@ -1710,6 +1751,31 @@ function App() {
       // Non-periodic prompt: enqueue the named prompt to the existing conversation.
       const sessionId = session?.session_id;
       if (!sessionId) return;
+      // Check whether any parameters cannot be auto-supplied by the conversation menu.
+      const missing = getMissingPromptParameters(prompt, "conversation");
+      if (missing.length > 0) {
+        setPromptParamDialog({
+          prompt,
+          parameters: missing,
+          onSubmit: async (userArgs) => {
+            const result = await seedConversationWithPrompt(sessionId, prompt, { arguments: userArgs });
+            if (result.success) {
+              showToast({
+                style: "success",
+                title: `Sent "${prompt.name}" to conversation`,
+                duration: 3000,
+              });
+            } else {
+              showToast({
+                style: "warning",
+                title: "Failed to send prompt",
+                duration: 4000,
+              });
+            }
+          },
+        });
+        return;
+      }
       const result = await seedConversationWithPrompt(sessionId, prompt);
       if (result.success) {
         showToast({
@@ -1725,7 +1791,7 @@ function App() {
         });
       }
     },
-    [seedConversationWithPrompt, startConversationWithPrompt, showToast, focusSession],
+    [seedConversationWithPrompt, startConversationWithPrompt, showToast, focusSession, setPromptParamDialog],
   );
 
   // ----- Chat header conversation menu -----
@@ -1747,7 +1813,7 @@ function App() {
     [allSessions, activeSessionId],
   );
   const headerIsArchived = activeSession?.archived || false;
-  const headerIsPeriodic = activeSession?.periodic_enabled || false;
+  const headerIsPeriodic = activeSession?.periodic_configured || false;
   const headerIsSpawned =
     !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
   // Only the active conversation can have queued messages; streaming state comes
@@ -1961,6 +2027,16 @@ function App() {
           onSchedule?.(schedule);
         }}
         onCancel=${() => setPeriodicScheduleDialog(null)}
+      />
+
+      <!-- Prompt Parameter Dialog: opened when a beadsIssues prompt has params the menu cannot auto-fill -->
+      <${PromptParameterDialog}
+        isOpen=${promptParamDialog !== null}
+        parameters=${promptParamDialog?.parameters || []}
+        workingDir=${beadsWorkingDir}
+        title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
+        onClose=${() => setPromptParamDialog(null)}
+        onSubmit=${(args) => { promptParamDialog?.onSubmit?.(args); setPromptParamDialog(null); }}
       />
 
       <!-- Unified toast container -->
@@ -2208,8 +2284,9 @@ function App() {
             showQueueDropdown=${showQueueDropdown}
             actionButtons=${actionButtons}
             availableCommands=${availableCommands}
-            periodicEnabled=${sessionInfo?.periodic_enabled || false}
+            periodicConfigured=${sessionInfo?.periodic_configured || false}
             onPeriodicPrompt=${(prompt) => handleSendPromptToConversation(activeSession, prompt)}
+            onOpenPromptParamDialog=${(prompt, parameters, onSubmit) => setPromptParamDialog({ prompt, parameters, onSubmit })}
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             gcSuspended=${sessionInfo?.gc_suspended || false}

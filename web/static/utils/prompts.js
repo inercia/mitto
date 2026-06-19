@@ -79,6 +79,28 @@ export function menuSatisfies(prompt, menu) {
 }
 
 /**
+ * Returns the ordered list of declared parameters whose `type` is NOT
+ * auto-supplied by the given menu. Each entry is the original parameter object
+ * ({ name, type, description?, required? }) so callers can inspect all fields.
+ *
+ * Rules:
+ *   - An unknown or missing `menu` is treated as providing [] (all params missing).
+ *   - A prompt with no parameters always returns [].
+ *   - A parameter whose type IS in the menu's provided-types list is excluded.
+ *   - Declared order is preserved.
+ *
+ * @param {Object} prompt - Prompt object with optional `parameters` array
+ * @param {string} menu   - Menu key (e.g. "beadsIssues", "prompts")
+ * @returns {Array}       - Subset of prompt parameters not auto-filled by menu
+ */
+export function getMissingPromptParameters(prompt, menu) {
+  const params = promptParameters(prompt);
+  if (params.length === 0) return [];
+  const provided = MENU_PARAM_TYPES[menu] || [];
+  return params.filter((p) => !provided.includes(p.type));
+}
+
+/**
  * Build the arguments map for a prompt from a map of type → value.
  * For each declared parameter { name, type }, if typeValues[type] is defined
  * (not undefined/null), the parameter's name is mapped to that value.

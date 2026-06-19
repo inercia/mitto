@@ -7,7 +7,7 @@
 const { useState, useCallback, useMemo, useRef } = window.preact;
 
 import { apiUrl, authFetch } from "../utils/index.js";
-import { promptMenus, menuSatisfies, collectPromptArguments } from "../utils/prompts.js";
+import { promptMenus, menuSatisfies, collectPromptArguments, getMissingPromptParameters } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
 /**
@@ -26,6 +26,10 @@ import { useConversationSeeding } from "./useConversationSeeding.js";
  * @param {Function} [deps.onOpenPeriodicDialog] - Opens the periodic schedule dialog.
  *   Signature: (prompt, onSchedule: ({ value, unit, at? }) => void) => void.
  *   When absent, periodic prompts fall back to the one-time named-prompt path.
+ * @param {Function} [deps.onOpenPromptParamDialog] - Opens the prompt parameter dialog
+ *   to collect free-text parameters that the beadsIssues menu cannot auto-fill.
+ *   Signature: (prompt, parameters, onSubmit: (argsMap) => void) => void.
+ *   When absent, prompts with missing params are dispatched without the dialog.
  */
 export function useBeadsIntegration({
   allSessions,
@@ -38,6 +42,7 @@ export function useBeadsIntegration({
   setShowSidePanel,
   setSidePanelTab,
   onOpenPeriodicDialog,
+  onOpenPromptParamDialog,
   activeSessionId,
 }) {
   const { startConversationWithPrompt } = useConversationSeeding({ newSession });
@@ -128,8 +133,7 @@ export function useBeadsIntegration({
         .filter(
           (p) =>
             p &&
-            promptMenus(p).includes("beadsIssues") &&
-            menuSatisfies(p, "beadsIssues"),
+            promptMenus(p).includes("beadsIssues"),
         )
         .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } catch (err) {
@@ -216,13 +220,48 @@ export function useBeadsIntegration({
         return;
       }
 
+      // Build the auto-filled args map from what the beadsIssues menu provides.
+      const autoArgs = collectPromptArguments(prompt, { beadsId: issue.id, beadsTitle: issue.title });
+      const missing = getMissingPromptParameters(prompt, "beadsIssues");
+
+      // When there are parameters the menu cannot auto-fill, open the dialog so
+      // the user can supply them. The dispatch happens inside the onSubmit callback.
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+          const result = await startConversationWithPrompt({
+            workingDir: beadsWorkingDir,
+            acpServer: ws?.acp_server,
+            name: convName,
+            beadsIssue: issue.id,
+            prompt,
+            arguments: { ...autoArgs, ...userArgs },
+          });
+          if (!result?.sessionId) {
+            showToast({
+              style: "error",
+              title: result?.error || "Failed to create conversation",
+              duration: 4000,
+            });
+            return;
+          }
+          setMainView("conversation");
+          showToast({
+            style: "success",
+            title: `Started "${prompt.name}" for ${issue.id}`,
+            duration: 3000,
+          });
+        });
+        return;
+      }
+
+      // All params are auto-filled (or no params declared) — dispatch directly.
       const result = await startConversationWithPrompt({
         workingDir: beadsWorkingDir,
         acpServer: ws?.acp_server,
         name: convName,
         beadsIssue: issue.id,
         prompt,
-        arguments: collectPromptArguments(prompt, { beadsId: issue.id, beadsTitle: issue.title }),
+        arguments: autoArgs,
       });
       if (!result?.sessionId) {
         showToast({
@@ -242,7 +281,7 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast, onOpenPeriodicDialog],
+    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast, onOpenPeriodicDialog, onOpenPromptParamDialog],
   );
 
   // Run a beads-list prompt: create a new conversation in the beads workspace,

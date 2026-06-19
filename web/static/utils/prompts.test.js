@@ -9,6 +9,7 @@ import {
   MENU_PARAM_TYPES,
   menuSatisfies,
   collectPromptArguments,
+  getMissingPromptParameters,
 } from "./prompts.js";
 
 // =============================================================================
@@ -273,5 +274,90 @@ describe("collectPromptArguments", () => {
   test("returns empty object when typeValues is empty", () => {
     const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
     expect(collectPromptArguments(prompt, {})).toEqual({});
+  });
+});
+
+// =============================================================================
+// getMissingPromptParameters Tests
+// =============================================================================
+
+describe("getMissingPromptParameters", () => {
+  test("prompt with no parameters returns []", () => {
+    expect(getMissingPromptParameters({}, "beadsIssues")).toEqual([]);
+  });
+
+  test("all parameters auto-filled by menu returns []", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+  });
+
+  test("none auto-filled (text param in prompts menu) returns all params", () => {
+    const params = [{ name: "MSG", type: "text" }];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual(params);
+  });
+
+  test("none auto-filled in unknown menu returns all params in declared order", () => {
+    const params = [
+      { name: "ISSUE_ID", type: "beadsId" },
+      { name: "MSG", type: "text" },
+    ];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual(params);
+  });
+
+  test("mix of auto-filled and free params returns only free ones in order", () => {
+    const beadsIdParam = { name: "ISSUE_ID", type: "beadsId" };
+    const textParam = { name: "MSG", type: "text" };
+    const prompt = { parameters: [beadsIdParam, textParam] };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
+      textParam,
+    ]);
+  });
+
+  test("unknown parameter type is treated as missing", () => {
+    const param = { name: "FOO", type: "unknownType" };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  });
+
+  test("unknown menu value causes all params to be treated as missing", () => {
+    const params = [
+      { name: "ISSUE_ID", type: "beadsId" },
+      { name: "TITLE", type: "beadsTitle" },
+    ];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, "unknownMenu")).toEqual(params);
+  });
+
+  test("missing menu argument causes all params to be treated as missing", () => {
+    const params = [{ name: "ISSUE_ID", type: "beadsId" }];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, undefined)).toEqual(params);
+  });
+
+  test("returned objects preserve the required field (required + optional)", () => {
+    const requiredParam = { name: "QUERY", type: "text", required: true };
+    const optionalParam = { name: "NOTES", type: "text" };
+    const prompt = { parameters: [requiredParam, optionalParam] };
+    const result = getMissingPromptParameters(prompt, "prompts");
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(requiredParam);
+    expect(result[0].required).toBe(true);
+    expect(result[1]).toBe(optionalParam);
+    expect(result[1].required).toBeUndefined();
+  });
+
+  test("preserves declared parameter order in the result", () => {
+    const p1 = { name: "ALPHA", type: "text" };
+    const p2 = { name: "BETA", type: "sessionId" };
+    const p3 = { name: "GAMMA", type: "workspaceId" };
+    const prompt = { parameters: [p1, p2, p3] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([p1, p2, p3]);
   });
 });
