@@ -439,12 +439,12 @@ sequenceDiagram
 
 #### `mitto_conversation_update`
 
-Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction).
+Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction). Pass `"self"` (or your own conversation ID) as `conversation_id` to update your own conversation (e.g. a periodic conversation disabling its own periodicity).
 
 | Parameter         | Type                            | Required | Description                                                    |
 | ----------------- | ------------------------------- | -------- | -------------------------------------------------------------- |
 | `self_id`         | string                          | Yes      | Your session ID                                                |
-| `conversation_id` | string                          | Yes      | Target conversation to update                                  |
+| `conversation_id` | string                          | Yes      | Target conversation to update, or `"self"`/your own ID to update yourself |
 | `name`            | string                          | No       | New conversation title (omit to leave unchanged)               |
 | `user_data`       | `[{name, value}]`               | No       | User data attributes to set (validated against workspace schema) |
 | `user_data_merge` | bool                            | No       | If `true` (default), merge with existing attributes; if `false`, replace all |

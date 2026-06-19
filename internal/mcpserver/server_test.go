@@ -8886,3 +8886,59 @@ func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
 		t.Errorf("patched maxDur = %d, want preserved 3600", out2.PeriodicMaxDurationSeconds)
 	}
 }
+
+// TestConversationUpdate_SelfAlias verifies that a conversation can update itself by
+// passing "self" as the conversation_id — the case where a periodic conversation
+// disables its own periodicity. The "self" alias must resolve to the caller's real
+// session ID, mirroring mitto_conversation_delete's self-targeting support.
+func TestConversationUpdate_SelfAlias(t *testing.T) {
+	store, srv, sessionID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	// Seed an enabled scheduled periodic config on the calling session.
+	prompt := "keep going"
+	freqValue := 1
+	freqUnit := "hours"
+	enabled := true
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:                 sessionID,
+		ConversationID:         sessionID,
+		PeriodicPrompt:         &prompt,
+		PeriodicFrequencyValue: &freqValue,
+		PeriodicFrequencyUnit:  &freqUnit,
+		PeriodicEnabled:        &enabled,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (seed) error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("seed update not successful: %s", out.Error)
+	}
+
+	// Disable periodicity using the "self" alias instead of the real ID.
+	disabled := false
+	_, selfOut, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:          sessionID,
+		ConversationID:  "self",
+		PeriodicEnabled: &disabled,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (self) error: %v", err)
+	}
+	if !selfOut.Success {
+		t.Fatalf("self update not successful: %s", selfOut.Error)
+	}
+	// The "self" alias must be resolved to the caller's real session ID in the output.
+	if selfOut.ConversationID != sessionID {
+		t.Errorf("output ConversationID = %q, want resolved real ID %q", selfOut.ConversationID, sessionID)
+	}
+
+	// Verify the stored periodic config is now disabled.
+	stored, err := store.Periodic(sessionID).Get()
+	if err != nil {
+		t.Fatalf("Get periodic: %v", err)
+	}
+	if stored.Enabled {
+		t.Error("expected periodic config to be disabled after self update, but it is still enabled")
+	}
+}

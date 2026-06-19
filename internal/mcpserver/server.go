@@ -1222,6 +1222,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_conversation_update",
 		Description: "Update properties of a conversation. " +
 			"Supports partial updates — only specified fields are changed, others are left untouched. " +
+			"To update YOUR OWN conversation (e.g. a periodic conversation disabling its own periodicity), " +
+			"pass \"self\" (or your own conversation ID) as conversation_id. " +
 			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes), " +
 			"'beads_issue' (linked beads issue ID, e.g. \"mitto-123\"; empty string clears it), " +
 			"'periodic' (periodic prompt configuration). " +
@@ -3665,6 +3667,15 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			Success: false,
 			Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
 		}, nil
+	}
+
+	// Self-targeting: agents may pass "self" to update their OWN conversation
+	// (e.g. a periodic conversation disabling its own periodicity). Unlike delete,
+	// an update only touches metadata/periodic config and is safe to perform
+	// synchronously, so we simply resolve the alias to the caller's real ID. This
+	// keeps the tool consistent with mitto_conversation_delete, which also accepts "self".
+	if input.ConversationID == "self" {
+		input.ConversationID = realSessionID
 	}
 
 	s.mu.RLock()

@@ -342,7 +342,7 @@ type DeleteConversationOutput struct {
 // ConversationUpdateInput is the input for mitto_conversation_update tool.
 type ConversationUpdateInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"` // Target conversation to update
+	ConversationID string `json:"conversation_id"` // Target conversation to update, or "self"/your own ID to update yourself
 
 	// Patchable properties — all optional, only non-nil fields are applied
 	Name       *string `json:"name,omitempty"`        // Update conversation title
