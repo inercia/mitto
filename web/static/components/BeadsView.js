@@ -32,6 +32,28 @@ async function readBeadsResponse(res) {
   return { error: (text && text.trim()) || `Request failed (HTTP ${res.status})` };
 }
 
+// matchesSearch returns true when `issue` matches the user's search query.
+// The query is whitespace-tokenized (case-insensitive) and every token must
+// appear as a substring of one of the searchable fields: id, title, owner,
+// or description (body). An empty / whitespace-only query matches everything.
+// The exact-ID case (e.g. "mitto-3bx") is naturally covered because the full
+// id substring-matches itself.
+function matchesSearch(issue, search) {
+  if (!search) return true;
+  const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const id = (issue.id || "").toLowerCase();
+  const title = (issue.title || "").toLowerCase();
+  const owner = (issue.owner || "").toLowerCase();
+  const description = (issue.description || "").toLowerCase();
+  for (const t of tokens) {
+    if (!(id.includes(t) || title.includes(t) || owner.includes(t) || description.includes(t))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Display labels for the folder's configured upstream task system.
 const UPSTREAM_LABELS = { jira: "Jira", github: "GitHub", gitlab: "GitLab", linear: "Linear" };
 
@@ -2125,12 +2147,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       // off. Statuses without a toggle (e.g. blocked, deferred) are unaffected.
       if (statusToggles[issue.status] === false) return false;
       if (typeFilter !== "all" && issue.issue_type !== typeFilter) return false;
-      if (search) {
-        const q = search.toLowerCase();
-        if (!(issue.id?.toLowerCase().includes(q) ||
-              issue.title?.toLowerCase().includes(q) ||
-              issue.owner?.toLowerCase().includes(q))) return false;
-      }
+      if (!matchesSearch(issue, search)) return false;
       return true;
     });
     // Flat list ordering follows the user's sort preference. The grouped view
@@ -2746,7 +2763,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         </select>
         <input
           type="text"
-          placeholder="Search…"
+          placeholder="Search id, title, body…"
           value=${search}
           onInput=${e => setSearch(e.target.value)}
           class="input input-xs flex-1 min-w-0"
