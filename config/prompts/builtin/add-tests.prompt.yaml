@@ -4,6 +4,11 @@ menus: prompts
 description: Write comprehensive tests for new or modified code
 group: Testing
 backgroundColor: '#FFE0B2'
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   Read the modified code and existing test files to understand testing conventions.
 

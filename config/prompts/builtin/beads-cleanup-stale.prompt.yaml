@@ -5,6 +5,11 @@ description: Find stale, obsolete, or duplicate beads and close them after confi
 backgroundColor: '#BCAAA4'
 group: Tasks
 enabledWhen: commandExists("bd") && dirExists(".beads")
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   ## Session Context
 

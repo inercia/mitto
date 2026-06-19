@@ -4,6 +4,11 @@ menus: prompts
 description: Check CI pipeline status and report results
 group: CI
 backgroundColor: '#BBDEFB'
+preferredModels:
+  - "*haiku*"
+  - "*flash*"
+  - "*mini*"
+  - "*sonnet*"
 prompt: |
   Check CI pipeline status for the current branch and report.
 

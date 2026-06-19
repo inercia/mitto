@@ -5,6 +5,11 @@ group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 enabledWhen: children.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+preferredModels:
+  - "*haiku*"
+  - "*flash*"
+  - "*mini*"
+  - "*sonnet*"
 prompt: |
   Review the child conversations spawned from this one, identify the ones that have
   finished their work and are no longer needed, and delete them after user confirmation.

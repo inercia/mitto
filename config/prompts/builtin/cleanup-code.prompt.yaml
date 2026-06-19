@@ -4,6 +4,11 @@ menus: prompts
 description: Remove dead code, unused imports, and outdated documentation
 group: Code Quality
 backgroundColor: '#C8E6C9'
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   Read relevant code and search for references before proposing cleanup.
   Read multiple files in parallel. Do not speculate — verify by searching.

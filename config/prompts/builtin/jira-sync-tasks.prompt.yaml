@@ -8,6 +8,11 @@ tags:
 - periodic
 - jira
 enabledWhen: tools.hasPattern("jira_*") && commandExists("bd")
+preferredModels:
+  - "*haiku*"
+  - "*flash*"
+  - "*mini*"
+  - "*sonnet*"
 prompt: |
   Pull JIRA tickets matching this project's saved query into local beads issues,
   keeping the beads copy in sync with changes made in JIRA (description, comments,

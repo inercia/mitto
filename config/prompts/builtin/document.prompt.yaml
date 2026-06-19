@@ -4,6 +4,11 @@ menus: prompts
 description: Update user-facing documentation for the changes we just made
 group: Documentation
 backgroundColor: '#E1BEE7'
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   Before updating documentation, read the code changes we made and the existing
   user-facing docs. Understand what changed from the user's perspective before

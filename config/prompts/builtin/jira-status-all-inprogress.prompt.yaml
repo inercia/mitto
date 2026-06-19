@@ -5,6 +5,11 @@ description: Fact-check implementation status for all in-progress sprint tickets
 backgroundColor: '#FFE0B2'
 group: JIRA
 enabledWhen: tools.hasPattern("jira_*")
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   # JIRA: Status Check — All In-Progress Tickets
 

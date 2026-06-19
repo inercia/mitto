@@ -5,6 +5,11 @@ description: Create a JIRA ticket — from the current conversation context or f
 backgroundColor: '#C8E6C9'
 group: JIRA
 enabledWhen: tools.hasPattern("jira_*")
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   ## Session Context
 

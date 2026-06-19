@@ -4,6 +4,11 @@ menus: prompts
 description: Explain the code or concept we just discussed
 group: Documentation
 backgroundColor: '#E1BEE7'
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   Before explaining, read the actual code or files being discussed. Base your
   explanation on the real implementation, not assumptions. If multiple files are

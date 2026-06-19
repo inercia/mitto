@@ -5,6 +5,11 @@ description: Pick one in-progress ticket relevant to this repo and fact-check it
 backgroundColor: '#FFF9C4'
 group: JIRA
 enabledWhen: tools.hasPattern("jira_*")
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   # JIRA: Status Check — One In-Progress Ticket
 

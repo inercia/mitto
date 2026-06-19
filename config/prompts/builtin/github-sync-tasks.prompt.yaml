@@ -8,6 +8,11 @@ tags:
 - periodic
 - github
 enabledWhen: fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh")) && commandExists("bd")
+preferredModels:
+  - "*haiku*"
+  - "*flash*"
+  - "*mini*"
+  - "*sonnet*"
 prompt: |
   Pull GitHub issues from this project's repository into local beads issues,
   keeping the beads copy in sync with changes made on GitHub (body, comments,

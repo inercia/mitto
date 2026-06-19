@@ -5,6 +5,11 @@ description: Pick one in-progress bead and fact-check its implementation status
 backgroundColor: '#F0F4C3'
 group: Tasks
 enabledWhen: commandExists("bd") && dirExists(".beads")
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   # Beads: Status Check — One In-Progress Bead
 

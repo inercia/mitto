@@ -4,6 +4,11 @@ menus: prompts
 description: Add inline documentation and comments to the code we just wrote
 group: Documentation
 backgroundColor: '#B39DDB'
+preferredModels:
+  - "*sonnet*"
+  - "*flash*"
+  - "*gpt-4o*"
+  - "*gpt-4.1*"
 prompt: |
   Before adding documentation, read the code we wrote to understand its behavior,
   edge cases, and non-obvious design decisions. Also check the project's existing

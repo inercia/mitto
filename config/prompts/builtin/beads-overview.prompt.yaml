@@ -5,6 +5,11 @@ description: 'Read-only health snapshot of the whole tracker: ready, blocked, in
 backgroundColor: '#CFD8DC'
 group: Tasks
 enabledWhen: commandExists("bd") && dirExists(".beads")
+preferredModels:
+  - "*haiku*"
+  - "*flash*"
+  - "*mini*"
+  - "*sonnet*"
 prompt: |
   ## Session Context
 
