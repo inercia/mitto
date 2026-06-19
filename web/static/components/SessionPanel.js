@@ -1353,7 +1353,6 @@ export function SessionPanel({
             </p>`}
             ${periodicConfig.next_scheduled_at &&
             html`<p class="mt-1 text-xs text-mitto-text-500">
-              Next run:
               ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
             </p>`}
             <p class="mt-1 text-xs text-mitto-text-500">

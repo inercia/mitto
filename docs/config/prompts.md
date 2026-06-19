@@ -618,17 +618,19 @@ leaving the schedule unchanged.
 
 ### Real-world example: auto-periodic, self-terminating
 
-The builtin **"Iterate until complete"** prompt
+The builtin **"Iterate until issue complete"** prompt
 (`config/prompts/builtin/beads-iterate-until-complete.prompt.yaml`) is a real
 auto-periodic example: a `menus: beadsIssues` prompt with a `periodic:` block
-(every 30 minutes, `maxIterations: 20`). Selecting it on a beads issue or epic
-starts a periodic conversation that, on each scheduled run, advances the target
-one concrete increment (for an epic, the next ready child) and logs progress to
-the tracker. Scheduled runs are **non-interactive** (branch on `@mitto:periodic` /
-`@mitto:periodic_forced`; use `mitto_ui_notify` only). When nothing ready remains
-in scope, it **self-terminates** — `mitto_conversation_update(conversation_id:
-"self", periodic_enabled: false)` turns it back into a regular conversation. It is
-the automated sibling of the interactive "Start work" (`beads-issue-work`) prompt.
+(`trigger: onCompletion`, `delay: 30`, `maxIterations: 20`, `maxDuration: 4h`).
+Selecting it on a beads issue or epic starts a periodic conversation that, on each
+run, **delegates** one concrete increment to a child conversation (for an epic, the
+next ready child) and logs progress to the tracker; the next run fires shortly
+after the agent stops responding. Scheduled runs are **non-interactive** (branch on
+`@mitto:periodic` / `@mitto:periodic_forced`; use `mitto_ui_notify` only). When
+nothing ready remains in scope, it **self-terminates** —
+`mitto_conversation_update(conversation_id: "self", periodic_enabled: false)` turns
+it back into a regular conversation. It is the automated sibling of the interactive
+"Start work" (`beads-issue-work`) prompt.
 
 ## Prompt Arguments
 
@@ -960,10 +962,10 @@ Information about the permissions granted to the current session.
 Information about available MCP tools. Note: Tool information may not be available
 immediately when a session starts.
 
-| Variable          | Type      | Description                         |
-| ----------------- | --------- | ----------------------------------- |
-| `tools.available` | bool      | `true` if tool list has been loaded |
-| `tools.names`     | list[str] | List of available tool names        |
+| Variable          | Type      | Description                                                |
+| ----------------- | --------- | --------------------------------------------------------- |
+| `tools.available` | bool      | `true` once the tool list is known (a non-empty result has been fetched); `false` while it is still being warmed up |
+| `tools.names`     | list[str] | List of available tool names                              |
 
 **Custom functions:**
 
@@ -971,9 +973,9 @@ immediately when a session starts.
 | ------------------------------------- | ------- | ------------------------------------------------------------- |
 | `acp.matchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
 | `acp.matchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
-| `tools.hasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern                   |
-| `tools.hasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied                     |
-| `tools.hasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied                       |
+| `tools.hasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern (fail-open while `tools.available` is `false`) |
+| `tools.hasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied (fail-open while `tools.available` is `false`) |
+| `tools.hasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied (fail-open while `tools.available` is `false`) |
 
 The glob pattern supports `*` (any characters) and `?` (single character).
 
@@ -1082,19 +1084,19 @@ These examples are from Mitto's built-in prompts:
 ```yaml
 # "Create minions" - Spawn parallel worker conversations
 # Only in parent conversations, requires Mitto MCP tools
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!session.isChild && tools.hasPattern("mitto_conversation_*")'
 
 # "Report to parent" - Send status back to parent
 # Only in child conversations that have a parent
-enabledWhen: 'session.isChild && parent.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'session.isChild && parent.exists && tools.hasPattern("mitto_conversation_*")'
 
 # "Continue work in child" - Resume work in existing child
 # Only when the session has spawned children
-enabledWhen: 'children.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'children.exists && tools.hasPattern("mitto_conversation_*")'
 
 # "JIRA: start work" - Pick a ticket and spawn workers
 # Only in parent conversations, requires both JIRA and Mitto tools
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: '!session.isChild && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # "Improve Augment rules" - Update .augment/rules
 # Only when using Augment-type agents (not Claude Code or other agents)
@@ -1102,7 +1104,7 @@ enabledWhen: 'acp.matchesServerType("augment")'
 
 # "Handoff to new conversation" - Continue in a new session
 # Only in parent conversations, requires Mitto tools
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!session.isChild && tools.hasPattern("mitto_conversation_*")'
 ```
 
 ### CEL Language Reference
@@ -1154,7 +1156,10 @@ For full CEL documentation, see the [CEL Language Definition](https://github.com
 - **Invalid expression syntax**: Prompt is shown (fail-open), warning logged
 - **Evaluation error**: Prompt is shown (fail-open), warning logged
 - **Missing context**: Default values used (empty strings, false booleans, zero counts)
-- **Tools not yet loaded**: `tools.available` is `false`, `tools.names` is empty
+- **Tools not yet loaded**: `tools.available` is `false` and `tools.names` is empty. The
+  `tools.hasPattern` / `tools.hasAllPatterns` / `tools.hasAnyPattern` functions **fail open**
+  (return `true`) in this state, so tool-gated prompts are shown during the MCP-tools cache
+  warm-up window rather than being hidden. Once the tool list is known they evaluate normally.
 
 ## Priority and Override Behavior
 
