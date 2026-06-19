@@ -5,8 +5,8 @@ group: Work flow
 menus: prompts, conversation
 parameters:
   - name: TARGET_CONVERSATION
-    type: sessionId
-    description: The existing conversation to continue (typically a child you spawned)
+    type: childSessionId
+    description: The child conversation to continue (one you spawned from this conversation)
     required: true
 backgroundColor: '#FFF9C4'
 enabledWhen: children.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
