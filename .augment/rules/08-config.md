@@ -125,6 +125,8 @@ Note: `/mitto/api/settings` manages global `settings.json`. For per-session feat
 
 `ACPServer.Constraints`: auto-select config options (model, etc.) on session start. MatchModes: `"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"` (word-based). Applied in `applyConfigConstraints()` after ACP init.
 
+Prompt `preferredModels` field (see `07-prompts.md`) also uses these match modes for model auto-selection during `selectPreferredModel()`.
+
 ## WorkspaceSettings Override Pattern
 
 `WorkspaceSettings.ACPCommandOverride`: set default from server map, then apply override. See `internal/config/merger.go` for `GenericMerger[T]`.

@@ -89,21 +89,7 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 
 ### Type-based menu gating
 
-A prompt is shown in menu **M** only when M can supply **every** type the prompt declares (or the prompt declares no parameters). Unknown menus supply nothing.
-
-Frontend: `menuSatisfies(prompt, menu)` — replaces the retired string-capability check.
-Auto-fill: `collectPromptArguments(prompt, typeValues)` — maps `{ name, type }` entries to the values the menu provides.
-
-| Menu | Supplied types |
-| ---- | -------------- |
-| `prompts`, `promptsPeriodic`, `conversation`, `beadsList` | *(none)* |
-| `beadsIssues` | `beadsId`, `beadsTitle` |
-
-`MENU_PARAM_TYPES` in `web/static/utils/prompts.js` maps each menu to its supplied types.
-
-### MCP surfacing
-
-`mitto_prompt_get` and `mitto_prompt_list` include the `parameters` array per prompt.
+Prompt shown in menu **M** only when M supplies **every** declared type. Frontend: `menuSatisfies(prompt, menu)`. Menu types: `beadsIssues` → `{beadsId, beadsTitle}`; others supply none. See `MENU_PARAM_TYPES` in `web/static/utils/prompts.js` and MCP tools `mitto_prompt_get/list` (include `parameters`).
 
 ## Key Types
 
@@ -115,37 +101,13 @@ Auto-fill: `collectPromptArguments(prompt, typeValues)` — maps `{ name, type }
 
 `MergePrompts()` filters disabled; `MergePromptsKeepDisabled()` keeps `enabled:false` for dialogs. PromptsCache auto-refreshes `MITTO_DIR/prompts/` on changes.
 
-## API Endpoints
+## API & Toggle
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /api/workspace-prompts?dir=...&session_id=...` | Fully merged prompt list (single source of truth for menu) |
-| `GET /api/workspace-prompts?dir=...&include_global=true` | All prompts including disabled (for WorkspacesDialog toggles) |
-| `PUT /api/workspace-prompts/toggle-enabled` | Toggle prompt enabled/disabled state |
-
-### Toggle-Enabled Logic
-
-Disable: set `enabled: false` in `.mitto/prompts/X.prompt.yaml` or `.mittorc` prompts section. Re-enable: remove the `enabled: false` entry.
+`GET /api/workspace-prompts?dir=...&session_id=...` (fully merged), `include_global=true` (disabled too), `PUT /api/workspace-prompts/toggle-enabled` (toggle state). Disable: set `enabled: false` in `.mitto/prompts/*.prompt.yaml` or `.mittorc`. Re-enable: remove the `enabled: false` entry.
 
 ## Menu-Driven Prompt Sends (Named-Prompt Mechanism)
 
-All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, conversation seeding, beadsIssues, beadsList) use `prompt_name` — **never POST the full prompt body**:
-
-- **One shared frontend helper** (`web/static/hooks/useConversationSeeding.js`) builds every seed request:
-  - `seedConversationWithPrompt(sessionId, prompt, {arguments})` → POST `{prompt_name, arguments}` to existing session queue
-  - `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic?})` — two paths:
-    - **No `periodic`**: POST `{initial_prompt_name, arguments}` to `POST /api/sessions` (atomic create+seed, existing behavior)
-    - **With `periodic: { value, unit, at?, maxIterations?, trigger?, delay?, maxDuration? }`**: POST `POST /api/sessions` without `initial_prompt_name`, then PUT `/api/sessions/{id}/periodic` with `{ prompt_name, frequency, enabled: true, max_iterations, trigger, delay_seconds, max_duration_seconds }`. `at` (UTC HH:MM) included only for `unit === "days"`; `trigger`/`delay_seconds`/`max_duration_seconds` carry the on-completion config (see `parseDurationToSeconds` for `maxDuration` strings).
-  - `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl?})` — standalone PUT helper (also exported for testing). Resolves `max_iterations` from the dialog value, then the prompt default; positive sent as-is, `0` = unlimited.
-  - `makePeriodicNow(sessionId, prompt, {fetchImpl?})` — convert a regular conversation to periodic: PUT periodic (prompt's declared defaults + `max_iterations`), then `POST /api/sessions/{id}/periodic/run-now` (`reset_timer: true`) to fire the first run. No dialog.
-- **Periodic menu branching (context-aware)**: when `prompt.periodic` is non-null, the app dispatcher (`handleSendPromptToConversation` in `app.js`) calls `decidePeriodicAction(session)` and branches:
-  - `"new-periodic"` (no session) → open `PeriodicScheduleDialog` (pre-filled from defaults, incl. **max runs**) → on confirm call `startConversationWithPrompt` with `periodic`.
-  - `"make-periodic"` (regular running, non-periodic, non-child) → call `makePeriodicNow` (no dialog; uses prompt defaults + fires first run).
-  - `"one-shot"` (already periodic — `periodic_enabled || periodic_configured` — **or** a child) → `seedConversationWithPrompt` once; periodic config untouched. Backend 400s on periodic-for-child too.
-- **ChatInput**: `handlePredefinedPrompt` → `onSend("", [], [], { promptName })` — never sends the full prompt text
-- **Backend resolution**: name resolved to full text at dispatch via `resolvePromptByName()` in the **target conversation's** workspace context (not at enqueue time); `arguments` substitution (`${VAR}`/`${VAR:-default}`) applied at the same point
-- **Title generation**: skipped for named-prompt queue items (prompt name is used as the queue label)
-- **Anti-pattern**: Do NOT call `POST /api/sessions/{id}/queue` with a `message` containing the resolved prompt text; send `prompt_name` instead
+All menus (prompts, beadsIssues, beadsList) send `prompt_name` only — never the full body. Frontend helpers in `useConversationSeeding.js`: `seedConversationWithPrompt()` (existing session), `startConversationWithPrompt()` (new ± periodic), `makePeriodicNow()` (convert to periodic). Backend resolves name at dispatch via `resolvePromptByName()` in target workspace context; `${VAR}` substitution applied there. **Anti-pattern**: never POST resolved text to `/api/sessions/{id}/queue` — send `prompt_name` instead.
 
 ## MCP Prompt Tools
 
@@ -155,26 +117,29 @@ All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, conversation see
 
 Updates replicate the 5-layer REST API merge. Name slugification via `config.SlugifyPromptName()`.
 
-## Frontend Architecture
+## Frontend & Builtin Conventions
 
-Never merge prompts client-side — backend does all merging. Re-fetch on: dropdown open, file watcher, visibility change, 30s interval. Session-scoped CEL filters (e.g., `session.isChild`) require re-fetch on `activeSessionId` change, not just workspace directory change.
+**Frontend**: Never merge client-side — backend does all merging. Refetch on: file changes, visibility change, 30s interval (session-scoped CEL filters like `session.isChild` trigger refetch on activeSessionId change).
 
-## Builtin Prompt Content Conventions
+**Builtin content**: Use `@mitto:*` placeholders (`@mitto:periodic`, `@mitto:mcp_children`, `@mitto:available_acp_servers`). Cross-session UI: propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`. See `docs/config/prompts.md` for full template reference.
 
-- **Template variables**: Use `@mitto:*` placeholders. See `docs/config/prompts.md#variable-substitution`.
-- **No hardcoded servers**: Use `@mitto:available_acp_servers`.
-- **Spawn deduplication**: Use `@mitto:mcp_children` to avoid duplicate children.
-- **Periodic mode**: Use `@mitto:periodic` / `@mitto:periodic_forced` to branch; scheduled runs use `mitto_ui_notify` only (no blocking UI).
-- **Cross-session confirmation**: Propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`, abort on timeout. Single proposal preferred over "3–5 options".
-
-## enabledWhen Filtering
+## enabledWhen Filtering & Preferred Models
 
 Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `fileExists(".git/config")`, `commandExists("gh")`, `tools.hasPattern("github_*")`.
 
-### Merge Pitfall: `enabledWhen` Lost in Settings Override
+### preferredModels Field
 
-`EnabledWhen` has `json:"-"` tag → not serialized. Settings override of a builtin **loses `enabledWhen`**. Fix: merge logic must carry forward `enabledWhen` from lower-priority source.
+Prompts may declare preferred ACP model(s) for auto-selection during session init:
 
-### Config Save Anti-pattern: Prompt Round-trip
+```yaml
+preferredModels:
+  - name: "Claude"
+    matchMode: "contains"  # "contains", "exact", "startsWith", "regex", "lookAlike"
+```
 
-Never round-trip merged prompts back via `POST /api/config` — set `prompts: []` explicitly in save. Backend must filter `req.Prompts` to only keep `Source == PromptSourceSettings`.
+Backend calls `selectPreferredModel()` to pick the best matching active model from the session's ACP server. If the active model **already satisfies** the preference, it is kept; otherwise the preference is applied. This enables smart routing of multi-model sessions without forcing model switches when not needed.
+
+### Pitfalls
+
+- `EnabledWhen` has `json:"-"` → settings override of a builtin loses `enabledWhen`. Merge logic must carry forward from lower-priority source.
+- Never round-trip merged prompts via `POST /api/config` — set `prompts: []` explicitly. Backend must filter `req.Prompts` to `Source == PromptSourceSettings` only.

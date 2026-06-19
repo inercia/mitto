@@ -130,10 +130,10 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | `children.*`            | `children.exists`, `children.count`, `children.mcp_count`, `children.promptingCount`, `children.idleCount` |
 | `tools.*`               | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
 | `commandExists(cmd)`    | `commandExists("git")`, `commandExists("docker")` — checks system PATH |
+| `fileExists(path)`      | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
+| `dirExists(path)`       | `dirExists(".github")`, `dirExists("src")` — checks if directory exists; workspace-relative |
 
-**`tools.*` fail-open:** `tools.hasPattern` / `hasAllPatterns` / `hasAnyPattern` return `true` (fail-open) when `tools.available` is `false` (the MCP-tools cache is cold / not yet fetched), so tool-gated prompts are not hidden during warm-up. They evaluate normally once the tool list is known. Processors always treat tools as known (`tools.available` is forced `true`), so they never fail-open on this path.
-| `fileExists(path)`    | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
-| `dirExists(path)`     | `dirExists(".github")`, `dirExists("src")` — checks if directory exists; workspace-relative |
+**`tools.*` fail-open behavior:** `tools.hasPattern` / `hasAllPatterns` / `hasAnyPattern` return `true` (fail-open) when the tool list is unknown (cache cold during warm-up or unknown tool query), so tool-gated prompts/processors are not hidden. Once the MCP tool list is fetched, they evaluate against the real tool list. **Processors always see known tools** (fail-open is forced false internally) so they use the actual tool list unconditionally.
 
 ## Common Mistakes
 

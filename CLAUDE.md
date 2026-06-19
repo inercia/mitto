@@ -68,3 +68,13 @@ go test -v -tags integration ./tests/integration/inprocess/
 4. Store in `useWebSocket.js` and pass through `app.js`
 5. Update mock ACP server and add integration test
 
+## Model Selection & Preferred Models
+
+Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). **Key insight**: If the active model already satisfies the preference, it's kept; otherwise the preference is applied. This avoids unnecessary model switches in multi-model sessions.
+
+## CEL Tool Evaluation (Fail-Open Behavior)
+
+- **Prompts**: `tools.hasPattern()` returns `true` when the tool list is unknown (cold cache during init), so prompts are not hidden during warm-up
+- **Processors**: Always see the real tool list (fail-open is disabled internally)
+- Once tools are fetched, evaluation uses the actual list. Useful for tool-gated prompt/processor gating via `enabledWhen`
+
