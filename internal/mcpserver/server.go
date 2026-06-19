@@ -182,6 +182,9 @@ type SessionManager interface {
 // PeriodicRunner interface for triggering immediate periodic prompt delivery.
 type PeriodicRunner interface {
 	TriggerNow(sessionID string, resetTimer bool) error
+	// BootstrapOnCompletion delivers the very first run of a fresh onCompletion
+	// periodic conversation (IterationCount==0, LastSentAt==nil). No-op otherwise.
+	BootstrapOnCompletion(sessionID string)
 }
 
 // BackgroundSession interface for session info.
@@ -3086,6 +3089,14 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				"frequency_value", input.PeriodicFrequencyValue,
 				"frequency_unit", input.PeriodicFrequencyUnit,
 				"enabled", enabled)
+
+			// Kick off the very first run for a fresh onCompletion conversation.
+			s.mu.RLock()
+			runner := s.periodicRunner
+			s.mu.RUnlock()
+			if runner != nil {
+				runner.BootstrapOnCompletion(newSessionID)
+			}
 		}
 	}
 
@@ -4012,6 +4023,14 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			if p, getErr := periodicStore.Get(); getErr == nil {
 				sm.BroadcastPeriodicUpdated(input.ConversationID, p)
 			}
+		}
+
+		// Kick off the very first run for a fresh onCompletion conversation.
+		s.mu.RLock()
+		runner := s.periodicRunner
+		s.mu.RUnlock()
+		if runner != nil {
+			runner.BootstrapOnCompletion(input.ConversationID)
 		}
 
 		// If the session has no title and a periodic prompt was set, trigger title generation.

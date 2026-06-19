@@ -167,6 +167,11 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 	// Broadcast periodic state change to all clients (includes full config)
 	s.BroadcastPeriodicUpdated(sessionID, updated)
 
+	// Kick off the very first run for a fresh onCompletion conversation.
+	if s.periodicRunner != nil {
+		s.periodicRunner.BootstrapOnCompletion(sessionID)
+	}
+
 	writeJSONOK(w, updated)
 }
 
@@ -233,6 +238,11 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 
 	// Broadcast periodic state change to all clients (includes full config)
 	s.BroadcastPeriodicUpdated(sessionID, updated)
+
+	// Kick off the very first run for a fresh onCompletion conversation.
+	if s.periodicRunner != nil {
+		s.periodicRunner.BootstrapOnCompletion(sessionID)
+	}
 
 	writeJSONOK(w, updated)
 }

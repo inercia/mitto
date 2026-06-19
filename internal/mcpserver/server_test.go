@@ -8301,9 +8301,10 @@ func TestPromptUpdate_EnableDisableOnly(t *testing.T) {
 
 // mockPeriodicRunner is a mock implementation of PeriodicRunner for testing.
 type mockPeriodicRunner struct {
-	mu         sync.Mutex
-	calls      []triggerNowCall
-	triggerErr error // if set, TriggerNow returns this error
+	mu             sync.Mutex
+	calls          []triggerNowCall
+	triggerErr     error    // if set, TriggerNow returns this error
+	bootstrapCalls []string // session IDs passed to BootstrapOnCompletion
 }
 
 type triggerNowCall struct {
@@ -8316,6 +8317,12 @@ func (m *mockPeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, triggerNowCall{sessionID: sessionID, resetTimer: resetTimer})
 	return m.triggerErr
+}
+
+func (m *mockPeriodicRunner) BootstrapOnCompletion(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bootstrapCalls = append(m.bootstrapCalls, sessionID)
 }
 
 // setupRunPeriodicNowServer creates a server with a registered session and a mock runner.

@@ -1389,3 +1389,204 @@ func TestPeriodicRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
 		t.Error("schedule-path periodic still enabled after maxDuration, want disabled")
 	}
 }
+
+// =============================================================================
+// BootstrapOnCompletion Tests
+// =============================================================================
+
+// TestPeriodicRunner_BootstrapOnCompletion_NilStore verifies that BootstrapOnCompletion
+// is a no-op when the runner has no session store.
+func TestPeriodicRunner_BootstrapOnCompletion_NilStore(t *testing.T) {
+	runner := NewPeriodicRunner(nil, nil, nil)
+	// Must not panic.
+	runner.BootstrapOnCompletion("any-session")
+}
+
+// TestPeriodicRunner_BootstrapOnCompletion_FreshSession_AttemptsDelivery verifies that a
+// fresh enabled onCompletion session (IterationCount==0, LastSentAt==nil) causes
+// BootstrapOnCompletion to attempt immediate delivery via TriggerNow with no timer delay.
+// With no session manager, TriggerNow fails gracefully; we assert no panic, no timer
+// is armed (delivery is synchronous, not timer-deferred), and the config stays enabled.
+func TestPeriodicRunner_BootstrapOnCompletion_FreshSession_AttemptsDelivery(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 30) // delay_seconds=30, must NOT apply to first run
+
+	runner := NewPeriodicRunner(store, nil, nil) // nil SM → TriggerNow returns ErrSessionManagerNotAvailable
+	runner.BootstrapOnCompletion("s1")
+
+	// No timer should be armed — delivery is attempted synchronously, not via timer.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (bootstrap must not arm a timer)", got)
+	}
+
+	// Periodic config must remain enabled — the failed TriggerNow must not disable it.
+	periodicStore := store.Periodic("s1")
+	p, err := periodicStore.Get()
+	if err != nil {
+		t.Fatalf("periodicStore.Get() error = %v", err)
+	}
+	if !p.Enabled {
+		t.Error("periodic.Enabled = false after failed bootstrap, want true")
+	}
+}
+
+// TestPeriodicRunner_BootstrapOnCompletion_AlreadyRan_Noop verifies that
+// BootstrapOnCompletion is a no-op when the session has already run at least once
+// (IterationCount > 0), preventing double delivery on restart.
+func TestPeriodicRunner_BootstrapOnCompletion_AlreadyRan_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 0)
+
+	// Simulate a completed first run by calling RecordSent.
+	periodicStore := store.Periodic("s1")
+	if err := periodicStore.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	// Verify IterationCount advanced.
+	p, err := periodicStore.Get()
+	if err != nil {
+		t.Fatalf("periodicStore.Get() error = %v", err)
+	}
+	if p.IterationCount == 0 {
+		t.Fatal("IterationCount = 0 after RecordSent, expected > 0")
+	}
+
+	// BootstrapOnCompletion must be a no-op (session already ran).
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.BootstrapOnCompletion("s1")
+
+	// No timer armed, no panic.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (already-ran session must be a no-op)", got)
+	}
+}
+
+// TestPeriodicRunner_BootstrapOnCompletion_Disabled_Noop verifies that
+// BootstrapOnCompletion is a no-op for a disabled periodic config.
+func TestPeriodicRunner_BootstrapOnCompletion_Disabled_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Periodic("s1").Set(&session.PeriodicPrompt{
+		Prompt:  "Test",
+		Enabled: false, // disabled
+		Trigger: session.TriggerOnCompletion,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.BootstrapOnCompletion("s1") // must be a no-op
+
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (disabled config must be no-op)", got)
+	}
+}
+
+// TestPeriodicRunner_BootstrapOnCompletion_ScheduleTrigger_Noop verifies that
+// BootstrapOnCompletion is a no-op for schedule-trigger configs (it targets
+// onCompletion only).
+func TestPeriodicRunner_BootstrapOnCompletion_ScheduleTrigger_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Periodic("s1").Set(&session.PeriodicPrompt{
+		Prompt:    "Test",
+		Enabled:   true,
+		Trigger:   session.TriggerSchedule, // schedule, not onCompletion
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.BootstrapOnCompletion("s1") // must be a no-op
+
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (schedule trigger must be no-op)", got)
+	}
+}
+
+// TestPeriodicRunner_BootstrapOnCompletion_TimerPending_Noop verifies that
+// BootstrapOnCompletion is a no-op when an onCompletion timer is already pending,
+// preventing double-firing within the same process lifetime.
+func TestPeriodicRunner_BootstrapOnCompletion_TimerPending_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 0)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	// Arm a timer to simulate a pending on-completion run.
+	runner.armCompletionTimer("s1", time.Hour)
+	defer runner.cancelCompletionTimer("s1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d after arm, want 1", got)
+	}
+
+	// BootstrapOnCompletion must detect the pending timer and return immediately.
+	runner.BootstrapOnCompletion("s1")
+
+	// Timer count must remain 1 (not replaced or cancelled by bootstrap).
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (pending timer guard must prevent bootstrap)", got)
+	}
+}
+
+// TestPeriodicRunner_RunOnce_OnCompletion_BootstrapsFirstRun verifies that the
+// poll loop (RunOnce / checkSession) bootstraps a fresh onCompletion session by
+// calling BootstrapOnCompletion rather than skipping the session entirely.
+// With no session manager, TriggerNow fails gracefully and RunOnce returns (0,0,0).
+// The important assertion: no error is counted (bootstrap failure is not an error),
+// and no timer is armed (bootstrap is synchronous, not timer-deferred).
+func TestPeriodicRunner_RunOnce_OnCompletion_BootstrapsFirstRun(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 30) // delay_seconds=30 must NOT defer the first run
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	delivered, skipped, errored := runner.RunOnce()
+	// bootstrap failures are best-effort and not counted as poll errors.
+	if delivered != 0 || errored != 0 {
+		t.Errorf("RunOnce() = (%d, %d, %d), want (0, *, 0)", delivered, skipped, errored)
+	}
+
+	// No completion timer should be armed — bootstrap is synchronous, not deferred.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (RunOnce bootstrap must not arm timer)", got)
+	}
+}

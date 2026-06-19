@@ -423,6 +423,71 @@ func (r *PeriodicRunner) cancelCompletionTimer(sessionID string) {
 	}
 }
 
+// BootstrapOnCompletion delivers the very first run of an onCompletion periodic
+// conversation that has never executed (IterationCount == 0 && LastSentAt == nil).
+//
+// Why this is needed — the bootstrap deadlock:
+//   - For onCompletion, the next run is armed only when an agent turn completes and
+//     the session goes idle (onTurnIdle → OnConversationIdle → armCompletionTimer →
+//     fireOnCompletion → TriggerNow).
+//   - The schedule-based poll loop deliberately skips onCompletion configs because
+//     computeNextScheduledTime() returns nil when IsOnCompletion(), so NextScheduledAt
+//     stays nil and checkSession returns early.
+//   - For a brand-new conversation: no prompt has ever been delivered → no turn
+//     completes → the idle transition never fires → the loop never bootstraps.
+//
+// This method breaks the deadlock by delivering the first run immediately (no
+// delay_seconds wait — delay is a between-runs gap, not a pre-first-run delay).
+// It is idempotent and crash-safe:
+//   - The IterationCount==0 && LastSentAt==nil guard prevents re-delivery after restart.
+//   - The completionTimers pending-check provides a cheap extra guard against double-fire
+//     within the same process lifetime.
+//   - TriggerNow's internal IsPrompting() check rejects a racing call with ErrSessionBusy
+//     once PromptWithMeta sets isPrompting synchronously before returning.
+//
+// Called from checkSession (crash-safe on poll-loop restart), handleSetPeriodic,
+// handlePatchPeriodic (HTTP), and handleConversationStart/handleConversationUpdate (MCP).
+// Best-effort — errors are logged but not propagated.
+func (r *PeriodicRunner) BootstrapOnCompletion(sessionID string) {
+	if r.store == nil {
+		return
+	}
+
+	periodicStore := r.store.Periodic(sessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnCompletion() {
+		return
+	}
+
+	// Only bootstrap the very first run.
+	if periodic.IterationCount != 0 || periodic.LastSentAt != nil {
+		return
+	}
+
+	// Extra guard: if a timer is already pending for this session, skip.
+	r.completionTimersMu.Lock()
+	_, pending := r.completionTimers[sessionID]
+	r.completionTimersMu.Unlock()
+	if pending {
+		return
+	}
+
+	// Deliver the first run immediately — no delay on first run.
+	if err := r.TriggerNow(sessionID, true); err != nil {
+		if r.logger == nil {
+			return
+		}
+		if errors.Is(err, ErrSessionBusy) {
+			r.logger.Debug("On-completion bootstrap skipped, session busy",
+				"session_id", sessionID)
+		} else {
+			r.logger.Warn("On-completion bootstrap failed",
+				"session_id", sessionID,
+				"error", err)
+		}
+	}
+}
+
 // fireOnCompletion delivers the next onCompletion periodic run. It re-validates the
 // session and periodic configuration (the conversation may have been archived, disabled,
 // or reconfigured during the delay) and then delivers via TriggerNow. A busy session is
@@ -687,6 +752,14 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 
 	// Skip if disabled
 	if !periodic.Enabled {
+		return 0, 0, 0
+	}
+
+	// onCompletion configs never have a NextScheduledAt — the schedule loop cannot
+	// deliver them. Bootstrap the very first run here so that a crash or restart
+	// before any delivery still kicks off the loop. No-op if already run or in-flight.
+	if periodic.IsOnCompletion() {
+		r.BootstrapOnCompletion(sessionID)
 		return 0, 0, 0
 	}
 
