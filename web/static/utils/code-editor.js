@@ -194,6 +194,91 @@ export class CodeEditor {
     });
   }
 
+  /**
+   * Wrap the current selection with `before` and `after` markers.
+   * If the selection is empty, inserts `before + placeholder + after` and
+   * places the cursor just after `before` (between the markers).
+   * @param {string} before       - Text to insert before the selection
+   * @param {string} after        - Text to insert after the selection
+   * @param {string} [placeholder] - Placeholder text when selection is empty
+   */
+  wrapSelection(before, after, placeholder = "") {
+    if (!this.view) return;
+    const { state } = this.view;
+    const sel = state.selection.main;
+    const isEmpty = sel.from === sel.to;
+    if (isEmpty) {
+      const insert = before + placeholder + after;
+      this.view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert },
+        selection: { anchor: sel.from + before.length, head: sel.from + before.length + placeholder.length },
+      });
+    } else {
+      const selectedText = state.doc.sliceString(sel.from, sel.to);
+      const insert = before + selectedText + after;
+      this.view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert },
+        selection: { anchor: sel.from + before.length, head: sel.from + before.length + selectedText.length },
+      });
+    }
+    this.view.focus();
+  }
+
+  /**
+   * Insert a markdown link, placing the cursor/selection in the URL portion.
+   * - Non-empty selection: replaces it with `[<selectedText>](<urlPlaceholder>)`
+   *   and selects the `urlPlaceholder` so the user can type the URL immediately.
+   * - Empty selection: inserts `[<textPlaceholder>](<urlPlaceholder>)` and
+   *   selects `textPlaceholder` so the user types the link text first.
+   * @param {string} [textPlaceholder="text"] - Placeholder for the link text
+   * @param {string} [urlPlaceholder="url"]   - Placeholder for the URL
+   */
+  insertLink(textPlaceholder = "text", urlPlaceholder = "url") {
+    if (!this.view) return;
+    const { state } = this.view;
+    const sel = state.selection.main;
+    const isEmpty = sel.from === sel.to;
+    if (isEmpty) {
+      const insert = `[${textPlaceholder}](${urlPlaceholder})`;
+      // Select the textPlaceholder so the user types the link text first.
+      this.view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert },
+        selection: { anchor: sel.from + 1, head: sel.from + 1 + textPlaceholder.length },
+      });
+    } else {
+      const selectedText = state.doc.sliceString(sel.from, sel.to);
+      const insert = `[${selectedText}](${urlPlaceholder})`;
+      // Cursor lands on the urlPlaceholder (just after the `](`).
+      const urlStart = sel.from + 1 + selectedText.length + 2; // `[` + text + `](`
+      this.view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert },
+        selection: { anchor: urlStart, head: urlStart + urlPlaceholder.length },
+      });
+    }
+    this.view.focus();
+  }
+
+  /**
+   * Prefix each line spanned by the current selection with `marker`.
+   * @param {string|Function} marker - String prefix, or `(index: number) => string`
+   *   for incrementing prefixes (e.g. numbered lists: `(i) => \`${i + 1}. \``).
+   */
+  prefixLines(marker) {
+    if (!this.view) return;
+    const { state } = this.view;
+    const sel = state.selection.main;
+    const startLine = state.doc.lineAt(sel.from);
+    const endLine = state.doc.lineAt(sel.to);
+    const changes = [];
+    for (let lineNum = startLine.number, i = 0; lineNum <= endLine.number; lineNum++, i++) {
+      const line = state.doc.line(lineNum);
+      const prefix = typeof marker === "function" ? marker(i) : marker;
+      changes.push({ from: line.from, to: line.from, insert: prefix });
+    }
+    this.view.dispatch({ changes });
+    this.view.focus();
+  }
+
   /** Focus the editor. */
   focus() {
     this.view?.focus();

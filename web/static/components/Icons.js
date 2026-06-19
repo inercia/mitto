@@ -1555,3 +1555,111 @@ export function getPromptIcon(name) {
 export function getPromptIconOrDefault(name) {
   return getPromptIcon(name) || LightningIcon;
 }
+
+// ---- Markdown editor toolbar icons ------------------------------------------
+
+/**
+ * Bold text icon (B)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function BoldIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+        d="M6 4h8a4 4 0 010 8H6V4zm0 8h9a4 4 0 010 8H6v-8z" />
+    </svg>
+  `;
+}
+
+/**
+ * Italic text icon (I)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ItalicIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M19 4h-9m4 16H5M15 4L9 20" />
+    </svg>
+  `;
+}
+
+/**
+ * Strikethrough text icon
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function StrikethroughIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M9 15a4 4 0 007.5-2H4m8-9c-2.2 0-4 1.3-4 3s1.8 3 4 3" />
+    </svg>
+  `;
+}
+
+/**
+ * Inline code icon (monospace brackets)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function InlineCodeIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+    </svg>
+  `;
+}
+
+/**
+ * Code block icon (fenced code block)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function CodeBlockIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M8 9l-3 3 3 3m8-6l3 3-3 3M3 5h18a1 1 0 011 1v12a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z" />
+    </svg>
+  `;
+}
+
+/**
+ * Numbered list icon
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function NumberedListIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M9 6h11M9 12h11M9 18h11M4 6h1m-1 6h1m-1 6h1" />
+    </svg>
+  `;
+}
+
+/**
+ * Heading icon (H with lines)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function HeadingIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M4 6h16M4 12h10M4 18h6" />
+    </svg>
+  `;
+}
+
+/**
+ * Blockquote icon (vertical bar with text lines)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function QuoteIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M3 6h18M3 10h18M3 14h18M3 18h18" />
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+        d="M2 4v16" />
+    </svg>
+  `;
+}

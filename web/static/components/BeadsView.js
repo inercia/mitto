@@ -4,8 +4,8 @@
 const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping, getBeadsSort, setBeadsSort } from "../utils/index.js";
-import { getBasename } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, getPromptIconOrDefault } from "./Icons.js";
+import { getBasename, copyToClipboard } from "../lib.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, CopyIcon, getPromptIconOrDefault, LinkIcon, ListIcon, BoldIcon, ItalicIcon, StrikethroughIcon, InlineCodeIcon, CodeBlockIcon, NumberedListIcon, HeadingIcon, QuoteIcon } from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import { ContextMenu, buildPromptGroupMenuItems } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -887,14 +887,64 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
   // (view) mode — but the controls are disabled/greyed unless an editable target
   // is supplied: { text, setText } back the active field (create form or inline
   // edit draft) and `disabled` force-greys the row regardless (read-only view).
-  const renderDescToolbar = ({ text, setText, disabled }) => html`
+  const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
     <div class="flex items-center gap-1 mb-1">
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Bold" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.wrapSelection("**", "**", "bold text")}>
+        <${BoldIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Italic" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.wrapSelection("*", "*", "italic")}>
+        <${ItalicIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Strikethrough" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}>
+        <${StrikethroughIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Inline code" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.wrapSelection("\`", "\`", "code")}>
+        <${InlineCodeIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Code block" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.wrapSelection("\n\`\`\`\n", "\n\`\`\`\n", "code")}>
+        <${CodeBlockIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Link" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.insertLink("text", "url")}>
+        <${LinkIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Bulleted list" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("- ")}>
+        <${ListIcon} className="w-4 h-4" />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Numbered list" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}>
+        <${NumberedListIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Heading" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("## ")}>
+        <${HeadingIcon} />
+      </button>
+      <button type="button" class="chat-input-action" disabled=${disabled}
+        title="Quote" onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("> ")}>
+        <${QuoteIcon} />
+      </button>
       <button
         type="button"
+        class="chat-input-action ${improvingDesc ? "improving" : ""} ml-auto"
         onClick=${() => improveDescriptionText(text, setText)}
         onMouseDown=${(e) => e.preventDefault()}
         disabled=${disabled || improvingDesc || !text || !text.trim()}
-        class="chat-input-action ${improvingDesc ? "improving" : ""}"
         title="Improve description with AI"
       >
         ${improvingDesc
@@ -1042,6 +1092,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             text: description,
             setText: (v) => { setDescription(v); createEditorApiRef.current?.setValue(v); },
             disabled: submitting,
+            editorApiRef: createEditorApiRef,
           })}
           <${CodeEditorField}
             value=${description}
@@ -1067,6 +1118,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                 text: viewDraft.description,
                 setText: (v) => { setViewDraft(p => ({ ...p, description: v })); detailEditorApiRef.current?.setValue(v); },
                 disabled: savingView,
+                editorApiRef: detailEditorApiRef,
               }
             : { text: "", setText: () => {}, disabled: true }
         )}
@@ -1320,34 +1372,24 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
 
   return html`
     <${Fragment}>
-      <!-- Full-window dimming backdrop (like SessionPanel) so the conversations
-           sidebar is dimmed too. fixed escapes the beads view's overflow clip
-           and covers the whole window; z-50 matches SessionPanel. Hidden in
-           fullscreen, where the panel fills the whole beads view area. -->
-      ${!fullscreen && html`
-        <div
-          class="fixed inset-0 z-50 bg-black/50 properties-backdrop ${isClosing ? "closing" : ""}"
-          onClick=${handleClose}
-        />
-      `}
-      <!-- Scoped daisyUI drawer confined to the beads view area (drawer-scoped =
-           absolute inset-0 within the relative BeadsView root; see styles.css).
-           Its drawer-overlay is transparent so the full-window backdrop above
-           dims through on the panel's left and outside clicks close the panel;
-           z-60 keeps the panel above the z-50 backdrop. Scoping means expand
-           fills only the beads view area and the panel never covers the sidebar.
-             Phone: panel is always full-width.
-             Desktop normal: a doubled fixed width (40rem), capped at 85% of the
-               beads view so the dim always shows on the panel's left and the
-               panel never exceeds the beads view width.
-             Desktop expanded: panel fills the whole beads view area. -->
+      <!-- Dock-mode daisyUI drawer docked to the right edge of the beads view
+           area (drawer-dock; see styles.css). NO dimming backdrop: a full-area
+           composited overlay over the beads list is exactly what dropped the
+           list's GPU backing store and blanked it on pointer-move (mitto-cdf),
+           so dock mode confines the panel to its own width and leaves the list
+           to its left under no composited layer. z-60 keeps it above content.
+             Phone: covers the whole viewport (handled by the dock media query).
+             Desktop normal: 40rem wide, capped at 85% of the beads view so the
+               list always stays visible on the panel's left.
+             Desktop expanded / standalone: fills the whole beads view area. -->
       <${Drawer}
-        scoped
+        dock
         side="end"
         isClosing=${isClosing}
         onClose=${handleClose}
         zClass="z-60"
-        widthClass=${(isMobile || fullscreen) ? "w-full" : "w-[40rem] max-w-[85%]"}
+        rootStyle=${(isMobile || fullscreen) ? "--dock-w:100%" : "--dock-w:40rem;--dock-maxw:85%"}
+        widthClass="w-full"
         panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
       >
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
@@ -1356,7 +1398,22 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>
                 ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}`
             : html`
-              <div class="font-mono text-xs text-mitto-text-secondary">${data.id}</div>
+              <div class="flex items-center gap-1">
+                <span class="font-mono text-xs text-mitto-text-secondary">${data.id}</span>
+                <button
+                  type="button"
+                  onClick=${async () => {
+                    const ok = await copyToClipboard(data.id);
+                    showToast && showToast(ok
+                      ? { style: "success", title: `Copied ${data.id}` }
+                      : { style: "error", title: "Failed to copy issue ID" });
+                  }}
+                  class="btn btn-ghost btn-xs btn-square"
+                  title="Copy issue ID ${data.id}"
+                >
+                  <${CopyIcon} className="w-3.5 h-3.5" />
+                </button>
+              </div>
               ${TitleField("view")}
             `}
         </div>
@@ -1449,7 +1506,14 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
               ${labelValue("Owner", data.owner)}
               ${labelValue("Created", data.created_at && new Date(data.created_at).toLocaleDateString())}
               ${labelValue("Updated", data.updated_at && new Date(data.updated_at).toLocaleDateString())}
-              ${data.parent && labelValue("Parent", html`<span class="font-mono">${data.parent}</span>`)}
+              ${data.parent && labelValue("Parent", html`
+                <button
+                  type="button"
+                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === data.parent) || { id: data.parent })}
+                  class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left"
+                  title=${"Open " + data.parent}
+                >${data.parent}</button>
+              `)}
             </div>
 
             ${DescriptionField("view")}
