@@ -1307,36 +1307,63 @@ a.mailto-link:hover {
   display: none;
 }
 
-/* Phones: a narrow right strip is poor UX and still leaves a visible,
-   blank-prone sliver of conversation, so cover the whole viewport instead —
-   nothing is visible underneath to blank. The block root/side (above) then
-   fill the viewport and the panel (w-full) follows. */
+/* Subtle elevation: a soft directional shadow cast toward the content on the
+   panel's LEFT edge, so the right-docked panel reads as floating slightly above
+   the conversation/beads list rather than sitting flush against it. Overrides
+   the panel's default shadow-2xl (a downward shadow that is invisible on a
+   full-height edge-docked strip). */
+.drawer-dock > .drawer-side > :not(.drawer-overlay) {
+  box-shadow: -6px 0 18px -8px rgba(0, 0, 0, 0.3);
+}
+
+/* Phones / small windows: keep the dock CONFINED to the right edge instead of
+   covering the whole viewport, so the content to its left (conversation / beads
+   list) stays visible and interactive — mirroring the left sidebar. The panel
+   keeps its --dock-w width but is capped so a content peek always remains on the
+   left. Because the panel is absolute (not a full-area composited overlay) and
+   the content beside it is never under a transparent fixed layer, there is no
+   GPU backing-store drop on pointer-move (mitto-cdf). Close via the panel's own
+   X or Escape (no backdrop). The beads viewer sets --dock-w:100% on mobile; the
+   85vw cap here confines it the same way. Consumers can lift the cap (e.g. the
+   beads viewer in fullscreen sets --dock-maxw:100%) to fill the viewport. */
 @media (max-width: 767.98px) {
   .drawer-dock {
-    position: fixed;
-    inset: 0; /* full viewport cover on phones */
-    width: auto; /* override --dock-w: fill the viewport */
-    max-width: none; /* override --dock-maxw cap (e.g. beads' 85%) */
+    max-width: var(--dock-maxw, 85vw);
   }
 }
 
-/* Left nav sidebar on phones (mitto-cdf): the conversations sidebar is the
-   top-level daisyUI drawer (.sidebar-shell, start side). On phones daisyUI
-   renders its .drawer-side as a position:fixed full-viewport layer, but the
-   panel child is only a fixed-width strip (the inline sidebarWidth px), leaving
-   a sliver of conversation visible on the right under the transparent
-   .drawer-overlay backdrop. Moving the pointer over that backdrop drops the
-   visible conversation's backing store and blanks it — the same
-   WebKit/Chromium compositing bug fixed for the end/dock panels. Cover the
-   whole viewport with the panel (nothing visible underneath to blank) and drop
-   the backdrop, mirroring the dock panels' phone behaviour above; the sidebar's
-   own md:hidden Close (X) button still dismisses it without an outside tap.
-   Desktop (md:drawer-open) is unaffected: this only applies below the md
-   breakpoint, where the sidebar is in-flow and pushes content. Unlayered so it
+/* Left nav sidebar on small screens (mitto-cdf): the conversations sidebar is
+   the top-level daisyUI drawer (.sidebar-shell, start side). Below the md
+   breakpoint daisyUI renders its .drawer-side as a position:fixed,
+   width:100% (full-viewport) grid layer with the panel as a fixed-width grid
+   item, leaving a sliver of conversation visible on the right under the
+   transparent .drawer-overlay backdrop. When open the full-viewport .drawer-side
+   has pointer-events:auto, so moving the pointer over it (backdrop or empty grid
+   area) drops the visible conversation's backing store and blanks it — the same
+   WebKit/Chromium compositing bug fixed for the end/dock panels.
+   Fix (mirrors the dock panels): CONFINE the fixed .drawer-side to the panel's
+   own width on the left edge (width:max-content, inset-inline-end:auto) instead
+   of spanning the viewport, and drop the dimming backdrop. The conversation then
+   stays visible and interactive to the panel's right and is never under a fixed
+   transparent layer, so the backing-store drop cannot occur — while the sidebar
+   no longer takes over the window on small/tablet widths (e.g. ~750px). The
+   panel is capped at 85vw so on very narrow phones a peek of conversation always
+   remains (still safe: that peek is live content, not a composited overlay). The
+   sidebar's own md:hidden Close (X) button still dismisses it.
+   Desktop (md:drawer-open, >=768px) is unaffected: this only applies below the md
+   breakpoint, where the sidebar is otherwise an overlay drawer. Unlayered so it
    wins over daisyUI's layered defaults AND the inline px width. */
 @media (max-width: 767.98px) {
+  .sidebar-shell > .drawer-side {
+    width: max-content; /* shrink to the panel strip, not the 100% viewport */
+    inset-inline-end: auto; /* do not span to the right edge */
+  }
   .sidebar-shell > .drawer-side > :not(.drawer-overlay) {
-    width: 100% !important; /* override the inline sidebarWidth px on phones */
+    max-width: 85vw; /* never cover the whole window; keep a conversation peek */
+    /* Subtle elevation toward the content on the panel's RIGHT edge (mirrors the
+       right-dock shadow) so the floating sidebar reads as lifted above the
+       conversation peek beside it. */
+    box-shadow: 6px 0 18px -8px rgba(0, 0, 0, 0.3);
   }
   .sidebar-shell > .drawer-side > .drawer-overlay {
     display: none; /* no dimming layer over visible conversation content */
@@ -1362,6 +1389,22 @@ a.mailto-link:hover {
    beads editors, so the chat input (a textarea) is untouched. */
 .input-font-target .cm-scroller {
   transform: translateZ(0);
+}
+
+/* Remove the stray horizontal line inside the beads description/create editor.
+   The wrapper carries a min-height (so a short description still shows a roomy
+   box), but its height is otherwise indefinite, so CodeMirror's height:100%
+   editor collapses to the text height and the GPU-promoted .cm-scroller above
+   ends mid-box — its composited bottom edge anti-aliases into a visible 1px
+   seam with empty space below it. Make the wrapper a flex column and let the
+   editor grow to fill the min-height, so the scroll layer's bottom edge lands
+   on the wrapper's bottom border (hidden) instead of floating mid-box. */
+.input-font-target {
+  display: flex;
+  flex-direction: column;
+}
+.input-font-target > .cm-editor {
+  flex: 1 0 auto;
 }
 
 /* Queue dropdown list scrollbar */

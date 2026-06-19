@@ -216,11 +216,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
-  // When true (desktop only), the panel expands to fill the beads view area
-  // (hiding the issue list behind it) so a single issue's details are easier to
-  // read. On mobile the panel is always full-width, so this has no effect there
-  // and the expand toggle is hidden.
-  // standalone=true: initialized to true (fills the whole view, no list behind).
+  // When true the panel expands to fill the available area (hiding the issue
+  // list behind it) so a single issue's details are easier to read. On desktop
+  // that is the beads view area; on small screens — where the panel is otherwise
+  // confined to a strip with a list peek beside it (mitto-cdf) — it fills the
+  // viewport (the dock's 85vw cap is lifted via --dock-maxw:100% when fullscreen).
+  // The expand toggle is shown on every screen size (and in standalone) now that
+  // the small-screen panel is confined rather than always full-width.
+  // standalone=true: initialized to true (fills the whole view, no list behind),
+  // but the toggle still lets the user collapse it to the docked strip width.
   const [fullscreen, setFullscreen] = useState(standalone ? true : false);
   // Phone detection drives the panel width. We deliberately use the user agent
   // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
@@ -1378,17 +1382,24 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
            list's GPU backing store and blanked it on pointer-move (mitto-cdf),
            so dock mode confines the panel to its own width and leaves the list
            to its left under no composited layer. z-60 keeps it above content.
-             Phone: covers the whole viewport (handled by the dock media query).
+             Small screens (confined): full width, but capped at 85vw by the dock
+               media query so a peek of the list always remains on the left.
              Desktop normal: 40rem wide, capped at 85% of the beads view so the
                list always stays visible on the panel's left.
-             Desktop expanded / standalone: fills the whole beads view area. -->
+             Expanded (fullscreen) / standalone: fills the whole area — on desktop
+               the beads view, on small screens the viewport (--dock-maxw:100%
+               lifts the media-query cap). -->
       <${Drawer}
         dock
         side="end"
         isClosing=${isClosing}
         onClose=${handleClose}
         zClass="z-60"
-        rootStyle=${(isMobile || fullscreen) ? "--dock-w:100%" : "--dock-w:40rem;--dock-maxw:85%"}
+        rootStyle=${fullscreen
+          ? "--dock-w:100%;--dock-maxw:100%"
+          : isMobile
+            ? "--dock-w:100%"
+            : "--dock-w:40rem;--dock-maxw:85%"}
         widthClass="w-full"
         panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
       >
@@ -1422,17 +1433,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             <${EllipsisIcon} className="w-5 h-5" />
           </button>
         `}
-        ${!standalone && html`
-          <button
-            onClick=${() => setFullscreen(f => !f)}
-            class="btn btn-ghost btn-square btn-sm shrink-0 ${isMobile ? "hidden" : ""}"
-            title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          >
-            ${fullscreen
-              ? html`<${CollapseIcon} className="w-5 h-5" />`
-              : html`<${ExpandIcon} className="w-5 h-5" />`}
-          </button>
-        `}
+        <button
+          onClick=${() => setFullscreen(f => !f)}
+          class="btn btn-ghost btn-square btn-sm shrink-0"
+          title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+        >
+          ${fullscreen
+            ? html`<${CollapseIcon} className="w-5 h-5" />`
+            : html`<${ExpandIcon} className="w-5 h-5" />`}
+        </button>
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
