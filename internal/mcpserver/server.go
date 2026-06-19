@@ -163,6 +163,8 @@ type SessionManager interface {
 	GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings
 	// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
 	BroadcastSessionRenamed(sessionID string, newName string)
+	// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
+	BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt)
 	// GetUserDataSchema returns the user data schema for a workspace.
 	GetUserDataSchema(workingDir string) *config.UserDataSchema
 	// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
@@ -4004,6 +4006,13 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		}
 
 		updated = append(updated, "periodic")
+
+		// Broadcast the periodic state change so all clients refresh live (parity with REST paths).
+		if sm != nil {
+			if p, getErr := periodicStore.Get(); getErr == nil {
+				sm.BroadcastPeriodicUpdated(input.ConversationID, p)
+			}
+		}
 
 		// If the session has no title and a periodic prompt was set, trigger title generation.
 		if input.Name == nil && meta.Name == "" && sm != nil {

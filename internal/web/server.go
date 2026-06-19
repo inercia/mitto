@@ -1207,15 +1207,10 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	}
 }
 
-// BroadcastPeriodicUpdated notifies all connected clients that a session's periodic state changed.
-// This includes the full periodic config so clients can update their frequency panels.
-//
-// The broadcast includes:
-// - periodic_configured: true if a periodic config exists (controls UI mode)
-// - periodic_enabled: true if periodic runs are active (controls lock state)
-// - max_iterations: cap on scheduled runs (0 = unlimited)
-// - iteration_count: number of scheduled runs delivered so far
-func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+// buildPeriodicUpdatedData constructs the WebSocket payload map for a periodic_updated event.
+// periodic_configured: true if a periodic config exists (controls editor UI mode).
+// periodic_enabled: true if periodic runs are active (controls sidebar category + clock icon).
+func buildPeriodicUpdatedData(sessionID string, periodic *session.PeriodicPrompt) map[string]interface{} {
 	data := map[string]interface{}{
 		"session_id": sessionID,
 	}
@@ -1245,6 +1240,13 @@ func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.Pe
 		data["periodic_enabled"] = false
 	}
 
+	return data
+}
+
+// BroadcastPeriodicUpdated notifies all connected clients that a session's periodic state changed.
+// This includes the full periodic config so clients can update their frequency panels.
+func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+	data := buildPeriodicUpdatedData(sessionID, periodic)
 	s.eventsManager.Broadcast(WSMsgTypePeriodicUpdated, data)
 
 	if s.logger != nil {
@@ -1585,6 +1587,11 @@ func (a *sessionManagerAdapter) GetWorkspaceByUUID(uuid string) *configPkg.Works
 // BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
 func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newName string) {
 	a.sm.BroadcastSessionRenamed(sessionID, newName)
+}
+
+// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+	a.sm.BroadcastPeriodicUpdated(sessionID, periodic)
 }
 
 // GetUserDataSchema returns the user data schema for a workspace.

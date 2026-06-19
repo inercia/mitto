@@ -883,6 +883,7 @@ func (m *mockSessionManager) DeleteChildSessions(parentID string)               
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
+func (m *mockSessionManager) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt)     {}
 func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
 func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt     { return nil }
 func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string           { return nil }
@@ -3087,6 +3088,8 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceByUUID(uuid string) *confi
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastSessionRenamed(sessionID string, newName string) {
 }
+func (m *mockSessionManagerForWorkspaces) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+}
 func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
 	return nil
 }
@@ -3437,6 +3440,8 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *
 	return nil
 }
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+}
 func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
 }
@@ -3770,18 +3775,19 @@ func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, stri
 }
 func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
 }
-func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
-func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
-func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
-func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
-func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
-func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
-func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt       { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string             { return nil }
-func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
-func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
-func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
+func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                           {}
+func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)                 {}
+func (m *mockSessionManagerForWait) DeleteChildSessions(string)                               {}
+func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings                { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings      { return nil }
+func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)                   {}
+func (m *mockSessionManagerForWait) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {}
+func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema          { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt            { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string                  { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time              { return time.Time{} }
+func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings            { return nil }
+func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                             {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -4518,10 +4524,11 @@ func (m *mockSessionManagerForChildren) GetWorkspaces() []config.WorkspaceSettin
 func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)          {}
-func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt   { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string         { return nil }
+func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)                   {}
+func (m *mockSessionManagerForChildren) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {}
+func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema          { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt            { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string                  { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time {
 	return time.Time{}
 }
@@ -4712,6 +4719,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *confi
 	return nil
 }
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+}
 func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
 }
@@ -5019,6 +5028,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.Wor
 	return nil
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForAutoResume) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+}
 func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
 }
@@ -6497,6 +6508,8 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 	return m.workspaces[uuid]
 }
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+}
 func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
 }

@@ -1276,6 +1276,24 @@ func (sm *SessionManager) BroadcastSessionRenamed(sessionID string, newName stri
 	}
 }
 
+// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
+// This is called when a session's periodic config changes (e.g., via MCP tools).
+func (sm *SessionManager) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypePeriodicUpdated, buildPeriodicUpdatedData(sessionID, periodic))
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast periodic updated", "session_id", sessionID, "clients", em.ClientCount())
+	}
+}
+
 // BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
 // This is called when a parent session starts or stops blocking on mitto_children_tasks_wait.
 func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
