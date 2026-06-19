@@ -34,14 +34,25 @@ describe("linkifyBeadsRefs", () => {
     expect(root.querySelectorAll("a.beads-link")).toHaveLength(0);
   });
 
-  test("does not wrap ID inside <code>", () => {
+  test("wraps ID inside inline <code> (markdown backticks)", () => {
     const root = makeDiv("<p>Run <code>mitto-aaa</code> check.</p>");
     linkifyBeadsRefs(root, KNOWN_IDS, META);
-    expect(root.querySelectorAll("a.beads-link")).toHaveLength(0);
+    const links = root.querySelectorAll("a.beads-link");
+    expect(links).toHaveLength(1);
+    expect(links[0].dataset.beadsId).toBe("mitto-aaa");
+    expect(links[0].textContent).toBe("mitto-aaa");
+    // The link stays nested inside the original <code> element.
+    expect(links[0].closest("code")).toBeTruthy();
   });
 
   test("does not wrap ID inside <pre>", () => {
     const root = makeDiv("<pre>mitto-aaa</pre>");
+    linkifyBeadsRefs(root, KNOWN_IDS, META);
+    expect(root.querySelectorAll("a.beads-link")).toHaveLength(0);
+  });
+
+  test("does not wrap ID inside fenced code block (<pre><code>)", () => {
+    const root = makeDiv("<pre><code>bd show mitto-aaa</code></pre>");
     linkifyBeadsRefs(root, KNOWN_IDS, META);
     expect(root.querySelectorAll("a.beads-link")).toHaveLength(0);
   });

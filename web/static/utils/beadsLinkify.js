@@ -5,7 +5,10 @@
 // The (?:\.[a-z0-9]+)* suffix ensures longest-match: "mitto-123.4" is captured
 // as a single token so it is never confused with its prefix "mitto-123".
 const CANDIDATE_RE = /\b([a-z][a-z0-9]*-[a-z0-9]+(?:\.[a-z0-9]+)*)\b/gi;
-const SKIP_TAGS = new Set(["A", "CODE", "PRE"]);
+// CODE is intentionally NOT skipped: IDs written in inline markdown backticks
+// (e.g. `mitto-123`) render as <code> and should still be linkified. Fenced
+// code blocks render as <pre><code> and are still skipped via the PRE ancestor.
+const SKIP_TAGS = new Set(["A", "PRE"]);
 
 function hasSkipAncestor(node, rootEl) {
   let el = node.parentElement;
@@ -21,7 +24,8 @@ function hasSkipAncestor(node, rootEl) {
 /**
  * Linkify beads issue IDs in the given DOM element.
  * Only wraps IDs present in the `ids` Set (lowercased).
- * Idempotent: skips text nodes already inside A, CODE, PRE, or .beads-link.
+ * Idempotent: skips text nodes already inside A, PRE, or .beads-link.
+ * Inline <code> is linkified so backtick-enclosed IDs become clickable.
  * @param {Element} rootEl
  * @param {Set<string>} ids - Lowercased known IDs.
  * @param {Map<string, {title: string, status: string}>} meta
