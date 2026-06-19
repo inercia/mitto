@@ -740,6 +740,7 @@ in sync.
 | `sessionId` | A Mitto conversation/session UUID. |
 | `workspaceId` | A Mitto workspace UUID. |
 | `workspaceFolder` | An absolute path to a workspace root directory. |
+| `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). |
 
 ### Visibility rule (type-based gating)

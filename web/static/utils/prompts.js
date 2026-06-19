@@ -26,16 +26,20 @@ export function promptMenus(prompt) {
  *   beadsId        — a beads issue ID (e.g. "mitto-42")
  *   beadsTitle     — a beads issue title (free text, typically auto-filled)
  *   sessionId      — a Mitto conversation/session UUID
+ *   childSessionId — a child conversation/session UUID (relative to the host conversation)
  *   workspaceId    — a Mitto workspace UUID
  *   workspaceFolder — an absolute path to the workspace root directory
+ *   acpServer      — an ACP server (agent) name
  *   text           — generic free-form text (catch-all)
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
   "beadsTitle",
   "sessionId",
+  "childSessionId",
   "workspaceId",
   "workspaceFolder",
+  "acpServer",
   "text",
 ];
 

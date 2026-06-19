@@ -1433,6 +1433,9 @@ func Parse(data []byte) (*Config, error) {
 		if p.Prompt == "" && !isDisabled {
 			continue
 		}
+		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
+			continue
+		}
 		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,

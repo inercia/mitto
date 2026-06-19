@@ -218,13 +218,8 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 	}
 
 	// Validate parameters block.
-	for i, param := range prompt.Parameters {
-		if param.Name == "" {
-			return nil, fmt.Errorf("prompt file %s: parameter #%d: name must not be empty", path, i+1)
-		}
-		if param.Type == "" || !IsKnownPromptParameterType(param.Type) {
-			return nil, fmt.Errorf("prompt file %s: parameter %q has unknown type %q (must be one of: beadsId, beadsTitle, sessionId, workspaceId, workspaceFolder, text)", path, param.Name, param.Type)
-		}
+	if err := ValidatePromptParameters(prompt.Menus, prompt.Parameters); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
 	return prompt, nil

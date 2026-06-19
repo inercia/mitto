@@ -163,7 +163,10 @@ open for project A while the active conversation is in project B). The
 `${ISSUE_ID}` placeholder in a bead prompt body is filled here; the prompt then
 loads further detail itself via `bd show ${ISSUE_ID}`. The `arguments` map
 supports bash-like `${VAR}` and `${VAR:-default}` syntax
-(`processors.SubstituteArguments`).
+(`processors.SubstituteArguments`). The argument count (`len(meta.Arguments)`) is
+persisted as `argument_count` on `UserPromptData` and broadcast via the `user_prompt`
+WebSocket message; the frontend renders a small numeric badge on the `NamedPromptPill`
+component when `argument_count > 0`.
 
 See [Message Queue → Named prompts](message-queue.md) for the queue field
 semantics (`prompt_name`, `arguments`, skipped title generation).

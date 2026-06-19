@@ -1000,6 +1000,149 @@ prompt: |
 	}
 }
 
+func TestValidatePromptParameters(t *testing.T) {
+	t.Run("empty name returns error containing 'name must not be empty'", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "", Type: "text"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "name must not be empty") {
+			t.Errorf("error = %q, want it to contain 'name must not be empty'", err.Error())
+		}
+	})
+
+	t.Run("unknown type returns error containing 'unknown type'", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "notAType"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown type") {
+			t.Errorf("error = %q, want it to contain 'unknown type'", err.Error())
+		}
+	})
+
+	t.Run("childSessionId with empty menus is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=prompts is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("prompts", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=conversation is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("conversation", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=prompts,conversation is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("prompts, conversation", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=beadsList returns error mentioning childSessionId and beadsList", func(t *testing.T) {
+		err := ValidatePromptParameters("beadsList", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "childSessionId") {
+			t.Errorf("error = %q, want it to contain 'childSessionId'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "beadsList") {
+			t.Errorf("error = %q, want it to contain 'beadsList'", err.Error())
+		}
+	})
+
+	t.Run("childSessionId with menus=conversation,beadsList returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("conversation, beadsList", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "childSessionId") {
+			t.Errorf("error = %q, want it to contain 'childSessionId'", err.Error())
+		}
+	})
+
+	t.Run("non-childSessionId param with beadsList menus is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("beadsList", []PromptParameter{{Name: "x", Type: "text"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestParsePromptFile_ChildSessionId(t *testing.T) {
+	tests := []struct {
+		name    string
+		menus   string
+		wantErr bool
+	}{
+		{"no menus line is OK", "", false},
+		{"menus=prompts is OK", "prompts", false},
+		{"menus=conversation is OK", "conversation", false},
+		{"menus=beadsList errors with childSessionId mention", "beadsList", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			menusLine := ""
+			if tc.menus != "" {
+				menusLine = "menus: " + tc.menus + "\n"
+			}
+			data := []byte("name: \"Test\"\n" + menusLine + "parameters:\n  - name: child\n    type: childSessionId\nprompt: |\n  body\n")
+			_, err := ParsePromptFile("test.prompt.yaml", data, time.Now())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "childSessionId") {
+					t.Errorf("error = %q, want it to contain 'childSessionId'", err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkspaceRC_SkipsInvalidChildSessionIdPrompt(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Valid Prompt"
+    prompt: "do something"
+    menus: conversation
+    parameters:
+      - name: child
+        type: childSessionId
+  - name: "Invalid Prompt"
+    prompt: "do something else"
+    menus: beadsList
+    parameters:
+      - name: child
+        type: childSessionId
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if len(rc.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1 (invalid prompt should be skipped)", len(rc.Prompts))
+	}
+	if len(rc.Prompts) > 0 && rc.Prompts[0].Name != "Valid Prompt" {
+		t.Errorf("Prompts[0].Name = %q, want %q", rc.Prompts[0].Name, "Valid Prompt")
+	}
+}
+
 func TestMigrateMarkdownPromptsInDir(t *testing.T) {
 	dir := t.TempDir()
 
