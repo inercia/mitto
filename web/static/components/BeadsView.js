@@ -201,16 +201,14 @@ function labelValue(label, value) {
  *  - Create mode (`isCreating` is true): shows editable fields for a new issue
  *    plus a "Save" footer that POSTs to /api/beads/create.
  *
- * The panel uses two stacked layers so it matches the conversation
- * SessionPanel's dimming while still respecting the beads view bounds:
- *  - A `fixed inset-0` dimming backdrop covering the WHOLE window (like
- *    SessionPanel), so the conversations sidebar is dimmed too. It is hidden in
- *    fullscreen, where the panel fills the whole beads view area.
- *  - A transparent `absolute inset-0` layer scoped to the beads view that holds
- *    the panel on the right. Keeping the panel scoped means `expand` fills only
- *    the beads view area and the panel never covers the sidebar; the backdrop's
- *    dim shows through the transparent layer on the panel's left.
- * Clicking anywhere outside the panel closes it.
+ * The panel is a dock-mode daisyUI Drawer (drawer-dock; see styles.css) docked
+ * to the right edge of the beads view area and confined to its own width — NOT a
+ * full-area overlay — with no dimming backdrop. A composited full-window overlay
+ * over the issue list dropped the list's GPU backing store on pointer-move and
+ * blanked it (mitto-cdf), so dock mode leaves the list to the panel's left under
+ * no composited layer. `expand`/fullscreen widens the panel to fill the area.
+ * Clicking anywhere outside the panel (the issue list / conversation) closes it,
+ * detected via a document mousedown listener rather than a backdrop element.
  */
 export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, standalone, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
   const isOpen = isCreating || !!issue;
@@ -289,9 +287,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
   const [editingType, setEditingType] = useState(false);
   const typeRef = useRef(null);
 
-  // View-mode inline priority editing.
-  const [editingPriority, setEditingPriority] = useState(false);
-  const priorityRef = useRef(null);
+
 
   // View-mode inline assignee editing.
   const [editingAssignee, setEditingAssignee] = useState(false);
@@ -360,18 +356,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [editingType]);
-
-  // Close the priority dropdown on outside click while it is open.
-  useEffect(() => {
-    if (!editingPriority) return undefined;
-    const onDocClick = (e) => {
-      if (priorityRef.current && !priorityRef.current.contains(e.target)) {
-        setEditingPriority(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [editingPriority]);
 
   const openPanelMenu = useCallback((e) => {
     e.preventDefault();
@@ -531,6 +515,30 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
     setTimeout(() => onClose(), 150);
   }, [onClose]);
 
+  // Close the panel when the user clicks outside of it (e.g. on the issue list
+  // or conversation to its left). Dock mode (mitto-cdf) deliberately has no
+  // dimming backdrop — a composited full-area overlay over the list dropped its
+  // GPU backing store on pointer-move — so outside clicks are detected with a
+  // document listener (no DOM overlay) instead. Clicks inside the docked panel,
+  // inside any modal dialog (the confirm/discard dialog renders as a
+  // viewport-covering .modal sibling), or while the kebab context menu is open
+  // are ignored so those surfaces keep working; the context menu dismisses
+  // itself via its own outside-click handler. handleClose routes through the
+  // unsaved-changes guard, so an outside click with a dirty draft prompts to
+  // discard rather than closing immediately.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onDocMouseDown = (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest(".drawer-dock") || t.closest(".modal")) return;
+      if (panelMenu) return;
+      handleClose();
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [isOpen, panelMenu, handleClose]);
+
   const panelMenuItems = useMemo(() => {
     if (!data) return [];
     const promptGroupItems = buildPromptGroupMenuItems(
@@ -580,7 +588,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
     setEditingDesc(false);
     setEditingTitle(false);
     setEditingType(false);
-    setEditingPriority(false);
     setEditingAssignee(false);
     setEditingNotes(false);
     setAddingComment(false);
@@ -697,7 +704,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
         setEditingDesc(false);
         setEditingNotes(false);
         setEditingAssignee(false);
-        setEditingPriority(false);
         showToast && showToast({ style: "success", title: "Changes saved" });
         onUpdated && onUpdated();
       }
@@ -975,7 +981,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
           value=${title}
           onInput=${e => setTitle(e.target.value)}
           disabled=${submitting}
-          autoFocus
         />`;
     }
     return editingTitle
@@ -1054,35 +1059,32 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
         )}
       </select>`
     : html`
-      <div class="relative" ref=${priorityRef}>
-        <button
-          type="button"
-          onClick=${() => setEditingPriority(o => !o)}
-          class="btn btn-ghost btn-xs"
-          title="Click to change priority"
-        >
+      <div class="dropdown">
+        <div tabindex="0" role="button" class="btn btn-ghost btn-xs" title="Click to change priority">
           ${priorityBadge(viewDraft.priority)}
-        </button>
-        ${editingPriority && html`
-          <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
-            ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
-              const num = Number(n);
-              const isCurrent = num === viewDraft.priority;
-              return html`
-                <li key=${n}>
-                  <button
-                    type="button"
-                    onClick=${() => { setViewDraft(p => ({ ...p, priority: num })); setEditingPriority(false); }}
-                  >
-                    ${priorityBadge(num)}
-                    <span class="flex-1">${label}</span>
-                    ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                  </button>
-                </li>
-              `;
-            })}
-          </ul>
-        `}
+        </div>
+        <ul tabindex="0" class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
+          ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
+            const num = Number(n);
+            const isCurrent = num === viewDraft.priority;
+            return html`
+              <li key=${n}>
+                <button
+                  type="button"
+                  onClick=${(ev) => {
+                    setViewDraft(p => ({ ...p, priority: num }));
+                    ev.currentTarget.blur();
+                    if (document.activeElement) document.activeElement.blur();
+                  }}
+                >
+                  ${priorityBadge(num)}
+                  <span class="flex-1">${label}</span>
+                  ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                </button>
+              </li>
+            `;
+          })}
+        </ul>
       </div>`;
 
   // DescriptionField is self-contained (includes label + wrapper) to avoid
@@ -1110,6 +1112,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             className="input-font-target"
             minHeight=${160}
             editorApiRef=${createEditorApiRef}
+            autoFocus=${true}
           />
         </div>`;
     }
@@ -1247,18 +1250,18 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             .filter(i => !createDeps.some(d => d.id === i.id))
             .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
         </datalist>
-        <div class="space-y-1 mt-1">
+        <ul class="list mt-1">
           ${createDeps.map(d => html`
-            <div key=${d.id} class="flex items-center gap-1.5">
+            <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
               <select
-                class="select select-xs beads-dep-type-select"
+                class="select select-xs beads-dep-type-select shrink-0"
                 value=${d.type || "blocks"}
                 disabled=${submitting}
                 onInput=${e => setCreateDeps(prev => prev.map(x => x.id === d.id ? { ...x, type: e.target.value } : x))}
               >
                 ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
               </select>
-              <span class="font-mono text-xs flex-1 min-w-0 truncate">${d.id}</span>
+              <span class="list-col-grow font-mono text-xs min-w-0 truncate">${d.id}</span>
               <button
                 type="button"
                 onClick=${() => removeCreateDep(d.id)}
@@ -1268,37 +1271,37 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
               >
                 <${CloseIcon} className="w-3.5 h-3.5" />
               </button>
-            </div>
+            </li>
           `)}
-          <div class="flex items-center gap-1.5 pt-1">
-            <select
-              class="select select-xs beads-dep-type-select"
-              value=${createNewDepType}
-              disabled=${submitting}
-              onInput=${e => setCreateNewDepType(e.target.value)}
-            >
-              ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-            </select>
-            <input
-              type="text"
-              list="beads-create-dep-options"
-              placeholder="issue id…"
-              value=${createNewDepId}
-              disabled=${submitting}
-              onInput=${e => setCreateNewDepId(e.target.value)}
-              onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addCreateDep(); } }}
-              class="input input-xs flex-1 min-w-0"
-            />
-            <button
-              type="button"
-              onClick=${addCreateDep}
-              aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-xs shrink-0 ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
-              title="Add dependency"
-            >
-              <${PlusIcon} className="w-3.5 h-3.5" />
-            </button>
-          </div>
+        </ul>
+        <div class="join w-full mt-1">
+          <select
+            class="select select-xs beads-dep-type-select join-item"
+            value=${createNewDepType}
+            disabled=${submitting}
+            onInput=${e => setCreateNewDepType(e.target.value)}
+          >
+            ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+          </select>
+          <input
+            type="text"
+            list="beads-create-dep-options"
+            placeholder="issue id…"
+            value=${createNewDepId}
+            disabled=${submitting}
+            onInput=${e => setCreateNewDepId(e.target.value)}
+            onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addCreateDep(); } }}
+            class="input input-xs flex-1 min-w-0 join-item"
+          />
+          <button
+            type="button"
+            onClick=${addCreateDep}
+            aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
+            class="btn btn-ghost btn-square btn-xs shrink-0 join-item ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
+            title="Add dependency"
+          >
+            <${PlusIcon} className="w-3.5 h-3.5" />
+          </button>
         </div>`;
     }
     return html`
@@ -1310,38 +1313,40 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
       ${depsLoading
         ? html`<div class="flex items-center gap-2 text-xs text-mitto-text-secondary"><span class="loading loading-spinner w-3 h-3"></span> Loading…</div>`
         : html`
-          <div class="space-y-1">
-            ${deps.length === 0 && html`<div class="text-xs text-mitto-text-secondary italic">No dependencies.</div>`}
-            ${deps.map(d => html`
-              <div key=${d.id} class="flex items-center gap-1.5">
-                <select
-                  class="select select-xs beads-dep-type-select"
-                  value=${d.dependency_type || "blocks"}
-                  disabled=${depsBusy}
-                  onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
-                >
-                  ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                </select>
-                <button
-                  type="button"
-                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                  class="font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline flex-1 min-w-0 truncate text-left"
-                  title=${"Open " + d.id}
-                >${d.id}</button>
-                <button
-                  type="button"
-                  onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
-                  aria-disabled=${depsBusy ? "true" : "false"}
-                  class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
-                  title="Remove dependency"
-                >
-                  <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
-                </button>
-              </div>
-            `)}
-            <div class="flex items-center gap-1.5 pt-1">
+          <${Fragment}>
+            <ul class="list">
+              ${deps.length === 0 && html`<li class="text-xs text-mitto-text-secondary italic px-2 py-1">No dependencies.</li>`}
+              ${deps.map(d => html`
+                <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
+                  <select
+                    class="select select-xs beads-dep-type-select shrink-0"
+                    value=${d.dependency_type || "blocks"}
+                    disabled=${depsBusy}
+                    onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
+                  >
+                    ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                  </select>
+                  <button
+                    type="button"
+                    onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
+                    class="list-col-grow font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline min-w-0 truncate text-left"
+                    title=${"Open " + d.id}
+                  >${d.id}</button>
+                  <button
+                    type="button"
+                    onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
+                    aria-disabled=${depsBusy ? "true" : "false"}
+                    class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
+                    title="Remove dependency"
+                  >
+                    <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
+                  </button>
+                </li>
+              `)}
+            </ul>
+            <div class="join w-full mt-1">
               <select
-                class="select select-xs beads-dep-type-select"
+                class="select select-xs beads-dep-type-select join-item"
                 value=${newDepType}
                 disabled=${depsBusy}
                 onInput=${e => setNewDepType(e.target.value)}
@@ -1356,13 +1361,13 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                 disabled=${depsBusy}
                 onInput=${e => setNewDepId(e.target.value)}
                 onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
-                class="input input-xs flex-1 min-w-0"
+                class="input input-xs flex-1 min-w-0 join-item"
               />
               <button
                 type="button"
                 onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
                 aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-xs shrink-0 ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
+                class="btn btn-ghost btn-square btn-xs shrink-0 join-item ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
                 title="Add dependency"
               >
                 ${depsBusy
@@ -1370,7 +1375,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                   : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
               </button>
             </div>
-          </div>
+          </${Fragment}>
         `}`;
   };
 

@@ -188,11 +188,12 @@ testWithCleanup.describe("Beads view - mobile", () => {
 /**
  * Beads detail panel behavior tests (desktop).
  *
- * The detail panel uses two stacked layers: a full-window `fixed inset-0`
- * dimming backdrop (like SessionPanel, so the conversations sidebar is dimmed
- * too) and a `pointer-events-none` panel layer scoped to the beads view area so
- * `expand` fills only that area and never covers the sidebar. Clicking the
- * backdrop (anywhere outside the panel) dismisses it.
+ * The detail panel is a dock-mode daisyUI Drawer (drawer-dock) docked to the
+ * right edge of the beads view area and confined to its own width, with NO
+ * dimming backdrop (a composited full-area overlay over the list dropped its GPU
+ * backing store on pointer-move, mitto-cdf). Clicking anywhere outside the panel
+ * (the issue list / header to its left) dismisses it via a document mousedown
+ * listener rather than a backdrop element.
  *
  * These run on the default desktop viewport.
  */
@@ -222,7 +223,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   });
 
   testWithCleanup(
-    "clicking the backdrop closes the open detail panel",
+    "clicking outside the panel closes the open detail panel",
     async ({ page, timeouts }) => {
       await openBeads(page, timeouts);
       const panel = page.locator(DETAIL_PANEL);
@@ -235,11 +236,15 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(panel.getByText("mitto-bbb")).toBeVisible();
 
-      // Clicking the dimming backdrop (outside the panel) dismisses it. The
-      // backdrop now spans the whole window and the panel sits above it on the
-      // right, so click near the top-left (over the sidebar region) to land on
-      // the backdrop rather than the panel.
-      await page.locator(PANEL_BACKDROP).click({ position: { x: 5, y: 5 } });
+      // Dock mode has no dimming backdrop; clicking anywhere outside the docked
+      // panel dismisses it via a document mousedown listener. Click the beads
+      // view header ("Tasks — …") on the LEFT — a non-interactive span that sits
+      // outside the right-docked panel. The span is flex-1 (its center lies
+      // under the panel), so click near its left edge to land on the list side.
+      await page
+        .locator("span.text-lg.font-semibold")
+        .filter({ hasText: "Tasks" })
+        .click({ position: { x: 5, y: 10 } });
       await expect(panel).toBeHidden({ timeout: timeouts.shortAction });
     },
   );
