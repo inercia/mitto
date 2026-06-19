@@ -738,6 +738,7 @@ in sync.
 | `beadsId` | A beads issue ID (e.g. `"mitto-42"`). Auto-filled by the `beadsIssues` menu from the selected issue's ID. |
 | `beadsTitle` | A beads issue title (free text). Auto-filled by the `beadsIssues` menu from the selected issue's title. |
 | `sessionId` | A Mitto conversation/session UUID. |
+| `childSessionId` | A child conversation/session UUID, relative to the host conversation. In the `conversation` menu it is auto-filled when the right-clicked conversation has exactly one (non-archived) child; otherwise the picker is scoped to that conversation's children. |
 | `workspaceId` | A Mitto workspace UUID. |
 | `workspaceFolder` | An absolute path to a workspace root directory. |
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |

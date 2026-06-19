@@ -108,4 +108,5 @@ bd close <id>         # Complete work
 - **Explicit commit approval required**: NEVER commit code without explicit user instruction to do so. Agents must ask for approval before committing, even if the code is correct and all tests pass. Do not commit at the end of a task unless the user explicitly asks for it.
 - **Explicit beads issue closure**: NEVER close a beads issue without explicit user instruction, even after implementing the work. The user must explicitly approve closing the issue.
 - **Progress tracking with bd comment**: Use `bd comment <id>` to record work progress on beads issues without closing them. This allows intermediate progress updates while awaiting user direction on commits/closure.
+- **Conflict-free increment strategy**: When working on concurrent epics across conversations, prioritize non-blocking, conflict-free increments that don't require editing files owned by other active conversations. Use optional component props with graceful degradation (fallback to plain text input) to unblock self-contained work and enable parallel progress on related features without merge conflicts.
 <!-- END USER PREFERENCES -->

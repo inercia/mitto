@@ -83,6 +83,7 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 | `beadsId` | Beads issue ID (e.g. `"mitto-42"`). Auto-filled by `beadsIssues` menu. |
 | `beadsTitle` | Beads issue title. Auto-filled by `beadsIssues` menu. |
 | `sessionId` | Mitto conversation/session UUID. |
+| `childSessionId` | Child conversation/session UUID (relative to host). Auto-filled in `conversation` menu when the host has exactly one non-archived child; otherwise the picker is scoped to the host's children. Valid only in `prompts`/`conversation` menus. |
 | `workspaceId` | Mitto workspace UUID. |
 | `workspaceFolder` | Absolute path to a workspace root directory. |
 | `text` | Generic free-form text (catch-all). |
