@@ -4,7 +4,7 @@ description: Continue work by sending instructions to an existing child conversa
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: children.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+enabledWhen: children.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
 prompt: |
   Continue working on this by sending instructions to an existing child conversation.
   Let the user pick the child and choose whether to wait for it to report back.

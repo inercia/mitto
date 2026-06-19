@@ -4,7 +4,7 @@ menus: prompts, beadsList
 description: Review ready (not-in-progress) beads, present a prioritized recommendation, claim the chosen one, then analyze and plan it in this conversation and dispatch the implementation work to child conversations
 backgroundColor: '#B2DFDB'
 group: Tasks
-enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!session.isChild && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*")'
 prompt: |
   ## Session Context
 

@@ -4,7 +4,12 @@ description: Send a status report to the parent conversation
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: session.isChild && parent.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+enabledWhen: session.isChild && parent.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+preferredModels:
+  - "*haiku*"
+  - "*flash*"
+  - "*mini*"
+  - "*sonnet*"
 prompt: |
   Report the current status and findings to the parent conversation that spawned this one.
 
