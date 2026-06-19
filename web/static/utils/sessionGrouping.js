@@ -28,7 +28,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
     filteredSessions
       .map(
         (s) =>
-          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
+          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.periodic_configured || false}|${s.pinned || false}|${s.name || ""}`,
       )
       .sort()
       .join("\n")

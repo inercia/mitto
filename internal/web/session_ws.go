@@ -435,13 +435,15 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
 		}
 
-		// Get periodic prompts state
-		// periodic_enabled = true means a periodic config exists (session is in periodic mode)
-		// This determines UI mode (shows frequency panel and lock/unlock buttons)
+		// Get periodic prompts state.
+		// periodic_configured = true means a periodic config exists (shows editor UI).
+		// periodic_enabled = true means runs are active (drives sidebar category + clock icon).
 		periodicStore := c.store.Periodic(c.sessionID)
 		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
-			data["periodic_enabled"] = true
+			data["periodic_configured"] = true
+			data["periodic_enabled"] = periodic.Enabled
 		} else {
+			data["periodic_configured"] = false
 			data["periodic_enabled"] = false
 		}
 

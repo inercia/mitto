@@ -1268,7 +1268,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   msg.data.archived_at ?? session.info?.archived_at ?? null,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
-                // Periodic enabled state from server
+                // Periodic state from server:
+                // periodic_configured: config exists → drives editor UI + reconnect long-lived check
+                // periodic_enabled: runs active → drives sidebar category + clock icon
+                periodic_configured:
+                  msg.data.periodic_configured ??
+                  session.info?.periodic_configured ??
+                  false,
                 periodic_enabled:
                   msg.data.periodic_enabled ??
                   session.info?.periodic_enabled ??
@@ -3443,12 +3449,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           //    The counter resets on the next successful onopen, and is cleared
           //    when the user explicitly switches to this session (switchSession).
 
-          // Check if this is a periodic session — they're long-lived by design
+          // Check if this conversation has a periodic config — those are long-lived by design
           // and should always be allowed to reconnect regardless of age.
+          // Use periodic_configured (config exists) not periodic_enabled (runs active),
+          // so paused/draft periodic conversations still count as long-lived.
           const isPeriodic =
-            sessionsRef.current[sessionId]?.info?.periodic_enabled ||
+            sessionsRef.current[sessionId]?.info?.periodic_configured ||
             storedSessionsRef.current?.find((s) => s.session_id === sessionId)
-              ?.periodic_enabled;
+              ?.periodic_configured;
 
           const sessionAgeMs = getSessionAgeMs(sessionId);
           const isTooOld =
@@ -4146,14 +4154,16 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         console.log(
           `[global] Session periodic state changed: ${msg.data.session_id} -> configured=${msg.data.periodic_configured}, enabled=${msg.data.periodic_enabled}`,
         );
-        // Update in stored sessions (for sidebar display - uses periodic_configured for UI)
-        // Also store next_scheduled_at and frequency for progress indicator
+        // Update in stored sessions:
+        // periodic_enabled: runs active → sidebar category + clock icon
+        // periodic_configured: config exists → editor UI mode
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
               ? {
                   ...s,
-                  periodic_enabled: msg.data.periodic_configured,
+                  periodic_enabled: msg.data.periodic_enabled,
+                  periodic_configured: msg.data.periodic_configured,
                   next_scheduled_at: msg.data.next_scheduled_at || null,
                   periodic_frequency: msg.data.frequency || null,
                   periodic_iteration_count: msg.data.iteration_count ?? null,
@@ -4172,8 +4182,10 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               ...session,
               info: {
                 ...session.info,
-                // Use periodic_configured for UI mode (shows frequency panel, lock/unlock buttons)
-                periodic_enabled: msg.data.periodic_configured,
+                // periodic_enabled: runs active → sidebar category + clock icon
+                periodic_enabled: msg.data.periodic_enabled,
+                // periodic_configured: config exists → editor UI mode
+                periodic_configured: msg.data.periodic_configured,
                 next_scheduled_at: msg.data.next_scheduled_at || null,
                 periodic_frequency: msg.data.frequency || null,
                 periodic_iteration_count: msg.data.iteration_count ?? null,

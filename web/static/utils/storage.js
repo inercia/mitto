@@ -802,6 +802,10 @@ export const FILTER_TAB = {
  * Derive which filter tab a session belongs to from its state. Mirrors the
  * tab-filtering logic used throughout the app (archived → archived,
  * periodic_enabled → periodic, otherwise → conversations).
+ *
+ * NOTE: uses periodic_enabled (runs active), NOT periodic_configured (config exists).
+ * A paused/draft periodic conversation (configured but not enabled) falls into
+ * the CONVERSATIONS group — its editor is still visible via periodic_configured.
  * @param {Object} session - A session object (archived, periodic_enabled flags)
  * @returns {string} The filter tab for the session
  */

@@ -404,7 +404,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
     // Flatten acp_server from info so session.acp_server is set for grouping/tooltips
     const acpServer = s.acp_server || s.info?.acp_server || stored?.acp_server || "";
 
-    // Always merge stored properties (archived, name, pinned, periodic_enabled, next_scheduled_at, periodic_frequency) if stored session exists
+    // Always merge stored properties (archived, name, pinned, periodic_enabled, periodic_configured, next_scheduled_at, periodic_frequency) if stored session exists
     if (stored) {
       return {
         ...s,
@@ -420,8 +420,10 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // session_streaming events out of order, causing the sidebar dot to stay lit
         // after the per-session WebSocket has already received prompt_complete.
         isStreaming: s.isStreaming || false,
-        // Periodic enabled state (from stored session, updated via WebSocket)
+        // periodic_enabled: runs active → sidebar category + clock icon
         periodic_enabled: stored.periodic_enabled || false,
+        // periodic_configured: config exists → editor UI mode + reconnect long-lived check
+        periodic_configured: stored.periodic_configured || false,
         // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
         next_scheduled_at: s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
         periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,

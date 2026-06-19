@@ -287,9 +287,15 @@ func ownerByContainment(normReq string, workspaces []config.WorkspaceSettings) *
 // SessionListResponse extends session.Metadata with additional runtime fields.
 type SessionListResponse struct {
 	session.Metadata
-	// PeriodicEnabled is true when a periodic config exists for this session.
-	// This determines UI mode (shows frequency panel and lock/unlock buttons).
-	// Note: This indicates config existence, not whether periodic runs are active.
+	// PeriodicConfigured is true when a periodic config exists for this session.
+	// Controls editor UI mode (shows frequency panel and lock/unlock buttons).
+	// A conversation with PeriodicConfigured=true but PeriodicEnabled=false is
+	// a "draft" periodic — editor visible but runs not yet active.
+	PeriodicConfigured bool `json:"periodic_configured"`
+	// PeriodicEnabled is true when periodic runs are active (config.Enabled == true).
+	// Drives the sidebar PERIODIC category and clock icon. A paused/draft periodic
+	// conversation has PeriodicConfigured=true but PeriodicEnabled=false and falls
+	// into the regular Conversations group.
 	PeriodicEnabled bool `json:"periodic_enabled"`
 	// NextScheduledAt is the next scheduled time for periodic sessions (nil if not periodic or not scheduled).
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
@@ -323,20 +329,22 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	// Build response with periodic_enabled status and scheduling info
+	// Build response with periodic status and scheduling info
 	response := make([]SessionListResponse, len(sessions))
 	for i := range sessions {
 		meta := sessions[i]
 		response[i] = SessionListResponse{
-			Metadata:        meta,
-			PeriodicEnabled: false, // Default to false
+			Metadata:           meta,
+			PeriodicConfigured: false, // Default to false
+			PeriodicEnabled:    false, // Default to false
 		}
 		// Check if a periodic config exists for this session
-		// PeriodicEnabled = true means UI shows periodic mode (frequency panel, lock/unlock buttons)
 		periodicStore := store.Periodic(meta.SessionID)
 		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
-			// Periodic config exists - session is in periodic mode
-			response[i].PeriodicEnabled = true
+			// Periodic config exists — show editor UI regardless of enabled state
+			response[i].PeriodicConfigured = true
+			// PeriodicEnabled reflects whether runs are active (config.Enabled)
+			response[i].PeriodicEnabled = periodic.Enabled
 			// Include scheduling info for progress indicator
 			if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
 				response[i].NextScheduledAt = periodic.NextScheduledAt
