@@ -422,7 +422,7 @@ export function RunnerRestrictionsEditor({
                 : " Loading inherited values..."}
             </p>
             <div class="space-y-1">
-              <div class="flex items-center gap-3">
+              <label class="label">
                 <input
                   type="checkbox"
                   id="override-networking"
@@ -430,13 +430,11 @@ export function RunnerRestrictionsEditor({
                   onChange=${(e) => handleNetworkingOverride(e.target.checked)}
                   class="checkbox checkbox-sm checkbox-primary"
                 />
-                <label for="override-networking" class="text-sm font-medium"
-                  >Override networking</label
-                >
-              </div>
+                Override networking
+              </label>
               ${overrideNetworking
                 ? html`
-                    <label class="flex items-center gap-3 ml-6 cursor-pointer">
+                    <label class="label ml-6">
                       <input
                         type="checkbox"
                         checked=${runnerConfig?.restrictions?.allow_networking !==
@@ -448,7 +446,7 @@ export function RunnerRestrictionsEditor({
                           )}
                         class="checkbox checkbox-sm checkbox-primary"
                       />
-                      <span class="text-sm">Allow networking</span>
+                      Allow networking
                     </label>
                   `
                 : html`
