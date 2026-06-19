@@ -18,6 +18,11 @@ import { Modal } from "./Modal.js";
  * @param {boolean} loadingBeads
  * @param {Array} sessions    - loaded sessions (may be [])
  * @param {boolean} loadingSessions
+ * @param {Array} workspaces  - loaded workspaces (may be [])
+ * @param {boolean} loadingWorkspaces
+ * @param {string} workingDir - current workspace directory (for "(current)" label)
+ * @param {Array} acpServers  - loaded ACP servers (may be [])
+ * @param {string} hostSessionId - host conversation id (for childSessionId filtering)
  */
 function ParamField({
   param,
@@ -27,6 +32,11 @@ function ParamField({
   loadingBeads,
   sessions,
   loadingSessions,
+  workspaces,
+  loadingWorkspaces,
+  workingDir,
+  acpServers,
+  hostSessionId,
 }) {
   const { name, type, description, required } = param;
 
@@ -92,6 +102,137 @@ function ParamField({
         </select>
       `;
     }
+  } else if (type === "childSessionId") {
+    const childSessions = (sessions || []).filter(
+      (s) => hostSessionId && s.parent_session_id === hostSessionId,
+    );
+    if (loadingSessions) {
+      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+    } else if (childSessions.length === 0) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=${value}
+          onInput=${(e) => onChange(name, e.target.value)}
+          placeholder="Child conversation ID"
+        />
+      `;
+    } else {
+      control = html`
+        <select
+          class="select select-sm w-full"
+          value=${value}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          <option value="">Select a child conversation…</option>
+          ${childSessions.map(
+            (s) =>
+              html`<option key=${s.session_id} value=${s.session_id}>
+                ${s.title || s.session_id}
+              </option>`,
+          )}
+        </select>
+      `;
+    }
+  } else if (type === "workspaceId") {
+    if (loadingWorkspaces) {
+      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+    } else if (workspaces.length === 0) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=${value}
+          onInput=${(e) => onChange(name, e.target.value)}
+          placeholder="Workspace ID"
+        />
+      `;
+    } else {
+      control = html`
+        <select
+          class="select select-sm w-full"
+          value=${value}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          <option value="">Select a workspace…</option>
+          ${workspaces.map(
+            (ws) =>
+              html`<option key=${ws.uuid} value=${ws.uuid}>
+                ${ws.name || ws.working_dir}${ws.working_dir === workingDir
+                  ? " (current)"
+                  : ""}
+              </option>`,
+          )}
+        </select>
+      `;
+    }
+  } else if (type === "workspaceFolder") {
+    const seen = new Set();
+    const folders = (workspaces || []).filter((ws) => {
+      if (!ws.working_dir || seen.has(ws.working_dir)) return false;
+      seen.add(ws.working_dir);
+      return true;
+    });
+    if (loadingWorkspaces) {
+      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+    } else if (folders.length === 0) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=${value}
+          onInput=${(e) => onChange(name, e.target.value)}
+          placeholder="Absolute folder path"
+        />
+      `;
+    } else {
+      control = html`
+        <select
+          class="select select-sm w-full"
+          value=${value}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          <option value="">Select a folder…</option>
+          ${folders.map(
+            (ws) =>
+              html`<option key=${ws.working_dir} value=${ws.working_dir}>
+                ${ws.working_dir}${ws.working_dir === workingDir
+                  ? " (current)"
+                  : ""}
+              </option>`,
+          )}
+        </select>
+      `;
+    }
+  } else if (type === "acpServer") {
+    if (loadingWorkspaces) {
+      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+    } else if (!acpServers || acpServers.length === 0) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=${value}
+          onInput=${(e) => onChange(name, e.target.value)}
+          placeholder="Agent (ACP server) name"
+        />
+      `;
+    } else {
+      control = html`
+        <select
+          class="select select-sm w-full"
+          value=${value}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          <option value="">Select an agent…</option>
+          ${acpServers.map(
+            (s) =>
+              html`<option key=${s.name} value=${s.name}>${s.name}</option>`,
+          )}
+        </select>
+      `;
+    }
   } else if (type === "text") {
     control = html`
       <textarea
@@ -102,7 +243,7 @@ function ParamField({
       ></textarea>
     `;
   } else {
-    // beadsTitle, workspaceId, workspaceFolder, unknown → plain text input
+    // beadsTitle, unknown → plain text input
     control = html`
       <input
         type="text"
@@ -143,6 +284,7 @@ export function PromptParameterDialog({
   onSubmit,
   parameters = [],
   workingDir,
+  hostSessionId,
   title = "Prompt parameters",
 }) {
   const [values, setValues] = useState({});
@@ -150,6 +292,9 @@ export function PromptParameterDialog({
   const [loadingBeads, setLoadingBeads] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
+  const [acpServers, setAcpServers] = useState([]);
 
   // Reset state each time the dialog opens
   useEffect(() => {
@@ -157,8 +302,11 @@ export function PromptParameterDialog({
     setValues({});
     setBeadsIssues([]);
     setSessions([]);
+    setWorkspaces([]);
+    setAcpServers([]);
     setLoadingBeads(false);
     setLoadingSessions(false);
+    setLoadingWorkspaces(false);
   }, [isOpen]);
 
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
@@ -187,7 +335,9 @@ export function PromptParameterDialog({
   // Fetch sessions when dialog opens (only if a sessionId param is present)
   useEffect(() => {
     if (!isOpen) return;
-    const needsSessions = parameters.some((p) => p.type === "sessionId");
+    const needsSessions = parameters.some(
+      (p) => p.type === "sessionId" || p.type === "childSessionId",
+    );
     if (!needsSessions) return;
 
     setLoadingSessions(true);
@@ -202,6 +352,31 @@ export function PromptParameterDialog({
         setSessions([]);
       })
       .finally(() => setLoadingSessions(false));
+  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch workspaces/agents when dialog opens (only if a relevant param is present)
+  useEffect(() => {
+    if (!isOpen) return;
+    const needsWsOrAgents = parameters.some(
+      (p) =>
+        p.type === "workspaceId" ||
+        p.type === "workspaceFolder" ||
+        p.type === "acpServer",
+    );
+    if (!needsWsOrAgents) return;
+    setLoadingWorkspaces(true);
+    authFetch(apiUrl("/api/workspaces"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((data) => {
+        setWorkspaces(Array.isArray(data?.workspaces) ? data.workspaces : []);
+        setAcpServers(Array.isArray(data?.acp_servers) ? data.acp_servers : []);
+      })
+      .catch((err) => {
+        console.warn("[PromptParameterDialog] workspaces list error:", err);
+        setWorkspaces([]);
+        setAcpServers([]);
+      })
+      .finally(() => setLoadingWorkspaces(false));
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFieldChange = useCallback((fieldName, val) => {
@@ -269,6 +444,11 @@ export function PromptParameterDialog({
                 loadingBeads=${loadingBeads}
                 sessions=${sessions}
                 loadingSessions=${loadingSessions}
+                workspaces=${workspaces}
+                loadingWorkspaces=${loadingWorkspaces}
+                workingDir=${workingDir}
+                acpServers=${acpServers}
+                hostSessionId=${hostSessionId}
               />`,
           )}
         </div>
