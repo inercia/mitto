@@ -109,7 +109,11 @@ type ChildrenContext struct {
 
 // ToolsContext holds MCP tools context for CEL evaluation.
 type ToolsContext struct {
-	// Available indicates whether the tool list has been fetched
+	// Available indicates whether the tool list is known (a definitive, non-empty
+	// result has been fetched). When false, the tool list is unknown / not yet
+	// fetched, and the tool-pattern functions (tools.hasPattern/hasAllPatterns/
+	// hasAnyPattern) fail open (return true) so tool-gated prompts are not hidden
+	// during the MCP-tools cache warm-up window.
 	Available bool
 	// Names contains the names of available tools
 	Names []string

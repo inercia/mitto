@@ -198,7 +198,16 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		ACP:   ACPContext{Name: "", Type: ""},
 		Tools: ToolsContext{Available: true, Names: []string{"mitto_list"}},
 	}
-	emptyToolsCtx := &PromptEnabledContext{
+	// fetchedEmptyCtx: the tool list has been fetched and is known to be empty
+	// (Available: true). Tool-pattern functions evaluate normally and fail closed.
+	fetchedEmptyCtx := &PromptEnabledContext{
+		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+		Tools: ToolsContext{Available: true, Names: nil},
+	}
+	// unknownToolsCtx: the tool list has not been fetched yet (Available: false).
+	// Tool-pattern functions fail open (return true) so prompts are not hidden
+	// during the MCP-tools cache warm-up window.
+	unknownToolsCtx := &PromptEnabledContext{
 		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 		Tools: ToolsContext{Available: false, Names: nil},
 	}
@@ -235,7 +244,8 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		// tools.hasAllPatterns — list arg
 		{"hasAllPatterns list all satisfied", `tools.hasAllPatterns(["mitto_*", "jira_*"])`, augCtx, true},
 		{"hasAllPatterns list some unsatisfied", `tools.hasAllPatterns(["mitto_*", "slack_*"])`, augCtx, false},
-		{"hasAllPatterns empty tools", `tools.hasAllPatterns(["mitto_*"])`, emptyToolsCtx, false},
+		{"hasAllPatterns fetched-empty fails closed", `tools.hasAllPatterns(["mitto_*"])`, fetchedEmptyCtx, false},
+		{"hasAllPatterns unknown tools fails open", `tools.hasAllPatterns(["mitto_*"])`, unknownToolsCtx, true},
 
 		// tools.hasAnyPattern — list arg
 		{"hasAnyPattern list one satisfied", `tools.hasAnyPattern(["slack_*", "jira_*"])`, augCtx, true},
@@ -243,7 +253,10 @@ func TestCELConvenienceFunctions(t *testing.T) {
 
 		// tools.hasAnyPattern — single string arg
 		{"hasAnyPattern single satisfied", `tools.hasAnyPattern("github_*")`, augCtx, true},
-		{"hasAnyPattern empty tools", `tools.hasAnyPattern(["mitto_*"])`, emptyToolsCtx, false},
+		{"hasAnyPattern fetched-empty fails closed", `tools.hasAnyPattern(["mitto_*"])`, fetchedEmptyCtx, false},
+		{"hasAnyPattern unknown tools fails open", `tools.hasAnyPattern(["mitto_*"])`, unknownToolsCtx, true},
+		{"hasPattern unknown tools fails open", `tools.hasPattern("mitto_*")`, unknownToolsCtx, true},
+		{"hasPattern fetched-empty fails closed", `tools.hasPattern("mitto_*")`, fetchedEmptyCtx, false},
 
 		// Combined expression
 		{"combined matchesServerType and hasAllPatterns",

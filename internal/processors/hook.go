@@ -224,11 +224,12 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	}
 	ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
 
-	// Tools context
-	if len(input.MCPToolNames) > 0 {
-		ctx.Tools.Available = true
-		ctx.Tools.Names = input.MCPToolNames
-	}
+	// Tools context. Processors evaluate at message-processing time, where the
+	// tool list is treated as known (the cache is warmed on connect). Mark it
+	// Available so tool-pattern functions use name-based matching rather than the
+	// warm-up fail-open path used by the prompt menus.
+	ctx.Tools.Available = true
+	ctx.Tools.Names = input.MCPToolNames
 
 	// Permissions context - resolve flags with defaults
 	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(input.AdvancedSettings, session.FlagCanDoIntrospection)

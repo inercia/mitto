@@ -2380,7 +2380,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasPattern satisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"mitto_conversation_new", "other_tool"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new", "other_tool"}},
 			},
 			wantNames: []string{"p"},
 		},
@@ -2389,7 +2389,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasPattern unsatisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"other_tool"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"other_tool"}},
 			},
 			wantNames: nil,
 		},
@@ -2398,7 +2398,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasAllPatterns all satisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"mitto_foo", "jira_bar"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo", "jira_bar"}},
 			},
 			wantNames: []string{"p"},
 		},
@@ -2407,18 +2407,27 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasAllPatterns partially satisfied excluded",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
-		// 12. tools.hasPattern empty tools — excluded
+		// 12. tools.hasPattern fetched-empty tools — excluded (fail-closed)
 		{
-			name:    "tools_hasPattern empty tools excluded",
+			name:    "tools_hasPattern fetched-empty tools excluded",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: nil},
+				Tools: config.ToolsContext{Available: true, Names: nil},
 			},
 			wantNames: nil,
+		},
+		// 12b. tools.hasPattern unknown tools — included (fail-open during warm-up)
+		{
+			name:    "tools_hasPattern unknown tools fail-open included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Available: false, Names: nil},
+			},
+			wantNames: []string{"p"},
 		},
 		// 13. enabledWhen CEL true expression
 		{
@@ -2466,7 +2475,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Names: []string{"mitto_conversation_new"}},
+				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new"}},
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"p"},
@@ -2481,7 +2490,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
@@ -2495,7 +2504,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
@@ -2511,7 +2520,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"included-1", "included-2", "included-3"},

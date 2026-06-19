@@ -121,34 +121,34 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// Because the bindings are pure functions of their arguments, the compiled
 		// cel.Program can be created once at compile time and reused per evaluation.
 		cel.Function("__mitto_hasPattern",
-			cel.Overload("__mitto_hasPattern_list_string",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasPattern_bool_list_string",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasPattern),
+				cel.FunctionBinding(mittoHasPattern),
 			),
 		),
 		cel.Function("__mitto_hasAllPatterns",
-			cel.Overload("__mitto_hasAllPatterns_list_string",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasAllPatterns_bool_list_string",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAllPatterns),
+				cel.FunctionBinding(mittoHasAllPatterns),
 			),
-			cel.Overload("__mitto_hasAllPatterns_list_list",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+			cel.Overload("__mitto_hasAllPatterns_bool_list_list",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAllPatterns),
+				cel.FunctionBinding(mittoHasAllPatterns),
 			),
 		),
 		cel.Function("__mitto_hasAnyPattern",
-			cel.Overload("__mitto_hasAnyPattern_list_string",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasAnyPattern_bool_list_string",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAnyPattern),
+				cel.FunctionBinding(mittoHasAnyPattern),
 			),
-			cel.Overload("__mitto_hasAnyPattern_list_list",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+			cel.Overload("__mitto_hasAnyPattern_bool_list_list",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAnyPattern),
+				cel.FunctionBinding(mittoHasAnyPattern),
 			),
 		),
 		cel.Function("__mitto_matchesServerType",
@@ -357,28 +357,28 @@ func isIdent(e celast.Expr, name string) bool {
 	return e != nil && e.Kind() == celast.IdentKind && e.AsIdent() == name
 }
 
-// toolsHasPatternMacro rewrites tools.hasPattern(p) -> __mitto_hasPattern(tools.names, p).
+// toolsHasPatternMacro rewrites tools.hasPattern(p) -> __mitto_hasPattern(tools.available, tools.names, p).
 func toolsHasPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	if !isIdent(target, "tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("tools.available"), eh.NewIdent("tools.names"), args[0]), nil
 }
 
-// toolsHasAllPatternsMacro rewrites tools.hasAllPatterns(a) -> __mitto_hasAllPatterns(tools.names, a).
+// toolsHasAllPatternsMacro rewrites tools.hasAllPatterns(a) -> __mitto_hasAllPatterns(tools.available, tools.names, a).
 func toolsHasAllPatternsMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	if !isIdent(target, "tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("tools.available"), eh.NewIdent("tools.names"), args[0]), nil
 }
 
-// toolsHasAnyPatternMacro rewrites tools.hasAnyPattern(a) -> __mitto_hasAnyPattern(tools.names, a).
+// toolsHasAnyPatternMacro rewrites tools.hasAnyPattern(a) -> __mitto_hasAnyPattern(tools.available, tools.names, a).
 func toolsHasAnyPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	if !isIdent(target, "tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("tools.available"), eh.NewIdent("tools.names"), args[0]), nil
 }
 
 // acpMatchesServerTypeMacro rewrites acp.matchesServerType(t) ->
@@ -408,14 +408,24 @@ func valToString(v ref.Val) string {
 	return ""
 }
 
-// mittoHasPattern reports whether any name (first arg, a list) matches the glob
-// pattern (second arg). Context-free so the compiled program can be cached.
-func mittoHasPattern(namesVal, patternVal ref.Val) ref.Val {
-	pattern, ok := patternVal.(types.String)
+// mittoHasPattern reports whether any name (args[1], a list) matches the glob
+// pattern (args[2]). args[0] is tools.available. Context-free so the compiled
+// program can be cached.
+// Fail-open: returns true when the tool list is not available (args[0] == false),
+// i.e. it has not been fetched yet. This avoids hiding tool-gated prompts during
+// the MCP-tools cache warm-up window.
+func mittoHasPattern(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(false)
+	}
+	if available, ok := args[0].(types.Bool); !ok || !bool(available) {
+		return types.Bool(true)
+	}
+	pattern, ok := args[2].(types.String)
 	if !ok {
 		return types.Bool(false)
 	}
-	for _, name := range extractStringArgs([]ref.Val{namesVal}) {
+	for _, name := range extractStringArgs([]ref.Val{args[1]}) {
 		if matched, err := filepath.Match(string(pattern), name); err == nil && matched {
 			return types.Bool(true)
 		}
@@ -423,11 +433,18 @@ func mittoHasPattern(namesVal, patternVal ref.Val) ref.Val {
 	return types.Bool(false)
 }
 
-// mittoHasAllPatterns reports whether ALL patterns (second arg, string or list)
-// are satisfied by at least one name each (first arg, a list).
-func mittoHasAllPatterns(namesVal, argVal ref.Val) ref.Val {
-	names := extractStringArgs([]ref.Val{namesVal})
-	for _, pattern := range extractStringArgs([]ref.Val{argVal}) {
+// mittoHasAllPatterns reports whether ALL patterns (args[2], string or list)
+// are satisfied by at least one name each (args[1], a list). args[0] is
+// tools.available. Fail-open: returns true when the tool list is not available.
+func mittoHasAllPatterns(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(false)
+	}
+	if available, ok := args[0].(types.Bool); !ok || !bool(available) {
+		return types.Bool(true)
+	}
+	names := extractStringArgs([]ref.Val{args[1]})
+	for _, pattern := range extractStringArgs([]ref.Val{args[2]}) {
 		found := false
 		for _, name := range names {
 			if matched, err := filepath.Match(pattern, name); err == nil && matched {
@@ -442,11 +459,18 @@ func mittoHasAllPatterns(namesVal, argVal ref.Val) ref.Val {
 	return types.Bool(true)
 }
 
-// mittoHasAnyPattern reports whether ANY pattern (second arg, string or list)
-// is satisfied by at least one name (first arg, a list).
-func mittoHasAnyPattern(namesVal, argVal ref.Val) ref.Val {
-	names := extractStringArgs([]ref.Val{namesVal})
-	for _, pattern := range extractStringArgs([]ref.Val{argVal}) {
+// mittoHasAnyPattern reports whether ANY pattern (args[2], string or list)
+// is satisfied by at least one name (args[1], a list). args[0] is
+// tools.available. Fail-open: returns true when the tool list is not available.
+func mittoHasAnyPattern(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(false)
+	}
+	if available, ok := args[0].(types.Bool); !ok || !bool(available) {
+		return types.Bool(true)
+	}
+	names := extractStringArgs([]ref.Val{args[1]})
+	for _, pattern := range extractStringArgs([]ref.Val{args[2]}) {
 		for _, name := range names {
 			if matched, err := filepath.Match(pattern, name); err == nil && matched {
 				return types.Bool(true)
