@@ -76,6 +76,30 @@ func matchConstraintOption(constraint *config.ACPServerConstraint, options []Ses
 	return matchedValue
 }
 
+// resolveAuxModelSwitch decides which model a freshly-created auxiliary session should run
+// and whether a SetSessionModel RPC is actually required to get there. It returns the matched
+// model id and shouldSet=true only when a switch is genuinely needed.
+//
+// shouldSet is false when the constraint is unset/empty, when no available model matches the
+// constraint (caller keeps the server default), OR when the session's current model already
+// satisfies the constraint. The last case lets the caller skip a needless set_model RPC; this
+// mirrors selectPreferredModel's prompt-path behaviour and removes calls from the per-process
+// set_model serialisation queue — the main source of the 8s deadline cascade at server wakeup
+// when many auxiliary sessions resume at once (mitto-ykb).
+func resolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *acp.UnstableSessionModelState) (modelID string, shouldSet bool) {
+	if constraint == nil || constraint.Pattern == "" {
+		return "", false
+	}
+	matched := matchConstraintOption(constraint, modelsToConfigOptions(models))
+	if matched == "" {
+		return "", false
+	}
+	if models != nil && string(models.CurrentModelId) == matched {
+		return matched, false
+	}
+	return matched, true
+}
+
 // selectPreferredModel resolves an ordered list of case-insensitive glob patterns to the
 // model id the session should run with. Patterns are walked in preference order and, for
 // each pattern, the currently active model is checked FIRST: when it already matches the

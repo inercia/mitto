@@ -4201,6 +4201,83 @@ func TestMatchConstraintOption(t *testing.T) {
 	}
 }
 
+// TestResolveAuxModelSwitch pins down the auxiliary model-switch decision (mitto-ykb).
+// shouldSet must be false — so the caller skips the contention-prone set_model RPC at
+// wakeup — whenever the constraint is unset/empty, no available model matches, or the
+// freshly-created session already runs the preferred model. It must be true only when a
+// genuine switch is required.
+func TestResolveAuxModelSwitch(t *testing.T) {
+	models := func(current string) *acp.UnstableSessionModelState {
+		return &acp.UnstableSessionModelState{
+			CurrentModelId: acp.UnstableModelId(current),
+			AvailableModels: []acp.UnstableModelInfo{
+				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
+				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+				{ModelId: "claude-opus-4-8", Name: "Opus 4.8"},
+			},
+		}
+	}
+	tests := []struct {
+		name          string
+		constraint    *config.ACPServerConstraint
+		models        *acp.UnstableSessionModelState
+		wantModelID   string
+		wantShouldSet bool
+	}{
+		{
+			name:          "nil constraint skips",
+			constraint:    nil,
+			models:        models("claude-sonnet-4-6"),
+			wantModelID:   "",
+			wantShouldSet: false,
+		},
+		{
+			name:          "empty pattern skips",
+			constraint:    &config.ACPServerConstraint{MatchMode: "contains", Pattern: ""},
+			models:        models("claude-sonnet-4-6"),
+			wantModelID:   "",
+			wantShouldSet: false,
+		},
+		{
+			name:          "no available model matches keeps default",
+			constraint:    &config.ACPServerConstraint{MatchMode: "contains", Pattern: "gpt"},
+			models:        models("claude-sonnet-4-6"),
+			wantModelID:   "",
+			wantShouldSet: false,
+		},
+		{
+			name:          "current already matches skips set_model",
+			constraint:    &config.ACPServerConstraint{MatchMode: "contains", Pattern: "haiku"},
+			models:        models("claude-haiku-4-5"),
+			wantModelID:   "claude-haiku-4-5",
+			wantShouldSet: false,
+		},
+		{
+			name:          "switch required when current differs",
+			constraint:    &config.ACPServerConstraint{MatchMode: "contains", Pattern: "haiku"},
+			models:        models("claude-sonnet-4-6"),
+			wantModelID:   "claude-haiku-4-5",
+			wantShouldSet: true,
+		},
+		{
+			name:          "nil models with match switches",
+			constraint:    &config.ACPServerConstraint{MatchMode: "contains", Pattern: "haiku"},
+			models:        nil,
+			wantModelID:   "",
+			wantShouldSet: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotModelID, gotShouldSet := resolveAuxModelSwitch(tt.constraint, tt.models)
+			if gotModelID != tt.wantModelID || gotShouldSet != tt.wantShouldSet {
+				t.Errorf("resolveAuxModelSwitch() = (%q, %v), want (%q, %v)",
+					gotModelID, gotShouldSet, tt.wantModelID, tt.wantShouldSet)
+			}
+		})
+	}
+}
+
 // TestSelectPreferredModel tests the per-prompt model resolver. For each pattern in
 // preference order the active (current) model is checked first, so a model that already
 // satisfies a preference is kept instead of switching to another model matching the same

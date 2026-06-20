@@ -782,8 +782,9 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// On no match or nil selection, leave the ACP server's default model unchanged.
 	if m.WorkspaceConfigProvider != nil {
 		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil && ws.AuxiliaryModelSelection != nil && ws.AuxiliaryModelSelection.Pattern != "" {
-			options := modelsToConfigOptions(sessionHandle.Models)
-			if matched := matchConstraintOption(ws.AuxiliaryModelSelection, options); matched != "" {
+			matched, shouldSet := resolveAuxModelSwitch(ws.AuxiliaryModelSelection, sessionHandle.Models)
+			switch {
+			case shouldSet:
 				// Derive from m.ctx, NOT from ctx: NewSession above may have consumed most
 				// of ctx's budget (e.g., in prewarmAuxiliarySessions where multiple goroutines
 				// were previously sharing a single deadline), making ctx already expired by the
@@ -808,12 +809,24 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 						"purpose", purpose,
 						"model_id", matched)
 				}
-			} else if m.logger != nil {
-				m.logger.Debug("Auxiliary session: no model matched AuxiliaryModelSelection, using server default",
-					"workspace_uuid", workspaceUUID,
-					"purpose", purpose,
-					"match_mode", ws.AuxiliaryModelSelection.MatchMode,
-					"pattern", ws.AuxiliaryModelSelection.Pattern)
+			case matched != "":
+				// The freshly-created session already runs the preferred model, so the
+				// set_model RPC is needless — skip it to avoid the per-process serialisation
+				// contention that drives the 8s deadline cascade at server wakeup (mitto-ykb).
+				if m.logger != nil {
+					m.logger.Debug("Auxiliary session: model already matches AuxiliaryModelSelection, skipping set_model",
+						"workspace_uuid", workspaceUUID,
+						"purpose", purpose,
+						"model_id", matched)
+				}
+			default:
+				if m.logger != nil {
+					m.logger.Debug("Auxiliary session: no model matched AuxiliaryModelSelection, using server default",
+						"workspace_uuid", workspaceUUID,
+						"purpose", purpose,
+						"match_mode", ws.AuxiliaryModelSelection.MatchMode,
+						"pattern", ws.AuxiliaryModelSelection.Pattern)
+				}
 			}
 		}
 	}
