@@ -1932,7 +1932,7 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
   `;
 }
 
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
+export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onLaunchPrompt, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -2023,11 +2023,15 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [childAction, setChildAction] = useState("none");
   const [statusBusy, setStatusBusy] = useState(false);
 
-  // Folder upstream task system ("none"|"jira"|"github"|"gitlab"|"linear") and the
+  // Folder upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"|"prompts") and the
   // in-flight sync action ("pull"|"push"|"sync"|null), used to drive the
   // upstream sync buttons in the footer.
   const [upstream, setUpstream] = useState("none");
   const [syncAction, setSyncAction] = useState(null);
+  // For the "prompts" upstream type: names of the configured pull/push/sync prompts.
+  const [pullPromptName, setPullPromptName] = useState("");
+  const [pushPromptName, setPushPromptName] = useState("");
+  const [syncPromptName, setSyncPromptName] = useState("");
 
   // List-level "Prompts" dropdown state (footer toolbar). These are the
   // `menus: beadsList` prompts that operate on the whole issue list rather than
@@ -2084,7 +2088,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       try {
         const res = await authFetch(apiUrl("/api/beads/upstream") + "?working_dir=" + encodeURIComponent(workingDir));
         const data = await readBeadsResponse(res);
-        if (!cancelled) setUpstream((data && data.upstream) || "none");
+        if (!cancelled) {
+          setUpstream((data && data.upstream) || "none");
+          setPullPromptName((data && data.pull_prompt) || "");
+          setPushPromptName((data && data.push_prompt) || "");
+          setSyncPromptName((data && data.sync_prompt) || "");
+        }
       } catch (_err) {
         if (!cancelled) setUpstream("none");
       }
@@ -3052,39 +3061,69 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
         ${upstream && upstream !== "none" && html`
           <div class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border">
-            <button
-              onClick=${() => { if (syncAction) return; handleSync("pull"); }}
-              aria-disabled=${syncAction ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-              data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-              aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-            >
-              ${syncAction === "pull"
-                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                : html`<${ArrowDownIcon} className="w-4 h-4" />`}
-            </button>
-            <button
-              onClick=${() => { if (syncAction) return; handleSync("push"); }}
-              aria-disabled=${syncAction ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-              data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-              aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-            >
-              ${syncAction === "push"
-                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                : html`<${ArrowUpIcon} className="w-4 h-4" />`}
-            </button>
-            <button
-              onClick=${() => { if (syncAction) return; handleSync("sync"); }}
-              aria-disabled=${syncAction ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-              data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-              aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-            >
-              ${syncAction === "sync"
-                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                : html`<${SyncIcon} className="w-4 h-4" />`}
-            </button>
+            ${upstream === "prompts" ? html`
+              <button
+                onClick=${() => { if (!pullPromptName || !onLaunchPrompt) return; onLaunchPrompt("pull", pullPromptName); }}
+                aria-disabled=${(!pullPromptName || !onLaunchPrompt) ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${(!pullPromptName || !onLaunchPrompt) ? "opacity-40 pointer-events-none" : ""}"
+                data-tip=${pullPromptName ? `Pull: run "${pullPromptName}"` : "No pull prompt configured"}
+                aria-label=${pullPromptName ? `Pull: run "${pullPromptName}"` : "No pull prompt configured"}
+              >
+                <${ArrowDownIcon} className="w-4 h-4" />
+              </button>
+              <button
+                onClick=${() => { if (!pushPromptName || !onLaunchPrompt) return; onLaunchPrompt("push", pushPromptName); }}
+                aria-disabled=${(!pushPromptName || !onLaunchPrompt) ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${(!pushPromptName || !onLaunchPrompt) ? "opacity-40 pointer-events-none" : ""}"
+                data-tip=${pushPromptName ? `Push: run "${pushPromptName}"` : "No push prompt configured"}
+                aria-label=${pushPromptName ? `Push: run "${pushPromptName}"` : "No push prompt configured"}
+              >
+                <${ArrowUpIcon} className="w-4 h-4" />
+              </button>
+              <button
+                onClick=${() => { if (!syncPromptName || !onLaunchPrompt) return; onLaunchPrompt("sync", syncPromptName); }}
+                aria-disabled=${(!syncPromptName || !onLaunchPrompt) ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${(!syncPromptName || !onLaunchPrompt) ? "opacity-40 pointer-events-none" : ""}"
+                data-tip=${syncPromptName ? `Sync: run "${syncPromptName}"` : "No sync prompt configured"}
+                aria-label=${syncPromptName ? `Sync: run "${syncPromptName}"` : "No sync prompt configured"}
+              >
+                <${SyncIcon} className="w-4 h-4" />
+              </button>
+            ` : html`
+              <button
+                onClick=${() => { if (syncAction) return; handleSync("pull"); }}
+                aria-disabled=${syncAction ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
+                data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+                aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+              >
+                ${syncAction === "pull"
+                  ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+                  : html`<${ArrowDownIcon} className="w-4 h-4" />`}
+              </button>
+              <button
+                onClick=${() => { if (syncAction) return; handleSync("push"); }}
+                aria-disabled=${syncAction ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
+                data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+                aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+              >
+                ${syncAction === "push"
+                  ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+                  : html`<${ArrowUpIcon} className="w-4 h-4" />`}
+              </button>
+              <button
+                onClick=${() => { if (syncAction) return; handleSync("sync"); }}
+                aria-disabled=${syncAction ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
+                data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+                aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+              >
+                ${syncAction === "sync"
+                  ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+                  : html`<${SyncIcon} className="w-4 h-4" />`}
+              </button>
+            `}
           </div>
         `}
 

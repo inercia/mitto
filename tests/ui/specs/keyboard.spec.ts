@@ -219,10 +219,12 @@ test.describe("Accessibility", () => {
     const sendButton = page.locator(selectors.sendButton);
     await expect(sendButton).toBeVisible();
 
-    // New session button should have a title
+    // New session button should expose an accessible name (aria-label).
+    // The tooltip migrated from a native `title` to a daisyUI tooltip, so the
+    // accessible name now lives on `aria-label` rather than `title`.
     const newButton = page.locator(selectors.newSessionButton);
-    const title = await newButton.getAttribute("title");
-    expect(title).toBeTruthy();
+    const ariaLabel = await newButton.getAttribute("aria-label");
+    expect(ariaLabel).toBeTruthy();
   });
 
   test("should support tab navigation", async ({ page, selectors }) => {

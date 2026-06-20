@@ -219,3 +219,176 @@ describe("matchesSearch", () => {
     });
   });
 });
+
+// =============================================================================
+// "prompts" upstream: argument-free prompt filtering logic
+// =============================================================================
+
+/**
+ * Duplicated filter from WorkspacesDialog.js / loadBeadsUpstreamPrompts for testing.
+ * Keep in sync with implementation: filters to enabled AND parameter-free prompts.
+ */
+function filterArgumentFreePrompts(prompts) {
+  return prompts.filter(p =>
+    p.enabled !== false && (!p.parameters || p.parameters.length === 0)
+  );
+}
+
+describe("filterArgumentFreePrompts (prompts upstream picker)", () => {
+  const basePrompts = [
+    { name: "sync-tasks", enabled: true, parameters: [] },
+    { name: "pull-issues", enabled: true, parameters: undefined },
+    { name: "create-issue", enabled: true, parameters: [{ name: "title" }] },
+    { name: "disabled-prompt", enabled: false, parameters: [] },
+    { name: "disabled-param", enabled: false, parameters: [{ name: "type" }] },
+    { name: "no-fields-at-all", enabled: true },
+  ];
+
+  test("includes prompts with empty parameters array", () => {
+    const result = filterArgumentFreePrompts(basePrompts);
+    expect(result.map(p => p.name)).toContain("sync-tasks");
+  });
+
+  test("includes prompts with undefined parameters", () => {
+    const result = filterArgumentFreePrompts(basePrompts);
+    expect(result.map(p => p.name)).toContain("pull-issues");
+  });
+
+  test("includes prompts with no parameters field", () => {
+    const result = filterArgumentFreePrompts(basePrompts);
+    expect(result.map(p => p.name)).toContain("no-fields-at-all");
+  });
+
+  test("excludes prompts that have parameters (has required args)", () => {
+    const result = filterArgumentFreePrompts(basePrompts);
+    expect(result.map(p => p.name)).not.toContain("create-issue");
+  });
+
+  test("excludes prompts where enabled === false", () => {
+    const result = filterArgumentFreePrompts(basePrompts);
+    expect(result.map(p => p.name)).not.toContain("disabled-prompt");
+    expect(result.map(p => p.name)).not.toContain("disabled-param");
+  });
+
+  test("treats enabled: undefined as enabled (included)", () => {
+    const prompt = { name: "no-enabled-field", parameters: [] };
+    const result = filterArgumentFreePrompts([prompt]);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("no-enabled-field");
+  });
+
+  test("returns empty array when no prompts pass the filter", () => {
+    const allParameterized = [
+      { name: "a", enabled: true, parameters: [{ name: "x" }] },
+      { name: "b", enabled: false, parameters: [] },
+    ];
+    expect(filterArgumentFreePrompts(allParameterized)).toHaveLength(0);
+  });
+
+  test("returns all argument-free enabled prompts when all qualify", () => {
+    const all = [
+      { name: "x", enabled: true, parameters: [] },
+      { name: "y", enabled: true },
+    ];
+    expect(filterArgumentFreePrompts(all)).toHaveLength(2);
+  });
+});
+
+// =============================================================================
+// "prompts" upstream: button disabled logic
+// =============================================================================
+
+/**
+ * Mirrors the disable condition used in BeadsView for the "prompts" upstream buttons.
+ * A button is disabled when its prompt name is empty OR onLaunchPrompt is absent.
+ */
+function isPromptButtonDisabled(promptName, onLaunchPrompt) {
+  return !promptName || !onLaunchPrompt;
+}
+
+describe("prompts upstream button disabled logic", () => {
+  const launcher = () => {};
+
+  test("disabled when promptName is empty string", () => {
+    expect(isPromptButtonDisabled("", launcher)).toBe(true);
+  });
+
+  test("disabled when promptName is undefined", () => {
+    expect(isPromptButtonDisabled(undefined, launcher)).toBe(true);
+  });
+
+  test("disabled when onLaunchPrompt is absent (no prop wired)", () => {
+    expect(isPromptButtonDisabled("my-prompt", undefined)).toBe(true);
+  });
+
+  test("disabled when both promptName and launcher are absent", () => {
+    expect(isPromptButtonDisabled("", undefined)).toBe(true);
+  });
+
+  test("enabled when both promptName and onLaunchPrompt are present", () => {
+    expect(isPromptButtonDisabled("sync-tasks", launcher)).toBe(false);
+  });
+});
+
+// =============================================================================
+// "prompts" upstream: onLaunchPrompt call convention
+// =============================================================================
+
+describe("onLaunchPrompt call convention", () => {
+  /**
+   * Simulates what the Pull/Push/Sync buttons do when clicked with a configured prompt:
+   *   onLaunchPrompt(action, promptName)
+   * — no arguments object, no periodic, no acpServer (handled by handler in app.js).
+   */
+  function simulateButtonClick(action, promptName, onLaunchPrompt) {
+    if (!promptName || !onLaunchPrompt) return;
+    onLaunchPrompt(action, promptName);
+  }
+
+  /** Minimal call spy without jest.fn() (file uses ESM without @jest/globals import). */
+  function makeSpy() {
+    const calls = [];
+    const spy = (...args) => calls.push(args);
+    spy.calls = calls;
+    spy.callCount = () => calls.length;
+    spy.lastCall = () => calls[calls.length - 1];
+    return spy;
+  }
+
+  test("pull button calls launcher with 'pull' action and the configured promptName", () => {
+    const launcher = makeSpy();
+    simulateButtonClick("pull", "sync-issues", launcher);
+    expect(launcher.callCount()).toBe(1);
+    expect(launcher.lastCall()).toEqual(["pull", "sync-issues"]);
+  });
+
+  test("push button calls launcher with 'push' action", () => {
+    const launcher = makeSpy();
+    simulateButtonClick("push", "push-tasks", launcher);
+    expect(launcher.lastCall()).toEqual(["push", "push-tasks"]);
+  });
+
+  test("sync button calls launcher with 'sync' action", () => {
+    const launcher = makeSpy();
+    simulateButtonClick("sync", "full-sync", launcher);
+    expect(launcher.lastCall()).toEqual(["sync", "full-sync"]);
+  });
+
+  test("button does NOT call launcher when promptName is empty", () => {
+    const launcher = makeSpy();
+    simulateButtonClick("pull", "", launcher);
+    expect(launcher.callCount()).toBe(0);
+  });
+
+  test("button does NOT call launcher when onLaunchPrompt is absent", () => {
+    // Nothing to assert — just ensure it doesn't throw
+    expect(() => simulateButtonClick("pull", "my-prompt", undefined)).not.toThrow();
+  });
+
+  test("launcher is NOT called with an arguments object (argument-free)", () => {
+    const launcher = makeSpy();
+    simulateButtonClick("sync", "sync-prompt", launcher);
+    // Must have exactly 2 args: action + promptName (no args/periodic object)
+    expect(launcher.lastCall()).toHaveLength(2);
+  });
+});
