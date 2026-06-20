@@ -1252,6 +1252,182 @@ func TestHandleBeadsUpstream_SetThenGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleBeadsUpstream_SetPromptsUpstream_AllEmpty(t *testing.T) {
+	// All three prompt names empty is allowed — operation simply unconfigured.
+	setupMittoDir(t)
+	s := newBeadsTestServer()
+
+	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
+		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"","push_prompt":"","sync_prompt":""}`))
+	put.RemoteAddr = "127.0.0.1:1"
+	put.Header.Set("Content-Type", "application/json")
+	pw := httptest.NewRecorder()
+	s.handleBeadsUpstream(pw, put)
+	if pw.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d (%s)", pw.Code, http.StatusOK, pw.Body.String())
+	}
+	if !strings.Contains(pw.Body.String(), `"upstream":"prompts"`) {
+		t.Errorf("PUT body = %q, want upstream prompts", pw.Body.String())
+	}
+}
+
+func TestHandleBeadsUpstream_SetPromptsUpstream_NonExistentPrompt(t *testing.T) {
+	// A non-existent prompt name must be rejected with 400.
+	setupMittoDir(t)
+	s := newBeadsTestServer()
+
+	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
+		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"does-not-exist"}`))
+	put.RemoteAddr = "127.0.0.1:1"
+	put.Header.Set("Content-Type", "application/json")
+	pw := httptest.NewRecorder()
+	s.handleBeadsUpstream(pw, put)
+	if pw.Code != http.StatusBadRequest {
+		t.Errorf("PUT status = %d, want %d (%s)", pw.Code, http.StatusBadRequest, pw.Body.String())
+	}
+}
+
+func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *testing.T) {
+	// A prompt with parameters must be rejected with 400.
+	setupMittoDir(t)
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
+	})
+
+	required := true
+	paramPrompt := config.WebPrompt{
+		Name:   "parameterized-prompt",
+		Prompt: "do something with ${id}",
+		Parameters: []config.PromptParameter{
+			{Name: "id", Type: "text", Required: &required},
+		},
+	}
+	s := &Server{
+		sessionManager: sm,
+		config: Config{
+			MittoConfig: &config.Config{
+				Prompts: []config.WebPrompt{paramPrompt},
+			},
+		},
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
+		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"parameterized-prompt"}`))
+	put.RemoteAddr = "127.0.0.1:1"
+	put.Header.Set("Content-Type", "application/json")
+	pw := httptest.NewRecorder()
+	s.handleBeadsUpstream(pw, put)
+	if pw.Code != http.StatusBadRequest {
+		t.Errorf("PUT status = %d, want %d (%s)", pw.Code, http.StatusBadRequest, pw.Body.String())
+	}
+}
+
+func TestHandleBeadsUpstream_SetPromptsUpstream_ValidPromptRoundTrip(t *testing.T) {
+	// A valid (no-param) prompt name must be accepted and round-tripped via GET.
+	setupMittoDir(t)
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
+	})
+
+	noParamPrompt := config.WebPrompt{
+		Name:   "my-pull-prompt",
+		Prompt: "run the pull operation",
+	}
+	s := &Server{
+		sessionManager: sm,
+		config: Config{
+			MittoConfig: &config.Config{
+				Prompts: []config.WebPrompt{noParamPrompt},
+			},
+		},
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
+		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"my-pull-prompt"}`))
+	put.RemoteAddr = "127.0.0.1:1"
+	put.Header.Set("Content-Type", "application/json")
+	pw := httptest.NewRecorder()
+	s.handleBeadsUpstream(pw, put)
+	if pw.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d (%s)", pw.Code, http.StatusOK, pw.Body.String())
+	}
+
+	// GET must return upstream=prompts and the stored pull_prompt.
+	get := localhostRequest("/api/beads/upstream?working_dir=/test/workspace")
+	gw := httptest.NewRecorder()
+	s.handleBeadsUpstream(gw, get)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", gw.Code, http.StatusOK)
+	}
+	body := gw.Body.String()
+	if !strings.Contains(body, `"upstream":"prompts"`) {
+		t.Errorf("GET body = %q, want upstream prompts", body)
+	}
+	if !strings.Contains(body, `"pull_prompt":"my-pull-prompt"`) {
+		t.Errorf("GET body = %q, want pull_prompt my-pull-prompt", body)
+	}
+}
+
+func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.T) {
+	// Switching from "prompts" to a regular tracker must clear the stored prompt names.
+	setupMittoDir(t)
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
+	})
+
+	noParamPrompt := config.WebPrompt{
+		Name:   "pull-prompt",
+		Prompt: "run pull",
+	}
+	s := &Server{
+		sessionManager: sm,
+		config: Config{
+			MittoConfig: &config.Config{
+				Prompts: []config.WebPrompt{noParamPrompt},
+			},
+		},
+	}
+
+	// First, set prompts upstream.
+	put1 := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
+		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"pull-prompt"}`))
+	put1.RemoteAddr = "127.0.0.1:1"
+	put1.Header.Set("Content-Type", "application/json")
+	pw1 := httptest.NewRecorder()
+	s.handleBeadsUpstream(pw1, put1)
+	if pw1.Code != http.StatusOK {
+		t.Fatalf("first PUT status = %d, want %d (%s)", pw1.Code, http.StatusOK, pw1.Body.String())
+	}
+
+	// Switch to jira — prompt names must disappear.
+	put2 := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
+		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"jira"}`))
+	put2.RemoteAddr = "127.0.0.1:1"
+	put2.Header.Set("Content-Type", "application/json")
+	pw2 := httptest.NewRecorder()
+	s.handleBeadsUpstream(pw2, put2)
+	if pw2.Code != http.StatusOK {
+		t.Fatalf("second PUT status = %d, want %d (%s)", pw2.Code, http.StatusOK, pw2.Body.String())
+	}
+
+	get := localhostRequest("/api/beads/upstream?working_dir=/test/workspace")
+	gw := httptest.NewRecorder()
+	s.handleBeadsUpstream(gw, get)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", gw.Code, http.StatusOK)
+	}
+	body := gw.Body.String()
+	if !strings.Contains(body, `"upstream":"jira"`) {
+		t.Errorf("GET body = %q, want upstream jira", body)
+	}
+	if strings.Contains(body, "pull_prompt") {
+		t.Errorf("GET body = %q, pull_prompt should not be present after switching to jira", body)
+	}
+}
+
 // --- handleBeadsSync ---------------------------------------------------------
 
 func TestHandleBeadsSync_MethodNotAllowed(t *testing.T) {

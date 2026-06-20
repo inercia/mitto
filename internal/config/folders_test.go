@@ -410,6 +410,82 @@ func TestSaveWorkspaces_OrphanBeadsPruned(t *testing.T) {
 	}
 }
 
+func TestSetFolderBeadsPromptUpstream_RoundTrip(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	// Before any set, getters return empty.
+	if got := FolderBeadsUpstream("/proj"); got != "" {
+		t.Errorf("FolderBeadsUpstream() before set = %q, want empty", got)
+	}
+	pull, push, sync := FolderBeadsPrompts("/proj")
+	if pull != "" || push != "" || sync != "" {
+		t.Errorf("FolderBeadsPrompts() before set = (%q,%q,%q), want all empty", pull, push, sync)
+	}
+
+	// Set prompts upstream with three names.
+	if err := SetFolderBeadsPromptUpstream("/proj", "My Pull", "My Push", "My Sync"); err != nil {
+		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
+	}
+
+	if got := FolderBeadsUpstream("/proj"); got != "prompts" {
+		t.Errorf("FolderBeadsUpstream() = %q, want prompts", got)
+	}
+	pull, push, sync = FolderBeadsPrompts("/proj")
+	if pull != "My Pull" || push != "My Push" || sync != "My Sync" {
+		t.Errorf("FolderBeadsPrompts() = (%q,%q,%q), want (My Pull,My Push,My Sync)", pull, push, sync)
+	}
+}
+
+func TestSetFolderBeadsUpstream_ClearsPromptNames(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	// Set prompts upstream first.
+	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync"); err != nil {
+		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
+	}
+
+	// Switch to a regular tracker — prompt names must be cleared.
+	if err := SetFolderBeadsUpstream("/proj", "jira"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() returned error: %v", err)
+	}
+	if got := FolderBeadsUpstream("/proj"); got != "jira" {
+		t.Errorf("FolderBeadsUpstream() = %q, want jira", got)
+	}
+	pull, push, sync := FolderBeadsPrompts("/proj")
+	if pull != "" || push != "" || sync != "" {
+		t.Errorf("FolderBeadsPrompts() after switch to jira = (%q,%q,%q), want all empty", pull, push, sync)
+	}
+}
+
+func TestSaveWorkspaces_PreservesBeadsPromptUpstream(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	// Register /proj as a valid workspace directory before persisting.
+	ws := []WorkspaceSettings{
+		{UUID: "u1", ACPServer: "auggie", WorkingDir: "/proj", Name: "P"},
+	}
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() initial returned error: %v", err)
+	}
+
+	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync"); err != nil {
+		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
+	}
+
+	// A second workspace save must not wipe the prompt names.
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() second returned error: %v", err)
+	}
+
+	if got := FolderBeadsUpstream("/proj"); got != "prompts" {
+		t.Errorf("FolderBeadsUpstream() after SaveWorkspaces = %q, want prompts", got)
+	}
+	pull, push, sync := FolderBeadsPrompts("/proj")
+	if pull != "Pull" || push != "Push" || sync != "Sync" {
+		t.Errorf("FolderBeadsPrompts() after SaveWorkspaces = (%q,%q,%q), want (Pull,Push,Sync)", pull, push, sync)
+	}
+}
+
 // ---- LoadFoldersFromFile tests ----
 
 func TestLoadFoldersFromFile_JSON(t *testing.T) {

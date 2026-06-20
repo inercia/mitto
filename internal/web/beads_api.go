@@ -3,11 +3,13 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 )
@@ -785,17 +787,26 @@ func (s *Server) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request) 
 type beadsUpstreamRequest struct {
 	WorkingDir string `json:"working_dir"`
 	Upstream   string `json:"upstream"`
+	// PullPrompt, PushPrompt, SyncPrompt are the workspace prompt names to run for
+	// pull/push/sync operations. Only used when Upstream == "prompts". Empty strings
+	// are allowed (the corresponding operation is simply unconfigured).
+	PullPrompt string `json:"pull_prompt"`
+	PushPrompt string `json:"push_prompt"`
+	SyncPrompt string `json:"sync_prompt"`
 }
 
 // beadsUpstreamResponse reports the configured upstream task system for a folder.
 type beadsUpstreamResponse struct {
-	Upstream string `json:"upstream"`
+	Upstream   string `json:"upstream"`
+	PullPrompt string `json:"pull_prompt,omitempty"`
+	PushPrompt string `json:"push_prompt,omitempty"`
+	SyncPrompt string `json:"sync_prompt,omitempty"`
 }
 
 // handleBeadsUpstream manages the per-folder beads upstream task system stored
 // in folders.json (folder-native, not a bd config value):
-//   - GET /api/beads/upstream?working_dir=...        -> {"upstream": "none|jira|github|gitlab|linear"}
-//   - PUT /api/beads/upstream (body: working_dir,upstream) -> persists the choice
+//   - GET /api/beads/upstream?working_dir=...        -> {"upstream":"none|jira|github|gitlab|linear|prompts","pull_prompt","push_prompt","sync_prompt"}
+//   - PUT /api/beads/upstream (body: working_dir,upstream,pull_prompt,push_prompt,sync_prompt) -> persists the choice
 //
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
@@ -828,7 +839,13 @@ func (s *Server) handleBeadsUpstreamGet(w http.ResponseWriter, r *http.Request) 
 	if upstream == "" {
 		upstream = "none"
 	}
-	writeJSONOK(w, beadsUpstreamResponse{Upstream: upstream})
+	pull, push, sync := config.FolderBeadsPrompts(workingDir)
+	writeJSONOK(w, beadsUpstreamResponse{
+		Upstream:   upstream,
+		PullPrompt: pull,
+		PushPrompt: push,
+		SyncPrompt: sync,
+	})
 }
 
 func (s *Server) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request) {
@@ -847,7 +864,7 @@ func (s *Server) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !beads.IsValidUpstream(req.Upstream) {
-		http.Error(w, "upstream must be one of: none, jira, github, gitlab, linear", http.StatusBadRequest)
+		http.Error(w, "upstream must be one of: none, jira, github, gitlab, linear, prompts", http.StatusBadRequest)
 		return
 	}
 	if !s.isKnownWorkspaceDir(req.WorkingDir) {
@@ -855,16 +872,54 @@ func (s *Server) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := config.SetFolderBeadsUpstream(req.WorkingDir, req.Upstream); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error()})
-		return
+	if req.Upstream == "prompts" {
+		// Validate each non-empty prompt name: it must exist in the folder's
+		// effective prompt list and must have no parameters (len(Parameters)==0).
+		allPrompts := s.getWorkspacePromptsAll(req.WorkingDir)
+		promptIdx := make(map[string]config.WebPrompt, len(allPrompts))
+		for _, p := range allPrompts {
+			promptIdx[strings.ToLower(p.Name)] = p
+		}
+		for field, name := range map[string]string{
+			"pull_prompt": req.PullPrompt,
+			"push_prompt": req.PushPrompt,
+			"sync_prompt": req.SyncPrompt,
+		} {
+			if name == "" {
+				continue // empty is allowed; operation simply unconfigured
+			}
+			p, ok := promptIdx[strings.ToLower(name)]
+			if !ok {
+				http.Error(w, fmt.Sprintf("%s: prompt %q not found in this folder's prompt list", field, name), http.StatusBadRequest)
+				return
+			}
+			if len(p.Parameters) > 0 {
+				http.Error(w, fmt.Sprintf("%s: prompt %q requires parameters and cannot be used as a beads action prompt", field, name), http.StatusBadRequest)
+				return
+			}
+		}
+		if err := config.SetFolderBeadsPromptUpstream(req.WorkingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt); err != nil {
+			writeJSONOK(w, beadsErrorResponse{Error: err.Error()})
+			return
+		}
+	} else {
+		if err := config.SetFolderBeadsUpstream(req.WorkingDir, req.Upstream); err != nil {
+			writeJSONOK(w, beadsErrorResponse{Error: err.Error()})
+			return
+		}
 	}
 
 	upstream := req.Upstream
 	if upstream == "" {
 		upstream = "none"
 	}
-	writeJSONOK(w, beadsUpstreamResponse{Upstream: upstream})
+	pull, push, sync := config.FolderBeadsPrompts(req.WorkingDir)
+	writeJSONOK(w, beadsUpstreamResponse{
+		Upstream:   upstream,
+		PullPrompt: pull,
+		PushPrompt: push,
+		SyncPrompt: sync,
+	})
 }
 
 // beadsSyncRequest is the JSON body for POST /api/beads/sync.
@@ -932,6 +987,45 @@ func (s *Server) handleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONOK(w, beadsSyncResponse{OK: true, Output: out})
+}
+
+// getWorkspacePromptsAll returns the full merged prompt list for a working
+// directory, using the same resolution pipeline as the workspace-prompts API
+// endpoint (without ACP server-specific prompts). Used to validate prompt names
+// when upstream == "prompts".
+func (s *Server) getWorkspacePromptsAll(workingDir string) []config.WebPrompt {
+	// 1. Global file prompts
+	var globalFilePrompts []config.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, _ := s.config.PromptsCache.GetWebPrompts()
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []config.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 4. Workspace inline prompts (.mittorc)
+	var inlinePrompts []config.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	return config.MergePrompts(
+		config.MergePrompts(globalFilePrompts, settingsPrompts, dirPrompts),
+		nil,
+		inlinePrompts,
+	)
 }
 
 // isKnownWorkspaceDir returns true if workingDir matches any configured workspace.

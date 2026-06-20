@@ -112,7 +112,7 @@ func IsValidConfigKey(key string) bool {
 // IsValidUpstream reports whether u is a recognised upstream task system.
 func IsValidUpstream(u string) bool {
 	switch u {
-	case "none", "jira", "github", "gitlab", "linear":
+	case "none", "jira", "github", "gitlab", "linear", "prompts":
 		return true
 	default:
 		return false

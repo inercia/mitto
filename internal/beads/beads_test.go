@@ -103,7 +103,7 @@ func TestIsValidConfigKey(t *testing.T) {
 }
 
 func TestIsValidUpstream(t *testing.T) {
-	for _, u := range []string{"none", "jira", "github", "gitlab", "linear"} {
+	for _, u := range []string{"none", "jira", "github", "gitlab", "linear", "prompts"} {
 		if !IsValidUpstream(u) {
 			t.Errorf("IsValidUpstream(%q) = false, want true", u)
 		}
