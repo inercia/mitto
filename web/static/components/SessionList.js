@@ -1096,8 +1096,9 @@ export function SessionList({
                     ${hasFolderStreaming
                       ? html`
                           <span
-                            class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
-                            title="Agent responding in this folder"
+                            class="loading loading-ring loading-xs shrink-0 text-mitto-accent tooltip tooltip-right"
+                            data-tip="Agent responding in this folder"
+                            aria-label="Agent responding in this folder"
                           ></span>
                         `
                       : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
@@ -1119,10 +1120,13 @@ export function SessionList({
                           if (!folderCreating)
                             handleNewSessionInFolder(folder.workingDir, e);
                         }}
-                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${folderCreating
+                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left ${folderCreating
                           ? "cursor-wait opacity-60"
                           : ""}"
-                        title=${folderCreating
+                        data-tip=${folderCreating
+                          ? "Creating conversation\u2026"
+                          : `New conversation in ${folder.label}`}
+                        aria-label=${folderCreating
                           ? "Creating conversation\u2026"
                           : `New conversation in ${folder.label}`}
                         disabled=${folderCreating}
@@ -1147,8 +1151,8 @@ export function SessionList({
                             label: folder.label,
                           });
                         }}
-                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                        title="More actions"
+                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left"
+                        data-tip="More actions"
                         aria-label="More actions"
                       >
                         <${EllipsisIcon} className="w-3.5 h-3.5" />
@@ -1231,8 +1235,8 @@ export function SessionList({
                                 onBeadsCreate &&
                                   onBeadsCreate(folder.workingDir);
                               }}
-                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                              title="New issue"
+                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left"
+                              data-tip="New issue"
                               aria-label="New issue"
                             >
                               <${PlusIcon} className="w-3.5 h-3.5" />
@@ -1251,8 +1255,8 @@ export function SessionList({
                                   folder.tasksNode.label,
                                 );
                               }}
-                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                              title="More actions"
+                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left"
+                              data-tip="More actions"
                               aria-label="More actions"
                             >
                               <${EllipsisIcon} className="w-3.5 h-3.5" />
@@ -1279,10 +1283,10 @@ export function SessionList({
                                  matching the folder git line and conversation
                                  subtitle second-line style. -->
                             <div class="text-[0.5625rem] font-normal italic truncate pl-6 w-full min-w-0 flex items-center gap-1.5 ${tasksActive ? "text-mitto-accent-fg/80" : "text-mitto-text-muted"}">
-                              <span title="${open} open">○ ${open}</span>
-                              <span class="${tasksActive ? "" : "text-amber-400"}" title="${inProgress} in progress">◐ ${inProgress}</span>
-                              <span class="${tasksActive ? "" : "text-green-400"}" title="${ready} ready">● ${ready}</span>
-                              ${blocked ? html`<span class="${tasksActive ? "" : "text-red-400"}" title="${blocked} blocked">⊘ ${blocked}</span>` : null}
+                              <span class="tooltip tooltip-top" data-tip="${open} open" aria-label="${open} open">○ ${open}</span>
+                              <span class="tooltip tooltip-top ${tasksActive ? "" : "text-amber-400"}" data-tip="${inProgress} in progress" aria-label="${inProgress} in progress">◐ ${inProgress}</span>
+                              <span class="tooltip tooltip-top ${tasksActive ? "" : "text-green-400"}" data-tip="${ready} ready" aria-label="${ready} ready">● ${ready}</span>
+                              ${blocked ? html`<span class="tooltip tooltip-top ${tasksActive ? "" : "text-red-400"}" data-tip="${blocked} blocked" aria-label="${blocked} blocked">⊘ ${blocked}</span>` : null}
                             </div>
                           `;
                         })()}
@@ -1578,8 +1582,9 @@ export function SessionList({
         html`
           <button
             onClick=${onClose}
-            class="btn btn-ghost btn-square btn-sm md:hidden"
-            title="Close"
+            class="btn btn-ghost btn-square btn-sm md:hidden tooltip tooltip-bottom"
+            data-tip="Close"
+            aria-label="Close"
           >
             <${CloseIcon} className="w-4 h-4" />
           </button>
@@ -1604,8 +1609,9 @@ export function SessionList({
             data-testid="new-conversation-btn"
             onClick=${() => !isCreatingSession && onNewSession(null, null)}
             aria-disabled=${isCreatingSession ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
-            title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
+            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
+            data-tip=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
+            aria-label=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
           >
             ${isCreatingSession
               ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
@@ -1618,10 +1624,10 @@ export function SessionList({
             type="button"
             onClick=${() => !configReadonly && onShowWorkspaces && onShowWorkspaces()}
             aria-disabled=${configReadonly ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto ${configReadonly
+            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${configReadonly
               ? "opacity-40 pointer-events-none text-mitto-text-muted"
               : "text-mitto-text-muted hover:text-mitto-text-strong"}"
-            title=${configReadonly ? "Workspaces (read-only configuration)" : "Workspaces"}
+            data-tip=${configReadonly ? "Workspaces (read-only configuration)" : "Workspaces"}
             aria-label="Workspaces"
           >
             <${FolderIcon} className="w-4 h-4" />
@@ -1641,10 +1647,10 @@ export function SessionList({
           >
             <summary
               data-testid="category-filter-btn"
-              class="btn btn-ghost btn-sm join-item w-full list-none ${anyCategoryHidden
+              class="btn btn-ghost btn-sm join-item w-full list-none tooltip tooltip-bottom ${anyCategoryHidden
                 ? "text-mitto-accent-400"
                 : "text-mitto-text-muted"}"
-              title="Filter categories"
+              data-tip="Filter categories"
               aria-label="Filter categories"
             >
               <${FilterIcon} className="w-4 h-4" />
@@ -1689,8 +1695,8 @@ export function SessionList({
           >
             <summary
               data-testid="density-btn"
-              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted"
-              title="Density"
+              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted tooltip tooltip-bottom"
+              data-tip="Density"
               aria-label="Density"
             >
               <${SlidersIcon} className="w-4 h-4" />
@@ -1717,9 +1723,9 @@ export function SessionList({
           <button
             type="button"
             data-testid="search-btn"
-            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
+            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted tooltip tooltip-bottom"
             aria-label="Search"
-            title="Search"
+            data-tip="Search"
           >
             <${SearchIcon} className="w-4 h-4" />
           </button>
@@ -1730,10 +1736,10 @@ export function SessionList({
             type="button"
             onClick=${() => !configReadonly && onShowSettings && onShowSettings()}
             aria-disabled=${configReadonly ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto ${configReadonly
+            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${configReadonly
               ? "opacity-40 pointer-events-none text-mitto-text-muted"
               : "text-mitto-text-muted hover:text-mitto-text-strong"}"
-            title=${configReadonly
+            data-tip=${configReadonly
               ? (rcFilePath ? `Using ${rcFilePath}` : "Settings (read-only configuration)")
               : "Settings"}
             aria-label="Settings"
@@ -1758,8 +1764,8 @@ export function SessionList({
                Controlled Preact checkbox — useTheme owns persistence / follow-system /
                Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
           <label
-            class="btn btn-ghost btn-square btn-sm swap swap-rotate text-mitto-text-muted hover:text-mitto-text-strong"
-            title="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
+            class="btn btn-ghost btn-square btn-sm swap swap-rotate text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-top"
+            data-tip="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
             aria-label="Toggle between light and dark theme"
             data-testid="theme-toggle"
           >
@@ -1781,10 +1787,11 @@ export function SessionList({
             <button
               type="button"
               onClick=${() => isLargeFont && onToggleFontSize()}
-              class="btn btn-sm join-item ${!isLargeFont
+              class="btn btn-sm join-item tooltip tooltip-top ${!isLargeFont
                 ? "btn-active"
                 : "btn-ghost"}"
-              title="Switch to small font"
+              data-tip="Switch to small font"
+              aria-label="Switch to small font"
               aria-pressed=${!isLargeFont}
             >
               <span class="text-xs font-semibold">A</span>
@@ -1792,10 +1799,11 @@ export function SessionList({
             <button
               type="button"
               onClick=${() => !isLargeFont && onToggleFontSize()}
-              class="btn btn-sm join-item ${isLargeFont
+              class="btn btn-sm join-item tooltip tooltip-top ${isLargeFont
                 ? "btn-active"
                 : "btn-ghost"}"
-              title="Switch to large font"
+              data-tip="Switch to large font"
+              aria-label="Switch to large font"
               aria-pressed=${isLargeFont}
             >
               <span class="text-base font-semibold">A</span>
@@ -1804,8 +1812,9 @@ export function SessionList({
           <!-- Keyboard shortcuts button -->
           <button
             onClick=${onShowKeyboardShortcuts}
-            class="btn btn-ghost btn-square btn-sm group"
-            title="Keyboard Shortcuts"
+            class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
+            data-tip="Keyboard Shortcuts"
+            aria-label="Keyboard Shortcuts"
           >
             <${KeyboardIcon}
               className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"

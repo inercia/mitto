@@ -112,7 +112,7 @@ testWithCleanup.describe("Beads issue linkification", () => {
       // closing it must return to the conversation WITHOUT popping the properties
       // panel. (Previously the same origin was reused for both entry points,
       // causing the properties panel to open unexpectedly on close.)
-      await issuePanel.getByTitle("Close", { exact: true }).click();
+      await issuePanel.locator('button[data-tip="Close"]').click();
 
       const convPanel = page.locator(
         'div.properties-panel:has(h2:has-text("Conversation"))',

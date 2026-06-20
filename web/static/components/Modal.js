@@ -183,8 +183,9 @@ export function Modal({
             <h3 id=${titleId} class="text-lg font-semibold">${title}</h3>
             <button
               onClick=${onClose}
-              class="btn btn-ghost btn-square btn-sm"
-              title="Close"
+              class="btn btn-ghost btn-square btn-sm tooltip tooltip-left"
+              data-tip="Close"
+              aria-label="Close"
               data-testid=${closeTestid}
             >
               <${CloseIcon} className="w-5 h-5" />

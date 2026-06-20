@@ -28,6 +28,7 @@ import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import { flattenPrompts, getMissingPromptParameters } from "../utils/prompts.js";
+import { Tooltip } from "./Tooltip.js";
 
 /**
  * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
@@ -52,18 +53,23 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
   );
 
   return html`
-    <select
-      class="select select-ghost select-xs max-w-[200px]"
-      value=${localValue || ""}
-      onInput=${handleInput}
-      title=${isStreaming
+    <${Tooltip}
+      tip=${isStreaming
         ? configOption.name + " will apply to the next prompt"
-        : configOption.description || "Select " + configOption.name.toLowerCase()}
+        : configOption.description ||
+          "Select " + configOption.name.toLowerCase()}
+      placement="top"
     >
-      ${configOption.options.map(
-        (opt) => html` <option value=${opt.value}>${opt.name}</option> `,
-      )}
-    </select>
+      <select
+        class="select select-ghost select-xs max-w-[200px]"
+        value=${localValue || ""}
+        onInput=${handleInput}
+      >
+        ${configOption.options.map(
+          (opt) => html` <option value=${opt.value}>${opt.name}</option> `,
+        )}
+      </select>
+    </${Tooltip}>
   `;
 }
 
@@ -76,8 +82,9 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
     <button
       type="button"
       onClick=${onToggle}
-      class="btn btn-ghost btn-square btn-sm"
-      title=${collapsed ? "Show prompt area" : "Hide prompt area"}
+      class="btn btn-ghost btn-square btn-sm tooltip tooltip-top"
+      data-tip=${collapsed ? "Show prompt area" : "Hide prompt area"}
+      aria-label=${collapsed ? "Show prompt area" : "Hide prompt area"}
     >
       <${ChatBubbleIcon} className="w-4 h-4" />
     </button>
@@ -2174,8 +2181,9 @@ ${activeUIPrompt.text || ""}</textarea
                                   }
                                 }}
                                 disabled=${!freeTextInput.trim()}
-                                class="btn btn-primary btn-square btn-sm shrink-0"
-                                title="Send response"
+                                class="btn btn-primary btn-square btn-sm shrink-0 tooltip tooltip-left"
+                                data-tip="Send response"
+                                aria-label="Send response"
                               >
                                 <svg
                                   class="w-4 h-4"
@@ -2509,8 +2517,9 @@ ${activeUIPrompt.text || ""}</textarea
                               <button
                                 type="button"
                                 onClick=${() => removeImage(img.id)}
-                                class="absolute -top-1 -right-1 w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                                title="Remove image"
+                                class="absolute -top-1 -right-1 w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity tooltip tooltip-left"
+                                data-tip="Remove image"
+                                aria-label="Remove image"
                               >
                                 <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -2549,8 +2558,9 @@ ${activeUIPrompt.text || ""}</textarea
                               <button
                                 type="button"
                                 onClick=${() => removeFile(file.id)}
-                                class="w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                                title="Remove file"
+                                class="w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity tooltip tooltip-left"
+                                data-tip="Remove file"
+                                aria-label="Remove file"
                               >
                                 <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -2574,8 +2584,9 @@ ${activeUIPrompt.text || ""}</textarea
                   onClick=${handleImprovePrompt}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                  class="chat-input-action ${isImproving ? "improving" : ""}"
-                  title="Improve prompt with AI (Ctrl+P)"
+                  class="chat-input-action tooltip tooltip-top ${isImproving ? "improving" : ""}"
+                  data-tip="Improve prompt with AI (Ctrl+P)"
+                  aria-label="Improve prompt with AI (Ctrl+P)"
                 >
                   ${isImproving
                     ? html`
@@ -2594,8 +2605,9 @@ ${activeUIPrompt.text || ""}</textarea
                   onClick=${handleAttachImageClick}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || isReadOnly || isImproving}
-                  class="chat-input-action"
-                  title="Attach image"
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip="Attach image"
+                  aria-label="Attach image"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -2608,8 +2620,9 @@ ${activeUIPrompt.text || ""}</textarea
                   onClick=${handleAttachFileClick}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || isReadOnly || isImproving}
-                  class="chat-input-action"
-                  title="Attach file"
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip="Attach file"
+                  aria-label="Attach file"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
@@ -2625,8 +2638,9 @@ ${activeUIPrompt.text || ""}</textarea
                     onClick=${() => setShowSaveDialog(true)}
                     onMouseDown=${(e) => e.preventDefault()}
                     disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                    class="chat-input-action"
-                    title="Save prompt as file"
+                    class="chat-input-action tooltip tooltip-top"
+                    data-tip="Save prompt as file"
+                    aria-label="Save prompt as file"
                   >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
@@ -2644,8 +2658,9 @@ ${activeUIPrompt.text || ""}</textarea
                   }}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || isReadOnly || isImproving || (!text.trim() && !hasPendingAttachments)}
-                  class="chat-input-action"
-                  title="Clear message"
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip="Clear message"
+                  aria-label="Clear message"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -2666,9 +2681,9 @@ ${activeUIPrompt.text || ""}</textarea
                   `)}
                   ${contextPct !== null && html`
                     <span
-                      class="chat-input-context-pct"
+                      class="chat-input-context-pct tooltip tooltip-top"
                       style=${"color: " + (contextPct > 80 ? "#ef4444" : contextPct > 50 ? "#f59e0b" : "#64748b")}
-                      title=${contextUsage?.size
+                      data-tip=${contextUsage?.size
                         ? "Context: " + (contextUsage.used || 0).toLocaleString() + " / " + contextUsage.size.toLocaleString() + " tokens"
                         : "Context: ~" + (tokenUsage?.input_tokens || 0).toLocaleString() + " input tokens"}
                     >${contextPct}%</span>
@@ -2687,9 +2702,12 @@ ${activeUIPrompt.text || ""}</textarea
                   }}
                   disabled=${periodicConfigured}
                   data-queue-toggle
-                  class="chat-input-action relative"
+                  class="chat-input-action relative tooltip tooltip-top"
                   style="${showQueueDropdown && !periodicConfigured ? "background: #2563eb !important; color: white !important;" : ""}"
-                  title=${periodicConfigured
+                  data-tip=${periodicConfigured
+                    ? "Queue disabled for periodic sessions"
+                    : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
+                  aria-label=${periodicConfigured
                     ? "Queue disabled for periodic sessions"
                     : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
                 >
@@ -2785,8 +2803,9 @@ ${activeUIPrompt.text || ""}</textarea
                       onClick=${handleTogglePrompts}
                       onMouseDown=${(e) => e.preventDefault()}
                       disabled=${isFullyDisabled || isReadOnly}
-                      class="chat-input-action"
-                      title="Insert predefined prompt"
+                      class="chat-input-action tooltip tooltip-top"
+                      data-tip="Insert predefined prompt"
+                      aria-label="Insert predefined prompt"
                     >
                       <svg
                         class="w-4 h-4 transition-transform ${showDropup ? "rotate-180" : ""}"
@@ -2806,8 +2825,9 @@ ${activeUIPrompt.text || ""}</textarea
                   type="button"
                   onClick=${handleAddToQueueClick}
                   disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicConfigured}
-                  class="chat-input-action"
-                  title=${periodicConfigured ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip=${periodicConfigured ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
+                  aria-label=${periodicConfigured ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -2827,8 +2847,9 @@ ${activeUIPrompt.text || ""}</textarea
                             }
                             onCancel();
                           }}
-                          class="chat-input-action stop-active"
-                          title=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
+                          class="chat-input-action stop-active tooltip tooltip-top"
+                          data-tip=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
+                          aria-label=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
                         >
                           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
@@ -2847,9 +2868,10 @@ ${activeUIPrompt.text || ""}</textarea
                           <button
                             type="submit"
                             disabled=${isFullyDisabled || isResuming || !acpReady || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || isQueueFull}
-                            class="chat-input-action ${(!text.trim() && !hasPendingAttachments) || isQueueFull ? "" : "send-active"} ${isQueueFull ? "queue-full" : ""}"
+                            class="chat-input-action tooltip tooltip-top ${(!text.trim() && !hasPendingAttachments) || isQueueFull ? "" : "send-active"} ${isQueueFull ? "queue-full" : ""}"
                             style="${isQueueFull ? "background: #ea580c !important; color: white !important;" : ""}"
-                            title=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
+                            data-tip=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
+                            aria-label=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
                           >
                             ${isQueueFull
                               ? html`

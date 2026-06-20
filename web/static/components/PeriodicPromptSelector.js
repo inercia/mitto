@@ -161,8 +161,11 @@ export function PeriodicPromptSelector({
         <button
           type="button"
           onClick=${onTogglePromptArea}
-          class="shrink-0 h-8 w-8 flex items-center justify-center bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-secondary hover:text-mitto-text-strong hover:border-mitto-accent-500/50 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors cursor-pointer"
-          title=${isPromptAreaVisible
+          class="shrink-0 h-8 w-8 flex items-center justify-center bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-secondary hover:text-mitto-text-strong hover:border-mitto-accent-500/50 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors cursor-pointer tooltip tooltip-bottom"
+          data-tip=${isPromptAreaVisible
+            ? "Hide message input"
+            : "Show message input"}
+          aria-label=${isPromptAreaVisible
             ? "Hide message input"
             : "Show message input"}
           data-testid=${toggleTestId}

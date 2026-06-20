@@ -309,11 +309,12 @@ export function QueueDropdown({
                           aria-disabled=${isMoving || index === 0
                             ? "true"
                             : "false"}
-                          class="queue-item-move-up btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
+                          class="queue-item-move-up btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left ${isMoving ||
                           index === 0
                             ? "opacity-40 pointer-events-none"
                             : ""}"
-                          title=${index === 0 ? "Already at top" : "Move up"}
+                          data-tip=${index === 0 ? "Already at top" : "Move up"}
+                          aria-label=${index === 0 ? "Already at top" : "Move up"}
                         >
                           <${ChevronUpIcon} className="w-3.5 h-3.5" />
                         </button>
@@ -323,11 +324,14 @@ export function QueueDropdown({
                           aria-disabled=${isMoving || index === messages.length - 1
                             ? "true"
                             : "false"}
-                          class="queue-item-move-down btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong ${isMoving ||
+                          class="queue-item-move-down btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left ${isMoving ||
                           index === messages.length - 1
                             ? "opacity-40 pointer-events-none"
                             : ""}"
-                          title=${index === messages.length - 1
+                          data-tip=${index === messages.length - 1
+                            ? "Already at bottom"
+                            : "Move down"}
+                          aria-label=${index === messages.length - 1
                             ? "Already at bottom"
                             : "Move down"}
                         >
@@ -337,10 +341,11 @@ export function QueueDropdown({
                           type="button"
                           onClick=${(e) => handleDelete(e, msg.id)}
                           aria-disabled=${isDeleting ? "true" : "false"}
-                          class="queue-item-delete btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:bg-red-600/80 hover:text-mitto-text-strong ${isDeleting
+                          class="queue-item-delete btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:bg-red-600/80 hover:text-mitto-text-strong tooltip tooltip-left ${isDeleting
                             ? "opacity-40 pointer-events-none"
                             : ""}"
-                          title="Remove from queue"
+                          data-tip="Remove from queue"
+                          aria-label="Remove from queue"
                         >
                           <${TrashIcon} className="w-3.5 h-3.5" />
                         </button>

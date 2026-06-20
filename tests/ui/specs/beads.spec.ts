@@ -137,7 +137,7 @@ testWithCleanup.describe("Beads view - mobile", () => {
       await openBeads(page, timeouts);
       await page.setViewportSize(MOBILE_VIEWPORT);
 
-      const hamburger = page.locator('button[title="Show conversations"]');
+      const hamburger = page.locator('button[data-tip="Show conversations"]');
       await expect(hamburger).toBeVisible({ timeout: timeouts.shortAction });
 
       await hamburger.click();
@@ -179,7 +179,7 @@ testWithCleanup.describe("Beads view - mobile", () => {
       await openBeads(page, timeouts);
       // Default Desktop Chrome viewport is >= md, so md:hidden applies.
       await expect(
-        page.locator('button[title="Show conversations"]'),
+        page.locator('button[data-tip="Show conversations"]'),
       ).toBeHidden();
     },
   );
@@ -272,14 +272,14 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Toggle fullscreen: the panel fills the beads view width (w-full) and the
       // backdrop is gone.
-      await page.getByTitle("Fullscreen").click();
+      await page.locator('button[data-tip="Fullscreen"]').click();
       await expect(panel).toHaveClass(/w-full/);
       await expect(panel).not.toHaveClass(/w-\[40rem\]/);
       await expect(page.locator(PANEL_BACKDROP)).toHaveCount(0);
 
       // Toggle back: the panel returns to its fixed doubled width and the
       // backdrop reappears.
-      await page.getByTitle("Exit fullscreen").click();
+      await page.locator('button[data-tip="Exit fullscreen"]').click();
       await expect(panel).toHaveClass(/w-\[40rem\]/);
       await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
     },
@@ -320,7 +320,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await titleInput.press("Enter");
 
       // Click the unified Save button to persist all dirty fields.
-      await panel.locator('button[title="Save changes"]').click();
+      await panel.locator('button[data-tip="Save changes"]').click();
 
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })
@@ -352,7 +352,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
       // Delete moved to the kebab menu (now a ContextMenu portaled to body).
-      await panel.locator('button[title="More actions"]').click();
+      await panel.locator('button[data-tip="More actions"]').click();
       await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
 
       const dialog = page.locator('[data-testid="confirm-dialog"]');
@@ -510,11 +510,11 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Click the type badge button to open the dropdown.
       // mitto-bbb has issue_type "bug"; select a different type to make the draft dirty.
-      await panel.locator('button[title="Click to change type"]').click();
+      await panel.locator('button[data-tip="Click to change type"]').click();
       await panel.locator('button:has-text("task")').first().click();
 
       // Click the unified Save button.
-      await panel.locator('button[title="Save changes"]').click();
+      await panel.locator('button[data-tip="Save changes"]').click();
 
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })
@@ -646,7 +646,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     await expect(panel.getByText("mitto-epic")).toBeVisible();
 
     // Delete moved to the kebab menu (now a ContextMenu portaled to body).
-    await panel.locator('button[title="More actions"]').click();
+    await panel.locator('button[data-tip="More actions"]').click();
     await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
@@ -1174,10 +1174,12 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
       await page.locator('button[aria-label="Session details"]').click();
       const convPanel = page.locator(CONV_PANEL);
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
+      await expect(
+        page.locator('[data-tip="Open beads issue mitto-bbb"]'),
+      ).toBeVisible();
 
       // Follow the linked-issue link → opens the standalone BeadsIssueView.
-      await page.getByTitle("Open beads issue mitto-bbb").click();
+      await page.locator('[data-tip="Open beads issue mitto-bbb"]').click();
 
       // The issue detail panel opens from the show fetch.
       const issuePanel = page.locator(ISSUE_PANEL);
@@ -1191,39 +1193,41 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
       // The standalone viewer opens expanded (fullscreen) but exposes a toggle
       // so it can be collapsed to the docked strip. The dock-mode Drawer drives
       // its width via the --dock-w CSS var on the .drawer-dock root: 100% when
-      // fullscreen, 40rem when collapsed. getByTitle uses exact:true so
-      // "Fullscreen" never substring-matches "Exit fullscreen".
+      // fullscreen, 40rem when collapsed. The data-tip attribute selectors
+      // match exactly so "Fullscreen" never substring-matches "Exit fullscreen".
       const drawerRoot = page.locator(
         'div.drawer-dock:has(h2:has-text("Short issue"))',
       );
       await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
-      const collapseBtn = issuePanel.getByTitle("Exit fullscreen", {
-        exact: true,
-      });
+      const collapseBtn = issuePanel.locator(
+        'button[data-tip="Exit fullscreen"]',
+      );
       await expect(collapseBtn).toBeVisible();
 
       // Collapse: the panel shrinks to the 40rem docked strip and the toggle
       // flips to the expand state ("Fullscreen").
       await collapseBtn.click();
       await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
-      const expandBtn = issuePanel.getByTitle("Fullscreen", { exact: true });
+      const expandBtn = issuePanel.locator('button[data-tip="Fullscreen"]');
       await expect(expandBtn).toBeVisible();
 
       // Expand again: back to fullscreen, toggle returns to "Exit fullscreen".
       await expandBtn.click();
       await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
       await expect(
-        issuePanel.getByTitle("Exit fullscreen", { exact: true }),
+        issuePanel.locator('button[data-tip="Exit fullscreen"]'),
       ).toBeVisible();
 
       // Close the detail panel → returns to the originating conversation with
       // its properties panel re-opened (not left on the beads list).
-      await issuePanel.getByTitle("Close", { exact: true }).click();
+      await issuePanel.locator('button[data-tip="Close"]').click();
 
       // Back in the conversation: the conversation properties panel (with the
       // linked-issue link) is shown again and the beads table remains absent.
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
+      await expect(
+        page.locator('[data-tip="Open beads issue mitto-bbb"]'),
+      ).toBeVisible();
       await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
     },
   );
@@ -1382,7 +1386,7 @@ testWithCleanup.describe("Beads view - create form fields", () => {
       });
 
       // Open the create panel via the "+" button in the beads toolbar.
-      await page.locator('button[title="New issue"]').first().click();
+      await page.locator('button[data-tip="New issue"]').first().click();
       const panel = page.locator(NEW_ISSUE_PANEL);
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
@@ -1394,7 +1398,7 @@ testWithCleanup.describe("Beads view - create form fields", () => {
       // Add a dependency: type an issue id in the dep input and click "+".
       const depInput = panel.locator('input[list="beads-create-dep-options"]');
       await depInput.fill("mitto-aaa");
-      await panel.locator('button[title="Add dependency"]').click();
+      await panel.locator('button[data-tip="Add dependency"]').click();
 
       // Fill assignee.
       await panel.locator("#new-issue-assignee").fill("alice");

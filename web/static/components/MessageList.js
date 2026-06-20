@@ -263,10 +263,11 @@ export function MessageList({
         <div class="scroll-to-bottom-wrapper">
           <button
             onClick=${() => onScrollToBottom(true)}
-            class="btn btn-circle scroll-to-bottom-btn ${hasNewMessages
+            class="btn btn-circle scroll-to-bottom-btn tooltip tooltip-left ${hasNewMessages
               ? "has-new"
               : ""}"
-            title="Scroll to bottom"
+            data-tip="Scroll to bottom"
+            aria-label="Scroll to bottom"
           >
             <${ArrowDownIcon} className="w-5 h-5" />
             ${hasNewMessages &&

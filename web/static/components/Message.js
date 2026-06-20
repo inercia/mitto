@@ -19,6 +19,7 @@ import {
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
 import { CopyIcon, CheckIcon } from "./Icons.js";
+import { Tooltip } from "./Tooltip.js";
 import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 
@@ -83,11 +84,12 @@ function NamedPromptPill({ message }) {
         </svg>
         <span class="text-sm font-medium">${message.promptName}</span>
         ${message.argumentCount > 0 &&
-        html`<span
-          class="badge badge-sm"
-          data-testid="prompt-arg-count"
-          title="${message.argumentCount} argument(s)"
-        >${message.argumentCount}</span>`}
+        html`<${Tooltip} tip="${message.argumentCount} argument(s)">
+          <span
+            class="badge badge-sm"
+            data-testid="prompt-arg-count"
+          >${message.argumentCount}</span>
+        <//>`}
       </div>
     </div>
   `;
@@ -318,26 +320,31 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           <span>❌</span>
           <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
           ${onRetry &&
-          html`<button
-            type="button"
-            class="btn btn-ghost btn-sm btn-circle shrink-0"
-            onClick=${onRetry}
-            title="Retry — resend the last prompt"
+          html`<${Tooltip}
+            tip="Retry — resend the last prompt"
+            className="shrink-0"
           >
-            <svg
-              class="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              stroke-width="2"
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm btn-circle shrink-0"
+              onClick=${onRetry}
+              aria-label="Retry — resend the last prompt"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.66v4.992"
-              />
-            </svg>
-          </button>`}
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.66v4.992"
+                />
+              </svg>
+            </button>
+          <//>`}
         </div>
       </div>
     `;
@@ -440,18 +447,22 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
           <div class="flex items-center justify-end gap-1 mt-1">
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
-              title=${userCopied ? "Copied!" : "Copy as Markdown"}
-              aria-label="Copy as Markdown"
-              data-testid="copy-message-markdown"
-              onClick=${handleUserCopy}
+            <${Tooltip}
+              tip=${userCopied ? "Copied!" : "Copy as Markdown"}
+              open=${userCopied}
             >
-              ${userCopied
-                ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
-                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
-            </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label="Copy as Markdown"
+                data-testid="copy-message-markdown"
+                onClick=${handleUserCopy}
+              >
+                ${userCopied
+                  ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
+                  : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+              </button>
+            <//>
             ${userTimeStr && html`<div class="message-timestamp">${userTimeStr}</div>`}
           </div>
         </div>
@@ -539,18 +550,22 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
             dangerouslySetInnerHTML=${{ __html: message.html || "" }}
           />
           <div class="flex items-center gap-1 mt-1">
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
-              title=${agentCopied ? "Copied!" : "Copy as Markdown"}
-              aria-label="Copy as Markdown"
-              data-testid="copy-message-markdown"
-              onClick=${handleAgentCopy}
+            <${Tooltip}
+              tip=${agentCopied ? "Copied!" : "Copy as Markdown"}
+              open=${agentCopied}
             >
-              ${agentCopied
-                ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
-                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
-            </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label="Copy as Markdown"
+                data-testid="copy-message-markdown"
+                onClick=${handleAgentCopy}
+              >
+                ${agentCopied
+                  ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
+                  : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+              </button>
+            <//>
             ${agentTimeStr && html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
           </div>
         </div>

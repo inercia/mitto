@@ -96,7 +96,7 @@ test.describe("MCP UI options panel — chevron toggle", () => {
 
     // The chevron (PromptCollapseToggle) is rendered inside the options panel.
     const chevronShow = page.locator(
-      '.ui-prompt-panel button[title="Show prompt area"]',
+      '.ui-prompt-panel button[data-tip="Show prompt area"]',
     );
     await expect(chevronShow).toBeVisible();
 
@@ -104,7 +104,7 @@ test.describe("MCP UI options panel — chevron toggle", () => {
     await chevronShow.click();
     await expect(page.locator(".chat-input-container")).toBeVisible();
     await expect(
-      page.locator('.ui-prompt-panel button[title="Hide prompt area"]'),
+      page.locator('.ui-prompt-panel button[data-tip="Hide prompt area"]'),
     ).toBeVisible();
   });
 });

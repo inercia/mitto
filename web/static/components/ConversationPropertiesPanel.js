@@ -17,6 +17,7 @@ import { secureFetch, authFetch } from "../utils/csrf.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
 import { Drawer } from "./Drawer.js";
+import { Tooltip } from "./Tooltip.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { getContextWindowSize } from "../utils/models.js";
 
@@ -707,13 +708,15 @@ export function ConversationPropertiesPanel({
         class="p-4 border-b border-mitto-border-1 flex items-center justify-between shrink-0"
       >
         <h2 class="font-semibold text-lg">Properties</h2>
-        <button
-          class="p-1 hover:bg-mitto-surface-hover rounded transition-colors"
-          onClick=${handleClose}
-          title="Close"
-        >
-          <${CloseIcon} className="w-5 h-5" />
-        </button>
+        <${Tooltip} tip="Close" placement="bottom">
+          <button
+            class="p-1 hover:bg-mitto-surface-hover rounded transition-colors"
+            onClick=${handleClose}
+            aria-label="Close"
+          >
+            <${CloseIcon} className="w-5 h-5" />
+          </button>
+        </${Tooltip}>
       </div>
 
       <!-- Content -->
@@ -743,32 +746,36 @@ export function ConversationPropertiesPanel({
                     }}
                     disabled=${isSavingTitle}
                   />
-                  <button
-                    class="p-2 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-success"
-                    onClick=${handleSaveTitle}
-                    title="Save"
-                    disabled=${isSavingTitle}
-                  >
-                    <${CheckIcon} className="w-4 h-4" />
-                  </button>
+                  <${Tooltip} tip="Save" placement="bottom">
+                    <button
+                      class="p-2 hover:bg-mitto-surface-hover rounded transition-colors text-mitto-success"
+                      onClick=${handleSaveTitle}
+                      aria-label="Save"
+                      disabled=${isSavingTitle}
+                    >
+                      <${CheckIcon} className="w-4 h-4" />
+                    </button>
+                  </${Tooltip}>
                 </div>
               `
             : html`
                 <div class="flex items-center gap-2 group">
                   <span
-                    class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors"
+                    class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors tooltip tooltip-bottom"
                     onClick=${handleStartEditTitle}
-                    title="Click to edit title"
+                    data-tip="Click to edit title"
                   >
                     ${sessionInfo?.name || "New conversation"}
                   </span>
-                  <button
-                    class="p-1 hover:bg-mitto-surface-hover rounded transition-colors opacity-0 group-hover:opacity-100"
-                    onClick=${handleStartEditTitle}
-                    title="Edit title"
-                  >
-                    <${EditIcon} className="w-4 h-4" />
-                  </button>
+                  <${Tooltip} tip="Edit title" placement="bottom">
+                    <button
+                      class="p-1 hover:bg-mitto-surface-hover rounded transition-colors opacity-0 group-hover:opacity-100"
+                      onClick=${handleStartEditTitle}
+                      aria-label="Edit title"
+                    >
+                      <${EditIcon} className="w-4 h-4" />
+                    </button>
+                  </${Tooltip}>
                 </div>
               `}
         </div>
@@ -816,8 +823,8 @@ export function ConversationPropertiesPanel({
           ${sessionInfo?.acp_server &&
           html`
             <span
-              class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
-              title="ACP Server"
+              class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
+              data-tip="ACP Server"
             >
               ${sessionInfo.acp_server}
             </span>
@@ -826,10 +833,10 @@ export function ConversationPropertiesPanel({
           ${sessionInfo?.runner_type &&
           html`
             <span
-              class="badge badge-sm ${sessionInfo.runner_restricted
+              class="badge badge-sm tooltip tooltip-bottom ${sessionInfo.runner_restricted
                 ? "bg-yellow-500/20 text-mitto-warning"
                 : "bg-purple-500/20 text-purple-400"}"
-              title="${sessionInfo.runner_restricted
+              data-tip="${sessionInfo.runner_restricted
                 ? "Restricted execution mode"
                 : "Sandbox type"}"
             >
@@ -1153,16 +1160,20 @@ export function ConversationPropertiesPanel({
             ${periodicConfig.enabled ? html`
               ${callbackConfig?.callback_url ? html`
                 <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors" title="Copy callback URL to clipboard">
-                    ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
-                  </button>
-                  <button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors" title="Generate new callback URL (invalidates old one)">🔄 Rotate</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-mitto-text-secondary hover:text-red-300 transition-colors" title="Revoke callback URL">✕</button>
+                  <${Tooltip} tip="Copy callback URL to clipboard" placement="top">
+                    <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">
+                      ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
+                    </button>
+                  </${Tooltip}>
+                  <${Tooltip} tip="Generate new callback URL (invalidates old one)" placement="top"><button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">🔄 Rotate</button></${Tooltip}>
+                  <${Tooltip} tip="Revoke callback URL" placement="top"><button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-mitto-text-secondary hover:text-red-300 transition-colors" aria-label="Revoke callback URL">✕</button></${Tooltip}>
                 </div>
               ` : html`
-                <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors" title="Generate a callback URL for triggering this periodic conversation externally">
-                  🔗 Enable Callback URL
-                </button>
+                <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
+                  <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">
+                    🔗 Enable Callback URL
+                  </button>
+                </${Tooltip}>
               `}
             ` : html`
               ${callbackConfig?.callback_url ? html`

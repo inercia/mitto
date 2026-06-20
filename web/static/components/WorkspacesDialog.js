@@ -43,6 +43,7 @@ import {
 } from "./SettingsDialog.js";
 
 import { ModelSelection } from "./ModelSelection.js";
+import { Tooltip } from "./Tooltip.js";
 
 // Recommended beads config keys per upstream task system. Shown as context-sensitive
 // help under the upstream selector in the Beads tab.
@@ -1378,32 +1379,36 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addWorkspace}
                 aria-disabled=${(acpServers.length === 0 || isNewFolderIncomplete) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm ${(acpServers.length === 0 || isNewFolderIncomplete) ? "opacity-40 pointer-events-none" : ""}"
-                title="Add folder"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(acpServers.length === 0 || isNewFolderIncomplete) ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Add folder"
+                aria-label="Add folder"
               >
                 <${FolderIcon} className="w-4 h-4" />
               </button>
               <button
                 onClick=${() => selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
                 aria-disabled=${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm ${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "opacity-40 pointer-events-none" : ""}"
-                title="Delete selected ACP server"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Delete selected ACP server"
+                aria-label="Delete selected ACP server"
               >
                 <${TrashIcon} className="w-4 h-4" />
               </button>
               <button
                 onClick=${() => selectedWorkspaceKey && duplicateWorkspace(selectedWorkspaceKey)}
                 aria-disabled=${!selectedWorkspaceKey ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm ${!selectedWorkspaceKey ? "opacity-40 pointer-events-none" : ""}"
-                title="Duplicate selected workspace"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${!selectedWorkspaceKey ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Duplicate selected workspace"
+                aria-label="Duplicate selected workspace"
               >
                 <${DuplicateIcon} className="w-4 h-4" />
               </button>
               <button
                 onClick=${addServerToFolder}
                 aria-disabled=${(!selectedFolder || !folderCanAddServer) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm ${(!selectedFolder || !folderCanAddServer) ? "opacity-40 pointer-events-none" : ""}"
-                title="Add ACP server to folder"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(!selectedFolder || !folderCanAddServer) ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Add ACP server to folder"
+                aria-label="Add ACP server to folder"
               >
                 <${ServerIcon} className="w-4 h-4" />
               </button>
@@ -1483,8 +1488,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     ${hasNativeFolderPicker() && html`
                                       <button
                                         onClick=${async () => { const p = await pickFolder(); if (p) updateNewFolderPath(p); }}
-                                        class="btn btn-ghost btn-square btn-sm"
-                                        title="Browse"
+                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-left"
+                                        data-tip="Browse"
+                                        aria-label="Browse"
                                       ><${FolderIcon} className="w-4 h-4" /></button>
                                     `}
                                   </div>
@@ -1607,8 +1613,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               </p>
                               <button
                                 onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
-                                class="btn btn-ghost btn-xs gap-1"
-                                title="Add Field"
+                                class="btn btn-ghost btn-xs gap-1 tooltip tooltip-left"
+                                data-tip="Add Field"
                               >
                                 <${PlusIcon} className="w-3.5 h-3.5" />
                                 Add Field
@@ -1661,8 +1667,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <div class="shrink-0 pt-4">
                                       <button
                                         onClick=${() => setEditUserDataFields(prev => prev.filter((_, idx) => idx !== i))}
-                                        class="btn btn-ghost btn-square btn-xs"
-                                        title="Remove field"
+                                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                                        data-tip="Remove field"
+                                        aria-label="Remove field"
                                       >
                                         <${TrashIcon} className="w-3.5 h-3.5" />
                                       </button>
@@ -1723,8 +1730,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <button
                                       type="button"
                                       onClick=${() => setNewBeadsKey(row.key)}
-                                      class="font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline whitespace-nowrap"
-                                      title="Use this key in the add-key field below"
+                                      class="font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline whitespace-nowrap tooltip tooltip-top"
+                                      data-tip="Use this key in the add-key field below"
                                     >${row.key}</button>
                                     <span class="text-mitto-text-muted">— ${row.desc}</span>
                                   </div>
@@ -1780,8 +1787,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           <button
                                             onClick=${() => { if (beadsConfigSaving) return; unsetBeadsConfigKey(k); }}
                                             aria-disabled=${beadsConfigSaving ? "true" : "false"}
-                                            class="btn btn-ghost btn-square btn-sm ${beadsConfigSaving ? "opacity-40 pointer-events-none" : ""}"
-                                            title="Delete this key"
+                                            class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${beadsConfigSaving ? "opacity-40 pointer-events-none" : ""}"
+                                            data-tip="Delete this key"
+                                            aria-label="Delete this key"
                                             style="height: 38px; box-sizing: border-box"
                                           ><${TrashIcon} className="w-4 h-4" /></button>
                                         </div>
@@ -1815,8 +1823,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           setNewBeadsValue("");
                                         }}
                                         aria-disabled=${(beadsConfigSaving || !newBeadsKey.trim()) ? "true" : "false"}
-                                        class="btn btn-ghost btn-square btn-sm ${(beadsConfigSaving || !newBeadsKey.trim()) ? "opacity-40 pointer-events-none" : ""}"
-                                        title="Add key"
+                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(beadsConfigSaving || !newBeadsKey.trim()) ? "opacity-40 pointer-events-none" : ""}"
+                                        data-tip="Add key"
+                                        aria-label="Add key"
                                         style="height: 38px; box-sizing: border-box"
                                       ><${PlusIcon} className="w-4 h-4" /></button>
                                     </div>
@@ -1851,8 +1860,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             </p>
                             <button
                               onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                              class="btn btn-ghost btn-square btn-sm ${showAddPrompt ? 'btn-active' : ''}"
-                              title="Add Prompt"
+                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${showAddPrompt ? 'btn-active' : ''}"
+                              data-tip="Add Prompt"
+                              aria-label="Add Prompt"
                             >
                               <${PlusIcon} className="w-5 h-5" />
                             </button>
@@ -1917,12 +1927,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           <div
                                              class="list-col-grow collapse ${editingPromptIndex === idx ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${isEnabled ? 'border-mitto-border-2/50' : 'border-mitto-border-2/30 opacity-60'} w-full">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0">
-                                            <input type="checkbox" checked=${isEnabled}
-                                              onChange=${() => togglePromptEnabled(prompt)}
-                                              onClick=${(e) => e.stopPropagation()}
-                                              class="checkbox checkbox-sm shrink-0"
-                                              title=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
-                                            />
+                                            <${Tooltip} tip=${isEnabled ? "Disable this prompt" : "Enable this prompt"} placement="right" className="shrink-0">
+                                              <input type="checkbox" checked=${isEnabled}
+                                                onChange=${() => togglePromptEnabled(prompt)}
+                                                onClick=${(e) => e.stopPropagation()}
+                                                class="checkbox checkbox-sm"
+                                                aria-label=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
+                                              />
+                                            <//>
                                             ${prompt.backgroundColor && html`
                                               <div class="w-5 h-5 rounded-sm shrink-0 border border-mitto-border-2" style="background-color: ${prompt.backgroundColor}" />
                                             `}
@@ -1948,12 +1960,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                     setEditingPromptIndex(idx);
                                                   }
                                                 }}
-                                                class="btn btn-ghost btn-square btn-xs" title=${isBuiltin ? "View" : "Edit"}>
+                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left" data-tip=${isBuiltin ? "View" : "Edit"} aria-label=${isBuiltin ? "View" : "Edit"}>
                                                 <${EditIcon} className="w-4 h-4 text-mitto-text-muted" />
                                               </button>
                                               ${!isBuiltin && html`
                                                 <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
-                                                  class="btn btn-ghost btn-square btn-xs" title="Delete">
+                                                  class="btn btn-ghost btn-square btn-xs tooltip tooltip-left" data-tip="Delete" aria-label="Delete">
                                                   <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                                 </button>
                                               `}
@@ -2061,12 +2073,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                              class="collapse collapse-plus ${isExpanded ? 'collapse-open' : 'collapse-close'} bg-mitto-surface-3/20 rounded-sm border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
                                           <div class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
                                                onClick=${() => setExpandedProcessor(isExpanded ? null : proc.name)}>
-                                            <input type="checkbox" checked=${isEnabled}
-                                              onChange=${() => toggleProcessorEnabled(proc)}
-                                              onClick=${(e) => e.stopPropagation()}
-                                              class="checkbox checkbox-sm shrink-0"
-                                              title=${isEnabled ? "Disable this processor" : "Enable this processor"}
-                                            />
+                                            <${Tooltip} tip=${isEnabled ? "Disable this processor" : "Enable this processor"} placement="right" className="shrink-0">
+                                              <input type="checkbox" checked=${isEnabled}
+                                                onChange=${() => toggleProcessorEnabled(proc)}
+                                                onClick=${(e) => e.stopPropagation()}
+                                                class="checkbox checkbox-sm"
+                                                aria-label=${isEnabled ? "Disable this processor" : "Enable this processor"}
+                                              />
+                                            <//>
                                             <div class="flex-1 min-w-0">
                                               <div class="flex items-center gap-2">
                                                 ${isPromptMode && html`<${RobotIcon} className="w-4 h-4 text-purple-400 shrink-0" />`}
@@ -2272,8 +2286,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                           <button
                             onClick=${() => { if (mcpToolsLoading) return; loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir); }}
                             aria-disabled=${mcpToolsLoading ? "true" : "false"}
-                            class="btn btn-ghost btn-square btn-sm ${mcpToolsLoading ? "opacity-40 pointer-events-none" : ""}"
-                            title="Refresh MCP server list"
+                            class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${mcpToolsLoading ? "opacity-40 pointer-events-none" : ""}"
+                            data-tip="Refresh MCP server list"
+                            aria-label="Refresh MCP server list"
                           >
                             <${RefreshIcon} className=${`w-4 h-4 ${mcpToolsLoading ? "animate-spin" : ""}`} />
                           </button>
@@ -2281,8 +2296,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             <button
                               onClick=${() => { if (mcpInstallLoading) return; handleInstallMittoMcp(); }}
                               aria-disabled=${mcpInstallLoading ? "true" : "false"}
-                              class="btn btn-ghost btn-square btn-sm ${mcpInstallLoading ? "opacity-40 pointer-events-none" : ""}"
-                              title="Install Mitto's MCP server"
+                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${mcpInstallLoading ? "opacity-40 pointer-events-none" : ""}"
+                              data-tip="Install Mitto's MCP server"
+                              aria-label="Install Mitto's MCP server"
                             >
                               <${MittoIcon} className="w-4 h-4" />
                             </button>
@@ -2295,8 +2311,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 setMcpInstallError("");
                                 setMcpInstallSuccess("");
                               }}
-                              class="btn btn-ghost btn-square btn-sm"
-                              title="Install MCP servers"
+                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
+                              data-tip="Install MCP servers"
+                              aria-label="Install MCP servers"
                             >
                               <${PlusIcon} className="w-4 h-4" />
                             </button>
@@ -2344,8 +2361,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             <button
                                               onClick=${() => { if (mcpRemoveLoading) return; handleMcpRemoveConfirm(srv.name); }}
                                               aria-disabled=${mcpRemoveLoading ? "true" : "false"}
-                                              class="btn btn-ghost btn-square btn-xs ${mcpRemoveLoading ? "opacity-40 pointer-events-none" : ""}"
-                                              title="Remove MCP server"
+                                              class="btn btn-ghost btn-square btn-xs tooltip tooltip-left ${mcpRemoveLoading ? "opacity-40 pointer-events-none" : ""}"
+                                              data-tip="Remove MCP server"
+                                              aria-label="Remove MCP server"
                                             >
                                               <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                             </button>
@@ -2378,8 +2396,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${handleRestartAcp}
                 disabled=${restarting}
-                class="btn btn-warning btn-sm gap-2"
-                title="Restart ACP to apply MCP changes to active conversations"
+                class="btn btn-warning btn-sm gap-2 tooltip tooltip-top"
+                data-tip="Restart ACP to apply MCP changes to active conversations"
               >
                 ${restarting
                   ? html`<${SpinnerIcon} className="w-4 h-4" /> Restarting...`

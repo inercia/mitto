@@ -56,8 +56,9 @@ export function ToastContainer({ toasts, onDismiss }) {
                     e.stopPropagation();
                     onDismiss(toast.id);
                   }}
-                  class="btn btn-ghost btn-xs btn-circle"
-                  title="Dismiss"
+                  class="btn btn-ghost btn-xs btn-circle tooltip tooltip-left"
+                  data-tip="Dismiss"
+                  aria-label="Dismiss"
                 >
                   <${CloseIcon} className="w-4 h-4" />
                 </button>

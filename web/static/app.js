@@ -2141,13 +2141,18 @@ function App() {
             </button>
           <//>
           <h1
-            class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
+            class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline tooltip tooltip-bottom ${!activeSessionId
               ? "text-mitto-text-muted"
               : connected
                 ? "cursor-pointer hover:text-mitto-accent-400 transition-colors"
                 : "text-mitto-text-muted cursor-pointer hover:text-mitto-text-secondary transition-colors"}"
             onClick=${activeSessionId ? handleToggleSidePanel : undefined}
-            title=${activeSessionId
+            data-tip=${activeSessionId
+              ? connected
+                ? "Click to view properties"
+                : "Not connected — click to view properties"
+              : ""}
+            aria-label=${activeSessionId
               ? connected
                 ? "Click to view properties"
                 : "Not connected — click to view properties"

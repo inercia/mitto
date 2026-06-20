@@ -45,6 +45,7 @@ import {
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
+import { Tooltip } from "./Tooltip.js";
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
@@ -176,8 +177,9 @@ export function FolderListEditor({
               <button
                 type="button"
                 onClick=${() => removeFolder(idx)}
-                class="btn btn-ghost btn-square btn-xs"
-                title="Remove folder"
+                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                data-tip="Remove folder"
+                aria-label="Remove folder"
               >
                 <${TrashIcon} className="w-4 h-4" />
               </button>
@@ -293,8 +295,9 @@ export function AutoChildrenEditor({
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="btn btn-ghost btn-square btn-sm join-item"
-                      title="Remove child"
+                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-left"
+                      data-tip="Remove child"
+                      aria-label="Remove child"
                     >
                       <${TrashIcon} className="w-4 h-4" />
                     </button>
@@ -782,8 +785,9 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                       <button
                         type="button"
                         onClick=${() => removeEnvVar(idx)}
-                        class="btn btn-ghost btn-square btn-xs"
-                        title="Remove variable"
+                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                        data-tip="Remove variable"
+                        aria-label="Remove variable"
                       >
                         <${TrashIcon} className="w-4 h-4" />
                       </button>
@@ -897,16 +901,18 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           >Background Color (optional)</label
         >
         <div class="flex items-center gap-2">
-          <input
-            type="color"
-            value=${backgroundColor || "#334155"}
-            onInput=${(e) => setBackgroundColor(e.target.value)}
-            disabled=${readOnly}
-            class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2 ${readOnly
-              ? "opacity-60 cursor-not-allowed"
-              : ""}"
-            title="Choose background color"
-          />
+          <${Tooltip} tip="Choose background color" placement="top">
+            <input
+              type="color"
+              value=${backgroundColor || "#334155"}
+              onInput=${(e) => setBackgroundColor(e.target.value)}
+              disabled=${readOnly}
+              class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2 ${readOnly
+                ? "opacity-60 cursor-not-allowed"
+                : ""}"
+              aria-label="Choose background color"
+            />
+          <//>
           <input
             type="text"
             value=${backgroundColor}
@@ -923,8 +929,9 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             <button
               type="button"
               onClick=${() => setBackgroundColor("")}
-              class="btn btn-ghost btn-square btn-xs"
-              title="Clear color"
+              class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+              data-tip="Clear color"
+              aria-label="Clear color"
             >
               <svg
                 class="w-4 h-4 text-mitto-text-muted"
@@ -2217,16 +2224,18 @@ export function SettingsDialog({
                         <button
                           type="button"
                           onClick=${() => setShowDiscoverAgents(true)}
-                          class="btn btn-ghost btn-square btn-sm"
-                          title="Discover Agents"
+                          class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
+                          data-tip="Discover Agents"
+                          aria-label="Discover Agents"
                         >
                           <${SearchIcon} className="w-5 h-5" />
                         </button>
                         <button
                           type="button"
                           onClick=${() => setShowAddServer(!showAddServer)}
-                          class="btn btn-ghost btn-square btn-sm ${showAddServer ? "btn-active" : ""}"
-                          title="Add Server"
+                          class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${showAddServer ? "btn-active" : ""}"
+                          data-tip="Add Server"
+                          aria-label="Add Server"
                         >
                           <${PlusIcon} className="w-5 h-5" />
                         </button>
@@ -2376,8 +2385,8 @@ export function SettingsDialog({
                                           ${srv.name}
                                           ${srv.type && html`
                                             <span
-                                              class="badge badge-sm bg-purple-500/20 text-purple-400"
-                                              title="Server type for prompt matching"
+                                              class="badge badge-sm bg-purple-500/20 text-purple-400 tooltip tooltip-top"
+                                              data-tip="Server type for prompt matching"
                                             >
                                               ${srv.type}
                                             </span>
@@ -2386,8 +2395,8 @@ export function SettingsDialog({
                                             (tag) => html`
                                               <span
                                                 key=${tag}
-                                                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
-                                                title="Tag"
+                                                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-top"
+                                                data-tip="Tag"
                                               >
                                                 ${tag}
                                               </span>
@@ -2426,8 +2435,9 @@ export function SettingsDialog({
                                             e.stopPropagation();
                                             duplicateServer(srv.name);
                                           }}
-                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100"
-                                          title="Duplicate server"
+                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-left"
+                                          data-tip="Duplicate server"
+                                          aria-label="Duplicate server"
                                         >
                                           <${DuplicateIcon} className="w-4 h-4" />
                                         </button>
@@ -2437,8 +2447,9 @@ export function SettingsDialog({
                                             e.stopPropagation();
                                             removeServer(srv.name);
                                           }}
-                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100"
-                                          title="Remove server"
+                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-left"
+                                          data-tip="Remove server"
+                                          aria-label="Remove server"
                                         >
                                           <${TrashIcon} className="w-4 h-4" />
                                         </button>
@@ -2679,8 +2690,9 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="btn btn-ghost btn-square btn-xs"
-                                                title="Remove folder"
+                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                                                data-tip="Remove folder"
+                                                aria-label="Remove folder"
                                               >
                                                 <${TrashIcon}
                                                   className="w-4 h-4"
@@ -2812,8 +2824,9 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="btn btn-ghost btn-square btn-xs"
-                                                title="Remove folder"
+                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                                                data-tip="Remove folder"
+                                                aria-label="Remove folder"
                                               >
                                                 <${TrashIcon}
                                                   className="w-4 h-4"

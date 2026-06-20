@@ -750,8 +750,9 @@ export function PeriodicFrequencyPanel({
             type="button"
             onClick=${periodicPaused ? handleRestoreClick : handleIconClick}
             disabled=${periodicPaused ? isSavingEnabled : isTriggering || isStreaming}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(periodicPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            title=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors tooltip tooltip-bottom ${(periodicPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            data-tip=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
+            aria-label=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
             data-testid="periodic-run-now-button"
           >
             ${
@@ -771,8 +772,9 @@ export function PeriodicFrequencyPanel({
             type="button"
             onClick=${handlePauseResume}
             disabled=${periodicPaused || isSavingEnabled}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${periodicPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            title=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors tooltip tooltip-bottom ${periodicPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            data-tip=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
+            aria-label=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
             data-testid="periodic-pause-resume-button"
           >
             ${
@@ -857,8 +859,9 @@ export function PeriodicFrequencyPanel({
           <button
             type="button"
             onClick=${onToggleExpanded}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
-            title=${expanded ? "Collapse settings" : "Expand settings"}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors tooltip tooltip-bottom"
+            data-tip=${expanded ? "Collapse settings" : "Expand settings"}
+            aria-label=${expanded ? "Collapse settings" : "Expand settings"}
             data-testid="periodic-expand-toggle"
           >
             <svg

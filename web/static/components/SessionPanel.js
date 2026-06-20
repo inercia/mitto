@@ -17,6 +17,7 @@ import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
+import { Tooltip } from "./Tooltip.js";
 import { statusBadge as beadsStatusBadge } from "./BeadsView.js";
 import { formatTimeAgo, looksLikeFilePath } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
@@ -738,13 +739,15 @@ export function SessionPanel({
           class="p-4 border-b border-mitto-border-1 flex items-center justify-between shrink-0"
         >
           <h2 class="font-semibold text-lg">Conversation</h2>
-          <button
-            class="btn btn-ghost btn-square btn-sm"
-            onClick=${handleClose}
-            title="Close"
-          >
-            <${CloseIcon} className="w-5 h-5" />
-          </button>
+          <${Tooltip} tip="Close" placement="bottom">
+            <button
+              class="btn btn-ghost btn-square btn-sm"
+              onClick=${handleClose}
+              aria-label="Close"
+            >
+              <${CloseIcon} className="w-5 h-5" />
+            </button>
+          </${Tooltip}>
         </div>
 
         <!-- Tab switcher — daisyUI radio tabs-lift with icons. Each tab is a
@@ -759,7 +762,7 @@ export function SessionPanel({
           class="tabs tabs-lift shrink-0 pt-2"
           style="--tab-border-color: var(--mitto-border-1);"
         >
-          <label class="tab flex-1" title="Properties">
+          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Properties" aria-label="Properties">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -768,7 +771,7 @@ export function SessionPanel({
             />
             <${SettingsIcon} className="w-4 h-4" />
           </label>
-          <label class="tab flex-1" title="Changes">
+          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Changes" aria-label="Changes">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -789,7 +792,7 @@ export function SessionPanel({
               />
             </svg>
           </label>
-          <label class="tab flex-1" title="Advanced">
+          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Advanced" aria-label="Advanced">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -965,11 +968,12 @@ export function SessionPanel({
             <span>${files.length} file${files.length !== 1 ? "s" : ""}</span>
           </div>
           <button
-            class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:text-mitto-text-200 ${isLoadingChanges
+            class="btn btn-ghost btn-square btn-sm text-mitto-text-secondary hover:text-mitto-text-200 tooltip tooltip-bottom ${isLoadingChanges
               ? "animate-spin opacity-40 pointer-events-none"
               : ""}"
             onClick=${handleRefreshChanges}
-            title="Refresh changes"
+            data-tip="Refresh changes"
+            aria-label="Refresh changes"
             aria-disabled=${isLoadingChanges ? "true" : "false"}
           >
             <svg
@@ -1077,34 +1081,38 @@ export function SessionPanel({
                     }}
                     disabled=${isSavingTitle}
                   />
-                  <button
-                    class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingTitle
-                      ? "opacity-40 pointer-events-none"
-                      : ""}"
-                    onClick=${handleSaveTitle}
-                    title="Save"
-                    aria-disabled=${isSavingTitle ? "true" : "false"}
-                  >
-                    <${CheckIcon} className="w-4 h-4" />
-                  </button>
+                  <${Tooltip} tip="Save" placement="bottom">
+                    <button
+                      class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingTitle
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      onClick=${handleSaveTitle}
+                      aria-label="Save"
+                      aria-disabled=${isSavingTitle ? "true" : "false"}
+                    >
+                      <${CheckIcon} className="w-4 h-4" />
+                    </button>
+                  </${Tooltip}>
                 </div>
               `
             : html`
                 <div class="flex items-center gap-2 group">
                   <span
-                    class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors"
+                    class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors tooltip tooltip-bottom"
                     onClick=${handleStartEditTitle}
-                    title="Click to edit title"
+                    data-tip="Click to edit title"
                   >
                     ${sessionInfo?.name || "New conversation"}
                   </span>
-                  <button
-                    class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100"
-                    onClick=${handleStartEditTitle}
-                    title="Edit title"
-                  >
-                    <${EditIcon} className="w-4 h-4" />
-                  </button>
+                  <${Tooltip} tip="Edit title" placement="bottom">
+                    <button
+                      class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100"
+                      onClick=${handleStartEditTitle}
+                      aria-label="Edit title"
+                    >
+                      <${EditIcon} className="w-4 h-4" />
+                    </button>
+                  </${Tooltip}>
                 </div>
               `}
         </div>
@@ -1137,16 +1145,16 @@ export function SessionPanel({
                   >`}
           ${sessionInfo?.acp_server &&
           html`<span
-            class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
-            title="ACP Server"
+            class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
+            data-tip="ACP Server"
             >${sessionInfo.acp_server}</span
           >`}
           ${sessionInfo?.runner_type &&
           html`<span
-            class="badge badge-sm ${sessionInfo.runner_restricted
+            class="badge badge-sm tooltip tooltip-bottom ${sessionInfo.runner_restricted
               ? "bg-yellow-500/20 text-mitto-warning"
               : "bg-purple-500/20 text-purple-400"}"
-            title="${sessionInfo.runner_restricted
+            data-tip="${sessionInfo.runner_restricted
               ? "Restricted execution mode"
               : "Sandbox type"}"
             >${sessionInfo.runner_type}</span
@@ -1344,7 +1352,7 @@ export function SessionPanel({
               ${onOpenBeadsIssue
                 ? html`<button
                     type="button"
-                    class="text-sm font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline transition-colors cursor-pointer"
+                    class="text-sm font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline transition-colors cursor-pointer tooltip tooltip-bottom"
                     onClick=${() =>
                       onOpenBeadsIssue(
                         sessionInfo.beads_issue,
@@ -1352,7 +1360,7 @@ export function SessionPanel({
                         sessionId,
                         { reopenProperties: true },
                       )}
-                    title="Open beads issue ${sessionInfo.beads_issue}"
+                    data-tip="Open beads issue ${sessionInfo.beads_issue}"
                   >
                     ${sessionInfo.beads_issue}
                   </button>`
@@ -1457,18 +1465,20 @@ export function SessionPanel({
                                 }}
                                 disabled=${isSavingAttribute}
                               />
-                              <button
-                                class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingAttribute
-                                  ? "opacity-40 pointer-events-none"
-                                  : ""}"
-                                onClick=${handleSaveAttribute}
-                                title="Save"
-                                aria-disabled=${isSavingAttribute
-                                  ? "true"
-                                  : "false"}
-                              >
-                                <${CheckIcon} className="w-4 h-4" />
-                              </button>
+                              <${Tooltip} tip="Save" placement="bottom">
+                                <button
+                                  class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingAttribute
+                                    ? "opacity-40 pointer-events-none"
+                                    : ""}"
+                                  onClick=${handleSaveAttribute}
+                                  aria-label="Save"
+                                  aria-disabled=${isSavingAttribute
+                                    ? "true"
+                                    : "false"}
+                                >
+                                  <${CheckIcon} className="w-4 h-4" />
+                                </button>
+                              </${Tooltip}>
                             </div>
                           `
                         : html`
@@ -1552,17 +1562,19 @@ export function SessionPanel({
                                       >${value || "(not set)"}</span
                                     >
                                   `}
-                              <button
-                                class="btn btn-ghost btn-square btn-xs opacity-0 group-hover:opacity-100"
-                                onClick=${() =>
-                                  handleStartEditAttribute({
-                                    name: field.name,
-                                    value,
-                                  })}
-                                title="Edit"
-                              >
-                                <${EditIcon} className="w-3 h-3" />
-                              </button>
+                              <${Tooltip} tip="Edit" placement="bottom">
+                                <button
+                                  class="btn btn-ghost btn-square btn-xs opacity-0 group-hover:opacity-100"
+                                  onClick=${() =>
+                                    handleStartEditAttribute({
+                                      name: field.name,
+                                      value,
+                                    })}
+                                  aria-label="Edit"
+                                >
+                                  <${EditIcon} className="w-3 h-3" />
+                                </button>
+                              </${Tooltip}>
                             </div>
                           `}
                     </div>
@@ -1658,37 +1670,42 @@ export function SessionPanel({
                   ${callbackConfig?.callback_url
                     ? html`
                         <div class="flex items-center gap-1.5">
-                          <button
-                            onClick=${handleCopyCallbackUrl}
-                            class="btn btn-xs btn-soft"
-                            title="Copy callback URL to clipboard"
-                          >
-                            ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
-                          </button>
-                          <button
-                            onClick=${handleRotateCallback}
-                            class="btn btn-xs btn-soft"
-                            title="Generate new callback URL (invalidates old one)"
-                          >
-                            🔄 Rotate
-                          </button>
-                          <button
-                            onClick=${handleRevokeCallback}
-                            class="btn btn-xs btn-soft btn-error"
-                            title="Revoke callback URL"
-                          >
-                            ✕
-                          </button>
+                          <${Tooltip} tip="Copy callback URL to clipboard" placement="top">
+                            <button
+                              onClick=${handleCopyCallbackUrl}
+                              class="btn btn-xs btn-soft"
+                            >
+                              ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
+                            </button>
+                          </${Tooltip}>
+                          <${Tooltip} tip="Generate new callback URL (invalidates old one)" placement="top">
+                            <button
+                              onClick=${handleRotateCallback}
+                              class="btn btn-xs btn-soft"
+                            >
+                              🔄 Rotate
+                            </button>
+                          </${Tooltip}>
+                          <${Tooltip} tip="Revoke callback URL" placement="top">
+                            <button
+                              onClick=${handleRevokeCallback}
+                              class="btn btn-xs btn-soft btn-error"
+                              aria-label="Revoke callback URL"
+                            >
+                              ✕
+                            </button>
+                          </${Tooltip}>
                         </div>
                       `
                     : html`
-                        <button
-                          onClick=${handleEnableCallback}
-                          class="btn btn-xs btn-soft"
-                          title="Generate a callback URL for triggering this periodic conversation externally"
-                        >
-                          🔗 Enable Callback URL
-                        </button>
+                        <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
+                          <button
+                            onClick=${handleEnableCallback}
+                            class="btn btn-xs btn-soft"
+                          >
+                            🔗 Enable Callback URL
+                          </button>
+                        </${Tooltip}>
                       `}
                 `
               : html`

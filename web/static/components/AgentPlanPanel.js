@@ -285,10 +285,11 @@ export function AgentPlanIndicator({
     <button
       type="button"
       onClick=${onClick}
-      class="agent-plan-indicator btn btn-xs gap-1.5 ${hasNewUpdate
+      class="agent-plan-indicator btn btn-xs gap-1.5 tooltip tooltip-bottom ${hasNewUpdate
         ? "ring-2 ring-mitto-accent-400/50"
         : ""}"
-      title="View agent plan"
+      data-tip="View agent plan"
+      aria-label="View agent plan"
     >
       ${inProgressCount > 0
         ? html`<span class="text-mitto-accent-400 animate-pulse">●</span>`

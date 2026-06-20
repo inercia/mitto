@@ -385,10 +385,11 @@ export function SessionItem({
               e.stopPropagation();
               triggerAction();
             }}
-            class="p-3 rounded-full ${isSwipeToDelete
+            class="p-3 rounded-full tooltip tooltip-left ${isSwipeToDelete
               ? "bg-red-700 hover:bg-red-800"
               : "bg-amber-700 hover:bg-amber-800"} transition-colors"
-            title=${isSwipeToDelete ? "Delete" : "Archive"}
+            data-tip=${isSwipeToDelete ? "Delete" : "Archive"}
+            aria-label=${isSwipeToDelete ? "Delete" : "Archive"}
           >
             ${isSwipeToDelete
               ? html`<${TrashIcon} className="w-5 h-5 text-white" />`
@@ -426,10 +427,11 @@ export function SessionItem({
                   ${isSpawned
                     ? html`
                           <span
-                            class="text-sm leading-none shrink-0 ${isActive
+                            class="text-sm leading-none shrink-0 tooltip tooltip-right ${isActive
                               ? "text-mitto-accent-fg"
                               : "text-mitto-text-muted"}"
-                            title="Spawned from another conversation"
+                            data-tip="Spawned from another conversation"
+                            aria-label="Spawned from another conversation"
                             >↳</span
                           >
                         `
@@ -441,8 +443,9 @@ export function SessionItem({
                           ? "text-mitto-accent-fg"
                           : "text-mitto-accent"}">
                           <span
-                            class="loading loading-ring loading-xs"
-                            title=${ringTitle}
+                            class="loading loading-ring loading-xs tooltip tooltip-right"
+                            data-tip=${ringTitle}
+                            aria-label=${ringTitle}
                           ></span>
                         </span>
                       `
@@ -456,8 +459,9 @@ export function SessionItem({
                             : categoryIconClass}">
                           ${showLoadingRing
                             ? html`<span
-                                class="loading loading-ring loading-xs"
-                                title=${ringTitle}
+                                class="loading loading-ring loading-xs tooltip tooltip-right"
+                                data-tip=${ringTitle}
+                                aria-label=${ringTitle}
                               ></span>`
                             : html`<${CategoryIcon} className="w-4 h-4" />`}
                         </span>
@@ -473,33 +477,33 @@ export function SessionItem({
                   >
                   ${session.child_origin === "auto"
                     ? html`
-                        <span class="shrink-0 text-amber-400" title="Auto-created child">
+                        <span class="shrink-0 text-amber-400 tooltip tooltip-right" data-tip="Auto-created child" aria-label="Auto-created child">
                           <${LightningIcon} className="w-4 h-4" />
                         </span>
                       `
                     : session.child_origin === "mcp"
                       ? html`
-                          <span class="shrink-0 text-mitto-accent" title="Created by agent">
+                          <span class="shrink-0 text-mitto-accent tooltip tooltip-right" data-tip="Created by agent" aria-label="Created by agent">
                             <${RobotIcon} className="w-4 h-4" />
                           </span>
                         `
                       : session.child_origin === "human"
                         ? html`
-                            <span class="shrink-0 text-mitto-success" title="Manually created child">
+                            <span class="shrink-0 text-mitto-success tooltip tooltip-right" data-tip="Manually created child" aria-label="Manually created child">
                               <${PersonIcon} className="w-4 h-4" />
                             </span>
                           `
                         : null}
                   ${session.isWaitingForChildren
                     ? html`
-                        <span class="shrink-0 text-mitto-warning animate-pulse" title="Waiting for child conversations">
+                        <span class="shrink-0 text-mitto-warning animate-pulse tooltip tooltip-right" data-tip="Waiting for child conversations" aria-label="Waiting for child conversations">
                           <${HourglassIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}
                   ${session.isWaitingForUserInput
                     ? html`
-                        <span class="shrink-0 text-purple-400 animate-pulse" title="Waiting for user input">
+                        <span class="shrink-0 text-purple-400 animate-pulse tooltip tooltip-right" data-tip="Waiting for user input" aria-label="Waiting for user input">
                           <${QuestionMarkIcon} className="w-4 h-4" />
                         </span>
                       `
@@ -511,8 +515,9 @@ export function SessionItem({
                 : !isArchived
                     ? html`
                         <span
-                          class="w-2 h-2 bg-amber-400 rounded-full shrink-0"
-                          title="Not connected"
+                          class="w-2 h-2 bg-amber-400 rounded-full shrink-0 tooltip tooltip-left"
+                          data-tip="Not connected"
+                          aria-label="Not connected"
                         ></span>
                       `
                     : null}
@@ -554,11 +559,11 @@ export function SessionItem({
                       if (onToggleExpand) onToggleExpand();
                     }
                   }}
-                  class="badge badge-sm badge-ghost shrink-0 tabular-nums cursor-pointer ${isActive
+                  class="badge badge-sm badge-ghost shrink-0 tabular-nums cursor-pointer tooltip tooltip-left ${isActive
                     ? "bg-mitto-accent-fg text-mitto-accent"
                     : ""}"
                   aria-expanded=${isExpanded}
-                  title="${isExpanded ? "Collapse" : "Expand"} ${childCount} child conversation${childCount ===
+                  data-tip="${isExpanded ? "Collapse" : "Expand"} ${childCount} child conversation${childCount ===
                   1
                     ? ""
                     : "s"}"
@@ -568,8 +573,8 @@ export function SessionItem({
               <button
                 type="button"
                 onClick=${handleMenuButtonClick}
-                class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 ${trailingControlClass}"
-                title="More actions"
+                class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 tooltip tooltip-left ${trailingControlClass}"
+                data-tip="More actions"
                 aria-label="More actions"
                 data-testid="session-item-menu"
               >

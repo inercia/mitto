@@ -10,6 +10,7 @@ import { CodeEditorField } from "./CodeEditorField.js";
 import { ContextMenu, buildPromptGroupMenuItems } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
+import { Tooltip } from "./Tooltip.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 import { useSwipeToAction } from "../hooks/index.js";
 
@@ -899,63 +900,63 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
   // edit draft) and `disabled` force-greys the row regardless (read-only view).
   const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
     <div class="flex items-center gap-1 mb-1">
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Bold" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Bold" aria-label="Bold" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.wrapSelection("**", "**", "bold text")}>
         <${BoldIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Italic" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Italic" aria-label="Italic" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.wrapSelection("*", "*", "italic")}>
         <${ItalicIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Strikethrough" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Strikethrough" aria-label="Strikethrough" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}>
         <${StrikethroughIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Inline code" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Inline code" aria-label="Inline code" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.wrapSelection("\`", "\`", "code")}>
         <${InlineCodeIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Code block" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Code block" aria-label="Code block" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.wrapSelection("\n\`\`\`\n", "\n\`\`\`\n", "code")}>
         <${CodeBlockIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Link" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Link" aria-label="Link" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.insertLink("text", "url")}>
         <${LinkIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Bulleted list" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Bulleted list" aria-label="Bulleted list" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.prefixLines("- ")}>
         <${ListIcon} className="w-4 h-4" />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Numbered list" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Numbered list" aria-label="Numbered list" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}>
         <${NumberedListIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Heading" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Heading" aria-label="Heading" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.prefixLines("## ")}>
         <${HeadingIcon} />
       </button>
-      <button type="button" class="chat-input-action" disabled=${disabled}
-        title="Quote" onMouseDown=${(e) => e.preventDefault()}
+      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
+        data-tip="Quote" aria-label="Quote" onMouseDown=${(e) => e.preventDefault()}
         onClick=${() => editorApiRef?.current?.prefixLines("> ")}>
         <${QuoteIcon} />
       </button>
       <button
         type="button"
-        class="chat-input-action ${improvingDesc ? "improving" : ""} ml-auto"
+        class="chat-input-action ${improvingDesc ? "improving" : ""} ml-auto tooltip tooltip-bottom"
         onClick=${() => improveDescriptionText(text, setText)}
         onMouseDown=${(e) => e.preventDefault()}
         disabled=${disabled || improvingDesc || !text || !text.trim()}
-        title="Improve description with AI"
+        data-tip="Improve description with AI" aria-label="Improve description with AI"
       >
         ${improvingDesc
           ? html`<span class="loading loading-spinner w-4 h-4"></span>`
@@ -997,9 +998,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
         />`
       : html`
         <h2
-          class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors"
+          class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors block tooltip tooltip-bottom"
           onClick=${startEditTitle}
-          title="Click to edit"
+          data-tip="Click to edit"
         >${viewDraft.title}</h2>`;
   };
 
@@ -1019,8 +1020,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
         <button
           type="button"
           onClick=${() => setEditingType(o => !o)}
-          class="btn btn-ghost btn-xs"
-          title="Click to change type"
+          class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
+          data-tip="Click to change type"
         >
           ${typeBadge(viewDraft.type)}
         </button>
@@ -1060,7 +1061,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
       </select>`
     : html`
       <div class="dropdown">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-xs" title="Click to change priority">
+        <div tabindex="0" role="button" class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom" data-tip="Click to change priority">
           ${priorityBadge(viewDraft.priority)}
         </div>
         <ul tabindex="0" class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
@@ -1148,9 +1149,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
           : html`
             <div
               ref=${descViewRef}
-              class="border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative"
+              class="border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-top"
               onClick=${startEditDesc}
-              title="Click to edit"
+              data-tip="Click to edit"
             >
               ${viewDraft.description
                 ? (md
@@ -1191,9 +1192,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
         />`
       : html`
         <div
-          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2"
+          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2 tooltip tooltip-top"
           onClick=${startEditAssignee}
-          title="Click to edit"
+          data-tip="Click to edit"
         >
           ${viewDraft.assignee
             ? html`<span>${viewDraft.assignee}</span>`
@@ -1232,9 +1233,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
       : html`
         <div
           ref=${notesViewRef}
-          class="border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative"
+          class="border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-top"
           onClick=${startEditNotes}
-          title="Click to edit"
+          data-tip="Click to edit"
         >
           ${viewDraft.notes && viewDraft.notes.trim()
             ? commentBody(viewDraft.notes)
@@ -1266,8 +1267,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                 type="button"
                 onClick=${() => removeCreateDep(d.id)}
                 disabled=${submitting}
-                class="btn btn-ghost btn-square btn-xs shrink-0"
-                title="Remove dependency"
+                class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-left"
+                data-tip="Remove dependency"
+                aria-label="Remove dependency"
               >
                 <${CloseIcon} className="w-3.5 h-3.5" />
               </button>
@@ -1297,8 +1299,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             type="button"
             onClick=${addCreateDep}
             aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
-            class="btn btn-ghost btn-square btn-xs shrink-0 join-item ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
-            title="Add dependency"
+            class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-top ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
+            data-tip="Add dependency"
+            aria-label="Add dependency"
           >
             <${PlusIcon} className="w-3.5 h-3.5" />
           </button>
@@ -1329,15 +1332,16 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                   <button
                     type="button"
                     onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                    class="list-col-grow font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline min-w-0 truncate text-left"
-                    title=${"Open " + d.id}
+                    class="list-col-grow font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline min-w-0 truncate text-left tooltip tooltip-top"
+                    data-tip=${"Open " + d.id}
                   >${d.id}</button>
                   <button
                     type="button"
                     onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
                     aria-disabled=${depsBusy ? "true" : "false"}
-                    class="btn btn-ghost btn-square btn-xs shrink-0 group ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
-                    title="Remove dependency"
+                    class="btn btn-ghost btn-square btn-xs shrink-0 group inline-flex tooltip tooltip-left ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
+                    data-tip="Remove dependency"
+                    aria-label="Remove dependency"
                   >
                     <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
                   </button>
@@ -1367,8 +1371,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                 type="button"
                 onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
                 aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-xs shrink-0 join-item ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
-                title="Add dependency"
+                class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-top ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Add dependency"
+                aria-label="Add dependency"
               >
                 ${depsBusy
                   ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
@@ -1424,8 +1429,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                       ? { style: "success", title: `Copied ${data.id}` }
                       : { style: "error", title: "Failed to copy issue ID" });
                   }}
-                  class="btn btn-ghost btn-xs btn-square"
-                  title="Copy issue ID ${data.id}"
+                  class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
+                  data-tip="Copy issue ID ${data.id}"
+                  aria-label="Copy issue ID ${data.id}"
                 >
                   <${CopyIcon} className="w-3.5 h-3.5" />
                 </button>
@@ -1434,14 +1440,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
             `}
         </div>
         ${!creating && data && html`
-          <button type="button" onClick=${openPanelMenu} class="btn btn-ghost btn-square btn-sm shrink-0" title="More actions">
+          <button type="button" onClick=${openPanelMenu} class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom" data-tip="More actions" aria-label="More actions">
             <${EllipsisIcon} className="w-5 h-5" />
           </button>
         `}
         <button
           onClick=${() => setFullscreen(f => !f)}
-          class="btn btn-ghost btn-square btn-sm shrink-0"
-          title=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
+          data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
         >
           ${fullscreen
             ? html`<${CollapseIcon} className="w-5 h-5" />`
@@ -1524,8 +1531,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                 <button
                   type="button"
                   onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === data.parent) || { id: data.parent })}
-                  class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left"
-                  title=${"Open " + data.parent}
+                  class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-top"
+                  data-tip=${"Open " + data.parent}
                 >${data.parent}</button>
               `)}
             </div>
@@ -1541,8 +1548,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                       <button
                         type="button"
                         onClick=${() => onSelectIssue && onSelectIssue(c)}
-                        class="btn btn-ghost btn-xs w-full justify-start"
-                        title="Open ${c.id}"
+                        class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-top"
+                        data-tip="Open ${c.id}"
                       >
                         ${statusBadge(c.status)}
                         <span class="font-mono text-mitto-text-secondary text-xs">${c.id}</span>
@@ -1602,8 +1609,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                           type="button"
                           onClick=${startAddComment}
                           disabled=${savingComment}
-                          class="btn btn-ghost btn-xs mt-2"
-                          title="Add comment"
+                          class="btn btn-ghost btn-xs mt-2 inline-flex tooltip tooltip-top"
+                          data-tip="Add comment"
                         >
                           ${savingComment
                             ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
@@ -1625,12 +1632,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
 
       ${(creating || data) && html`
         <div class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0">
-          <button type="button" onClick=${handleClose} disabled=${creating ? submitting : savingView} class="btn btn-ghost btn-sm" title="Close">Close</button>
+          <button type="button" onClick=${handleClose} disabled=${creating ? submitting : savingView} class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top" data-tip="Close">Close</button>
           <button type="button"
             onClick=${creating ? handleSave : handleViewSave}
             disabled=${creating ? (!description.trim() || submitting) : (!viewDirty || savingView)}
-            class="btn btn-primary btn-sm"
-            title="Save changes">
+            class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
+            data-tip="Save changes">
             ${(creating ? submitting : savingView) ? html`<span class="loading loading-spinner w-4 h-4"></span>` : null}
             Save
           </button>
@@ -1902,8 +1909,9 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
       >
         <button
           onClick=${(e) => { e.preventDefault(); e.stopPropagation(); triggerAction(); }}
-          class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-green-900"} transition-colors"
-          title=${isSwipeToDelete ? "Delete" : "Close"}
+          class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-green-900"} transition-colors tooltip tooltip-left"
+          data-tip=${isSwipeToDelete ? "Delete" : "Close"}
+          aria-label=${isSwipeToDelete ? "Delete" : "Close"}
         >
           ${isSwipeToDelete
             ? html`<${TrashIcon} className="w-5 h-5 text-white" />`
@@ -2694,8 +2702,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       ${showChevron
         ? html`<button
             type="button"
-            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong"
-            title=${epicExpanded ? "Collapse epic" : "Expand epic"}
+            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-right"
+            data-tip=${epicExpanded ? "Collapse epic" : "Expand epic"}
             aria-label=${epicExpanded ? "Collapse epic" : "Expand epic"}
             aria-expanded=${epicExpanded ? "true" : "false"}
             data-testid="beads-epic-chevron"
@@ -2721,10 +2729,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="list-col-grow flex flex-col gap-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           ${isStreamingIssue
-            ? html`<span class="shrink-0 text-mitto-accent">
+            ? html`<span class="shrink-0 text-mitto-accent tooltip tooltip-right" data-tip="A linked conversation is responding..." aria-label="A linked conversation is responding...">
                 <span
                   class="loading loading-ring loading-xs"
-                  title="A linked conversation is responding..."
                 ></span>
               </span>`
             : null}
@@ -2742,8 +2749,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           ${priorityBadge(issue.priority)}
           ${childCount > 0 ? html`
             <span
-              class="inline-flex items-center gap-1 text-xs text-purple-300"
-              title="${childCount} child issue${childCount === 1 ? "" : "s"}"
+              class="inline-flex items-center gap-1 text-xs text-purple-300 tooltip tooltip-top"
+              data-tip="${childCount} child issue${childCount === 1 ? "" : "s"}"
             >
               <${LayersIcon} className="w-3.5 h-3.5" />
               ${childCount}
@@ -2757,8 +2764,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           ? html`<button
               type="button"
               onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openCreateInEpic(issue.id); }}
-              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-              title="New issue in epic"
+              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-top"
+              data-tip="New issue in epic"
               aria-label="New issue in epic"
               data-testid="beads-issue-add-child"
             >
@@ -2768,8 +2775,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <button
           type="button"
           onClick=${(e) => handleRowMenuButton(e, issue)}
-          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-          title="More actions"
+          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-left"
+          data-tip="More actions"
           aria-label="More actions"
           data-testid="beads-issue-menu"
         >
@@ -2797,8 +2804,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
-          class="btn btn-ghost btn-square btn-sm md:hidden shrink-0"
-          title="Show conversations"
+          class="btn btn-ghost btn-square btn-sm md:hidden shrink-0 inline-flex tooltip tooltip-bottom"
+          data-tip="Show conversations"
+          aria-label="Show conversations"
         >
           <${MenuIcon} className="w-6 h-6" />
         </button>
@@ -2813,8 +2821,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
               onClick=${() => toggleStatus(t.key)}
               aria-pressed=${statusToggles[t.key] ? "true" : "false"}
               aria-label=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              title=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              class="btn btn-xs btn-square join-item ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
+              data-tip=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
+              class="btn btn-xs btn-square join-item inline-flex tooltip tooltip-bottom ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
             >
               <${t.Icon} className="w-3.5 h-3.5" />
             </button>
@@ -2825,8 +2833,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             type="button"
             onClick=${() => setGrouping(g => !g)}
             aria-pressed=${grouping ? "true" : "false"}
-            title=${grouping ? "Switch to flat list" : "Group issues by epic"}
-            class="btn btn-xs join-item ${grouping ? "btn-active" : "btn-ghost"}"
+            data-tip=${grouping ? "Switch to flat list" : "Group issues by epic"}
+            aria-label=${grouping ? "Switch to flat list" : "Group issues by epic"}
+            class="btn btn-xs join-item inline-flex tooltip tooltip-bottom ${grouping ? "btn-active" : "btn-ghost"}"
           >
             <${LayersIcon} className="w-3.5 h-3.5" />
           </button>
@@ -2852,8 +2861,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             onClick=${() => setShowSortMenu(o => !o)}
             aria-haspopup="true"
             aria-expanded=${showSortMenu ? "true" : "false"}
-            class="btn btn-xs gap-1 ${showSortMenu ? "btn-active" : "btn-ghost"}"
-            title=${`Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`}
+            class="btn btn-xs gap-1 inline-flex tooltip tooltip-bottom ${showSortMenu ? "btn-active" : "btn-ghost"}"
+            data-tip=${`Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`}
+            aria-label=${`Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`}
             data-testid="beads-sort-button"
           >
             <${SortIcon} className="w-3.5 h-3.5" />
@@ -2978,8 +2988,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
         <button
           onClick=${openCreate}
-          class="btn btn-ghost btn-square btn-sm"
-          title="New issue"
+          class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
+          data-tip="New issue"
+          aria-label="New issue"
         >
           <${PlusIcon} className="w-4 h-4" />
         </button>
@@ -2987,8 +2998,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <button
             type="button"
             onClick=${toggleListPrompts}
-            class="btn btn-ghost btn-square btn-sm"
-            title="Run a prompt over the issue list in a new conversation"
+            class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
+            data-tip="Run a prompt over the issue list in a new conversation"
+            aria-label="Run a prompt over the issue list in a new conversation"
           >
             <${ChevronUpIcon} className="w-4 h-4" />
           </button>
@@ -3022,16 +3034,18 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         </div>
         <button
           onClick=${fetchList}
-          class="btn btn-ghost btn-square btn-sm"
-          title="Refresh"
+          class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
+          data-tip="Refresh"
+          aria-label="Refresh"
         >
           <${RefreshIcon} className="w-4 h-4" />
         </button>
         <button
           onClick=${() => { if (closedCount === 0 || cleaningUp) return; setShowCleanupConfirm(true); }}
           aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
-          class="btn btn-ghost btn-square btn-sm group ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
-          title=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
+          class="btn btn-ghost btn-square btn-sm group inline-flex tooltip tooltip-top ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
+          data-tip=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
+          aria-label=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
         >
           <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />
         </button>
@@ -3041,8 +3055,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <button
               onClick=${() => { if (syncAction) return; handleSync("pull"); }}
               aria-disabled=${syncAction ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-              title=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+              class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
+              data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+              aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "pull"
                 ? html`<span class="loading loading-spinner w-4 h-4"></span>`
@@ -3051,8 +3066,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <button
               onClick=${() => { if (syncAction) return; handleSync("push"); }}
               aria-disabled=${syncAction ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-              title=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+              class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
+              data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+              aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
             >
               ${syncAction === "push"
                 ? html`<span class="loading loading-spinner w-4 h-4"></span>`
@@ -3061,8 +3077,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             <button
               onClick=${() => { if (syncAction) return; handleSync("sync"); }}
               aria-disabled=${syncAction ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-              title=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+              class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
+              data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+              aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
             >
               ${syncAction === "sync"
                 ? html`<span class="loading loading-spinner w-4 h-4"></span>`
@@ -3076,8 +3093,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         ${onOpenConfig && html`
           <button
             onClick=${() => onOpenConfig()}
-            class="btn btn-ghost btn-square btn-sm ml-2"
-            title="Tasks configuration"
+            class="btn btn-ghost btn-square btn-sm ml-2 inline-flex tooltip tooltip-top"
+            data-tip="Tasks configuration"
+            aria-label="Tasks configuration"
           >
             <${SettingsIcon} className="w-4 h-4" />
           </button>
