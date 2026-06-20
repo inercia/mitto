@@ -448,6 +448,25 @@ function App() {
   // or create a new (optionally periodic) conversation seeded with a named prompt.
   const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
 
+  // Launch a named prompt in a new conversation for the "prompts" upstream type in BeadsView.
+  // action is "pull"|"push"|"sync"; conversationName is set to "Pull tasks" etc.
+  const handleBeadsLaunchPrompt = useCallback(async (action, promptName) => {
+    const names = { pull: "Pull tasks", push: "Push tasks", sync: "Sync tasks" };
+    const conversationName = names[action] || "Tasks";
+    const result = await startConversationWithPrompt({
+      workingDir: beadsWorkingDir,
+      // omit acpServer — use the folder default
+      name: conversationName,
+      prompt: { name: promptName },
+    });
+    if (!result?.sessionId) {
+      showToast({ style: "error", title: result?.error || `Failed to launch ${action} prompt`, duration: 4000 });
+      return;
+    }
+    setMainView("conversation");
+    showToast({ style: "success", title: `Started "${promptName}"`, duration: 3000 });
+  }, [startConversationWithPrompt, beadsWorkingDir, showToast, setMainView]);
+
   // Fetch and cache known beads issue IDs for the active session's workspace.
   // Dispatches "beads-ids-updated" to re-linkify already-rendered messages.
   useBeadsKnownIds(sessionInfo?.working_dir);
@@ -2112,6 +2131,7 @@ function App() {
               issueSessionMap=${beadsIssueSessionMap}
               issueStreamingSet=${beadsIssueStreamingSet}
               onOpenConversation=${handleSelectSession}
+              onLaunchPrompt=${handleBeadsLaunchPrompt}
               initialCreateNonce=${beadsCreateNonce}
               initialRefreshNonce=${beadsRefreshNonce}
               initialCleanupNonce=${beadsCleanupNonce}

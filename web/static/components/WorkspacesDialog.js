@@ -187,10 +187,17 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const [beadsConfigSaving, setBeadsConfigSaving] = useState(false);
   const [newBeadsKey, setNewBeadsKey] = useState("");
   const [newBeadsValue, setNewBeadsValue] = useState("");
-  // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"),
+  // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"|"prompts"),
   // persisted in folders.json via /api/beads/upstream.
   const [beadsUpstream, setBeadsUpstream] = useState("none");
   const [beadsUpstreamSaving, setBeadsUpstreamSaving] = useState(false);
+  // "prompts" upstream: names of the three configured prompt actions.
+  const [beadsPullPrompt, setBeadsPullPrompt] = useState("");
+  const [beadsPushPrompt, setBeadsPushPrompt] = useState("");
+  const [beadsSyncPrompt, setBeadsSyncPrompt] = useState("");
+  // Available argument-free, enabled folder prompts (populated when upstream === "prompts").
+  const [beadsUpstreamPrompts, setBeadsUpstreamPrompts] = useState([]);
+  const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] = useState(false);
 
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -410,6 +417,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     }
   }, [activeTab, selectedFolder]);
 
+  // Load argument-free folder prompts when the Beads tab is active and upstream is "prompts".
+  useEffect(() => {
+    if (activeTab !== "beads" || !selectedFolder || beadsUpstream !== "prompts") return;
+    const workingDir = getSelectedFolderDir();
+    if (workingDir) loadBeadsUpstreamPrompts(workingDir);
+  }, [activeTab, selectedFolder, beadsUpstream]);
+
   // Reset beads config state when switching folders.
   useEffect(() => {
     setBeadsConfig(null);
@@ -417,6 +431,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setNewBeadsKey("");
     setNewBeadsValue("");
     setBeadsUpstream("none");
+    setBeadsPullPrompt("");
+    setBeadsPushPrompt("");
+    setBeadsSyncPrompt("");
+    setBeadsUpstreamPrompts([]);
   }, [selectedFolder]);
 
   const loadData = async () => {
@@ -1119,8 +1137,30 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       const res = await secureFetch(apiUrl(`/api/beads/upstream?working_dir=${encodeURIComponent(workingDir)}`));
       const data = await res.json().catch(() => ({}));
       setBeadsUpstream((data && data.upstream) || "none");
+      setBeadsPullPrompt((data && data.pull_prompt) || "");
+      setBeadsPushPrompt((data && data.push_prompt) || "");
+      setBeadsSyncPrompt((data && data.sync_prompt) || "");
     } catch (_err) {
       setBeadsUpstream("none");
+    }
+  };
+
+  // Load available argument-free, enabled folder prompts for the "prompts" upstream pickers.
+  const loadBeadsUpstreamPrompts = async (workingDir) => {
+    if (!workingDir) return;
+    setBeadsUpstreamPromptsLoading(true);
+    try {
+      const res = await secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&include_global=true`));
+      const data = await res.json().catch(() => ({}));
+      const all = (data && data.prompts) || [];
+      // Only offer enabled prompts with no parameters (argument-free).
+      setBeadsUpstreamPrompts(all.filter(p =>
+        p.enabled !== false && (!p.parameters || p.parameters.length === 0)
+      ));
+    } catch (_err) {
+      setBeadsUpstreamPrompts([]);
+    } finally {
+      setBeadsUpstreamPromptsLoading(false);
     }
   };
 
@@ -1132,18 +1172,69 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setBeadsUpstream(upstream); // optimistic
     setBeadsUpstreamSaving(true);
     try {
+      const body = { working_dir: workingDir, upstream };
+      if (upstream === "prompts") {
+        body.pull_prompt = beadsPullPrompt;
+        body.push_prompt = beadsPushPrompt;
+        body.sync_prompt = beadsSyncPrompt;
+      }
       const res = await secureFetch(apiUrl("/api/beads/upstream"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, upstream }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed to set upstream");
       if (data && data.error) throw new Error(data.error);
       setBeadsUpstream((data && data.upstream) || upstream);
+      setBeadsPullPrompt((data && data.pull_prompt) || "");
+      setBeadsPushPrompt((data && data.push_prompt) || "");
+      setBeadsSyncPrompt((data && data.sync_prompt) || "");
     } catch (err) {
       setBeadsUpstream(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to set upstream");
+    } finally {
+      setBeadsUpstreamSaving(false);
+    }
+  };
+
+  // Persist a single pull/push/sync prompt selection for the "prompts" upstream.
+  const saveBeadsPromptName = async (field, value) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    const setterMap = {
+      pull_prompt: setBeadsPullPrompt,
+      push_prompt: setBeadsPushPrompt,
+      sync_prompt: setBeadsSyncPrompt,
+    };
+    const prevMap = {
+      pull_prompt: beadsPullPrompt,
+      push_prompt: beadsPushPrompt,
+      sync_prompt: beadsSyncPrompt,
+    };
+    const setter = setterMap[field];
+    const prev = prevMap[field];
+    if (!setter) return;
+    setter(value); // optimistic
+    setBeadsUpstreamSaving(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/beads/upstream"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          working_dir: workingDir,
+          upstream: "prompts",
+          pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
+          push_prompt: field === "push_prompt" ? value : beadsPushPrompt,
+          sync_prompt: field === "sync_prompt" ? value : beadsSyncPrompt,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to save prompt");
+      if (data && data.error) throw new Error(data.error);
+    } catch (err) {
+      setter(prev); // revert on failure
+      setBeadsConfigError(err.message || "Failed to save prompt");
     } finally {
       setBeadsUpstreamSaving(false);
     }
@@ -1715,6 +1806,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               <option value="github">GitHub</option>
                               <option value="gitlab">GitLab</option>
                               <option value="linear">Linear</option>
+                              <option value="prompts">Prompts</option>
                             </select>
                           </fieldset>
 
@@ -1738,6 +1830,42 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                 `)}
                               </div>
                             </div>
+                          `}
+
+                          ${beadsUpstream === "prompts" && html`
+                            <fieldset class="fieldset pt-2">
+                              <legend class="fieldset-legend">Prompt Actions</legend>
+                              <p class="label">
+                                Choose an argument-free prompt for each button. Only enabled prompts
+                                with no parameters are listed here.
+                              </p>
+                              ${beadsUpstreamPromptsLoading
+                                ? html`<div class="flex items-center gap-2 text-sm text-mitto-text-muted"><${SpinnerIcon} className="w-4 h-4 animate-spin" /> Loading prompts…</div>`
+                                : html`
+                                  <div class="space-y-2 pt-1">
+                                    ${[
+                                      { label: "Pull", field: "pull_prompt", value: beadsPullPrompt },
+                                      { label: "Push", field: "push_prompt", value: beadsPushPrompt },
+                                      { label: "Sync", field: "sync_prompt", value: beadsSyncPrompt },
+                                    ].map(({ label, field, value }) => html`
+                                      <div key=${field} class="flex items-center gap-2">
+                                        <span class="text-xs text-mitto-text-secondary" style="min-width: 2.5rem">${label}</span>
+                                        <select
+                                          value=${beadsUpstreamPrompts.some(p => p.name === value) ? value : ""}
+                                          onInput=${(e) => saveBeadsPromptName(field, e.target.value)}
+                                          disabled=${beadsUpstreamSaving}
+                                          class="select select-sm flex-1 disabled:opacity-50"
+                                        >
+                                          <option value="">— none —</option>
+                                          ${beadsUpstreamPrompts.map(p => html`
+                                            <option key=${p.name} value=${p.name}>${p.name}</option>
+                                          `)}
+                                        </select>
+                                      </div>
+                                    `)}
+                                  </div>
+                                `}
+                            </fieldset>
                           `}
 
                           <div class="pt-2 border-t border-mitto-border"></div>
