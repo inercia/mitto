@@ -211,7 +211,7 @@ function labelValue(label, value) {
  * Clicking anywhere outside the panel (the issue list / conversation) closes it,
  * detected via a document mousedown listener rather than a backdrop element.
  */
-export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, standalone, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
+export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, initialFullscreen, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -220,11 +220,12 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
   // that is the beads view area; on small screens — where the panel is otherwise
   // confined to a strip with a list peek beside it (mitto-cdf) — it fills the
   // viewport (the dock's 85vw cap is lifted via --dock-maxw:100% when fullscreen).
-  // The expand toggle is shown on every screen size (and in standalone) now that
-  // the small-screen panel is confined rather than always full-width.
-  // standalone=true: initialized to true (fills the whole view, no list behind),
-  // but the toggle still lets the user collapse it to the docked strip width.
-  const [fullscreen, setFullscreen] = useState(standalone ? true : false);
+  // The expand toggle is shown on every screen size now that the small-screen
+  // panel is confined rather than always full-width. The single-issue overlay
+  // (BeadsIssueView) passes initialFullscreen=false so it opens as the docked
+  // ~40rem side panel over the conversation; the toggle still lets the user
+  // expand it to fill the area.
+  const [fullscreen, setFullscreen] = useState(!!initialFullscreen);
   // Phone detection drives the panel width. We deliberately use the user agent
   // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
   // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
@@ -1093,7 +1094,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
   const DescriptionField = (mode) => {
     if (mode === "create") {
       return html`
-        <div class="mt-3">
+        <div>
           <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
           ${renderDescToolbar({
             text: description,
@@ -1149,7 +1150,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
           : html`
             <div
               ref=${descViewRef}
-              class="border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-top"
+              class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-top"
               onClick=${startEditDesc}
               data-tip="Click to edit"
             >
@@ -1233,7 +1234,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
       : html`
         <div
           ref=${notesViewRef}
-          class="border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-top"
+          class="card border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-top"
           onClick=${startEditNotes}
           data-tip="Click to edit"
         >
@@ -1329,12 +1330,16 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
                   >
                     ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
                   </select>
+                  ${statusBadge(d.status)}
                   <button
                     type="button"
                     onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                    class="list-col-grow font-mono text-xs text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline min-w-0 truncate text-left tooltip tooltip-top"
+                    class="list-col-grow inline-flex items-center gap-2 min-w-0 text-left hover:underline tooltip tooltip-top"
                     data-tip=${"Open " + d.id}
-                  >${d.id}</button>
+                  >
+                    <span class="font-mono text-xs text-mitto-accent-400 shrink-0">${d.id}</span>
+                    <span class="truncate text-xs text-mitto-text">${d.title}</span>
+                  </button>
                   <button
                     type="button"
                     onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
@@ -1416,8 +1421,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
           ${creating
-            ? html`<h2 class="font-semibold text-base text-mitto-text">New Issue</h2>
-                ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}`
+            ? html`<${Fragment}>
+                ${TitleField("create")}
+                ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
+              </${Fragment}>`
             : html`
               <div class="flex items-center gap-1">
                 <span class="font-mono text-xs text-mitto-text-secondary">${data.id}</span>
@@ -1459,58 +1466,48 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
         ${creating
           ? html`
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">Issue</legend>
-
-              ${createParentId ? html`
-                <div>
-                  <label class=${labelClass} for="new-issue-parent">Parent</label>
-                  <input
-                    id="new-issue-parent"
-                    type="text"
-                    class="${inputClass} font-mono"
-                    value=${createParentId}
-                    readonly
-                    aria-readonly="true"
-                    title="This issue will be created as a child of ${createParentId}"
-                    data-testid="beads-create-parent"
-                  />
-                </div>
-              ` : null}
-
-              <div>
-                <label class=${labelClass} for="new-issue-title">Title</label>
-                ${TitleField("create")}
+            <${Fragment}>
+              <div class="flex flex-wrap gap-2 items-center">
+                <span class="${labelClass} shrink-0">Type</span>
+                ${TypeField("create")}
+                <span class="${labelClass} shrink-0">Priority</span>
+                ${PriorityField("create")}
               </div>
 
-              <div class="flex gap-3 mt-3">
-                <div class="flex-1">
-                  <label class=${labelClass} for="new-issue-type">Type</label>
-                  ${TypeField("create")}
-                </div>
-                <div class="flex-1">
-                  <label class=${labelClass} for="new-issue-priority">Priority</label>
-                  ${PriorityField("create")}
+              <div class="grid grid-cols-2 gap-3">
+                ${createParentId ? html`
+                  <div>
+                    <label class=${labelClass} for="new-issue-parent">Parent</label>
+                    <input
+                      id="new-issue-parent"
+                      type="text"
+                      class="${inputClass} font-mono"
+                      value=${createParentId}
+                      readonly
+                      aria-readonly="true"
+                      title="This issue will be created as a child of ${createParentId}"
+                      data-testid="beads-create-parent"
+                    />
+                  </div>
+                ` : null}
+                <div>
+                  <label class=${labelClass} for="new-issue-assignee">Assignee</label>
+                  ${AssigneeField("create")}
                 </div>
               </div>
 
               ${DescriptionField("create")}
 
-              <div class="mt-3">
-                <label class=${labelClass}>Dependencies</label>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Dependencies</legend>
                 ${DependenciesField("create")}
-              </div>
+              </fieldset>
 
-              <div class="mt-3">
-                <label class=${labelClass} for="new-issue-assignee">Assignee</label>
-                ${AssigneeField("create")}
-              </div>
-
-              <div class="mt-3">
-                <label class=${labelClass} for="new-issue-notes">Notes</label>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Notes</legend>
                 ${NotesField("create")}
-              </div>
-            </fieldset>
+              </fieldset>
+            </${Fragment}>
           `
           : html`
             <div class="flex flex-wrap gap-2 items-center">
@@ -1669,17 +1666,19 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, sta
 // ---- Standalone single-issue viewer -----------------------------------------
 
 /**
- * BeadsIssueView renders a single beads issue in a list-free standalone view.
- * Opened when the user follows a conversation's "Linked beads issue" link.
- * The issue is fetched from /api/beads/show; clicking a dependency navigates
- * within the viewer via another show fetch. Close (X) returns to the originating
- * conversation via onReturnToConversation.
+ * BeadsIssueView renders a single beads issue as a docked side panel overlaid
+ * on the conversation (it returns a Fragment whose BeadsDetailPanel is a
+ * dock-mode drawer, so it does not reflow the conversation behind it). Opened
+ * when the user follows a conversation's "Linked beads issue" link. The issue
+ * is fetched from /api/beads/show; clicking a dependency navigates within the
+ * viewer via another show fetch. Close (X) / outside-click returns to the
+ * conversation via onReturnToConversation. The expand toggle in the panel
+ * header lets the user widen it to fill the area.
  */
 export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onReturnToConversation }) {
   // currentIssueId tracks in-viewer navigation (e.g. clicking a dep id).
   const [currentIssueId, setCurrentIssueId] = useState(issueId);
   const [issue, setIssue] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deletingIssue, setDeletingIssue] = useState(false);
@@ -1695,7 +1694,6 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
   useEffect(() => {
     if (!workingDir || !currentIssueId) return;
     let cancelled = false;
-    setLoading(true);
     (async () => {
       try {
         const res = await authFetch(
@@ -1711,8 +1709,6 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
         }
       } catch (_err) {
         if (!cancelled) showToast && showToast({ style: "error", title: "Failed to load issue" });
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -1799,22 +1795,14 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     }
   }, [deleteTarget, workingDir, showToast, onReturnToConversation]);
 
-  if (loading && !issue) {
-    return html`
-      <div class="relative h-full flex items-center justify-center">
-        <span class="loading loading-spinner w-6 h-6 text-mitto-text-secondary"></span>
-      </div>
-    `;
-  }
-
   return html`
-    <div class="relative h-full">
+    <${Fragment}>
       <${BeadsDetailPanel}
         issue=${issue}
         allIssues=${[]}
         isCreating=${false}
         workingDir=${workingDir}
-        standalone=${true}
+        initialFullscreen=${false}
         onClose=${onReturnToConversation}
         onUpdated=${refresh}
         showToast=${showToast}
@@ -1837,7 +1825,7 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
         onConfirm=${confirmDeleteIssue}
         onCancel=${() => setDeleteTarget(null)}
       />
-    </div>
+    </${Fragment}>
   `;
 }
 

@@ -62,6 +62,11 @@ export function useBeadsIntegration({
   // its Refresh / Cleanup actions drive the beads view's existing handlers.
   const [beadsRefreshNonce, setBeadsRefreshNonce] = useState(0);
   const [beadsCleanupNonce, setBeadsCleanupNonce] = useState(0);
+  // Whether the single-issue viewer (BeadsIssueView) is open as a docked overlay
+  // over the conversation. Unlike the beads list view it does NOT replace the
+  // main view — the conversation stays mounted and visible behind it — so this
+  // is tracked independently of mainView.
+  const [beadsIssueOpen, setBeadsIssueOpen] = useState(false);
   // Session id of the conversation a single issue was opened from (via the
   // properties panel's "Linked beads issue" link). When the beads view's detail
   // panel for that issue is closed, we return to this conversation and re-open
@@ -439,7 +444,10 @@ export function useBeadsIntegration({
     setBeadsWorkingDir(workingDir);
     setBeadsInitialIssueId(issueId);
     setBeadsSelectNonce((n) => n + 1);
-    setMainView("beadsIssue");
+    // Open as a docked overlay over the conversation rather than switching the
+    // main view, so the conversation stays visible behind it. The properties
+    // panel (if open) is closed so the overlay docks cleanly to the right edge.
+    setBeadsIssueOpen(true);
     setShowSidebar(false);
     setShowSidePanel(false);
   }, []);
@@ -456,14 +464,16 @@ export function useBeadsIntegration({
     const reopenProperties = beadsReturnOpenPropertiesRef.current;
     beadsReturnSessionRef.current = null;
     beadsReturnOpenPropertiesRef.current = false;
+    // Close the docked overlay. The conversation was never replaced, so there is
+    // no main-view navigation to undo — it is already visible behind the overlay.
+    setBeadsIssueOpen(false);
     if (!origin) return;
     switchSession(origin);
-    setMainView("conversation");
     if (reopenProperties) {
       setSidePanelTab("properties");
       setShowSidePanel(true);
     }
-  }, [switchSession, setMainView, setSidePanelTab, setShowSidePanel]);
+  }, [switchSession, setSidePanelTab, setShowSidePanel]);
 
   return {
     beadsWorkingDir,
@@ -472,6 +482,7 @@ export function useBeadsIntegration({
     beadsCreateNonce,
     beadsRefreshNonce,
     beadsCleanupNonce,
+    beadsIssueOpen,
     beadsIssueSessionMap,
     beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,

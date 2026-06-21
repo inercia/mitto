@@ -417,6 +417,7 @@ function App() {
     beadsCreateNonce,
     beadsRefreshNonce,
     beadsCleanupNonce,
+    beadsIssueOpen,
     beadsIssueSessionMap,
     beadsIssueStreamingSet,
     fetchBeadsPromptsForWorkspace,
@@ -443,6 +444,14 @@ function App() {
     onOpenPromptParamDialog: (prompt, parameters, onSubmit) => setPromptParamDialog({ prompt, parameters, onSubmit }),
     activeSessionId,
   });
+
+  // Ref mirror of beadsIssueOpen: the native swipe-gesture handlers are
+  // registered in an effect that does not depend on it, so they read the current
+  // value through a ref to avoid a stale closure (matches mainViewRef).
+  const beadsIssueOpenRef = useRef(beadsIssueOpen);
+  useEffect(() => {
+    beadsIssueOpenRef.current = beadsIssueOpen;
+  }, [beadsIssueOpen]);
 
   // Conversation seeding: send a named prompt to an existing conversation via queue,
   // or create a new (optionally periodic) conversation seeded with a named prompt.
@@ -1112,8 +1121,9 @@ function App() {
       if (isOverHorizontallyScrollable()) return;
       // Don't navigate if a modal dialog is open.
       if (isModalDialogOpen()) return;
-      // Don't navigate when the beads view is open — swipes should not switch conversations.
-      if (mainViewRef.current === "beads" || mainViewRef.current === "beadsIssue") return;
+      // Don't navigate when the beads list view or the docked single-issue
+      // overlay is open — swipes should not switch conversations underneath them.
+      if (mainViewRef.current === "beads" || beadsIssueOpenRef.current) return;
       navigateToNextSession();
     };
 
@@ -1123,8 +1133,9 @@ function App() {
       if (isOverHorizontallyScrollable()) return;
       // Don't navigate if a modal dialog is open.
       if (isModalDialogOpen()) return;
-      // Don't navigate when the beads view is open — swipes should not switch conversations.
-      if (mainViewRef.current === "beads" || mainViewRef.current === "beadsIssue") return;
+      // Don't navigate when the beads list view or the docked single-issue
+      // overlay is open — swipes should not switch conversations underneath them.
+      if (mainViewRef.current === "beads" || beadsIssueOpenRef.current) return;
       navigateToPreviousSession();
     };
 
@@ -2101,20 +2112,6 @@ function App() {
         ? html`
           <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
         `
-        : mainView === "beadsIssue" && beadsWorkingDir && beadsInitialIssueId
-        ? html`
-          <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
-            <${BeadsIssueView}
-              workingDir=${beadsWorkingDir}
-              issueId=${beadsInitialIssueId}
-              selectNonce=${beadsSelectNonce}
-              showToast=${showToast}
-              onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
-              onRunBeadsPrompt=${handleRunBeadsPrompt}
-              onReturnToConversation=${handleReturnFromBeadsIssue}
-            />
-          </div>
-        `
         : mainView === "beads" && beadsWorkingDir
         ? html`
           <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
@@ -2385,6 +2382,25 @@ function App() {
         mcpTools=${mcpTools}
         showToast=${showToast}
       />
+
+      <!-- Single-issue viewer: docks to the right edge of drawer-content as a
+           confined overlay (Drawer dock mode, like SessionPanel) over the
+           conversation, which stays mounted and visible behind it. Opened from a
+           conversation's "Linked beads issue" link or an inline beads link.
+           Gated on beadsIssueOpen so it unmounts after its close animation. -->
+      ${beadsIssueOpen && beadsWorkingDir && beadsInitialIssueId
+        ? html`
+          <${BeadsIssueView}
+            workingDir=${beadsWorkingDir}
+            issueId=${beadsInitialIssueId}
+            selectNonce=${beadsSelectNonce}
+            showToast=${showToast}
+            onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+            onRunBeadsPrompt=${handleRunBeadsPrompt}
+            onReturnToConversation=${handleReturnFromBeadsIssue}
+          />
+        `
+        : ""}
 
       <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the
            current content without switching to the beads list view. Its own

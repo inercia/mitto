@@ -86,31 +86,32 @@ export function PromptsMenu({
       : baseStyle;
     const PromptIcon = getPromptIcon(prompt.icon);
     return html`
-      <button
-        key=${keyPrefix + "-item-" + prompt.name}
-        type="button"
-        onClick=${(e) => onSelect && onSelect(prompt, e)}
-        title=${prompt.description || prompt.name}
-        class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2"
-        style=${style}
-        aria-selected=${isChosen ? "true" : "false"}
-        ref=${isKbSelected ? selectedItemRef : null}
-      >
-        ${shiftHeld
-          ? html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>`
-          : PromptIcon
-            ? html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`
-            : html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>`}
-        <span class="truncate flex-1">${prompt.name}</span>
-        ${showSourceBadge &&
-        html`<span
-          class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(prompt.source).bgColor} text-white/90 shrink-0"
-          title=${getBadgeInfo(prompt.source).title}
-          >${getBadgeInfo(prompt.source).label}</span
-        >`}
-        ${isChosen &&
-        html`<svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>`}
-      </button>
+      <li key=${keyPrefix + "-item-" + prompt.name}>
+        <button
+          type="button"
+          onClick=${(e) => onSelect && onSelect(prompt, e)}
+          title=${prompt.description || prompt.name}
+          class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2 rounded-none"
+          style=${style}
+          aria-selected=${isChosen ? "true" : "false"}
+          ref=${isKbSelected ? selectedItemRef : null}
+        >
+          ${shiftHeld
+            ? html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>`
+            : PromptIcon
+              ? html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`
+              : html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>`}
+          <span class="truncate flex-1">${prompt.name}</span>
+          ${showSourceBadge &&
+          html`<span
+            class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(prompt.source).bgColor} text-white/90 shrink-0"
+            title=${getBadgeInfo(prompt.source).title}
+            >${getBadgeInfo(prompt.source).label}</span
+          >`}
+          ${isChosen &&
+          html`<svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>`}
+        </button>
+      </li>
     `;
   };
 
@@ -137,16 +138,18 @@ export function PromptsMenu({
         style="scrollbar-gutter: stable;"
         data-testid=${listTestId}
       >
-        ${groups.map(
-          (g) => html`
-            <div key=${keyPrefix + "-group-" + g.name}>
-              <div class="px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
-                ${g.name}
-              </div>
-              ${g.prompts.map(renderItem)}
-            </div>
-          `,
-        )}
+        <ul class="menu menu-sm w-full p-0">
+          ${groups.map(
+            (g) => html`
+              <${Fragment} key=${keyPrefix + "-group-" + g.name}>
+                <li class="menu-title px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
+                  ${g.name}
+                </li>
+                ${g.prompts.map(renderItem)}
+              </${Fragment}>
+            `,
+          )}
+        </ul>
         ${flat.length === 0 &&
         html`<div class="px-4 py-3 text-xs text-mitto-text-muted text-center">${emptyText}</div>`}
       </div>
