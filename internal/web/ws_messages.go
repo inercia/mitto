@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -499,7 +500,7 @@ type ToolCallUpdateData struct {
 
 // PlanData holds data for a plan event.
 type PlanData struct {
-	Entries []PlanEntry `json:"entries"`
+	Entries []conversation.PlanEntry `json:"entries"`
 }
 
 // FileOperationData holds data for file read/write events.
@@ -601,7 +602,7 @@ func (b *EventBuffer) AppendToolCallUpdate(seq int64, id string, status *string)
 
 // AppendPlan appends a plan event to the buffer.
 // Always creates a new event with the provided seq.
-func (b *EventBuffer) AppendPlan(seq int64, entries []PlanEntry) {
+func (b *EventBuffer) AppendPlan(seq int64, entries []conversation.PlanEntry) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventPlan,
 		Seq:  seq,
@@ -681,10 +682,10 @@ func (b *EventBuffer) GetAgentThought() string {
 	return result.String()
 }
 
-// ReplayTo sends this buffered event to a SessionObserver.
+// ReplayTo sends this buffered event to a conversation.SessionObserver.
 // This is used to catch up newly connected observers on in-progress streaming.
 // The event's Seq is passed to the observer for ordering and deduplication.
-func (e BufferedEvent) ReplayTo(observer SessionObserver) {
+func (e BufferedEvent) ReplayTo(observer conversation.SessionObserver) {
 	switch e.Type {
 	case BufferedEventAgentThought:
 		if data, ok := e.Data.(*AgentThoughtData); ok && data.Text != "" {

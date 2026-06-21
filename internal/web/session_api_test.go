@@ -10,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -1509,10 +1509,7 @@ func TestHandleRunningSessions_WithSessions(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 	// Add a mock running session
 	sm.mu.Lock()
-	sm.sessions["20260131-120030-abcd1234"] = &BackgroundSession{
-		persistedID: "20260131-120030-abcd1234",
-		workingDir:  "/tmp",
-	}
+	sm.sessions["20260131-120030-abcd1234"] = conversation.NewMinimalBackgroundSession("20260131-120030-abcd1234", "/tmp", "")
 	sm.mu.Unlock()
 
 	server := &Server{
@@ -1661,13 +1658,7 @@ func TestHandleUpdateSession_ArchiveStopsACP(t *testing.T) {
 	// Create session manager with a mock running session
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	mockSession := &BackgroundSession{
-		persistedID: "test-session-archive",
-		isPrompting: false,
-		ctx:         ctx,
-		cancel:      cancel,
-	}
-	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+	mockSession := conversation.NewTestBackgroundSessionWithCtx("test-session-archive", ctx, cancel)
 	sm.mu.Lock()
 	sm.sessions["test-session-archive"] = mockSession
 	sm.mu.Unlock()
@@ -1733,13 +1724,7 @@ func TestHandleUpdateSession_ArchiveWaitsForPrompt(t *testing.T) {
 	// Create session manager with a mock running session that is prompting
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	mockSession := &BackgroundSession{
-		persistedID: "test-session-archive-wait",
-		isPrompting: true,
-		ctx:         ctx,
-		cancel:      cancel,
-	}
-	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+	mockSession := conversation.NewTestBackgroundSessionPromptingWithCtx("test-session-archive-wait", true, ctx, cancel)
 	sm.mu.Lock()
 	sm.sessions["test-session-archive-wait"] = mockSession
 	sm.mu.Unlock()
@@ -1753,10 +1738,7 @@ func TestHandleUpdateSession_ArchiveWaitsForPrompt(t *testing.T) {
 	// Simulate prompt completion after 100ms
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		mockSession.promptMu.Lock()
-		mockSession.isPrompting = false
-		mockSession.promptCond.Broadcast()
-		mockSession.promptMu.Unlock()
+		mockSession.SimulatePromptComplete()
 	}()
 
 	// Archive the session
@@ -3169,15 +3151,15 @@ func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// BackgroundSession with a promptResolver that returns a recognisable body.
-	bs := &BackgroundSession{
-		store:       store,
-		persistedID: sid,
-		workingDir:  tmpDir,
-		promptResolver: func(name, dir string) (string, error) {
+	// conversation.BackgroundSession with a promptResolver that returns a recognisable body.
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:  sid,
+		WorkingDir: tmpDir,
+		Store:      store,
+		PromptResolver: func(name, dir string) (string, error) {
 			return "The actual resolved body for " + name, nil
 		},
-	}
+	})
 
 	sm := NewSessionManager("", "", false, nil)
 	sm.mu.Lock()

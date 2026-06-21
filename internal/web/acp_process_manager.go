@@ -14,6 +14,7 @@ import (
 
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/runner"
 )
 
@@ -407,7 +408,7 @@ func (m *ACPProcessManager) CreateSession(
 	r *runner.Runner,
 	cwd string,
 	mcpServers []acp.McpServer,
-) (*SessionHandle, error) {
+) (*conversation.SessionHandle, error) {
 	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		return nil, err
@@ -427,7 +428,7 @@ func (m *ACPProcessManager) LoadSession(
 	acpSessionID string,
 	cwd string,
 	mcpServers []acp.McpServer,
-) (*SessionHandle, error) {
+) (*conversation.SessionHandle, error) {
 	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
 		return nil, err
@@ -545,7 +546,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		// Always release the lock before returning or retrying.
 		auxState.mu.Unlock()
 
-		if !isACPConnectionError(err) {
+		if !conversation.IsACPConnectionError(err) {
 			return "", fmt.Errorf("auxiliary prompt failed: %w", err)
 		}
 
@@ -782,7 +783,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// On no match or nil selection, leave the ACP server's default model unchanged.
 	if m.WorkspaceConfigProvider != nil {
 		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil && ws.AuxiliaryModelSelection != nil && ws.AuxiliaryModelSelection.Pattern != "" {
-			matched, shouldSet := resolveAuxModelSwitch(ws.AuxiliaryModelSelection, sessionHandle.Models)
+			matched, shouldSet := conversation.ResolveAuxModelSwitch(ws.AuxiliaryModelSelection, sessionHandle.Models)
 			switch {
 			case shouldSet:
 				// Best-effort async model switch (mitto-f7q, Option 4): return the aux
@@ -851,7 +852,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	client := newAuxiliaryClient()
 
 	// Register the session with the multiplexer
-	callbacks := &SessionCallbacks{
+	callbacks := &conversation.SessionCallbacks{
 		OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
 			return client.OnSessionUpdate(ctx, params)
 		},
@@ -1031,7 +1032,7 @@ func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Durat
 // (at minimum title-gen) and launches async pre-warming if not.
 // This is cheap to call repeatedly — it only checks the auxSessions map under a lock.
 //
-// This should be called when creating a new BackgroundSession on an existing shared
+// This should be called when creating a new conversation.BackgroundSession on an existing shared
 // process. When a shared process is first created, prewarmAuxiliarySessions runs
 // automatically. But auxiliary sessions can be lost (server restart, process recreation,
 // idle reaping) and won't be re-created until something needs them. Without this,

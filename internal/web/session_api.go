@@ -17,6 +17,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
@@ -212,7 +213,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 // seedQueueWithNamedPrompt enqueues a named prompt on a freshly created session,
 // reusing the same queue plumbing as the queue API (Add + notifyQueueUpdate +
 // TryProcessQueuedMessage). Title generation is skipped for named-prompt items.
-func (s *Server) seedQueueWithNamedPrompt(bs *BackgroundSession, sessionID, promptName string, arguments map[string]string) {
+func (s *Server) seedQueueWithNamedPrompt(bs *conversation.BackgroundSession, sessionID, promptName string, arguments map[string]string) {
 	queue := s.store.Queue(sessionID)
 	maxSize := config.DefaultQueueMaxSize
 	if qc := bs.GetQueueConfig(); qc != nil {

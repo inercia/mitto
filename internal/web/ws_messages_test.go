@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -255,7 +256,7 @@ func TestEventBuffer_AllEventTypes(t *testing.T) {
 	buf.AppendToolCall(3, "tool-1", "Read", "running")
 	status := "done"
 	buf.AppendToolCallUpdate(4, "tool-1", &status)
-	buf.AppendPlan(5, []PlanEntry{{Content: "Test task", Status: "pending"}})
+	buf.AppendPlan(5, []conversation.PlanEntry{{Content: "Test task", Status: "pending"}})
 	buf.AppendFileRead(6, "/path/to/file", 100)
 	buf.AppendFileWrite(7, "/path/to/output", 200)
 
@@ -305,7 +306,7 @@ func TestEventBuffer_Append(t *testing.T) {
 	}
 }
 
-// replayTestObserver implements SessionObserver for testing ReplayTo.
+// replayTestObserver implements conversation.SessionObserver for testing ReplayTo.
 // It tracks all event types with full details.
 type replayTestObserver struct {
 	agentMessages []string
@@ -341,7 +342,7 @@ func (m *replayTestObserver) OnToolUpdate(_ int64, id string, status *string) {
 		status *string
 	}{id, status})
 }
-func (m *replayTestObserver) OnPlan(_ int64, _ []PlanEntry) { m.planCalls++ }
+func (m *replayTestObserver) OnPlan(_ int64, _ []conversation.PlanEntry) { m.planCalls++ }
 func (m *replayTestObserver) OnFileRead(_ int64, path string, size int) {
 	m.fileReads = append(m.fileReads, struct {
 		path string
@@ -358,8 +359,8 @@ func (m *replayTestObserver) OnPermission(_ context.Context, _ acp.RequestPermis
 	return acp.RequestPermissionResponse{}, nil
 }
 func (m *replayTestObserver) OnPromptComplete(_ int)                                               {}
-func (m *replayTestObserver) OnActionButtons(_ []ActionButton)                                     {}
-func (m *replayTestObserver) OnAvailableCommandsUpdated(_ []AvailableCommand)                      {}
+func (m *replayTestObserver) OnActionButtons(_ []conversation.ActionButton)                        {}
+func (m *replayTestObserver) OnAvailableCommandsUpdated(_ []conversation.AvailableCommand)         {}
 func (m *replayTestObserver) OnUserPrompt(_ int64, _, _, _ string, _, _ []string, _ string, _ int) {}
 func (m *replayTestObserver) OnError(_ string)                                                     {}
 func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)                                    {}
@@ -368,9 +369,9 @@ func (m *replayTestObserver) OnQueueMessageSending(_ string)                    
 func (m *replayTestObserver) OnQueueMessageSent(_ string)                                          {}
 func (m *replayTestObserver) OnACPStopped(_ string)                                                {}
 func (m *replayTestObserver) OnACPStarted()                                                        {}
-func (m *replayTestObserver) OnUIPrompt(_ UIPromptRequest)                                         {}
+func (m *replayTestObserver) OnUIPrompt(_ conversation.UIPromptRequest)                            {}
 func (m *replayTestObserver) OnUIPromptDismiss(_ string, _ string)                                 {}
-func (m *replayTestObserver) OnNotification(_ UINotifyRequest)                                     {}
+func (m *replayTestObserver) OnNotification(_ conversation.UINotifyRequest)                        {}
 func (m *replayTestObserver) OnContextUsageUpdate(_ int, _ int)                                    {}
 
 func TestBufferedEvent_ReplayTo(t *testing.T) {
@@ -811,27 +812,27 @@ func (o *testReplayObserver) OnToolCall(seq int64, id, title, status string) {
 	o.toolCalls = append(o.toolCalls, id)
 }
 
-func (o *testReplayObserver) OnToolUpdate(seq int64, id string, status *string) {}
-func (o *testReplayObserver) OnPlan(seq int64, entries []PlanEntry)             {}
-func (o *testReplayObserver) OnFileWrite(seq int64, path string, size int)      {}
-func (o *testReplayObserver) OnFileRead(seq int64, path string, size int)       {}
-func (o *testReplayObserver) OnPromptComplete(eventCount int)                   {}
+func (o *testReplayObserver) OnToolUpdate(seq int64, id string, status *string)  {}
+func (o *testReplayObserver) OnPlan(seq int64, entries []conversation.PlanEntry) {}
+func (o *testReplayObserver) OnFileWrite(seq int64, path string, size int)       {}
+func (o *testReplayObserver) OnFileRead(seq int64, path string, size int)        {}
+func (o *testReplayObserver) OnPromptComplete(eventCount int)                    {}
 func (o *testReplayObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
 }
 func (o *testReplayObserver) OnError(message string) {}
 func (o *testReplayObserver) OnQueueUpdated(queueLength int, action string, messageID string) {
 }
-func (o *testReplayObserver) OnQueueMessageSending(messageID string)                 {}
-func (o *testReplayObserver) OnQueueMessageSent(messageID string)                    {}
-func (o *testReplayObserver) OnQueueReordered(messages []session.QueuedMessage)      {}
-func (o *testReplayObserver) OnActionButtons(buttons []ActionButton)                 {}
-func (o *testReplayObserver) OnAvailableCommandsUpdated(commands []AvailableCommand) {}
-func (o *testReplayObserver) OnACPStopped(reason string)                             {}
-func (o *testReplayObserver) OnACPStarted()                                          {}
-func (o *testReplayObserver) OnUIPrompt(req UIPromptRequest)                         {}
-func (o *testReplayObserver) OnUIPromptDismiss(requestID string, reason string)      {}
-func (o *testReplayObserver) OnNotification(req UINotifyRequest)                     {}
-func (o *testReplayObserver) OnContextUsageUpdate(size, used int)                    {}
+func (o *testReplayObserver) OnQueueMessageSending(messageID string)                              {}
+func (o *testReplayObserver) OnQueueMessageSent(messageID string)                                 {}
+func (o *testReplayObserver) OnQueueReordered(messages []session.QueuedMessage)                   {}
+func (o *testReplayObserver) OnActionButtons(buttons []conversation.ActionButton)                 {}
+func (o *testReplayObserver) OnAvailableCommandsUpdated(commands []conversation.AvailableCommand) {}
+func (o *testReplayObserver) OnACPStopped(reason string)                                          {}
+func (o *testReplayObserver) OnACPStarted()                                                       {}
+func (o *testReplayObserver) OnUIPrompt(req conversation.UIPromptRequest)                         {}
+func (o *testReplayObserver) OnUIPromptDismiss(requestID string, reason string)                   {}
+func (o *testReplayObserver) OnNotification(req conversation.UINotifyRequest)                     {}
+func (o *testReplayObserver) OnContextUsageUpdate(size, used int)                                 {}
 func (o *testReplayObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
 }

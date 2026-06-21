@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 // testWSDialer is a WebSocket dialer for tests
@@ -829,15 +830,15 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 			"session_id": "test-session",
 			"client_id":  "test-client",
 			"acp_server": "test-server",
-			"config_options": []SessionConfigOption{
+			"config_options": []conversation.SessionConfigOption{
 				{
-					ID:           ConfigOptionCategoryMode,
+					ID:           conversation.ConfigOptionCategoryMode,
 					Name:         "Mode",
 					Description:  "Session operating mode",
-					Category:     ConfigOptionCategoryMode,
-					Type:         ConfigOptionTypeSelect,
+					Category:     conversation.ConfigOptionCategoryMode,
+					Type:         conversation.ConfigOptionTypeSelect,
 					CurrentValue: "code",
-					Options: []SessionConfigOptionValue{
+					Options: []conversation.SessionConfigOptionValue{
 						{Value: "ask", Name: "Ask", Description: "Ask questions"},
 						{Value: "code", Name: "Code", Description: "Make code changes"},
 					},
@@ -863,9 +864,9 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 
 	// Parse the data
 	var connectedData struct {
-		SessionID     string                `json:"session_id"`
-		ClientID      string                `json:"client_id"`
-		ConfigOptions []SessionConfigOption `json:"config_options"`
+		SessionID     string                             `json:"session_id"`
+		ClientID      string                             `json:"client_id"`
+		ConfigOptions []conversation.SessionConfigOption `json:"config_options"`
 	}
 	if err := json.Unmarshal(connectedMsg.Data, &connectedData); err != nil {
 		t.Fatalf("Failed to unmarshal connected data: %v", err)
@@ -877,14 +878,14 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 	}
 
 	modeOpt := connectedData.ConfigOptions[0]
-	if modeOpt.ID != ConfigOptionCategoryMode {
-		t.Errorf("Config option ID = %q, want %q", modeOpt.ID, ConfigOptionCategoryMode)
+	if modeOpt.ID != conversation.ConfigOptionCategoryMode {
+		t.Errorf("Config option ID = %q, want %q", modeOpt.ID, conversation.ConfigOptionCategoryMode)
 	}
-	if modeOpt.Category != ConfigOptionCategoryMode {
-		t.Errorf("Config option Category = %q, want %q", modeOpt.Category, ConfigOptionCategoryMode)
+	if modeOpt.Category != conversation.ConfigOptionCategoryMode {
+		t.Errorf("Config option Category = %q, want %q", modeOpt.Category, conversation.ConfigOptionCategoryMode)
 	}
-	if modeOpt.Type != ConfigOptionTypeSelect {
-		t.Errorf("Config option Type = %q, want %q", modeOpt.Type, ConfigOptionTypeSelect)
+	if modeOpt.Type != conversation.ConfigOptionTypeSelect {
+		t.Errorf("Config option Type = %q, want %q", modeOpt.Type, conversation.ConfigOptionTypeSelect)
 	}
 	if modeOpt.CurrentValue != "code" {
 		t.Errorf("Config option CurrentValue = %q, want %q", modeOpt.CurrentValue, "code")
@@ -954,7 +955,7 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 	// Broadcast a config option changed event
 	eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
 		"session_id": "test-session",
-		"config_id":  ConfigOptionCategoryMode,
+		"config_id":  conversation.ConfigOptionCategoryMode,
 		"value":      "architect",
 	})
 
@@ -977,8 +978,8 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 	if changedData.SessionID != "test-session" {
 		t.Errorf("session_id = %q, want %q", changedData.SessionID, "test-session")
 	}
-	if changedData.ConfigID != ConfigOptionCategoryMode {
-		t.Errorf("config_id = %q, want %q", changedData.ConfigID, ConfigOptionCategoryMode)
+	if changedData.ConfigID != conversation.ConfigOptionCategoryMode {
+		t.Errorf("config_id = %q, want %q", changedData.ConfigID, conversation.ConfigOptionCategoryMode)
 	}
 	if changedData.Value != "architect" {
 		t.Errorf("value = %q, want %q", changedData.Value, "architect")
@@ -992,7 +993,7 @@ func TestSessionWS_SetConfigOption_MessageFormat(t *testing.T) {
 		Type: WSMsgTypeSetConfigOption,
 	}
 	data := map[string]string{
-		"config_id": ConfigOptionCategoryMode,
+		"config_id": conversation.ConfigOptionCategoryMode,
 		"value":     "code",
 	}
 	msg.Data, _ = json.Marshal(data)
@@ -1020,25 +1021,25 @@ func TestSessionWS_SetConfigOption_MessageFormat(t *testing.T) {
 		t.Fatalf("Failed to unmarshal data: %v", err)
 	}
 
-	if parsedData.ConfigID != ConfigOptionCategoryMode {
-		t.Errorf("config_id = %q, want %q", parsedData.ConfigID, ConfigOptionCategoryMode)
+	if parsedData.ConfigID != conversation.ConfigOptionCategoryMode {
+		t.Errorf("config_id = %q, want %q", parsedData.ConfigID, conversation.ConfigOptionCategoryMode)
 	}
 	if parsedData.Value != "code" {
 		t.Errorf("value = %q, want %q", parsedData.Value, "code")
 	}
 }
 
-// TestSessionConfigOption_JSONSerialization tests that SessionConfigOption
+// TestSessionConfigOption_JSONSerialization tests that conversation.SessionConfigOption
 // serializes correctly to JSON for WebSocket transmission.
 func TestSessionConfigOption_JSONSerialization(t *testing.T) {
-	opt := SessionConfigOption{
-		ID:           ConfigOptionCategoryMode,
+	opt := conversation.SessionConfigOption{
+		ID:           conversation.ConfigOptionCategoryMode,
 		Name:         "Mode",
 		Description:  "Session operating mode",
-		Category:     ConfigOptionCategoryMode,
-		Type:         ConfigOptionTypeSelect,
+		Category:     conversation.ConfigOptionCategoryMode,
+		Type:         conversation.ConfigOptionTypeSelect,
 		CurrentValue: "code",
-		Options: []SessionConfigOptionValue{
+		Options: []conversation.SessionConfigOptionValue{
 			{Value: "ask", Name: "Ask", Description: "Ask questions without making changes"},
 			{Value: "code", Name: "Code", Description: "Make code changes"},
 			{Value: "architect", Name: "Architect"}, // No description
@@ -1052,7 +1053,7 @@ func TestSessionConfigOption_JSONSerialization(t *testing.T) {
 	}
 
 	// Parse back
-	var parsed SessionConfigOption
+	var parsed conversation.SessionConfigOption
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}
@@ -1098,12 +1099,12 @@ func TestSessionConfigOption_JSONSerialization(t *testing.T) {
 // TestSessionConfigOption_OmitEmptyFields tests that empty optional fields
 // are omitted from JSON serialization.
 func TestSessionConfigOption_OmitEmptyFields(t *testing.T) {
-	opt := SessionConfigOption{
+	opt := conversation.SessionConfigOption{
 		ID:           "model",
 		Name:         "Model",
-		Type:         ConfigOptionTypeSelect,
+		Type:         conversation.ConfigOptionTypeSelect,
 		CurrentValue: "gpt-4",
-		Options: []SessionConfigOptionValue{
+		Options: []conversation.SessionConfigOptionValue{
 			{Value: "gpt-4", Name: "GPT-4"},
 		},
 		// Description and Category are intentionally empty

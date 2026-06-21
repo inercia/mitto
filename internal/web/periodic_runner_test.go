@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -1588,5 +1589,211 @@ func TestPeriodicRunner_RunOnce_OnCompletion_BootstrapsFirstRun(t *testing.T) {
 	// No completion timer should be armed — bootstrap is synchronous, not deferred.
 	if got := countCompletionTimers(runner); got != 0 {
 		t.Errorf("completionTimers = %d, want 0 (RunOnce bootstrap must not arm timer)", got)
+	}
+}
+
+// =============================================================================
+// RecoverStalledOnCompletion Tests
+// =============================================================================
+
+// newOnCompletionSessionWithRan creates an onCompletion session that has already
+// run at least once (IterationCount > 0), simulating a loop that is in-progress.
+func newOnCompletionSessionWithRan(t *testing.T, store *session.Store, sessionID string, delaySeconds int) *session.PeriodicStore {
+	t.Helper()
+	newOnCompletionSession(t, store, sessionID, delaySeconds)
+	ps := store.Periodic(sessionID)
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+	return ps
+}
+
+// TestPeriodicRunner_RecoverStalledOnCompletion_ReArmsStalledLoop verifies that
+// recoverStalledOnCompletion arms a completion timer when the loop has run at
+// least once, no timer is currently pending, and the session is not prompting.
+func TestPeriodicRunner_RecoverStalledOnCompletion_ReArmsStalledLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnCompletionSessionWithRan(t, store, "s1", 3600) // long delay so timer doesn't fire
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetMinPeriodicCompletionDelaySeconds(0) // no floor so we can assert timer presence easily
+
+	// Precondition: no timer pending.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Fatalf("precondition: completionTimers = %d, want 0", got)
+	}
+
+	meta := session.Metadata{SessionID: "s1"}
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	runner.recoverStalledOnCompletion(meta, periodic)
+	defer runner.cancelCompletionTimer("s1")
+
+	// A timer must now be armed — the stall was detected and the loop re-armed.
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (stalled loop must be re-armed)", got)
+	}
+}
+
+// TestPeriodicRunner_RecoverStalledOnCompletion_TimerPending_Noop verifies that
+// recoverStalledOnCompletion is a no-op when a timer is already pending, i.e. the
+// loop is healthy and does not need recovery.
+func TestPeriodicRunner_RecoverStalledOnCompletion_TimerPending_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnCompletionSessionWithRan(t, store, "s1", 0)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	// Pre-arm a timer (simulates a healthy loop).
+	runner.armCompletionTimer("s1", time.Hour)
+	defer runner.cancelCompletionTimer("s1")
+
+	// Record the exact timer pointer before calling recover.
+	runner.completionTimersMu.Lock()
+	timerBefore := runner.completionTimers["s1"]
+	runner.completionTimersMu.Unlock()
+
+	meta := session.Metadata{SessionID: "s1"}
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	runner.recoverStalledOnCompletion(meta, periodic)
+
+	// Timer must be unchanged — recover must not replace a healthy pending timer.
+	runner.completionTimersMu.Lock()
+	timerAfter := runner.completionTimers["s1"]
+	runner.completionTimersMu.Unlock()
+
+	if timerAfter != timerBefore {
+		t.Errorf("timer replaced by recover when it should have been left unchanged")
+	}
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (pending timer must not be touched)", got)
+	}
+}
+
+// TestPeriodicRunner_RecoverStalledOnCompletion_FreshLoop_Noop verifies that
+// recoverStalledOnCompletion is a no-op for a fresh loop (IterationCount==0,
+// LastSentAt==nil). Fresh loops are the responsibility of BootstrapOnCompletion.
+func TestPeriodicRunner_RecoverStalledOnCompletion_FreshLoop_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Fresh session: no RecordSent call, so IterationCount==0 and LastSentAt==nil.
+	newOnCompletionSession(t, store, "s1", 0)
+	ps := store.Periodic("s1")
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	meta := session.Metadata{SessionID: "s1"}
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	// Precondition: IterationCount==0, LastSentAt==nil.
+	if periodic.IterationCount != 0 || periodic.LastSentAt != nil {
+		t.Fatalf("precondition failed: IterationCount=%d LastSentAt=%v", periodic.IterationCount, periodic.LastSentAt)
+	}
+
+	runner.recoverStalledOnCompletion(meta, periodic)
+
+	// No timer must be armed — bootstrap, not recover, handles fresh loops.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (fresh loop must not be recovered here)", got)
+	}
+}
+
+// TestPeriodicRunner_RecoverStalledOnCompletion_ReachedMaxDuration_Noop verifies that
+// recoverStalledOnCompletion does not re-arm a loop that has exceeded its wall-clock cap,
+// so the auto-stop logic in fireOnCompletion can gracefully terminate the loop.
+func TestPeriodicRunner_RecoverStalledOnCompletion_ReachedMaxDuration_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Cap of 60s, anchored 2h ago → cap is well exceeded.
+	past := time.Now().Add(-2 * time.Hour)
+	ps := newDurationCappedSession(t, store, "s1", &past, 60, 0)
+
+	// Simulate at least one completed run.
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	meta := session.Metadata{SessionID: "s1"}
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	// Precondition: cap is reached.
+	if !periodic.ReachedMaxDuration(time.Now()) {
+		t.Fatal("precondition failed: ReachedMaxDuration() = false, want true")
+	}
+
+	runner.recoverStalledOnCompletion(meta, periodic)
+
+	// No timer must be armed — capped loops must not be kept alive.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (cap reached, must not re-arm)", got)
+	}
+}
+
+// TestPeriodicRunner_RecoverStalledOnCompletion_SessionPrompting_Noop verifies that
+// recoverStalledOnCompletion is a no-op when the session is currently prompting.
+// An in-flight turn will re-arm itself on idle completion; recover must not race it.
+func TestPeriodicRunner_RecoverStalledOnCompletion_SessionPrompting_Noop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnCompletionSessionWithRan(t, store, "s1", 0)
+
+	// Build a minimal session manager with a mock conversation.BackgroundSession that is prompting.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	mockBS := conversation.NewMinimalBackgroundSessionPrompting("s1", true)
+	sm.mu.Lock()
+	sm.sessions["s1"] = mockBS
+	sm.mu.Unlock()
+
+	runner := NewPeriodicRunner(store, sm, nil)
+	runner.SetMinPeriodicCompletionDelaySeconds(0)
+
+	meta := session.Metadata{SessionID: "s1"}
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	runner.recoverStalledOnCompletion(meta, periodic)
+
+	// No timer must be armed — the in-flight turn handles re-arm on completion.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (prompting session must block recovery)", got)
 	}
 }

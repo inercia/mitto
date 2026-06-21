@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -83,7 +84,7 @@ func (m *mockBackgroundSessionForPrompting) setIsPrompting(v bool) {
 }
 
 // TestSessionWSClient_OnAgentMessage_IsPrompting tests that OnAgentMessage includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnAgentMessage_IsPrompting(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -148,7 +149,7 @@ func TestSessionWSClient_OnAgentMessage_IsPrompting(t *testing.T) {
 }
 
 // TestSessionWSClient_OnAgentThought_IsPrompting tests that OnAgentThought includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnAgentThought_IsPrompting(t *testing.T) {
 	mockBg := &mockBackgroundSessionForPrompting{isPrompting: true}
 
@@ -164,7 +165,7 @@ func TestSessionWSClient_OnAgentThought_IsPrompting(t *testing.T) {
 }
 
 // TestSessionWSClient_OnToolCall_IsPrompting tests that OnToolCall includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnToolCall_IsPrompting(t *testing.T) {
 	mockBg := &mockBackgroundSessionForPrompting{isPrompting: true}
 
@@ -181,7 +182,7 @@ func TestSessionWSClient_OnToolCall_IsPrompting(t *testing.T) {
 }
 
 // TestSessionWSClient_OnToolUpdate_IsPrompting tests that OnToolUpdate includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnToolUpdate_IsPrompting(t *testing.T) {
 	mockBg := &mockBackgroundSessionForPrompting{isPrompting: false}
 
@@ -695,7 +696,7 @@ func TestSessionWSClient_OnAvailableCommandsUpdated(t *testing.T) {
 	}
 
 	// Call OnAvailableCommandsUpdated
-	commands := []AvailableCommand{
+	commands := []conversation.AvailableCommand{
 		{Name: "test", Description: "Test command", InputHint: "Enter test"},
 		{Name: "help", Description: "Get help"},
 	}
@@ -758,7 +759,7 @@ func TestSessionWSClient_OnAvailableCommandsUpdated_Empty(t *testing.T) {
 	}
 
 	// Call with empty commands
-	client.OnAvailableCommandsUpdated([]AvailableCommand{})
+	client.OnAvailableCommandsUpdated([]conversation.AvailableCommand{})
 
 	// Read the message from the channel
 	select {
@@ -820,7 +821,7 @@ func (m *mockBackgroundSessionForMaxSeq) IsClosed() bool {
 }
 
 // TestGetServerMaxSeq_WithBackgroundSession tests that getServerMaxSeq
-// returns the correct value when a BackgroundSession is active.
+// returns the correct value when a conversation.BackgroundSession is active.
 func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 	// Note: When we create a session with Start() and End(), it adds 2 extra events:
 	// - session_start (1 event)
@@ -829,7 +830,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 	tests := []struct {
 		name           string
 		persistedCount int   // Number of agent messages to record
-		assignedSeq    int64 // Simulated assigned seq from BackgroundSession
+		assignedSeq    int64 // Simulated assigned seq from conversation.BackgroundSession
 		wantMaxSeq     int64 // Expected max seq (max of persisted+2 and assignedSeq)
 	}{
 		{
@@ -891,9 +892,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 			client := &SessionWSClient{
 				sessionID: sessionID,
 				store:     store,
-				bgSession: &BackgroundSession{
-					nextSeq: tt.assignedSeq + 1, // nextSeq is assignedSeq + 1
-				},
+				bgSession: conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{NextSeq: tt.assignedSeq + 1}),
 			}
 
 			// Override bgSession's GetMaxAssignedSeq by setting nextSeq directly
@@ -901,7 +900,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 			got := client.getServerMaxSeq()
 
 			// The expected value is max(persistedCount, assignedSeq)
-			// But since we're using the real BackgroundSession, we need to account
+			// But since we're using the real conversation.BackgroundSession, we need to account
 			// for how it calculates GetMaxAssignedSeq
 			_ = mockBg // unused in this test, but shows the pattern
 
@@ -913,7 +912,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 }
 
 // TestGetServerMaxSeq_NoBackgroundSession tests that getServerMaxSeq
-// returns the persisted event count when no BackgroundSession is active.
+// returns the persisted event count when no conversation.BackgroundSession is active.
 func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -1129,6 +1128,43 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			}
 		case <-time.After(100 * time.Millisecond):
 			t.Fatal("expected second user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("argument_names array passes through in meta", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		const seq = int64(99)
+		client.OnEventMeta(seq, map[string]any{"argument_names": []string{"ISSUE_ID", "PROJECT"}})
+		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			metaOut, ok := msg.Data["meta"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("meta missing or wrong type: %T", msg.Data["meta"])
+			}
+			names, ok := metaOut["argument_names"].([]interface{})
+			if !ok {
+				t.Fatalf("argument_names missing or wrong type: %T", metaOut["argument_names"])
+			}
+			if len(names) != 2 || names[0] != "ISSUE_ID" || names[1] != "PROJECT" {
+				t.Errorf("argument_names = %v, want [ISSUE_ID PROJECT]", names)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
 		}
 	})
 }

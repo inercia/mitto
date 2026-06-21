@@ -6,19 +6,20 @@ import (
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 func TestMultiplexClient_RoutesSessionUpdate(t *testing.T) {
 	mc := NewMultiplexClient()
 
 	var received1, received2 bool
-	mc.RegisterSession("session-1", &SessionCallbacks{
+	mc.RegisterSession("session-1", &conversation.SessionCallbacks{
 		OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
 			received1 = true
 			return nil
 		},
 	})
-	mc.RegisterSession("session-2", &SessionCallbacks{
+	mc.RegisterSession("session-2", &conversation.SessionCallbacks{
 		OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
 			received2 = true
 			return nil
@@ -57,7 +58,7 @@ func TestMultiplexClient_UnregisterSession(t *testing.T) {
 	mc := NewMultiplexClient()
 
 	called := false
-	mc.RegisterSession("session-1", &SessionCallbacks{
+	mc.RegisterSession("session-1", &conversation.SessionCallbacks{
 		OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
 			called = true
 			return nil
@@ -81,7 +82,7 @@ func TestMultiplexClient_RoutesPermission(t *testing.T) {
 	mc := NewMultiplexClient()
 
 	called := false
-	mc.RegisterSession("session-1", &SessionCallbacks{
+	mc.RegisterSession("session-1", &conversation.SessionCallbacks{
 		OnRequestPermission: func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 			called = true
 			return acp.RequestPermissionResponse{}, nil
@@ -123,7 +124,7 @@ func TestMultiplexClient_ConcurrentAccess(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		sid := acp.SessionId("session-" + string(rune('a'+i)))
-		mc.RegisterSession(sid, &SessionCallbacks{
+		mc.RegisterSession(sid, &conversation.SessionCallbacks{
 			OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
 				mu.Lock()
 				counts[string(params.SessionId)]++
@@ -163,7 +164,7 @@ func TestMultiplexClient_RoutesFileOperations(t *testing.T) {
 	mc := NewMultiplexClient()
 
 	var readCalled, writeCalled bool
-	mc.RegisterSession("session-1", &SessionCallbacks{
+	mc.RegisterSession("session-1", &conversation.SessionCallbacks{
 		OnReadTextFile: func(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
 			readCalled = true
 			return acp.ReadTextFileResponse{Content: "test content"}, nil

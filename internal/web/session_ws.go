@@ -16,6 +16,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -74,7 +75,7 @@ type SessionWSClient struct {
 	logger    *slog.Logger // Client-scoped logger with session_id and client_id context
 
 	// The background session this client is observing
-	bgSession *BackgroundSession
+	bgSession *conversation.BackgroundSession
 
 	// WebSocket lifecycle
 	ctx    context.Context
@@ -383,7 +384,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
-func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
+func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSession) {
 	data := map[string]interface{}{
 		"session_id":  c.sessionID,
 		"client_id":   c.clientID, // Unique ID for this client (for multi-browser sync identification)
@@ -687,7 +688,7 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 	shouldGenerateTitle := c.sessionNeedsTitle()
 
 	// Send prompt to background session with sender info for multi-client broadcast
-	meta := PromptMeta{
+	meta := conversation.PromptMeta{
 		SenderID:   c.clientID,
 		PromptID:   promptID,
 		PromptName: promptName,
@@ -700,7 +701,7 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 	}
 
 	// Note: prompt_received ACK is now sent via the OnUserPrompt observer callback
-	// which is called by BackgroundSession.PromptWithMeta after persisting the prompt.
+	// which is called by conversation.BackgroundSession.PromptWithMeta after persisting the prompt.
 	// This ensures all observers (including the sender) receive the same broadcast.
 
 	// Auto-generate title if session has no title yet
@@ -1318,10 +1319,10 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 // - status: Session status (active, completed, error)
 // - is_running: Whether the background session is active
 func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq int64) {
-	// If bgSession is nil, try to attach to a running BackgroundSession.
+	// If bgSession is nil, try to attach to a running conversation.BackgroundSession.
 	// This handles the race condition where a WebSocket client connected while
 	// the session was archived, and the session was later unarchived via the API.
-	// The unarchive API creates a BackgroundSession but has no way to notify
+	// The unarchive API creates a conversation.BackgroundSession but has no way to notify
 	// per-session WS clients directly. The keepalive poll (every 5-10s) discovers it.
 	if c.bgSession == nil {
 		c.tryAttachToSession()
@@ -1443,7 +1444,7 @@ func (c *SessionWSClient) handleSetConfigOption(configID, value string) {
 
 // getServerMaxSeq returns the highest sequence number for this session.
 // This considers both persisted events (from storage) and in-flight events
-// (from the BackgroundSession's sequence counter if active).
+// (from the conversation.BackgroundSession's sequence counter if active).
 func (c *SessionWSClient) getServerMaxSeq() int64 {
 	var maxSeq int64
 
@@ -1478,11 +1479,11 @@ func (c *SessionWSClient) getServerMaxSeq() int64 {
 // sessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
 // Returns false if the session already has a title (either auto-generated or user-set).
 func (c *SessionWSClient) sessionNeedsTitle() bool {
-	return SessionNeedsTitle(c.store, c.sessionID)
+	return conversation.SessionNeedsTitle(c.store, c.sessionID)
 }
 
 func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
-	GenerateAndSetTitle(TitleGenerationConfig{
+	conversation.GenerateAndSetTitle(conversation.TitleGenerationConfig{
 		Store:            c.store,
 		SessionID:        c.sessionID,
 		Message:          initialMessage,
@@ -1828,7 +1829,7 @@ func (c *SessionWSClient) handleEnsureResumed() {
 	}()
 }
 
-// tryAttachToSession attempts to attach to a running BackgroundSession.
+// tryAttachToSession attempts to attach to a running conversation.BackgroundSession.
 // This is called when bgSession is nil but the session may have been resumed
 // (e.g., after unarchiving). If successful, the client is added as an observer.
 func (c *SessionWSClient) tryAttachToSession() {
@@ -1920,7 +1921,7 @@ func (c *SessionWSClient) tryAttachToSession() {
 	c.sendMessage(WSMsgTypeACPStarted, c.buildACPStartedPayload())
 }
 
-// --- SessionObserver interface implementation ---
+// --- conversation.SessionObserver interface implementation ---
 
 // OnAgentMessage is called when the agent sends a message chunk.
 // seq is the sequence number for this logical message (chunks of the same message share the same seq).
@@ -2151,7 +2152,7 @@ func (c *SessionWSClient) OnToolUpdate(seq int64, id string, status *string) {
 // OnPlan is called when a plan update occurs.
 // seq is the sequence number for this plan event.
 // entries contains the list of plan tasks with their status.
-func (c *SessionWSClient) OnPlan(seq int64, entries []PlanEntry) {
+func (c *SessionWSClient) OnPlan(seq int64, entries []conversation.PlanEntry) {
 	// Check seq tracking
 	c.seqMu.Lock()
 	if seq > 0 && seq <= c.lastSentSeq {
@@ -2326,7 +2327,7 @@ func (c *SessionWSClient) OnContextUsageUpdate(size, used int) {
 // It concatenates "label\x00response" pairs separated by "\x01" so that
 // different label/response orderings produce different keys.
 // An empty slice returns "" (the sentinel for "no buttons / clear signal").
-func actionButtonsKey(buttons []ActionButton) string {
+func actionButtonsKey(buttons []conversation.ActionButton) string {
 	if len(buttons) == 0 {
 		return ""
 	}
@@ -2344,7 +2345,7 @@ func actionButtonsKey(buttons []ActionButton) string {
 
 // OnActionButtons is called when action buttons are extracted from the agent's response.
 // An empty slice is a valid "clear" signal and must be forwarded to all clients.
-func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
+func (c *SessionWSClient) OnActionButtons(buttons []conversation.ActionButton) {
 	c.logger.Debug("action_buttons: OnActionButtons called", "button_count", len(buttons))
 
 	// Dedup: skip if these exact buttons were already sent to this client.
@@ -2441,12 +2442,12 @@ func (c *SessionWSClient) GetClientID() string {
 	return c.clientID
 }
 
-// OnEventMeta implements EventMetaObserver. It stores the meta keyed by seq so
+// OnEventMeta implements conversation.EventMetaObserver. It stores the meta keyed by seq so
 // that the next OnUserPrompt (or other typed notification with the same seq) can
 // attach it to the outgoing WebSocket payload.
 //
 // This method is always called BEFORE the matching typed notification (guaranteed
-// by the ordering in BackgroundSession.PromptWithMeta), so the map entry is
+// by the ordering in conversation.BackgroundSession.PromptWithMeta), so the map entry is
 // always present when OnUserPrompt runs.
 func (c *SessionWSClient) OnEventMeta(seq int64, meta map[string]any) {
 	if seq <= 0 || len(meta) == 0 {
@@ -2500,7 +2501,7 @@ func (c *SessionWSClient) OnQueueMessageSent(messageID string) {
 }
 
 // OnAvailableCommandsUpdated is called when the agent sends available slash commands.
-func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []AvailableCommand) {
+func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []conversation.AvailableCommand) {
 	c.sendMessage(WSMsgTypeAvailableCommandsUpdated, map[string]interface{}{
 		"session_id": c.sessionID,
 		"commands":   commands,
@@ -2580,7 +2581,7 @@ func (c *SessionWSClient) OnACPStopped(reason string) {
 
 // OnUIPrompt is called when an MCP tool requests user input via the UI.
 // The client should display the prompt with the specified options.
-func (c *SessionWSClient) OnUIPrompt(req UIPromptRequest) {
+func (c *SessionWSClient) OnUIPrompt(req conversation.UIPromptRequest) {
 	if c.logger != nil {
 		c.logger.Debug("UI prompt sent to client",
 			"session_id", c.sessionID,
@@ -2627,7 +2628,7 @@ func (c *SessionWSClient) OnUIPromptDismiss(requestID string, reason string) {
 
 // OnNotification is called when an MCP tool sends a fire-and-forget notification.
 // It sends the notification to the frontend WebSocket client without waiting for a response.
-func (c *SessionWSClient) OnNotification(req UINotifyRequest) {
+func (c *SessionWSClient) OnNotification(req conversation.UINotifyRequest) {
 	if c.logger != nil {
 		c.logger.Debug("Notification sent to client",
 			"session_id", c.sessionID,

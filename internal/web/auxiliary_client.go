@@ -11,7 +11,7 @@ import (
 )
 
 // auxiliaryClient collects agent responses for auxiliary sessions.
-// It implements the SessionCallbacks interface for use with MultiplexClient.
+// It implements the conversation.SessionCallbacks interface for use with MultiplexClient.
 type auxiliaryClient struct {
 	mu       sync.Mutex
 	response strings.Builder

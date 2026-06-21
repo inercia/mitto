@@ -16,6 +16,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
 )
@@ -58,9 +59,9 @@ const (
 
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
-	// acp_error_classification.go as shared constants (MaxACPRestarts, ACPRestartWindow,
-	// ACPRestartBaseDelay, ACPRestartMaxDelay) to ensure consistent behavior between
-	// SharedACPProcess and BackgroundSession.
+	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
+	// conversation.ACPRestartBaseDelay, conversation.ACPRestartMaxDelay) to ensure consistent behavior between
+	// SharedACPProcess and conversation.BackgroundSession.
 )
 
 // SharedACPProcessConfig holds configuration for creating a SharedACPProcess.
@@ -93,23 +94,8 @@ type SharedACPProcessConfig struct {
 	RecordRestart func()
 }
 
-// SessionHandle is returned when creating a new session on a SharedACPProcess.
-// It provides the session-scoped interface for the BackgroundSession.
-type SessionHandle struct {
-	// SessionID is the ACP-assigned session ID.
-	SessionID string
-	// Capabilities are the agent's capabilities (from Initialize).
-	Capabilities acp.AgentCapabilities
-	// Modes are the session mode state (from NewSession/LoadSession).
-	Modes *acp.SessionModeState
-	// Models are the available models (UNSTABLE, from NewSession/LoadSession/ResumeSession).
-	// Uses UnstableSessionModelState to unify both stable and unstable response variants.
-	Models *acp.UnstableSessionModelState
-	// ConfigOptions are the session config options (from NewSession/LoadSession).
-	ConfigOptions []SessionConfigOption
-	// Process is a reference to the parent SharedACPProcess.
-	Process *SharedACPProcess
-}
+// Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
+var _ conversation.SharedProcess = (*SharedACPProcess)(nil)
 
 // SharedACPProcess manages a single ACP server process that can host multiple sessions.
 // Multiple BackgroundSessions share this process via the MultiplexClient.
@@ -189,15 +175,15 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 
 // startProcess starts the ACP process and performs the Initialize handshake.
 // Must be called with appropriate synchronization (only from constructor or restart).
-// Returns an *ACPClassifiedError when the error has been classified, allowing
+// Returns an *conversation.ACPClassifiedError when the error has been classified, allowing
 // callers to distinguish permanent from transient failures.
 func (p *SharedACPProcess) startProcess() error {
 	var lastErr error
-	var lastClassified *ACPClassifiedError
+	var lastClassified *conversation.ACPClassifiedError
 
 	for attempt := 0; attempt < maxProcessStartRetries; attempt++ {
 		if attempt > 0 {
-			delay := backoffDelay(attempt-1, processStartRetryBaseDelay, processStartRetryMaxDelay, processStartRetryJitterRatio)
+			delay := conversation.BackoffDelay(attempt-1, processStartRetryBaseDelay, processStartRetryMaxDelay, processStartRetryJitterRatio)
 			if p.logger != nil {
 				p.logger.Info("Retrying ACP process start",
 					"attempt", attempt+1,
@@ -222,7 +208,7 @@ func (p *SharedACPProcess) startProcess() error {
 		lastErr = processErr
 
 		// Classify the error to determine if retrying is worthwhile.
-		lastClassified = classifyACPError(processErr, stderr)
+		lastClassified = conversation.ClassifyACPError(processErr, stderr)
 
 		if p.logger != nil {
 			p.logger.Warn("ACP process start failed",
@@ -308,7 +294,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var wait func() error
 	var cmd *exec.Cmd
 
-	stderrCollector := newStderrCollector(8192, p.logger)
+	stderrCollector := conversation.NewStderrCollector(8192, p.logger)
 
 	// Pre-create process death detection channel so the stderr crash detector
 	// (Fix C) can signal it immediately when crash patterns are detected.
@@ -350,7 +336,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		// Build env using the same layering as the direct-exec branch below so that
 		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
 		// are propagated to the restricted-runner-spawned process.
-		runnerEnv := buildACPProcessEnv(p.config.Env, mittoEnv)
+		runnerEnv := conversation.BuildACPProcessEnv(p.config.Env, mittoEnv)
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
@@ -368,9 +354,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 				"acp_server", p.config.ACPServer)
 		}
 
-		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
+		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		startStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
+		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -399,7 +385,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		// Set environment variables for the ACP subprocess. Same layering as the
 		// runner branch (os.Environ + server-specific Env + MITTO_*).
-		cmd.Env = buildACPProcessEnv(p.config.Env, mittoEnv)
+		cmd.Env = conversation.BuildACPProcessEnv(p.config.Env, mittoEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))
@@ -429,9 +415,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if cmd.Process != nil {
 			pid = cmd.Process.Pid
 		}
-		signalStartupActivity = startACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
+		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
+		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -656,7 +642,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 }
 
 // NewSession creates a new ACP session on this shared process.
-func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
 	defer p.activeRPCs.Add(-1)
 
@@ -710,11 +696,11 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
-	handle := &SessionHandle{
+	handle := &conversation.SessionHandle{
 		SessionID: string(sessResp.SessionId),
 		Process:   p,
 		Modes:     sessResp.Modes,
-		Models:    stableToUnstableModelState(sessResp.Models),
+		Models:    conversation.StableToUnstableModelState(sessResp.Models),
 	}
 	if caps != nil {
 		handle.Capabilities = *caps
@@ -735,7 +721,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 }
 
 // LoadSession attempts to load/resume an existing ACP session.
-func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
 	defer p.activeRPCs.Add(-1)
 
@@ -794,11 +780,11 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		return nil, fmt.Errorf("failed to load session: %w", err)
 	}
 
-	handle := &SessionHandle{
+	handle := &conversation.SessionHandle{
 		SessionID:    acpSessionID,
 		Capabilities: *caps,
 		Modes:        loadResp.Modes,
-		Models:       stableToUnstableModelState(loadResp.Models),
+		Models:       conversation.StableToUnstableModelState(loadResp.Models),
 		Process:      p,
 	}
 
@@ -815,7 +801,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 // ResumeSession attempts to resume an existing ACP session without replaying history.
 // This is faster than LoadSession but requires the agent to support session/resume
 // and still have the session in memory.
-func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
 	defer p.activeRPCs.Add(-1)
 
@@ -867,7 +853,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
-	handle := &SessionHandle{
+	handle := &conversation.SessionHandle{
 		SessionID:    acpSessionID,
 		Capabilities: *caps,
 		Modes:        resumeResp.Modes,
@@ -886,7 +872,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 }
 
 // RegisterSession registers per-session callbacks with the MultiplexClient.
-func (p *SharedACPProcess) RegisterSession(sessionID acp.SessionId, callbacks *SessionCallbacks) {
+func (p *SharedACPProcess) RegisterSession(sessionID acp.SessionId, callbacks *conversation.SessionCallbacks) {
 	p.client.RegisterSession(sessionID, callbacks)
 }
 
@@ -1175,7 +1161,7 @@ func (p *SharedACPProcess) canRestart() bool {
 	defer p.restartMu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
+	cutoff := now.Add(-conversation.ACPRestartWindow)
 
 	// Remove old restart timestamps
 	valid := p.restartTimes[:0]
@@ -1186,7 +1172,7 @@ func (p *SharedACPProcess) canRestart() bool {
 	}
 	p.restartTimes = valid
 
-	return len(p.restartTimes) < MaxACPRestarts
+	return len(p.restartTimes) < conversation.MaxACPRestarts
 }
 
 // recordRestart records a restart attempt.
@@ -1199,10 +1185,10 @@ func (p *SharedACPProcess) recordRestart() {
 
 // Restart kills the old process and starts a new one.
 // All sessions must re-register their callbacks and LoadSession after restart.
-// Returns nil on success. Returns an *ACPClassifiedError for permanent failures.
+// Returns nil on success. Returns an *conversation.ACPClassifiedError for permanent failures.
 func (p *SharedACPProcess) Restart() error {
 	if !p.canRestart() {
-		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", MaxACPRestarts, ACPRestartWindow)
+		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", conversation.MaxACPRestarts, conversation.ACPRestartWindow)
 	}
 
 	// Check global (cross-workspace) restart rate limiter before proceeding.
@@ -1216,7 +1202,7 @@ func (p *SharedACPProcess) Restart() error {
 	p.restartMu.Unlock()
 
 	if recentCount > 0 {
-		delay := backoffDelay(recentCount-1, ACPRestartBaseDelay, ACPRestartMaxDelay, processStartRetryJitterRatio)
+		delay := conversation.BackoffDelay(recentCount-1, conversation.ACPRestartBaseDelay, conversation.ACPRestartMaxDelay, processStartRetryJitterRatio)
 		if p.logger != nil {
 			p.logger.Info("Waiting before restart",
 				"delay", delay.String(),
@@ -1254,7 +1240,7 @@ func (p *SharedACPProcess) Restart() error {
 	if err := p.startProcess(); err != nil {
 		if p.logger != nil {
 			logAttrs := []any{"error", err}
-			if classified, ok := err.(*ACPClassifiedError); ok {
+			if classified, ok := err.(*conversation.ACPClassifiedError); ok {
 				logAttrs = append(logAttrs,
 					"error_class", classified.Class.String(),
 					"user_message", classified.UserMessage,
@@ -1288,27 +1274,4 @@ func (p *SharedACPProcess) SetOnRestart(fn func()) {
 // strPtr returns a pointer to the given string.
 func strPtr(s string) *string {
 	return &s
-}
-
-// stableToUnstableModelState converts a *acp.SessionModelState (from NewSession/LoadSession)
-// to *acp.UnstableSessionModelState so both stable and unstable model state responses
-// can be stored in a unified field.
-func stableToUnstableModelState(m *acp.SessionModelState) *acp.UnstableSessionModelState {
-	if m == nil {
-		return nil
-	}
-	models := make([]acp.UnstableModelInfo, len(m.AvailableModels))
-	for i, mi := range m.AvailableModels {
-		models[i] = acp.UnstableModelInfo{
-			Meta:        mi.Meta,
-			Description: mi.Description,
-			ModelId:     acp.UnstableModelId(mi.ModelId),
-			Name:        mi.Name,
-		}
-	}
-	return &acp.UnstableSessionModelState{
-		Meta:            m.Meta,
-		AvailableModels: models,
-		CurrentModelId:  acp.UnstableModelId(m.CurrentModelId),
-	}
 }

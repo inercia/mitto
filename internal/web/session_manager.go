@@ -14,6 +14,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
@@ -50,9 +51,9 @@ var ErrTooManySessions = errors.New("maximum number of sessions reached")
 // Goroutines that race to resume the same session ID wait on done, then read
 // the result set by the first (primary) goroutine — preventing duplicate ACP launches.
 type pendingResumeResult struct {
-	done chan struct{}      // closed when the resume is complete
-	bs   *BackgroundSession // result (valid after done is closed)
-	err  error              // error  (valid after done is closed)
+	done chan struct{}                   // closed when the resume is complete
+	bs   *conversation.BackgroundSession // result (valid after done is closed)
+	err  error                           // error  (valid after done is closed)
 }
 
 // ACPServerRenameResult summarizes persisted and restarted sessions after an ACP server rename/remap.
@@ -69,7 +70,7 @@ type WorkspaceSaveFunc func(workspaces []config.WorkspaceSettings) error
 // It is safe for concurrent use.
 type SessionManager struct {
 	mu       sync.RWMutex
-	sessions map[string]*BackgroundSession // keyed by persisted session ID
+	sessions map[string]*conversation.BackgroundSession // keyed by persisted session ID
 
 	// pendingResumes tracks in-progress session resume operations, keyed by session ID.
 	// This prevents the TOCTOU race where two goroutines both observe no running session
@@ -129,7 +130,7 @@ type SessionManager struct {
 	// This is in-memory only (not persisted to disk) and survives conversation switches
 	// within the same server session. Automatically cleared on server restart.
 	// Used to restore the agent plan panel when switching back to a conversation.
-	planState map[string][]PlanEntry
+	planState map[string][]conversation.PlanEntry
 
 	// waitingForChildrenMu protects waitingForChildren map.
 	waitingForChildrenMu sync.RWMutex
@@ -160,11 +161,11 @@ type SessionManager struct {
 	mcpToolsFetchedWorkspacesMu sync.RWMutex
 
 	// promptResolver resolves a named workspace prompt to its full text at send time.
-	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
-	promptResolver PromptResolverFunc
+	// Passed to conversation.BackgroundSession via conversation.BackgroundSessionConfig on creation/resume.
+	promptResolver conversation.PromptResolver
 
 	// preferredModelsResolver resolves a named workspace prompt to its preferredModels list.
-	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
+	// Passed to conversation.BackgroundSession via conversation.BackgroundSessionConfig on creation/resume.
 	preferredModelsResolver func(name, workingDir string) []string
 
 	// onConversationIdle is invoked when a session's agent stops and the session is
@@ -191,14 +192,14 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		WorkingDir:         "", // Will be set at session creation time
 	}
 	return &SessionManager{
-		sessions:                  make(map[string]*BackgroundSession),
+		sessions:                  make(map[string]*conversation.BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
 		workspaces:                make(map[string]*config.WorkspaceSettings),
 		logger:                    logger,
 		defaultWorkspace:          defaultWS,
 		autoApprove:               autoApprove,
 		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
-		planState:                 make(map[string][]PlanEntry),
+		planState:                 make(map[string][]conversation.PlanEntry),
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
@@ -228,7 +229,7 @@ type SessionManagerOptions struct {
 // Workspaces without UUIDs will have UUIDs generated automatically.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
-		sessions:                  make(map[string]*BackgroundSession),
+		sessions:                  make(map[string]*conversation.BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
 		workspaces:                make(map[string]*config.WorkspaceSettings),
 		logger:                    opts.Logger,
@@ -237,7 +238,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		onWorkspaceSave:           opts.OnWorkspaceSave,
 		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:                 opts.APIPrefix,
-		planState:                 make(map[string][]PlanEntry),
+		planState:                 make(map[string][]conversation.PlanEntry),
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
@@ -429,7 +430,7 @@ func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSetti
 // createAutoChildren creates child sessions for a newly created parent session.
 // Only called for top-level sessions (conversations created without a parent).
 // Children are created asynchronously; failures are logged but don't fail parent creation.
-func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, workspace *config.WorkspaceSettings) {
+func (sm *SessionManager) createAutoChildren(parentBS *conversation.BackgroundSession, workspace *config.WorkspaceSettings) {
 	if workspace == nil || len(workspace.AutoChildren) == 0 {
 		return
 	}
@@ -570,8 +571,8 @@ func (sm *SessionManager) ResolveWorkspaceIdentifier(uuid string) (string, bool)
 	// with a working directory that's not a registered workspace (e.g., CLI usage).
 	// The session inherits the default workspace's UUID but has its own working directory.
 	for _, bs := range sm.sessions {
-		if bs.workspaceUUID == uuid && bs.workingDir != "" {
-			return bs.workingDir, true
+		if bs.GetWorkspaceUUID() == uuid && bs.GetWorkingDir() != "" {
+			return bs.GetWorkingDir(), true
 		}
 	}
 
@@ -1045,15 +1046,15 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 }
 
 // SetPromptResolver sets the function used to resolve named workspace prompts to their full text.
-// The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
-func (sm *SessionManager) SetPromptResolver(resolver PromptResolverFunc) {
+// The resolver is passed to every new and resumed conversation.BackgroundSession via conversation.BackgroundSessionConfig.
+func (sm *SessionManager) SetPromptResolver(resolver conversation.PromptResolver) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.promptResolver = resolver
 }
 
 // SetPreferredModelsResolver sets the function used to resolve a prompt name to its preferredModels list.
-// The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+// The resolver is passed to every new and resumed conversation.BackgroundSession via conversation.BackgroundSessionConfig.
 func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, workingDir string) []string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -1534,7 +1535,7 @@ func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *
 // Uses the workspace configuration for the given working directory, or the default if not found.
 // ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
 // so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
-func (sm *SessionManager) CreateSession(ctx context.Context, name, workingDir string) (*BackgroundSession, error) {
+func (sm *SessionManager) CreateSession(ctx context.Context, name, workingDir string) (*conversation.BackgroundSession, error) {
 	return sm.CreateSessionWithWorkspace(ctx, name, workingDir, nil)
 }
 
@@ -1542,7 +1543,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, name, workingDir st
 // If workspace is nil, looks up the workspace by workingDir or uses the default.
 // ctx is used for the initial ACP session creation RPC — pass r.Context() from HTTP handlers
 // so that the 30s request-timeout middleware can cancel the RPC if the agent is busy.
-func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
+func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, workingDir string, workspace *config.WorkspaceSettings) (*conversation.BackgroundSession, error) {
 	createStart := time.Now()
 
 	sm.mu.Lock()
@@ -1728,7 +1729,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	availableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
 	newBsStart := time.Now()
-	bs, err := NewBackgroundSession(BackgroundSessionConfig{
+	bs, err := conversation.NewBackgroundSession(conversation.BackgroundSessionConfig{
 		PersistedID:             "",  // Empty = generate fresh
 		CreationCtx:             ctx, // Propagate caller's context for the initial NewSession RPC
 		ACPCommand:              acpCommand,
@@ -1751,10 +1752,10 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		AvailableACPServers:     availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:         sm.mcpServer,
 		AuxiliaryManager:        sm.auxiliaryManager,
-		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
-		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:          sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
-		PreferredModelsResolver: sm.preferredModelsResolver, // Named prompt resolver (resolves prompt name → preferredModels)
+		SharedProcess:           toSharedProcess(sharedProcess), // Shared ACP process (nil = legacy mode)
+		PruneConfig:             pruneConfig,                    // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:          sm.promptResolver,              // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver: sm.preferredModelsResolver,     // Named prompt resolver (resolves prompt name → preferredModels)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -1779,7 +1780,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 				})
 			}
 		},
-		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
+		OnUIPromptTimeout: func(sessionID string, req conversation.UIPromptRequest, sessionName string) {
 			if sm.eventsManager != nil {
 				question := req.Question
 				if len([]rune(question)) > 200 {
@@ -1793,7 +1794,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 				})
 			}
 		},
-		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
+		OnPlanStateChanged: func(sessionID string, entries []conversation.PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
 		OnConfigOptionChanged: func(sessionID string, configID, value string) {
@@ -1918,7 +1919,7 @@ func (sm *SessionManager) PromptingSessionCount() int {
 }
 
 // GetSession returns a running session by ID, or nil if not found.
-func (sm *SessionManager) GetSession(sessionID string) *BackgroundSession {
+func (sm *SessionManager) GetSession(sessionID string) *conversation.BackgroundSession {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.sessions[sessionID]
@@ -1944,7 +1945,7 @@ func (sm *SessionManager) GetActiveWorkingDirs() []string {
 
 // GetOrCreateSession returns an existing session or creates a new one.
 // If the session exists in the store but isn't running, it starts a new ACP process.
-func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*BackgroundSession, bool, error) {
+func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*conversation.BackgroundSession, bool, error) {
 	// Check if already running
 	if bs := sm.GetSession(sessionID); bs != nil {
 		return bs, false, nil
@@ -1966,7 +1967,7 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 // loading and we have a stored ACP session ID, we attempt to resume the ACP session
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
-func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*conversation.BackgroundSession, error) {
 	// Clear GC-suspended flag — any explicit resume (ensure_resumed, periodic runner,
 	// queue processing) should allow the session to run. This must happen before the
 	// "already running" check to avoid stale flags.
@@ -2204,7 +2205,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// ResumeSession, found the stale pendingResumes entry, read from the already-
 	// closed channel, saw the error again, and kept retrying until the delete
 	// finally raced through — creating a window for inconsistent state.
-	signalDone := func(result *BackgroundSession, err error) {
+	signalDone := func(result *conversation.BackgroundSession, err error) {
 		pr.bs = result
 		pr.err = err
 		sm.mu.Lock()
@@ -2293,12 +2294,12 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 
 	// Acquire the startup semaphore before the expensive ACP work (getSharedProcess may start
-	// a new OS subprocess; ResumeBackgroundSession calls LoadSession/NewSession RPC).
+	// a new OS subprocess; conversation.ResumeBackgroundSession calls LoadSession/NewSession RPC).
 	// Without this limit, when the app starts with many sessions and the browser connects to
 	// all of them simultaneously, N goroutines each call LoadSession concurrently, overwhelming
 	// the ACP process and causing cascade failures (26-second RPCs, context deadlines, crashes).
 	//
-	// The semaphore is released as soon as ResumeBackgroundSession returns, so the next queued
+	// The semaphore is released as soon as conversation.ResumeBackgroundSession returns, so the next queued
 	// goroutine can start immediately — the fast post-startup bookkeeping runs concurrently.
 	//
 	// Only the "primary" goroutine for each session reaches this point; secondary goroutines
@@ -2328,7 +2329,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
-	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+	bs, err := conversation.ResumeBackgroundSession(conversation.BackgroundSessionConfig{
 		// CreationCtx: use a background context with the default timeout. ResumeSession is
 		// called from a goroutine (session_ws.go), not directly from an HTTP handler, so
 		// there is no request context to propagate. The 25s timeout in creationRPCCtx()
@@ -2356,10 +2357,10 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		AvailableACPServers:     resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:         sm.mcpServer,
 		AuxiliaryManager:        sm.auxiliaryManager,
-		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
-		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:          sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
-		PreferredModelsResolver: sm.preferredModelsResolver, // Named prompt resolver (resolves prompt name → preferredModels)
+		SharedProcess:           toSharedProcess(sharedProcess), // Shared ACP process (nil = legacy mode)
+		PruneConfig:             pruneConfig,                    // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:          sm.promptResolver,              // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver: sm.preferredModelsResolver,     // Named prompt resolver (resolves prompt name → preferredModels)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -2384,7 +2385,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
-		OnUIPromptTimeout: func(sessionID string, req UIPromptRequest, sessionName string) {
+		OnUIPromptTimeout: func(sessionID string, req conversation.UIPromptRequest, sessionName string) {
 			if sm.eventsManager != nil {
 				question := req.Question
 				if len([]rune(question)) > 200 {
@@ -2398,7 +2399,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
-		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
+		OnPlanStateChanged: func(sessionID string, entries []conversation.PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
 		OnConfigOptionChanged: func(sessionID string, configID, value string) {
@@ -2684,11 +2685,11 @@ func (sm *SessionManager) ListRunningSessions() []string {
 // CloseAll closes all running sessions.
 func (sm *SessionManager) CloseAll(reason string) {
 	sm.mu.Lock()
-	sessions := make([]*BackgroundSession, 0, len(sm.sessions))
+	sessions := make([]*conversation.BackgroundSession, 0, len(sm.sessions))
 	for _, bs := range sm.sessions {
 		sessions = append(sessions, bs)
 	}
-	sm.sessions = make(map[string]*BackgroundSession)
+	sm.sessions = make(map[string]*conversation.BackgroundSession)
 	pm := sm.acpProcessManager
 	sm.mu.Unlock()
 
@@ -2712,12 +2713,12 @@ func (sm *SessionManager) CloseAll(reason string) {
 // SetCachedPlanState stores the last known agent plan entries for a session.
 // This is used to restore the agent plan panel when switching back to a conversation.
 // The state is in-memory only and does not persist across server restarts.
-func (sm *SessionManager) SetCachedPlanState(sessionID string, entries []PlanEntry) {
+func (sm *SessionManager) SetCachedPlanState(sessionID string, entries []conversation.PlanEntry) {
 	sm.planStateMu.Lock()
 	defer sm.planStateMu.Unlock()
 
 	if sm.planState == nil {
-		sm.planState = make(map[string][]PlanEntry)
+		sm.planState = make(map[string][]conversation.PlanEntry)
 	}
 
 	if len(entries) == 0 {
@@ -2727,7 +2728,7 @@ func (sm *SessionManager) SetCachedPlanState(sessionID string, entries []PlanEnt
 	}
 
 	// Make a copy to avoid external modification
-	entriesCopy := make([]PlanEntry, len(entries))
+	entriesCopy := make([]conversation.PlanEntry, len(entries))
 	copy(entriesCopy, entries)
 	sm.planState[sessionID] = entriesCopy
 
@@ -2741,7 +2742,7 @@ func (sm *SessionManager) SetCachedPlanState(sessionID string, entries []PlanEnt
 // GetCachedPlanState returns the cached agent plan entries for a session.
 // Returns nil if no plan state is cached for the session.
 // The returned slice is a copy, safe to modify.
-func (sm *SessionManager) GetCachedPlanState(sessionID string) []PlanEntry {
+func (sm *SessionManager) GetCachedPlanState(sessionID string) []conversation.PlanEntry {
 	sm.planStateMu.RLock()
 	defer sm.planStateMu.RUnlock()
 
@@ -2755,7 +2756,7 @@ func (sm *SessionManager) GetCachedPlanState(sessionID string) []PlanEntry {
 	}
 
 	// Return a copy to prevent external modification
-	result := make([]PlanEntry, len(entries))
+	result := make([]conversation.PlanEntry, len(entries))
 	copy(result, entries)
 	return result
 }
@@ -2931,7 +2932,7 @@ func (sm *SessionManager) ProcessPendingQueues() {
 		// Try to process the queued message immediately.
 		// Note: On startup, the delay is skipped because lastResponseComplete is zero.
 		// Run in a goroutine so we don't block the stagger loop for other sessions.
-		go func(session *BackgroundSession, sessionID string) {
+		go func(session *conversation.BackgroundSession, sessionID string) {
 			if session.TryProcessQueuedMessage() {
 				if sm.logger != nil {
 					sm.logger.Info("Auto-dequeued message on startup",
@@ -2949,7 +2950,7 @@ func (sm *SessionManager) GetWorkspaceUUIDForSession(sessionID string) string {
 	defer sm.mu.RUnlock()
 
 	if bs, ok := sm.sessions[sessionID]; ok {
-		return bs.workspaceUUID
+		return bs.GetWorkspaceUUID()
 	}
 	return ""
 }
@@ -3140,4 +3141,14 @@ func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
 			})
 		}
 	}()
+}
+
+// toSharedProcess safely converts a *SharedACPProcess to conversation.SharedProcess.
+// A nil *SharedACPProcess produces a nil conversation.SharedProcess interface (not a
+// typed-nil interface), which is what nil-guard code (if sp != nil) expects.
+func toSharedProcess(p *SharedACPProcess) conversation.SharedProcess {
+	if p == nil {
+		return nil
+	}
+	return p
 }

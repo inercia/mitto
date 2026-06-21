@@ -7,39 +7,17 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
-// SessionCallbacks holds the per-session callback handlers that the MultiplexClient
-// routes ACP events to. Each BackgroundSession registers its own set of callbacks.
-type SessionCallbacks struct {
-	// OnSessionUpdate handles streaming updates (agent messages, thoughts, tool calls, etc.)
-	OnSessionUpdate func(ctx context.Context, params acp.SessionNotification) error
-	// OnReadTextFile handles file read requests from the agent.
-	OnReadTextFile func(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error)
-	// OnWriteTextFile handles file write requests from the agent.
-	OnWriteTextFile func(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error)
-	// OnRequestPermission handles permission requests from the agent.
-	OnRequestPermission func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
-	// OnCreateTerminal handles terminal creation requests.
-	OnCreateTerminal func(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error)
-	// OnTerminalOutput handles terminal output requests.
-	OnTerminalOutput func(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error)
-	// OnReleaseTerminal handles terminal release requests.
-	OnReleaseTerminal func(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error)
-	// OnWaitForTerminalExit handles terminal wait requests.
-	OnWaitForTerminalExit func(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error)
-	// OnKillTerminal handles terminal kill requests.
-	OnKillTerminal func(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error)
-}
-
 // MultiplexClient implements acp.Client and routes all ACP callbacks to the
-// correct BackgroundSession based on the SessionId included in each request.
+// correct conversation.BackgroundSession based on the SessionId included in each request.
 //
 // This enables multiple ACP sessions to share a single ACP server process,
 // with each session receiving only its own events.
 type MultiplexClient struct {
 	mu       sync.RWMutex
-	sessions map[acp.SessionId]*SessionCallbacks
+	sessions map[acp.SessionId]*conversation.SessionCallbacks
 }
 
 // Ensure MultiplexClient implements acp.Client
@@ -48,13 +26,13 @@ var _ acp.Client = (*MultiplexClient)(nil)
 // NewMultiplexClient creates a new MultiplexClient.
 func NewMultiplexClient() *MultiplexClient {
 	return &MultiplexClient{
-		sessions: make(map[acp.SessionId]*SessionCallbacks),
+		sessions: make(map[acp.SessionId]*conversation.SessionCallbacks),
 	}
 }
 
 // RegisterSession registers callbacks for a session. The MultiplexClient will
 // route ACP events with the given sessionID to these callbacks.
-func (mc *MultiplexClient) RegisterSession(sessionID acp.SessionId, callbacks *SessionCallbacks) {
+func (mc *MultiplexClient) RegisterSession(sessionID acp.SessionId, callbacks *conversation.SessionCallbacks) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.sessions[sessionID] = callbacks
@@ -68,7 +46,7 @@ func (mc *MultiplexClient) UnregisterSession(sessionID acp.SessionId) {
 }
 
 // getSession returns the callbacks for the given session, or nil if not found.
-func (mc *MultiplexClient) getSession(sessionID acp.SessionId) *SessionCallbacks {
+func (mc *MultiplexClient) getSession(sessionID acp.SessionId) *conversation.SessionCallbacks {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	return mc.sessions[sessionID]
@@ -181,21 +159,21 @@ func defaultWriteTextFile(params acp.WriteTextFileRequest) (acp.WriteTextFileRes
 }
 
 func defaultCreateTerminal(params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
-	return webTerminalStub.CreateTerminal(context.Background(), params)
+	return conversation.WebTerminalStub.CreateTerminal(context.Background(), params)
 }
 
 func defaultKillTerminal(params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
-	return webTerminalStub.KillTerminal(context.Background(), params)
+	return conversation.WebTerminalStub.KillTerminal(context.Background(), params)
 }
 
 func defaultTerminalOutput(params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
-	return webTerminalStub.TerminalOutput(context.Background(), params)
+	return conversation.WebTerminalStub.TerminalOutput(context.Background(), params)
 }
 
 func defaultReleaseTerminal(params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
-	return webTerminalStub.ReleaseTerminal(context.Background(), params)
+	return conversation.WebTerminalStub.ReleaseTerminal(context.Background(), params)
 }
 
 func defaultWaitForTerminalExit(params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
-	return webTerminalStub.WaitForTerminalExit(context.Background(), params)
+	return conversation.WebTerminalStub.WaitForTerminalExit(context.Background(), params)
 }

@@ -1,6 +1,10 @@
 package web
 
-import "time"
+import (
+	"time"
+
+	"github.com/inercia/mitto/internal/conversation"
+)
 
 // RecordGlobalRestart records a restart attempt in the global rate limiter.
 // Called by SharedACPProcess.Restart() via the RecordRestart callback.
@@ -28,7 +32,7 @@ func (m *ACPProcessManager) CanRestartGlobally() bool {
 	}
 
 	// Clean old entries outside the window
-	cutoff := now.Add(-GlobalRestartWindow)
+	cutoff := now.Add(-conversation.GlobalRestartWindow)
 	valid := m.globalRestartTimes[:0]
 	for _, t := range m.globalRestartTimes {
 		if t.After(cutoff) {
@@ -38,14 +42,14 @@ func (m *ACPProcessManager) CanRestartGlobally() bool {
 	m.globalRestartTimes = valid
 
 	// Check if limit exceeded
-	if len(m.globalRestartTimes) >= MaxGlobalRestarts {
+	if len(m.globalRestartTimes) >= conversation.MaxGlobalRestarts {
 		// Enter cooldown
-		m.globalCooldownUntil = now.Add(GlobalCooldownDuration)
+		m.globalCooldownUntil = now.Add(conversation.GlobalCooldownDuration)
 		if m.logger != nil {
 			m.logger.Warn("Global restart limit exceeded, entering cooldown",
 				"recent_restarts", len(m.globalRestartTimes),
-				"max_global_restarts", MaxGlobalRestarts,
-				"cooldown_duration", GlobalCooldownDuration)
+				"max_global_restarts", conversation.MaxGlobalRestarts,
+				"cooldown_duration", conversation.GlobalCooldownDuration)
 		}
 		return false
 	}

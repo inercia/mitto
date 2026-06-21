@@ -1,0 +1,12 @@
+# Table with slow row delivery
+# This tests that tables aren't split when rows arrive slowly
+{"timestamp": "2026-01-25T14:30:57.000Z", "type": "agent_message", "data": {"html": "Here's the comparison:\n\n"}}
+{"timestamp": "2026-01-25T14:30:57.050Z", "type": "agent_message", "data": {"html": "| Feature | Before | After |\n"}}
+{"timestamp": "2026-01-25T14:30:57.100Z", "type": "agent_message", "data": {"html": "|---------|--------|-------|\n"}}
+# 400ms between rows - should NOT trigger soft timeout flush
+{"timestamp": "2026-01-25T14:30:57.500Z", "type": "agent_message", "data": {"html": "| Speed | Slow | Fast |\n"}}
+{"timestamp": "2026-01-25T14:30:57.900Z", "type": "agent_message", "data": {"html": "| Memory | High | Low |\n"}}
+{"timestamp": "2026-01-25T14:30:58.300Z", "type": "agent_message", "data": {"html": "| Reliability | Poor | Good |\n"}}
+{"timestamp": "2026-01-25T14:30:58.350Z", "type": "agent_message", "data": {"html": "\n"}}
+{"timestamp": "2026-01-25T14:30:58.400Z", "type": "agent_message", "data": {"html": "As you can see, the improvements are significant.\n"}}
+

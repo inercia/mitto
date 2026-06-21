@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 func TestFileServer_ServeFile(t *testing.T) {
@@ -289,11 +290,7 @@ func TestFileServer_ActiveSessionWorkspace(t *testing.T) {
 
 	// Add an active session with a working directory
 	sm.mu.Lock()
-	sm.sessions["test-session"] = &BackgroundSession{
-		persistedID:   "test-session",
-		workingDir:    sessionWorkspace,
-		workspaceUUID: wsUUID,
-	}
+	sm.sessions["test-session"] = conversation.NewMinimalBackgroundSession("test-session", sessionWorkspace, wsUUID)
 	sm.mu.Unlock()
 
 	fs := NewFileServer(sm, nil)

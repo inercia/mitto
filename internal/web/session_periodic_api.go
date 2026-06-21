@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -158,7 +159,7 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 	}
 
 	// If the session has no title, trigger title generation from the periodic prompt.
-	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
+	if s.sessionManager != nil && conversation.SessionNeedsTitle(s.Store(), sessionID) {
 		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
 			bs.TriggerTitleGenerationFromPeriodic(req.Prompt, req.PromptName)
 		}
@@ -225,7 +226,7 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	// If the session has no title, trigger title generation from the periodic prompt.
-	if s.sessionManager != nil && SessionNeedsTitle(s.Store(), sessionID) {
+	if s.sessionManager != nil && conversation.SessionNeedsTitle(s.Store(), sessionID) {
 		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
 			var pPrompt, pName string
 			if updated != nil {

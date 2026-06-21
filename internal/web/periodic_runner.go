@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -52,9 +53,6 @@ type PeriodicAutoStoppedCallback func(sessionID string, periodic *session.Period
 // WebSocket clients so the countdown resets.
 type PeriodicUpdatedCallback func(sessionID string, periodic *session.PeriodicPrompt)
 
-// PromptResolverFunc resolves a prompt name to its full text for a given working directory.
-type PromptResolverFunc func(promptName string, workingDir string) (string, error)
-
 // PeriodicRunner manages scheduled periodic prompt delivery and session housekeeping.
 // It polls all sessions at regular intervals and:
 // - Delivers periodic prompts that are due
@@ -97,7 +95,7 @@ type PeriodicRunner struct {
 	archiveRetentionPeriod string
 
 	// promptResolver resolves a prompt name to its text at execution time.
-	promptResolver PromptResolverFunc
+	promptResolver conversation.PromptResolver
 
 	// maxPeriodicIterations is the user-configured default cap on scheduled
 	// periodic runs. 0 means unlimited; the hardcoded backstop still applies.
@@ -230,7 +228,7 @@ func (r *PeriodicRunner) MinPeriodicCompletionDelaySeconds() int {
 }
 
 // SetPromptResolver sets the function used to resolve prompt names to their text at execution time.
-func (r *PeriodicRunner) SetPromptResolver(resolver PromptResolverFunc) {
+func (r *PeriodicRunner) SetPromptResolver(resolver conversation.PromptResolver) {
 	r.promptResolver = resolver
 }
 
@@ -486,6 +484,74 @@ func (r *PeriodicRunner) BootstrapOnCompletion(sessionID string) {
 				"error", err)
 		}
 	}
+}
+
+// recoverStalledOnCompletion is the poll-loop self-healing fallback for an
+// onCompletion periodic loop that missed its end-of-turn re-arm and would
+// otherwise stall forever (see mitto-5dn).
+//
+// The next onCompletion run is normally armed only by an in-memory timer set
+// when a turn completes on the clean idle path. If a turn completes in a
+// non-idle state (notably around an ACP session resume or a heavy
+// children-wait turn), the re-arm is skipped and nothing reschedules the loop.
+// This poll-loop check mirrors how schedule-based triggers recover: it re-arms
+// the completion timer when the loop has clearly stalled.
+//
+// It re-arms only when ALL of the following hold:
+//   - the loop has run at least once (IterationCount > 0 || LastSentAt != nil);
+//     a fresh loop is handled by BootstrapOnCompletion, not here;
+//   - no completion timer is currently armed for the session; a healthy loop
+//     always has one pending while waiting for the next run, so an absent timer
+//     is the precise stall signal;
+//   - the wall-clock maxDuration cap has not been reached; a capped loop should
+//     auto-stop on its next fire, not be kept alive;
+//   - the session is not currently prompting; an in-flight turn will re-arm
+//     itself on completion, and if it misses (the bug) the next poll recovers it.
+//
+// When those hold it re-arms via OnConversationIdle, which re-reads the config
+// and arms the timer with the floor-clamped delay. The downstream
+// fireOnCompletion auto-resumes a non-running session and enforces caps, so this
+// also self-heals after a process restart (in-memory timers do not survive one).
+func (r *PeriodicRunner) recoverStalledOnCompletion(meta session.Metadata, periodic *session.PeriodicPrompt) {
+	if periodic == nil {
+		return
+	}
+
+	// Fresh loops are bootstrapped elsewhere; only recover loops that have run.
+	if periodic.IterationCount == 0 && periodic.LastSentAt == nil {
+		return
+	}
+
+	// A pending timer means the loop is healthy — nothing to recover.
+	r.completionTimersMu.Lock()
+	_, pending := r.completionTimers[meta.SessionID]
+	r.completionTimersMu.Unlock()
+	if pending {
+		return
+	}
+
+	// Don't keep a loop alive past its wall-clock cap; let it auto-stop on fire.
+	if periodic.ReachedMaxDuration(time.Now()) {
+		return
+	}
+
+	// A turn in flight will re-arm itself on completion; if it misses (the bug),
+	// the next poll catches it with the session idle. Avoid touching it now so we
+	// neither interfere with a healthy turn nor race the fire→deliver window.
+	if r.sessionManager != nil {
+		if bs := r.sessionManager.GetSession(meta.SessionID); bs != nil && bs.IsPrompting() {
+			return
+		}
+	}
+
+	if r.logger != nil {
+		r.logger.Info("Re-arming stalled on-completion periodic loop (missed end-of-turn re-arm)",
+			"session_id", meta.SessionID,
+			"iteration_count", periodic.IterationCount)
+	}
+
+	// Re-read config and arm the timer with the floor-clamped delay.
+	r.OnConversationIdle(meta.SessionID)
 }
 
 // fireOnCompletion delivers the next onCompletion periodic run. It re-validates the
@@ -760,6 +826,10 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 	// before any delivery still kicks off the loop. No-op if already run or in-flight.
 	if periodic.IsOnCompletion() {
 		r.BootstrapOnCompletion(sessionID)
+		// Self-healing safety net for an already-running loop whose end-of-turn
+		// re-arm was missed (e.g. around an ACP resume or a heavy children-wait
+		// turn that did not register as a clean idle transition). See mitto-5dn.
+		r.recoverStalledOnCompletion(meta, periodic)
 		return 0, 0, 0
 	}
 
@@ -1025,7 +1095,7 @@ func (r *PeriodicRunner) handlePromptResolveFailure(sessionID, sessionName strin
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
 //   - false → schedule is left untouched (manual "run now" without resetting the timer)
-func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool, forced bool) error {
+func (r *PeriodicRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool, forced bool) error {
 	sessionID := bs.GetSessionID()
 
 	// Resolve prompt text from name if needed
@@ -1060,7 +1130,7 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
 	// RecordSent would advance the schedule even if the prompt later fails
 	// (e.g., ACP process crash).
-	meta := PromptMeta{
+	meta := conversation.PromptMeta{
 		SenderID:         "periodic-runner",
 		PromptID:         "",                  // No client to confirm delivery to
 		PromptName:       periodic.PromptName, // Pass prompt name so UI can render a badge instead of full text

@@ -18,6 +18,7 @@ import (
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
@@ -169,8 +170,8 @@ type Server struct {
 	periodicRunner *PeriodicRunner
 
 	// Callback index for mapping callback tokens to session IDs
-	callbackIndex       *CallbackIndex
-	callbackRateLimiter *CallbackRateLimiter
+	callbackIndex       *conversation.CallbackIndex
+	callbackRateLimiter *conversation.CallbackRateLimiter
 
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
@@ -665,8 +666,8 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize callback index and rate limiter
-	s.callbackIndex = NewCallbackIndex()
-	s.callbackRateLimiter = NewCallbackRateLimiter()
+	s.callbackIndex = conversation.NewCallbackIndex()
+	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()
 
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
@@ -1304,7 +1305,7 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 const acpStartFailWindow = 5 * time.Second
 
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
-// If err is an *ACPClassifiedError with a permanent classification, a more detailed
+// If err is an *conversation.ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
 // Duplicate calls for the same session within acpStartFailWindow are suppressed so that
 // coalesced resume waiters do not each emit an error toast.
@@ -1343,7 +1344,7 @@ func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err erro
 	}
 
 	// Check if this is a classified permanent error — broadcast with extra context.
-	if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
+	if classified, ok := err.(*conversation.ACPClassifiedError); ok && !classified.IsRetryable() {
 		data["error_class"] = classified.Class.String()
 		data["user_message"] = classified.UserMessage
 		data["user_guidance"] = classified.UserGuidance
