@@ -3,12 +3,83 @@ package session
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/logging"
 )
+
+// MaxMetaBytes is the maximum allowed size (in bytes) of a JSON-encoded event
+// metadata bag. If the bag exceeds this cap, it is dropped in its entirety
+// (not truncated per-key) so that behaviour remains predictable.
+// 4 KB is generous for lightweight annotations while blocking accidental
+// secret storage.
+const MaxMetaBytes = 4096
+
+// RecordOption configures an Event before it is appended to the session log.
+//
+// SENSITIVITY POLICY: Options must NOT store secrets, credentials, full argument
+// values, or full prompt text in the metadata bag. Meta is intended for
+// lightweight, experimental annotations only. Well-established, high-traffic
+// annotations should graduate to typed fields on the per-type *Data struct.
+type RecordOption func(*Event)
+
+// WithMeta sets a single key on the event's generic metadata bag. Repeated
+// calls accumulate entries. Same sensitivity rules as RecordOption apply.
+func WithMeta(key string, value any) RecordOption {
+	return func(e *Event) {
+		if e.Meta == nil {
+			e.Meta = make(map[string]any)
+		}
+		e.Meta[key] = value
+	}
+}
+
+// WithMetaMap merges all entries from m into the event's metadata bag.
+// Same sensitivity rules as RecordOption apply.
+func WithMetaMap(m map[string]any) RecordOption {
+	return func(e *Event) {
+		if len(m) == 0 {
+			return
+		}
+		if e.Meta == nil {
+			e.Meta = make(map[string]any)
+		}
+		for k, v := range m {
+			e.Meta[k] = v
+		}
+	}
+}
+
+// validateMeta JSON-encodes the map and, if the result exceeds MaxMetaBytes,
+// drops the entire map and logs a warning. Returns the (possibly nil) map.
+func validateMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return meta
+	}
+	b, err := json.Marshal(meta)
+	if err != nil || len(b) > MaxMetaBytes {
+		size := len(b)
+		if err != nil {
+			size = -1
+		}
+		logging.Session().Warn("event meta exceeds size cap, dropped",
+			"size", size, "cap", MaxMetaBytes)
+		return nil
+	}
+	return meta
+}
+
+// applyOptions applies opts to event and validates the resulting meta.
+func applyOptions(event Event, opts []RecordOption) Event {
+	for _, o := range opts {
+		o(&event)
+	}
+	event.Meta = validateMeta(event.Meta)
+	return event
+}
 
 // Recorder records events to a session store.
 type Recorder struct {
@@ -147,48 +218,48 @@ func (r *Recorder) Resume() error {
 }
 
 // RecordUserPrompt records a user prompt event.
-func (r *Recorder) RecordUserPrompt(message string) error {
-	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0)
+func (r *Recorder) RecordUserPrompt(message string, opts ...RecordOption) error {
+	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0, opts...)
 }
 
 // RecordUserPromptWithImages records a user prompt event with optional image references.
-func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef) error {
-	return r.RecordUserPromptComplete(message, images, nil, "", "", 0)
+func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef, opts ...RecordOption) error {
+	return r.RecordUserPromptComplete(message, images, nil, "", "", 0, opts...)
 }
 
 // RecordUserPromptComplete records a user prompt event with optional image/file references, prompt ID, prompt name, and argument count.
 // The promptID is a client-generated ID used for delivery confirmation on reconnect.
 // The promptName is the name of the workspace prompt used (for UI rendering); empty string means no named prompt.
 // The argumentCount is the number of ${VAR} arguments substituted; 0 means no arguments (ad-hoc or no-arg named prompt).
-func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
 		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
-	})
+	}, opts))
 }
 
 // RecordAgentMessage records an agent message event.
-func (r *Recorder) RecordAgentMessage(text string) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordAgentMessage(text string, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeAgentMessage,
 		Timestamp: time.Now(),
 		Data:      AgentMessageData{Text: text},
-	})
+	}, opts))
 }
 
 // RecordAgentThought records an agent thought event.
-func (r *Recorder) RecordAgentThought(text string) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordAgentThought(text string, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeAgentThought,
 		Timestamp: time.Now(),
 		Data:      AgentThoughtData{Text: text},
-	})
+	}, opts))
 }
 
 // RecordToolCall records a tool call event.
-func (r *Recorder) RecordToolCall(toolCallID, title, status, kind string, rawInput, rawOutput any) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordToolCall(toolCallID, title, status, kind string, rawInput, rawOutput any, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeToolCall,
 		Timestamp: time.Now(),
 		Data: ToolCallData{
@@ -199,12 +270,12 @@ func (r *Recorder) RecordToolCall(toolCallID, title, status, kind string, rawInp
 			RawInput:   rawInput,
 			RawOutput:  rawOutput,
 		},
-	})
+	}, opts))
 }
 
 // RecordToolCallUpdate records a tool call update event.
-func (r *Recorder) RecordToolCallUpdate(toolCallID string, status, title *string) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordToolCallUpdate(toolCallID string, status, title *string, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeToolCallUpdate,
 		Timestamp: time.Now(),
 		Data: ToolCallUpdateData{
@@ -212,21 +283,21 @@ func (r *Recorder) RecordToolCallUpdate(toolCallID string, status, title *string
 			Status:     status,
 			Title:      title,
 		},
-	})
+	}, opts))
 }
 
 // RecordPlan records a plan event.
-func (r *Recorder) RecordPlan(entries []PlanEntry) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordPlan(entries []PlanEntry, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypePlan,
 		Timestamp: time.Now(),
 		Data:      PlanData{Entries: entries},
-	})
+	}, opts))
 }
 
 // RecordPermission records a permission event.
-func (r *Recorder) RecordPermission(title, selectedOption, outcome string) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordPermission(title, selectedOption, outcome string, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypePermission,
 		Timestamp: time.Now(),
 		Data: PermissionData{
@@ -234,34 +305,34 @@ func (r *Recorder) RecordPermission(title, selectedOption, outcome string) error
 			SelectedOption: selectedOption,
 			Outcome:        outcome,
 		},
-	})
+	}, opts))
 }
 
 // RecordError records an error event.
-func (r *Recorder) RecordError(message string, code int) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordError(message string, code int, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeError,
 		Timestamp: time.Now(),
 		Data:      ErrorData{Message: message, Code: code},
-	})
+	}, opts))
 }
 
 // RecordFileRead records a file read event.
-func (r *Recorder) RecordFileRead(path string, size int) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordFileRead(path string, size int, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeFileRead,
 		Timestamp: time.Now(),
 		Data:      FileOperationData{Path: path, Size: size},
-	})
+	}, opts))
 }
 
 // RecordFileWrite records a file write event.
-func (r *Recorder) RecordFileWrite(path string, size int) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordFileWrite(path string, size int, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeFileWrite,
 		Timestamp: time.Now(),
 		Data:      FileOperationData{Path: path, Size: size},
-	})
+	}, opts))
 }
 
 // Suspend suspends the recording session but keeps it active for later resumption.
@@ -430,8 +501,8 @@ func (r *Recorder) MaxSeq() int64 {
 
 // RecordUIPromptAnswer records a user's response to a UI prompt from an MCP tool.
 // This creates an audit trail of user decisions made through the UI prompt system.
-func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string) error {
-	return r.recordEvent(Event{
+func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeUIPromptAnswer,
 		Timestamp: time.Now(),
 		Data: map[string]interface{}{
@@ -439,5 +510,5 @@ func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string) error
 			"option_id":  optionID,
 			"label":      label,
 		},
-	})
+	}, opts))
 }

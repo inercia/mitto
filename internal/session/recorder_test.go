@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -1639,5 +1641,136 @@ func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
 		if lastEvent.Type != EventTypeSessionEnd {
 			t.Errorf("Last event should be session_end, got %s", lastEvent.Type)
 		}
+	}
+}
+
+// --- RecordOption / WithMeta / WithMetaMap tests ---
+
+func setupRecorder(t *testing.T) (*Recorder, *Store) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	r := NewRecorder(store)
+	if err := r.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	return r, store
+}
+
+func lastEvent(t *testing.T, store *Store, sessionID string) Event {
+	t.Helper()
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("no events in store")
+	}
+	// Skip session_start; return the last non-start event if present.
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != EventTypeSessionStart {
+			return events[i]
+		}
+	}
+	return events[len(events)-1]
+}
+
+func TestRecordOption_NoMeta_AbsentInJSON(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	if err := r.RecordUserPrompt("hello"); err != nil {
+		t.Fatalf("RecordUserPrompt: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeUserPrompt {
+		t.Fatalf("expected user_prompt, got %s", ev.Type)
+	}
+	if ev.Meta != nil {
+		t.Errorf("expected nil Meta when no options used, got %v", ev.Meta)
+	}
+
+	// Verify JSON round-trip: "meta" key must be absent (omitempty).
+	jsonBytes, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(jsonBytes, []byte(`"meta"`)) {
+		t.Errorf("JSON should not contain \"meta\" key when Meta is nil, got: %s", jsonBytes)
+	}
+}
+
+func TestRecordOption_WithMeta_SingleKey(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	if err := r.RecordUserPrompt("hello", WithMeta("k", "v")); err != nil {
+		t.Fatalf("RecordUserPrompt: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Meta == nil {
+		t.Fatal("expected non-nil Meta")
+	}
+	if got, ok := ev.Meta["k"]; !ok || got != "v" {
+		t.Errorf(`Meta["k"] = %v, want "v"`, got)
+	}
+}
+
+func TestRecordOption_WithMetaMap_Merged(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	if err := r.RecordAgentMessage("hi", WithMetaMap(map[string]any{"a": 42, "b": "two"})); err != nil {
+		t.Fatalf("RecordAgentMessage: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Meta == nil {
+		t.Fatal("expected non-nil Meta")
+	}
+	// JSON round-trip converts int to float64; accept both.
+	switch v := ev.Meta["a"].(type) {
+	case int:
+		if v != 42 {
+			t.Errorf(`Meta["a"] = %v, want 42`, v)
+		}
+	case float64:
+		if v != 42 {
+			t.Errorf(`Meta["a"] = %v, want 42`, v)
+		}
+	default:
+		t.Errorf(`Meta["a"] has unexpected type %T, value %v`, ev.Meta["a"], ev.Meta["a"])
+	}
+	if ev.Meta["b"] != "two" {
+		t.Errorf(`Meta["b"] = %v, want "two"`, ev.Meta["b"])
+	}
+}
+
+func TestRecordOption_SizeCap_DropsEntireMap(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	// Build a meta map that exceeds MaxMetaBytes.
+	bigVal := make([]byte, MaxMetaBytes+100)
+	for i := range bigVal {
+		bigVal[i] = 'x'
+	}
+	if err := r.RecordUserPrompt("hello", WithMeta("big", string(bigVal))); err != nil {
+		t.Fatalf("RecordUserPrompt: %v", err)
+	}
+
+	// Event must still be recorded (drop ≠ failure).
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeUserPrompt {
+		t.Fatalf("expected user_prompt, got %s", ev.Type)
+	}
+	// Meta must be nil after cap enforcement.
+	if ev.Meta != nil {
+		t.Errorf("expected Meta to be dropped (nil) when oversized, got %v", ev.Meta)
 	}
 }

@@ -122,6 +122,20 @@ type Event struct {
 	Type      EventType   `json:"type"`
 	Timestamp time.Time   `json:"timestamp"`
 	Data      interface{} `json:"data"`
+
+	// Meta is an optional generic metadata bag for lightweight, experimental annotations
+	// that do not yet warrant a dedicated typed field on the *Data struct.
+	//
+	// SENSITIVITY POLICY: Meta must NOT carry secrets, credentials, full argument
+	// values, or full prompt text. Well-established, high-traffic annotations should
+	// graduate to typed fields on the per-type *Data struct instead.
+	//
+	// Size cap: MaxMetaBytes (4 KB JSON-encoded). Entries that exceed the cap are
+	// dropped in their entirety (not truncated) to keep behaviour predictable.
+	//
+	// Backward compatible: omitempty means absent meta serialises as nothing, so old
+	// events need no migration and old readers ignore the field.
+	Meta map[string]any `json:"meta,omitempty"`
 }
 
 // UserPromptData contains data for a user prompt event.
