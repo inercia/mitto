@@ -1,7 +1,7 @@
 icon: check
-name: Close if issue completed
-description: Check the conversation's beads issue and, if all its requirements are done, close it and self-destruct
-menus: conversation
+name: Close issue if completed
+description: Check the conversation's linked beads issue and, if all its requirements are done, close it; otherwise explain why it cannot be closed
+menus: conversation, prompts
 backgroundColor: '#C5E1A5'
 group: Tasks
 enabledWhen: session.hasBeadsIssue && commandExists("bd") && dirExists(".beads")
@@ -14,14 +14,25 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  This conversation is linked to the bead `@mitto:beads_issue`. Your job is to determine, against the
-  **actual work done in this conversation** and the **current state of the codebase**, whether
-  everything that bead asked for is now finished. If — and only if — it is **fully** complete, close
-  the bead and self-destruct this conversation. Otherwise, leave it open and report what remains.
+  This conversation is linked to the bead `@mitto:beads_issue`. Determine whether that bead is
+  already done. If it is fully complete, close it. If it cannot be closed yet, explain why and offer
+  to open its details.
 
-  ## Step 1 — Load the bead's requirements
+  ## Step 1 — Is the bead already closed?
 
-  Fetch everything the bead promises to deliver:
+  Load the bead's current state first:
+
+  ```bash
+  bd show @mitto:beads_issue --json
+  ```
+
+  If its `status` is already `closed`, there is **nothing else to do**. Notify the user and stop:
+
+  `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "@mitto:beads_issue already closed", message: "This bead is already closed — nothing to do.", style: "info")`
+
+  ## Step 2 — Load requirements and assess completion
+
+  The bead is still open. Fetch everything it promises to deliver:
 
   ```bash
   bd show @mitto:beads_issue --long --json     # full description, acceptance criteria, design, metadata
@@ -29,16 +40,11 @@ prompt: |
   ```
 
   Identify the concrete acceptance criteria. If none are listed, infer them from the description.
-
-  ## Step 2 — Check what this conversation accomplished
-
-  You already have the full context of what this conversation worked on — use it directly; do **not**
-  ask for a summary. Cross-reference each acceptance criterion against **hard evidence**, not just the
-  conversation narrative:
+  Then cross-reference each criterion against **hard evidence** — the current state of the codebase
+  and the work done in this conversation — not just narrative:
 
   - **Code changes**: confirm the files, symbols, APIs, UI, or config the bead describes actually
-    exist and behave as required in the codebase right now. For a bug, confirm the defective path is
-    gone or guarded.
+    exist and behave as required right now. For a bug, confirm the defective path is gone or guarded.
   - **Commits / branches** referencing the bead:
 
     ```bash
@@ -47,25 +53,19 @@ prompt: |
 
   - **Tests**: locate the tests covering the bead's behaviour. If they exist and are cheap to run,
     run the relevant ones and record the result. Treat missing or failing tests as **not done**.
+  - **Open blockers**: any unfinished blocker in the dep tree means the bead is **not done**.
 
   Mark each criterion: ✅ Done (with evidence) / ⚠️ Partial / ❌ Not done / ❓ Unknown.
 
   ## Step 3 — Decide
 
-  - **Fully complete** — every acceptance criterion is ✅ Done with concrete evidence and any
-    relevant tests pass → proceed to Step 4 (close and clean up).
+  - **Fully complete** — every acceptance criterion is ✅ Done with concrete evidence, no open
+    blockers, and any relevant tests pass → go to Step 4 (close).
   - **Anything else** — any criterion is ⚠️ Partial, ❌ Not done, or ❓ Unknown, or there is active
-    work still in flight → **do not close**. Be conservative: when evidence is ambiguous, treat the
-    bead as still open.
+    work still in flight → go to Step 5 (cannot close). Be conservative: when evidence is ambiguous,
+    treat the bead as not done.
 
-  If not fully complete, post a short progress note so the finding is not lost, report what remains to
-  the user, and **stop here** (do not run Step 4):
-
-  ```bash
-  bd comment @mitto:beads_issue "Reviewed for completion: <what is done> / <what remains>. Keeping open."
-  ```
-
-  ## Step 4 — Close the bead (only when fully complete)
+  ## Step 4 — Close the bead
 
   Close with a clear, specific, evidence-backed reason:
 
@@ -73,20 +73,31 @@ prompt: |
   bd close @mitto:beads_issue --reason "<what was delivered; key changes/commits; tests run and their result>"
   ```
 
-  If the close command fails, report the error and stop — do not self-destruct.
+  If the command fails, report the error and stop. On success, notify the user and stop:
 
-  ## Step 5 — Notify and self-destruct
+  `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Closed @mitto:beads_issue", message: "<one-line summary of what was delivered>", style: "success")`
 
-  This conversation existed to deliver `@mitto:beads_issue`, and that work is now complete and closed.
-  Tidy up so the conversation list does not accumulate finished work:
+  ## Step 5 — Cannot close: explain and offer details
 
-  1. Notify the user of the outcome (so they still get feedback after the conversation disappears):
+  Do **not** close the bead. Show a confirmation dialog that explains concisely **why** it cannot be
+  closed (which criteria remain, with the evidence you found) and offers to open its details:
 
-     `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Closed @mitto:beads_issue", message: "<one-line summary of what was delivered>", style: "success")`
+  ```
+  mitto_ui_options_mitto(self_id: "@mitto:session_id",
+    question: "@mitto:beads_issue can't be closed yet: <one-line reason>. What would you like to do?",
+    options: [
+      {label: "Open issue details", description: "Show the full bead and what still remains"},
+      {label: "Leave it open", description: "Do nothing further"}
+    ])
+  ```
 
-  2. Self-destruct this conversation:
+  - If the user picks **Open issue details**, run `bd show @mitto:beads_issue --long` and present the
+    full bead alongside a per-criterion breakdown of what is done and what remains.
+  - If the user picks **Leave it open**, record the finding so it is not lost, then stop:
 
-     `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`
+    ```bash
+    bd comment @mitto:beads_issue "Reviewed for completion: <what is done> / <what remains>. Keeping open."
+    ```
 
-  The deletion is deferred until your turn finishes, so the notification is delivered first. If the
-  delete tool is unavailable, skip this step silently.
+  If the interactive tools are unavailable (e.g. an automated run), skip the dialog and instead report
+  the same explanation — why it cannot be closed and what remains — as a normal message.

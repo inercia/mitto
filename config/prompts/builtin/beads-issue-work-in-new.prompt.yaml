@@ -1,0 +1,175 @@
+icon: play
+name: Start work in new
+menus: beadsIssues
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID to act on
+  - name: ACP_SERVER
+    type: acpServer
+    required: true
+    description: The agent (workspace) to run the work in (e.g. "Auggie (Opus)")
+description: Plan this bead and spawn parallel Mitto conversations — running the work in a chosen agent (workspace)
+backgroundColor: '#B2DFDB'
+group: Tasks
+enabledWhen: '!session.isChild && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*") && item.status != "closed"'
+prompt: |
+  ## Session Context
+
+  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `@mitto:available_acp_servers`
+  Existing children: `@mitto:children`
+
+  **Chosen agent for the work:** `${ACP_SERVER}` — every work conversation you create
+  below MUST run on this agent (pass `acp_server: "${ACP_SERVER}"` to
+  `mitto_conversation_new_mitto`). This is what makes this prompt "start work in new":
+  the implementation runs in fresh conversations on the agent the user selected.
+
+  # Beads: Start Work on a Bead (in a chosen agent)
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  The **target bead** is `${ISSUE_ID}`.
+
+  ## Step 1 — Fetch full bead details
+
+  Load everything about the target bead:
+
+  ```bash
+  bd show ${ISSUE_ID} --long --json        # full fields, metadata, design, acceptance
+  bd dep tree ${ISSUE_ID}                   # dependency tree (blockers and what it blocks)
+  bd show ${ISSUE_ID} --children --json     # any child beads
+  ```
+
+  Analyze all gathered context thoroughly: understand the problem statement, scope, constraints, acceptance criteria, design notes, and any dependencies or prior discussion in notes/comments.
+
+  ## Step 1b — If the bead is an epic, pick the first child to tackle
+
+  Before planning, determine whether the target bead is an **epic** (or otherwise a parent with child beads): check its `type` (`issue_type` is `epic`) and the `bd show ${ISSUE_ID} --children --json` output from Step 1.
+
+  - If the bead is **not** an epic and has **no children**: skip this step and continue to Step 2, working `${ISSUE_ID}` directly.
+  - If the bead **is** an epic / has children: an epic is a container, not directly implementable. You must first decide which child to start with:
+
+    1. **Map the children's dependencies** — both explicit edges (`blocks` / `depends-on`, visible via `bd dep tree ${ISSUE_ID}`) and implicit ones you infer from the children's descriptions (e.g., a child that establishes schema, infrastructure, or shared scaffolding that its siblings build on). Inspect children as needed with `bd show <child-id> --long --json`.
+    2. **Determine the execution order** that respects those dependencies (a topological order: a child only comes after everything it depends on), and skip any child already `closed`/`done` or `in_progress`.
+    3. **Find the first workable child(ren)** — every child with **no unresolved blockers** that can be started right now. There may be **more than one** when several have no dependencies between them; in that case they can all be tackled in parallel.
+    4. **Propose to the user** which child(ren) to start with, using `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`:
+       - Make the first option your top recommendation among the workable children (highest declared priority, then highest blocking leverage over its siblings), labelled with the child bead ID and title.
+       - If multiple children are independently workable, offer an option to **start them together**, plus an option for each individually.
+       - Set `allow_free_text: true` so the user can override and name a different child.
+       - **Do not** offer any child that is blocked (directly or transitively) by an unfinished child — it is not in a workable state yet.
+    5. **Wait for the user's confirmation.** Once they confirm, treat the chosen child (or children) as the bead(s) to work for the rest of this prompt — substitute the chosen child bead ID for `${ISSUE_ID}` in the steps below (claim, plan, dispatch, and log against the chosen child). If the user picked multiple independent children, plan and dispatch each of them. Leave the epic itself open as the parent.
+
+  ## Step 2 — Claim the bead
+
+  Atomically claim the bead so others know it is being worked on:
+
+  ```bash
+  bd update ${ISSUE_ID} --claim
+  ```
+
+  This sets the assignee to you and the status to `in_progress` (idempotent if already claimed by you).
+
+  ## Step 3 — Produce an implementation plan
+
+  Create a structured plan with the following sections:
+
+  ### Goal
+  One-paragraph summary of what needs to be built or fixed, and why.
+
+  ### Approach
+  High-level technical approach: which components are affected, what design decisions are involved, and why this approach was chosen.
+
+  ### Work Items
+  A numbered list of concrete, independently executable tasks. Each task must have:
+  - **Title**: short action-oriented name (e.g., "Add database migration for new column")
+  - **What to do**: a focused description of the work
+  - **Inputs / context needed**: what the task needs to know or have access to
+  - **Definition of done**: how to verify the task is complete
+
+  ### Open Questions & Risks
+  - Any ambiguities in the bead that need clarification
+  - Technical risks or unknowns
+  - Dependencies on other beads or systems
+
+  ## Step 4 — Present the plan and iterate
+
+  Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to show the plan summary and ask: "Does this plan look correct? Shall I proceed with spawning work conversations on `${ACP_SERVER}`?"
+
+  - If the user says **No** or provides feedback: revise the plan and present it again. Repeat until the user explicitly approves.
+  - If the user says **Yes**: proceed to Step 5.
+
+  ## Step 5 — Dispatch work items to new conversations on the chosen agent
+
+  Only parallelize work items that are **truly independent** (no shared files, no ordering dependency). Run trivial or tightly-coupled items inline in this conversation rather than dispatching a separate conversation for each.
+
+  For each parallelizable work item in the approved plan, **create a new conversation running on `${ACP_SERVER}`** (the agent the user selected). Only reuse an existing child if it is **idle** AND already runs `${ACP_SERVER}`; otherwise always create a new one:
+
+  1. **Create the work conversation** with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", ...)`:
+     - `acp_server`: `"${ACP_SERVER}"` (the chosen agent — do **not** auto-pick a different one)
+     - `title`: the work item title prefixed with the bead ID (e.g., `"${ISSUE_ID} · Add database migration"`)
+     - `beads_issue`: `${ISSUE_ID}` (links the worker conversation to this bead)
+     - To reuse a suitable idle child running `${ACP_SERVER}`, send the worker prompt instead with
+       `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.
+
+  2. The **worker prompt** (reused or new) must be **self-contained** and include:
+     - The full bead ID, title, and description
+     - The acceptance criteria from the bead
+     - The specific work item title and description
+     - The definition of done for this task
+     - Any relevant context from the bead's design notes or dependencies
+     - Instruction to report back using `mitto_children_tasks_report_mitto` when done
+
+  3. Do **not** wait for each conversation before dispatching the next — dispatch all in parallel.
+
+  ## Step 6 — Log work start on the bead
+
+  Immediately after dispatching, record a progress comment in the bead's history so the tracker reflects that work has begun, where it is happening, and on which agent:
+
+  ```bash
+  bd comment ${ISSUE_ID} "Started work on agent ${ACP_SERVER}. Plan: <N> work items. Dispatched to: <child titles / IDs> (reused: <which, if any>)."
+  ```
+
+  ## Step 7 — Wait for workers and synthesise
+
+  Use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "${ISSUE_ID}", timeout_seconds: 600)` to wait for the workers to report back. On timeout, retry the pending children with the **same `task_id`** (omit the prompt to avoid duplicates). Summarise the consolidated results to the user, and log a short progress comment for any notable milestone or blocker:
+
+  ```bash
+  bd comment ${ISSUE_ID} "Progress: <what completed / what remains / blockers>."
+  ```
+
+  ## Step 8 — Log completion and close out
+
+  Once the work is complete and verified, record a completion comment in the bead's history, then offer to close it:
+
+  ```bash
+  bd comment ${ISSUE_ID} "Completed: <what was delivered, key changes, verification performed>."
+  bd close ${ISSUE_ID} --reason "<short summary of what was delivered>"
+  ```
+
+  After closing, clean up any finished child conversations that are no longer needed with `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>")`.
+
+  ## Final step — Offer to delete this conversation
+
+  The task is complete. Offer to tidy up so finished conversations do not accumulate.
+
+  1. Ask the user whether to delete this conversation now, via
+     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     - **"Yes, delete it"**
+     - **"No, keep it"**
+
+  2. Honour the answer:
+     - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+       message is delivered first) with
+       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       then self-destruct with
+       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+     - **Keep** → leave the conversation in place.
+
+  3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+     it was **started by this prompt** (a dedicated conversation for this task, not an existing
+     conversation you were invoked into), **no further action is expected from the user**, and
+     **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+     leave the conversation untouched.
+
+  If the `mitto_*` tools are unavailable, skip this step silently.
