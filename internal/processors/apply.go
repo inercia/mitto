@@ -28,6 +28,22 @@ func wrapUserRequest(message string) string {
 	return userRequestOpenTag + message + userRequestCloseTag
 }
 
+const (
+	systemNotesOpenTag  = "\n<mitto_system_notes>\n"
+	systemNotesCloseTag = "\n</mitto_system_notes>"
+)
+
+// wrapSystemNotes wraps the appended processor instruction region (standing
+// reminders) in an explicitly labeled block so the agent treats it as system
+// guidance rather than additional user tasks. Whitespace-only input is returned
+// unchanged.
+func wrapSystemNotes(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	return systemNotesOpenTag + text + systemNotesCloseTag
+}
+
 // pendingPromptDispatch holds a prompt-mode processor ready for dispatch.
 type pendingPromptDispatch struct {
 	name    string
@@ -82,6 +98,10 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 	applied := 0
 	skipped := 0
 
+	// appendBuf accumulates all append contributions so they can be wrapped once
+	// in <mitto_system_notes> on first-message assemblies.
+	var appendBuf strings.Builder
+
 	for _, proc := range procs {
 		// Check if processor should apply
 		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input)
@@ -114,7 +134,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			case config.ProcessorMutatePrepend:
 				result.Message = proc.Text + result.Message
 			case config.ProcessorMutateAppend:
-				result.Message += proc.Text
+				appendBuf.WriteString(proc.Text)
 			}
 			logger.Info("text-mode processor applied",
 				"name", proc.Name,
@@ -192,7 +212,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			}
 		case OutputAppend:
 			if output.Text != "" {
-				result.Message += output.Text
+				appendBuf.WriteString(output.Text)
 			}
 		case OutputDiscard:
 			// Do nothing with output
@@ -211,6 +231,17 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			"name", proc.Name,
 			"output_type", proc.GetOutput(),
 		)
+	}
+
+	// Flush the append buffer once after all processors. On first-message assemblies,
+	// wrap the accumulated region in <mitto_system_notes> so the agent treats it as
+	// standing guidance rather than new tasks.
+	if appendBuf.Len() > 0 {
+		if input.IsFirstMessage {
+			result.Message += wrapSystemNotes(appendBuf.String())
+		} else {
+			result.Message += appendBuf.String()
+		}
 	}
 
 	logger.Info("processor pipeline complete",
@@ -640,6 +671,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 	// Collect prompt-mode processors for batched dispatch after the loop.
 	var pendingPrompts []pendingPromptDispatch
 
+	// appendBuf accumulates all append contributions so they can be wrapped once
+	// in <mitto_system_notes> on first-message assemblies.
+	var appendBuf strings.Builder
+
 	for _, proc := range m.processors {
 		// Determine effective isFirstMessage for this processor
 		effectiveIsFirst := origIsFirst
@@ -681,10 +716,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			switch proc.GetMutate() {
 			case config.ProcessorMutatePrepend:
 				result.Message = text + result.Message
+				input.Message = result.Message
 			case config.ProcessorMutateAppend:
-				result.Message += text
+				appendBuf.WriteString(text)
 			}
-			input.Message = result.Message
 		} else if proc.IsPromptMode() {
 			// Prompt-mode: collect for batched dispatch after loop.
 			if m.promptFunc == nil {
@@ -755,7 +790,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				}
 			case OutputAppend:
 				if output.Text != "" {
-					result.Message += output.Text
+					appendBuf.WriteString(output.Text)
 				}
 			case OutputDiscard:
 				// Do nothing with output
@@ -773,6 +808,17 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				messagesSince: 0,
 				tokensSince:   0,
 			}
+		}
+	}
+
+	// Flush the append buffer once after all processors. On first-message-style
+	// assemblies, wrap the accumulated region in <mitto_system_notes> so the agent
+	// treats it as standing guidance rather than new tasks.
+	if appendBuf.Len() > 0 {
+		if origIsFirst || len(rerunOverrides) > 0 {
+			result.Message += wrapSystemNotes(appendBuf.String())
+		} else {
+			result.Message += appendBuf.String()
 		}
 	}
 

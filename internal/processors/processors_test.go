@@ -1119,7 +1119,7 @@ echo '{"text": " :SUFFIX"}'
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := wrapUserRequest("original") + " :SUFFIX"
+	expected := wrapUserRequest("original") + wrapSystemNotes(" :SUFFIX")
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1324,8 +1324,8 @@ func TestApplyProcessorsTextModeAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	if result.Message != wrapUserRequest("hello world")+" SUFFIX" {
-		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("hello world")+" SUFFIX")
+	if result.Message != wrapUserRequest("hello world")+wrapSystemNotes(" SUFFIX") {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("hello world")+wrapSystemNotes(" SUFFIX"))
 	}
 }
 
@@ -1356,7 +1356,7 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := "Context: " + wrapUserRequest("user message") + "\n---\nEnd"
+	expected := "Context: " + wrapUserRequest("user message") + wrapSystemNotes("\n---\nEnd")
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1436,9 +1436,11 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 		t.Errorf("expected result to contain wrapped user request %q, got %q", wrapped, result.Message)
 	}
 
-	// Ordering: [Session Context] < <user_request> < [Reminder]
+	// Ordering: [Session Context] < <user_request> < <mitto_system_notes> (contains [Reminder])
 	idxCtx := strings.Index(result.Message, "[Session Context]")
 	idxReq := strings.Index(result.Message, "<user_request>")
+	idxNotesOpen := strings.Index(result.Message, "<mitto_system_notes>")
+	idxNotesClose := strings.Index(result.Message, "</mitto_system_notes>")
 	idxRem := strings.Index(result.Message, "[Reminder]")
 	if idxCtx < 0 || idxReq < 0 || idxRem < 0 {
 		t.Fatalf("expected all three sections present; ctx=%d req=%d rem=%d in %q", idxCtx, idxReq, idxRem, result.Message)
@@ -1447,7 +1449,18 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 		t.Errorf("ordering wrong: [Session Context] at %d, <user_request> at %d, [Reminder] at %d", idxCtx, idxReq, idxRem)
 	}
 
-	// Negative case: non-first message must NOT be wrapped.
+	// System-notes wrapping: appended [Reminder] must be inside <mitto_system_notes>.
+	if idxNotesOpen < 0 || idxNotesClose < 0 {
+		t.Fatalf("expected <mitto_system_notes>…</mitto_system_notes> in first-message result, got %q", result.Message)
+	}
+	if idxReq >= idxNotesOpen {
+		t.Errorf("ordering wrong: <user_request> at %d should be before <mitto_system_notes> at %d", idxReq, idxNotesOpen)
+	}
+	if idxNotesOpen >= idxRem || idxRem >= idxNotesClose {
+		t.Errorf("[Reminder] at %d should be between <mitto_system_notes> (%d) and </mitto_system_notes> (%d)", idxRem, idxNotesOpen, idxNotesClose)
+	}
+
+	// Negative case: non-first message must NOT be wrapped with either tag.
 	input2 := &ProcessorInput{Message: msg, IsFirstMessage: false}
 	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
 	if err != nil {
@@ -1455,6 +1468,9 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 	}
 	if strings.Contains(result2.Message, "<user_request>") {
 		t.Errorf("non-first message should NOT contain <user_request> wrapper, got %q", result2.Message)
+	}
+	if strings.Contains(result2.Message, "<mitto_system_notes>") {
+		t.Errorf("non-first message should NOT contain <mitto_system_notes> wrapper, got %q", result2.Message)
 	}
 }
 
@@ -1494,17 +1510,20 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 
 	// At this point, @mitto: variables are still unresolved.
 	// The user request is wrapped in <user_request> delimiters (first-message protection).
+	// The appended footer is wrapped in <mitto_system_notes> (first-message system-notes wrapping).
 	expectedBeforeSubst := "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n" +
-		wrapUserRequest("Fix the login bug") + "\n[agent: @mitto:acp_server]"
+		wrapUserRequest("Fix the login bug") + wrapSystemNotes("\n[agent: @mitto:acp_server]")
 	if result.Message != expectedBeforeSubst {
 		t.Errorf("before substitution: got %q, want %q", result.Message, expectedBeforeSubst)
 	}
 
-	// Step 2: Substitute variables (as BackgroundSession does)
+	// Step 2: Substitute variables (as BackgroundSession does).
+	// SubstituteVariables runs on the whole assembled string, so @mitto: tokens
+	// inside <mitto_system_notes> are substituted the same as before.
 	finalMessage := SubstituteVariables(result.Message, input)
 
 	expectedAfterSubst := "Session: sess-001\nProject: /home/user/myproject\n\n" +
-		wrapUserRequest("Fix the login bug") + "\n[agent: claude-code]"
+		wrapUserRequest("Fix the login bug") + wrapSystemNotes("\n[agent: claude-code]")
 	if finalMessage != expectedAfterSubst {
 		t.Errorf("after substitution: got %q, want %q", finalMessage, expectedAfterSubst)
 	}

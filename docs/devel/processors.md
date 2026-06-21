@@ -630,3 +630,39 @@ bury the current user message again.
 so on a first message they see the wrapped text. This is an accepted minor tradeoff; the
 impactful built-in processors (session-context, delegation rules, reminders) are all text-mode
 or prompt-mode and are not affected.
+
+### First-Message System-Notes Wrapping
+
+On first-message-style assemblies, all append contributions (text-mode `mutate: append` and
+command-mode `OutputAppend`) are accumulated in a buffer and flushed once after the processor
+loop, wrapped in an explicit XML delimiter:
+
+```
+<mitto_system_notes>
+{accumulated append text}
+</mitto_system_notes>
+```
+
+**Rationale:** Without labeling, the trailing wall of reminder/instruction text appended by
+processors such as `beads-track-tasks`, `beads-ready-tasks`, `delegate-to-coder`, and
+`check-mcp-tools` can be misread as a new task request rather than standing guidance. The
+`<mitto_system_notes>` tag makes the boundary unambiguous.
+
+**What is wrapped and what is not:**
+
+| Region | Wrapped? | Reason |
+|---|---|---|
+| Prepended session-context | No | Already self-labeled `[Session Context]` |
+| User's core message | No | Wrapped separately by `<user_request>` |
+| Command `OutputTransform` result | No | Replaces the whole message; not an append |
+| Text-mode `mutate: append` | Yes | Accumulated in buffer, flushed once |
+| Command `OutputAppend` | Yes | Accumulated in buffer, flushed once |
+
+**Gating:** The wrapping is applied under the same conditions as user-request wrapping:
+`IsFirstMessage` in `ApplyProcessors`, and `origIsFirst || len(rerunOverrides) > 0` in
+`applyWithRerun`. Non-first messages receive the raw concatenated append text unchanged.
+
+**Command-mode stdin tradeoff:** Command processors receive `result.Message` as stdin, which
+contains prepends and the user core but NOT the pending append buffer. This is intentional and
+acceptable; the only built-in command processor for user-prompt phase (`beads-prime`) uses
+`input: none` and is therefore unaffected.
