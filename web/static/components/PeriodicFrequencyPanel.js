@@ -13,7 +13,6 @@ import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
-import { CountdownDisplay } from "./CountdownDisplay.js";
 import { PortalTooltip } from "./ContextMenu.js";
 
 /** Minimum delay for on-completion trigger (seconds). Used for client-side clamp helper text. */
@@ -183,9 +182,10 @@ export function PeriodicFrequencyPanel({
   // localAt is stored in LOCAL time for display/editing (converted from UTC when syncing from props)
   const [localAt, setLocalAt] = useState(utcToLocalTime(frequency.at) || "");
   const [isSaving, setIsSaving] = useState(false);
-  // Local estimated next run time (updated immediately on frequency change)
-  const [localNextScheduledAt, setLocalNextScheduledAt] =
-    useState(nextScheduledAt);
+  // Local estimated next run time, kept in sync and propagated to the parent on
+  // save. The live countdown + next-run display now live in the conversation
+  // header subtitle, so the value is written but no longer read here.
+  const [, setLocalNextScheduledAt] = useState(nextScheduledAt);
   // Triggering immediate delivery
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
@@ -684,28 +684,8 @@ export function PeriodicFrequencyPanel({
   // play button restores the schedule and the pause button is greyed out.
   const periodicPaused = !disabled;
 
-  // Format next scheduled time for display (uses local state for immediate feedback)
-  const nextTimeDisplay = localNextScheduledAt
-    ? new Date(localNextScheduledAt).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : null;
-
   // Compact frequency label for the header glance row
   const freqLabel = `every ${localValue}${localUnit === "minutes" ? "min" : localUnit === "hours" ? "h" : "d"}`;
-
-  // Live adaptive countdown to the next run; absolute time surfaced as a tooltip
-  const countdownDisplay = localNextScheduledAt
-    ? html`<${CountdownDisplay}
-        targetIso=${localNextScheduledAt}
-        unit=${localUnit}
-        active=${isOpen}
-        title=${nextTimeDisplay ? `Next: ${nextTimeDisplay}` : ""}
-      />`
-    : null;
 
   // Run count for the header glance row
   const runCountLabel =
@@ -851,9 +831,10 @@ export function PeriodicFrequencyPanel({
           <div class="flex-1 min-w-0"></div>
 
           <!-- While expanded: staged-edit Save button replaces the glance status.
-               While collapsed: trigger-aware label + live countdown + run count.
-               The glance status is md+ only — on phones the next-run info is
-               surfaced inside the expanded properties body instead. -->
+               While collapsed: trigger-aware frequency label + run count. The
+               live countdown + next-run time live in the conversation header
+               subtitle. The glance status is md+ only — on phones the frequency
+               label is surfaced inside the expanded properties body instead. -->
           ${
             expanded
               ? html`<button
@@ -879,19 +860,10 @@ export function PeriodicFrequencyPanel({
                             ? ` · +${localDelay}s`
                             : ""}</span
                         >`
-                      : html`<${Fragment}>
-                            <span
-                              class="badge badge-sm badge-ghost whitespace-nowrap"
-                              >${freqLabel}</span
-                            >
-                            ${
-                              countdownDisplay &&
-                              html`<span
-                                class="badge badge-sm badge-ghost font-mono whitespace-nowrap"
-                                >${countdownDisplay}</span
-                              >`
-                            }
-                          </${Fragment}>`}
+                      : html`<span
+                          class="badge badge-sm badge-ghost whitespace-nowrap"
+                          >${freqLabel}</span
+                        >`}
                     <span
                       class="badge badge-sm badge-ghost whitespace-nowrap"
                       >${runCountLabel}</span
@@ -937,9 +909,10 @@ export function PeriodicFrequencyPanel({
           }"
         >
           <!-- Mobile-only next-run info: the header glance status is hidden on
-               phones, so surface the trigger label + live countdown here at the
-               top of the expanded properties instead. On md+ this info lives in
-               the header status row. -->
+               phones, so surface the trigger/frequency label here at the top of
+               the expanded properties instead. The live countdown + next-run
+               time live in the conversation header subtitle. On md+ this label
+               lives in the header status row. -->
           <div
             class="md:hidden flex items-center gap-1.5 px-4 pt-2 pb-2 text-sm"
             data-testid="periodic-next-run-info-mobile"
@@ -951,21 +924,9 @@ export function PeriodicFrequencyPanel({
                     >after agent
                     finishes${localDelay > 0 ? ` · +${localDelay}s` : ""}</span
                   >`
-                : html`<${Fragment}>
-                    <span class="badge badge-sm badge-ghost whitespace-nowrap"
-                      >${freqLabel}</span
-                    >
-                    ${localNextScheduledAt &&
-                    html`<span
-                      class="badge badge-sm badge-ghost font-mono whitespace-nowrap"
-                      ><${CountdownDisplay}
-                        targetIso=${localNextScheduledAt}
-                        unit=${localUnit}
-                        active=${isOpen && expanded}
-                        title=${nextTimeDisplay ? `Next: ${nextTimeDisplay}` : ""}
-                      /></span
-                    >`}
-                  </${Fragment}>`
+                : html`<span class="badge badge-sm badge-ghost whitespace-nowrap"
+                    >${freqLabel}</span
+                  >`
             }
           </div>
 

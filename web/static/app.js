@@ -111,6 +111,7 @@ import {
 import { SessionPanel } from "./components/SessionPanel.js";
 import { Drawer } from "./components/Drawer.js";
 import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
+import { CountdownDisplay } from "./components/CountdownDisplay.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
   SpinnerIcon,
@@ -1911,6 +1912,23 @@ function App() {
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 
+  // Header subtitle: ACP server name (always) plus, for periodic conversations, a
+  // live countdown + next scheduled run time. The periodic fields live on the
+  // stored session object (GET /api/sessions + periodic_updated broadcasts carry
+  // next_scheduled_at + frequency; the per-session "connected" message does not).
+  const headerAcpServer = sessionInfo?.acp_server || activeSession?.acp_server || "";
+  const headerNextScheduledAt =
+    (activeSession?.periodic_configured && activeSession?.next_scheduled_at) || null;
+  const headerPeriodicUnit = activeSession?.periodic_frequency?.unit || "hours";
+  const headerNextRunDisplay = headerNextScheduledAt
+    ? new Date(headerNextScheduledAt).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+
   const handleCopyConversation = useCallback(async () => {
     const md = conversationToMarkdown(messages);
     const ok = await copyToClipboard(md);
@@ -2180,26 +2198,52 @@ function App() {
               <${MenuIcon} className="w-6 h-6" />
             </button>
           <//>
-          <h1
-            class="font-bold text-xl truncate flex-1 min-w-0 no-underline tooltip tooltip-bottom ${!activeSessionId
-              ? "text-mitto-text-muted"
-              : connected
-                ? "cursor-pointer hover:text-mitto-accent-400 transition-colors"
-                : "text-mitto-text-muted cursor-pointer hover:text-mitto-text-secondary transition-colors"}"
-            onClick=${activeSessionId ? handleToggleSidePanel : undefined}
-            data-tip=${activeSessionId
-              ? sessionInfo?.name || "New conversation"
-              : ""}
-            aria-label=${activeSessionId
-              ? connected
-                ? "Click to view properties"
-                : "Not connected — click to view properties"
-              : ""}
-          >
-            ${activeSessionId
-              ? sessionInfo?.name || "New conversation"
-              : "No Active Session"}
-          </h1>
+          <div class="flex-1 min-w-0 flex flex-col justify-center">
+            <h1
+              class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
+                ? "text-mitto-text-muted"
+                : connected
+                  ? "cursor-pointer hover:text-mitto-accent-400 transition-colors"
+                  : "text-mitto-text-muted cursor-pointer hover:text-mitto-text-secondary transition-colors"}"
+              onClick=${activeSessionId ? handleToggleSidePanel : undefined}
+              data-tip=${activeSessionId
+                ? sessionInfo?.name || "New conversation"
+                : ""}
+              aria-label=${activeSessionId
+                ? connected
+                  ? "Click to view properties"
+                  : "Not connected — click to view properties"
+                : ""}
+            >
+              ${activeSessionId
+                ? sessionInfo?.name || "New conversation"
+                : "No Active Session"}
+            </h1>
+            ${activeSessionId &&
+            (headerAcpServer || headerNextScheduledAt) &&
+            html`<div
+              class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
+              data-testid="conversation-header-subtitle"
+            >
+              ${headerAcpServer &&
+              html`<span class="truncate min-w-0">${headerAcpServer}</span>`}
+              ${headerNextScheduledAt &&
+              html`<${Fragment}>
+                ${headerAcpServer &&
+                html`<span class="opacity-60">·</span>`}
+                <${CountdownDisplay}
+                  targetIso=${headerNextScheduledAt}
+                  unit=${headerPeriodicUnit}
+                  active=${true}
+                  className="whitespace-nowrap"
+                />
+                <span class="opacity-60">·</span>
+                <span class="whitespace-nowrap"
+                  >Next: ${headerNextRunDisplay}</span
+                >
+              </${Fragment}>`}
+            </div>`}
+          </div>
           <div class="ml-auto flex items-center gap-2">
             <!-- Conversation actions menu (mirrors the sidebar row menu) -->
             ${activeSessionId
