@@ -1,5 +1,19 @@
 // Mitto Web Interface - Tooltip Component
-const { html, Fragment } = window.preact;
+const { html, Fragment, useState, useRef, useCallback, useEffect } =
+  window.preact;
+
+import { PortalTooltip } from "./ContextMenu.js";
+
+// Hover-only tooltips are pointless on touch devices (no hover); gate the portal
+// variant the same way daisyUI gates its CSS tooltips so taps never trigger a
+// stuck bubble.
+const TOOLTIP_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+
+// Delay before a portal tooltip appears on hover (ms).
+const PORTAL_TOOLTIP_DELAY_MS = 250;
 
 // =============================================================================
 // Tooltip Component (daisyUI)
@@ -44,27 +58,71 @@ const COLOR_CLASS = {
  * If `tip` is empty/nullish, children render unwrapped (no empty tooltip).
  *
  * @param {string} tip - Tooltip text (rendered as data-tip).
- * @param {string} placement - 'top' (default), 'bottom', 'left', 'right'.
+ * @param {string} placement - 'bottom' (default), 'top', 'left', 'right'.
+ *   Bottom is the project default so labels never overlap the content above the
+ *   trigger; pass 'top' explicitly for controls anchored at the bottom edge.
  * @param {string} color - Optional daisyUI color: 'primary', 'secondary',
  *   'accent', 'info', 'success', 'warning', 'error'.
  * @param {boolean} open - Force the tooltip open (adds tooltip-open).
  * @param {string} className - Extra classes for the wrapper element.
+ * @param {boolean} portal - Render the bubble at the document root instead of
+ *   as a CSS pseudo-element. Use where a CSS tooltip would be clipped by an
+ *   `overflow:hidden` ancestor or occluded by a sibling stacking context (e.g.
+ *   header buttons next to the side panel). Cursor-anchored and viewport-clamped
+ *   (via PortalTooltip); `placement`/`color`/`open` are ignored in this mode.
  */
 export function Tooltip({
   tip,
-  placement = "top",
+  placement = "bottom",
   color,
   open = false,
   className = "",
+  portal = false,
   children,
 }) {
+  // Hooks must run unconditionally (tip can toggle between empty/non-empty
+  // across renders), so declare the portal hover state before any early return.
+  const [tipPos, setTipPos] = useState(null);
+  const tipTimerRef = useRef(null);
+  const showPortalTip = useCallback((e) => {
+    if (!TOOLTIP_SUPPORTS_HOVER || !tip) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    clearTimeout(tipTimerRef.current);
+    tipTimerRef.current = setTimeout(
+      () => setTipPos({ x, y }),
+      PORTAL_TOOLTIP_DELAY_MS,
+    );
+  }, [tip]);
+  const hidePortalTip = useCallback(() => {
+    clearTimeout(tipTimerRef.current);
+    setTipPos(null);
+  }, []);
+  useEffect(() => () => clearTimeout(tipTimerRef.current), []);
+
   if (tip === undefined || tip === null || tip === "") {
     return html`<${Fragment}>${children}<//>`;
   }
 
+  if (portal) {
+    const wrapperClasses = ["inline-flex", className].filter(Boolean).join(" ");
+    return html`<${Fragment}>
+      <span
+        class=${wrapperClasses}
+        data-tip=${tip}
+        onMouseEnter=${showPortalTip}
+        onMouseLeave=${hidePortalTip}
+        onMouseDown=${hidePortalTip}
+        >${children}</span
+      >
+      ${tipPos &&
+      html`<${PortalTooltip} x=${tipPos.x} y=${tipPos.y} text=${tip} />`}
+    <//>`;
+  }
+
   const classes = [
     "tooltip",
-    PLACEMENT_CLASS[placement] || PLACEMENT_CLASS.top,
+    PLACEMENT_CLASS[placement] || PLACEMENT_CLASS.bottom,
     color ? COLOR_CLASS[color] : "",
     open ? "tooltip-open" : "",
     className,

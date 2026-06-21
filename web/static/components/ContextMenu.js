@@ -34,7 +34,7 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
 // position:fixed descendants AND a stacking context, which traps the menu's
 // `fixed z-50` inside the sidebar's width and paints it BEHIND the chat panel.
 // Rendering at the document.body level sidesteps this entirely.
-function Portal({ children }) {
+export function Portal({ children }) {
   const containerRef = useRef(null);
   if (containerRef.current === null) {
     containerRef.current = document.createElement("div");
@@ -56,6 +56,54 @@ function Portal({ children }) {
   });
 
   return null;
+}
+
+// A portal-rendered tooltip bubble anchored near a cursor position. Used for
+// multi-line metadata tooltips on elements whose ancestors clip CSS tooltips —
+// e.g. the swipeable conversation rows, which need `overflow-hidden` for the
+// swipe-to-archive reveal and sit inside the sidebar's `overflow-x: hidden`.
+// daisyUI's CSS `::before` tooltip cannot escape those overflow boundaries and
+// gets cropped; rendering at document.body (via Portal) does. Styled with the
+// same CSS variables daisyUI's tooltip uses (var(--color-neutral) bubble,
+// var(--color-neutral-content) text, var(--radius-field) corners) so it matches
+// the other tooltips visually, and clamped to the viewport so it never spills
+// off any edge. `text` may contain "\n"; rendered with white-space: pre-line.
+export function PortalTooltip({ x, y, text }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ x: x + 14, y: y + 18 });
+
+  // Clamp inside the viewport before paint (useLayoutEffect runs synchronously
+  // after the Portal child mounts but before the browser paints, so the parked
+  // initial offset is never visible). Prefer below-right of the cursor; flip to
+  // the left and/or pin to an edge so the bubble is never cropped — the exact
+  // failure this component fixes.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    let nx = x + 14;
+    let ny = y + 18;
+    if (nx + rect.width > window.innerWidth - margin) {
+      nx = x - rect.width - 14;
+    }
+    if (nx < margin) nx = margin;
+    if (ny + rect.height > window.innerHeight - margin) {
+      ny = window.innerHeight - rect.height - margin;
+    }
+    if (ny < margin) ny = margin;
+    setPos((prev) => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
+  }, [x, y, text]);
+
+  return html`
+    <${Portal}>
+      <div
+        ref=${ref}
+        class="fixed pointer-events-none"
+        style="left: ${pos.x}px; top: ${pos.y}px; z-index: 9999; max-width: 20rem; white-space: pre-line; background: var(--color-neutral); color: var(--color-neutral-content); border-radius: var(--radius-field); padding: .375rem .625rem; font-size: .8125rem; line-height: 1.4; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);"
+      >${text}</div>
+    <//>
+  `;
 }
 
 // Renders a single context menu entry. Entries with a non-empty `submenu`

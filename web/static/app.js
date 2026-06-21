@@ -2181,16 +2181,14 @@ function App() {
             </button>
           <//>
           <h1
-            class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline tooltip tooltip-bottom ${!activeSessionId
+            class="font-bold text-xl truncate flex-1 min-w-0 no-underline tooltip tooltip-bottom ${!activeSessionId
               ? "text-mitto-text-muted"
               : connected
                 ? "cursor-pointer hover:text-mitto-accent-400 transition-colors"
                 : "text-mitto-text-muted cursor-pointer hover:text-mitto-text-secondary transition-colors"}"
             onClick=${activeSessionId ? handleToggleSidePanel : undefined}
             data-tip=${activeSessionId
-              ? connected
-                ? "Click to view properties"
-                : "Not connected — click to view properties"
+              ? sessionInfo?.name || "New conversation"
               : ""}
             aria-label=${activeSessionId
               ? connected
@@ -2206,7 +2204,7 @@ function App() {
             <!-- Conversation actions menu (mirrors the sidebar row menu) -->
             ${activeSessionId
               ? html`
-                  <${Tooltip} tip="Conversation actions" placement="bottom">
+                  <${Tooltip} tip="Conversation actions" placement="bottom" portal>
                     <button
                       type="button"
                       onClick=${handleHeaderMenuButtonClick}
@@ -2220,7 +2218,7 @@ function App() {
                 `
               : null}
             <!-- Unified side panel toggle -->
-            <${Tooltip} tip="Session details" placement="bottom">
+            <${Tooltip} tip="Session details" placement="bottom" portal>
               <button
                 onClick=${handleToggleSidePanel}
                 class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-mitto-text-secondary hover:text-mitto-text-200"}"

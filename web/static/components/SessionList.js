@@ -25,7 +25,7 @@ import {
 } from "../utils/index.js";
 import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
-import { ContextMenu } from "./ContextMenu.js";
+import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
 import { Modal } from "./Modal.js";
 import {
   FolderIcon,
@@ -61,6 +61,17 @@ const GIT_CHANGES_CACHE = {};
 const GIT_CHANGES_TTL_MS = 30_000;
 // In-flight fetch promises keyed by workingDir to avoid duplicate concurrent requests.
 const GIT_CHANGES_IN_FLIGHT = {};
+
+// Hover-only portal tooltips for sidebar row controls. CSS daisyUI tooltips on
+// the folder/group action buttons get clipped by the row chrome and the
+// sidebar's overflow, so those use a body-level PortalTooltip instead
+// (cursor-anchored, viewport-clamped). Gate on hover so taps never leave a
+// stuck bubble, matching daisyUI's own behaviour.
+const SIDEBAR_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+const SIDEBAR_TOOLTIP_DELAY_MS = 250;
 
 // Fetch git changes for a session's workingDir, with caching and in-flight dedup.
 // Returns { files, is_git_repo, branch } or null on error.
@@ -225,6 +236,35 @@ export function SessionList({
   // Group header context menu state: { x, y, workingDir, label }
   const [groupContextMenu, setGroupContextMenu] = useState(null);
   const closeGroupContextMenu = () => setGroupContextMenu(null);
+
+  // Body-level portal tooltip for sidebar row controls (see SIDEBAR_* above).
+  // A single shared bubble is fine since only one row is hovered at a time.
+  const [rowTip, setRowTip] = useState(null);
+  const rowTipTimerRef = useRef(null);
+  const hideRowTip = useCallback(() => {
+    clearTimeout(rowTipTimerRef.current);
+    setRowTip(null);
+  }, []);
+  // Spread onto an element via ...${rowTipHandlers("...")} to show `text` below
+  // the cursor on hover and hide it on leave / press.
+  const rowTipHandlers = useCallback(
+    (text) => ({
+      onMouseEnter: (e) => {
+        if (!SIDEBAR_SUPPORTS_HOVER || !text) return;
+        const x = e.clientX;
+        const y = e.clientY;
+        clearTimeout(rowTipTimerRef.current);
+        rowTipTimerRef.current = setTimeout(
+          () => setRowTip({ x, y, text }),
+          SIDEBAR_TOOLTIP_DELAY_MS,
+        );
+      },
+      onMouseLeave: hideRowTip,
+      onMouseDown: hideRowTip,
+    }),
+    [hideRowTip],
+  );
+  useEffect(() => () => clearTimeout(rowTipTimerRef.current), []);
 
   // Per-folder "Tasks" entry context menu state: { x, y, workingDir, label }.
   // Mirrors groupContextMenu but for the static Tasks node. The beadsList
@@ -1096,9 +1136,10 @@ export function SessionList({
                     ${hasFolderStreaming
                       ? html`
                           <span
-                            class="loading loading-ring loading-xs shrink-0 text-mitto-accent tooltip tooltip-right"
+                            class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
                             data-tip="Agent responding in this folder"
                             aria-label="Agent responding in this folder"
+                            ...${rowTipHandlers("Agent responding in this folder")}
                           ></span>
                         `
                       : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
@@ -1120,7 +1161,12 @@ export function SessionList({
                           if (!folderCreating)
                             handleNewSessionInFolder(folder.workingDir, e);
                         }}
-                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left ${folderCreating
+                        ...${rowTipHandlers(
+                          folderCreating
+                            ? "Creating conversation\u2026"
+                            : `New conversation in ${folder.label}`,
+                        )}
+                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${folderCreating
                           ? "cursor-wait opacity-60"
                           : ""}"
                         data-tip=${folderCreating
@@ -1151,7 +1197,8 @@ export function SessionList({
                             label: folder.label,
                           });
                         }}
-                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left"
+                        ...${rowTipHandlers("More actions")}
+                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
                         data-tip="More actions"
                         aria-label="More actions"
                       >
@@ -1235,7 +1282,8 @@ export function SessionList({
                                 onBeadsCreate &&
                                   onBeadsCreate(folder.workingDir);
                               }}
-                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left"
+                              ...${rowTipHandlers("New issue")}
+                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
                               data-tip="New issue"
                               aria-label="New issue"
                             >
@@ -1255,7 +1303,8 @@ export function SessionList({
                                   folder.tasksNode.label,
                                 );
                               }}
-                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-left"
+                              ...${rowTipHandlers("More actions")}
+                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
                               data-tip="More actions"
                               aria-label="More actions"
                             >
@@ -1367,6 +1416,8 @@ export function SessionList({
 
   return html`
     <${Fragment}>
+      ${rowTip &&
+      html`<${PortalTooltip} x=${rowTip.x} y=${rowTip.y} text=${rowTip.text} />`}
       ${groupContextMenu && html`
         <${ContextMenu}
           x=${groupContextMenu.x}

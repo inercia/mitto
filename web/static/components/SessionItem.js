@@ -1,5 +1,6 @@
 // Mitto Web Interface - Session Item Component
-const { html, Fragment, useMemo, useCallback } = window.preact;
+const { html, Fragment, useState, useRef, useEffect, useMemo, useCallback } =
+  window.preact;
 
 import { FILTER_TAB } from "../utils/index.js";
 import { useSwipeToAction, useConversationMenu } from "../hooks/index.js";
@@ -10,7 +11,7 @@ import {
   PERIODIC_PROGRESS_URGENT_THRESHOLD,
 } from "../constants.js";
 import { WorkspacePill } from "./WorkspaceBadge.js";
-import { ContextMenu } from "./ContextMenu.js";
+import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
 import {
   LightningIcon,
   RobotIcon,
@@ -23,6 +24,18 @@ import {
   ClockIcon,
   EllipsisIcon,
 } from "./Icons.js";
+
+// Hover-only metadata tooltips are pointless on touch devices (no hover) and
+// daisyUI suppresses CSS tooltips there too; gate the row metadata tooltip the
+// same way so taps never trigger a stuck bubble.
+const SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+
+// Delay before the row metadata tooltip appears on hover (ms), roughly matching
+// the native `title` delay it replaces.
+const META_TOOLTIP_DELAY_MS = 450;
 
 /**
  * Calculate periodic progress background style.
@@ -326,6 +339,66 @@ export function SessionItem({
     onSelect(session.session_id);
   }, [isSwipingRef, isRevealed, reset, onSelect, session.session_id]);
 
+  // Row metadata tooltip. The native `title` it replaces was never clipped, but
+  // a daisyUI CSS tooltip would be (the row needs overflow-hidden for the swipe
+  // reveal, and the sidebar is overflow-x:hidden). So we render it through a
+  // body-level Portal (PortalTooltip) anchored at the cursor. Open after a short
+  // delay on hover; cancel/close on leave, swipe start, or right-click.
+  const [metaTip, setMetaTip] = useState(null);
+  const metaTipTimerRef = useRef(null);
+
+  const showMetaTip = useCallback(
+    (e) => {
+      if (!SUPPORTS_HOVER) return;
+      const text = buildTooltip();
+      if (!text) return;
+      const x = e.clientX;
+      const y = e.clientY;
+      clearTimeout(metaTipTimerRef.current);
+      metaTipTimerRef.current = setTimeout(() => {
+        setMetaTip({ x, y, text });
+      }, META_TOOLTIP_DELAY_MS);
+    },
+    [buildTooltip],
+  );
+
+  const hideMetaTip = useCallback(() => {
+    clearTimeout(metaTipTimerRef.current);
+    setMetaTip(null);
+  }, []);
+
+  // Same body-level portal tooltip, but with caller-supplied text — used by the
+  // trailing controls (child-count badge, "…" menu), the swipe action button and
+  // the inline status markers. A daisyUI CSS tooltip on these would be clipped by
+  // the row's overflow-hidden (a `tooltip-bottom` is cut off below the row),
+  // which is why they previously used `tooltip-left/right` (overlapping the row
+  // text). The portal renders below the cursor (i.e. below the target) and is
+  // never clipped, so it sits on the bottom side as intended.
+  const showTextTip = useCallback((e, text) => {
+    if (!SUPPORTS_HOVER || !text) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    clearTimeout(metaTipTimerRef.current);
+    metaTipTimerRef.current = setTimeout(() => {
+      setMetaTip({ x, y, text });
+    }, META_TOOLTIP_DELAY_MS);
+  }, []);
+
+  // Convenience: the standard hover handlers for a portal text tip. Spread onto
+  // an element via ...${tipHandlers("...")} to show `text` below the cursor on
+  // hover and hide it on leave / press.
+  const tipHandlers = useCallback(
+    (text) => ({
+      onMouseEnter: (e) => showTextTip(e, text),
+      onMouseLeave: hideMetaTip,
+      onMouseDown: hideMetaTip,
+    }),
+    [showTextTip, hideMetaTip],
+  );
+
+  // Hide and clear the pending timer if the row unmounts mid-hover.
+  useEffect(() => () => clearTimeout(metaTipTimerRef.current), []);
+
   const displayName = session.name || session.description || "Untitled";
   // Archived sessions should never show as active (they have no ACP connection)
   const isActiveSession =
@@ -367,6 +440,10 @@ export function SessionItem({
           onClose=${closeContextMenu}
         />
       `}
+      ${metaTip &&
+      html`
+        <${PortalTooltip} x=${metaTip.x} y=${metaTip.y} text=${metaTip.text} />
+      `}
       <div
         class="session-item-container relative overflow-hidden"
         ...${containerProps}
@@ -385,7 +462,8 @@ export function SessionItem({
               e.stopPropagation();
               triggerAction();
             }}
-            class="p-3 rounded-full tooltip tooltip-left ${isSwipeToDelete
+            ...${tipHandlers(isSwipeToDelete ? "Delete" : "Archive")}
+            class="p-3 rounded-full ${isSwipeToDelete
               ? "bg-red-700 hover:bg-red-800"
               : "bg-amber-700 hover:bg-amber-800"} transition-colors"
             data-tip=${isSwipeToDelete ? "Delete" : "Archive"}
@@ -399,7 +477,13 @@ export function SessionItem({
         <!-- Swipeable content -->
         <div
           onClick=${handleClick}
-          onContextMenu=${handleContextMenu}
+          onContextMenu=${(e) => {
+            hideMetaTip();
+            handleContextMenu(e);
+          }}
+          onMouseEnter=${showMetaTip}
+          onMouseLeave=${hideMetaTip}
+          onMouseDown=${hideMetaTip}
           class="px-2.5 ${density === "comfortable" ? "py-2.5" : "py-1"} rounded-lg cursor-pointer relative overflow-hidden ${isActive
             ? "bg-mitto-accent text-mitto-accent-fg"
             : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
@@ -408,7 +492,6 @@ export function SessionItem({
             ? "session-item-new"
             : ""}"
           style="transform: translateX(${swipeOffset}px);"
-          title=${buildTooltip()}
           data-session-id=${session.session_id}
           data-has-context-menu="true"
         >
@@ -427,11 +510,12 @@ export function SessionItem({
                   ${isSpawned
                     ? html`
                           <span
-                            class="text-sm leading-none shrink-0 tooltip tooltip-right ${isActive
+                            class="text-sm leading-none shrink-0 ${isActive
                               ? "text-mitto-accent-fg"
                               : "text-mitto-text-muted"}"
                             data-tip="Spawned from another conversation"
                             aria-label="Spawned from another conversation"
+                            ...${tipHandlers("Spawned from another conversation")}
                             >↳</span
                           >
                         `
@@ -443,9 +527,10 @@ export function SessionItem({
                           ? "text-mitto-accent-fg"
                           : "text-mitto-accent"}">
                           <span
-                            class="loading loading-ring loading-xs tooltip tooltip-right"
+                            class="loading loading-ring loading-xs"
                             data-tip=${ringTitle}
                             aria-label=${ringTitle}
+                            ...${tipHandlers(ringTitle)}
                           ></span>
                         </span>
                       `
@@ -459,9 +544,10 @@ export function SessionItem({
                             : categoryIconClass}">
                           ${showLoadingRing
                             ? html`<span
-                                class="loading loading-ring loading-xs tooltip tooltip-right"
+                                class="loading loading-ring loading-xs"
                                 data-tip=${ringTitle}
                                 aria-label=${ringTitle}
+                                ...${tipHandlers(ringTitle)}
                               ></span>`
                             : html`<${CategoryIcon} className="w-4 h-4" />`}
                         </span>
@@ -477,33 +563,33 @@ export function SessionItem({
                   >
                   ${session.child_origin === "auto"
                     ? html`
-                        <span class="shrink-0 text-amber-400 tooltip tooltip-right" data-tip="Auto-created child" aria-label="Auto-created child">
+                        <span class="shrink-0 text-amber-400" data-tip="Auto-created child" aria-label="Auto-created child" ...${tipHandlers("Auto-created child")}>
                           <${LightningIcon} className="w-4 h-4" />
                         </span>
                       `
                     : session.child_origin === "mcp"
                       ? html`
-                          <span class="shrink-0 text-mitto-accent tooltip tooltip-right" data-tip="Created by agent" aria-label="Created by agent">
+                          <span class="shrink-0 text-mitto-accent" data-tip="Created by agent" aria-label="Created by agent" ...${tipHandlers("Created by agent")}>
                             <${RobotIcon} className="w-4 h-4" />
                           </span>
                         `
                       : session.child_origin === "human"
                         ? html`
-                            <span class="shrink-0 text-mitto-success tooltip tooltip-right" data-tip="Manually created child" aria-label="Manually created child">
+                            <span class="shrink-0 text-mitto-success" data-tip="Manually created child" aria-label="Manually created child" ...${tipHandlers("Manually created child")}>
                               <${PersonIcon} className="w-4 h-4" />
                             </span>
                           `
                         : null}
                   ${session.isWaitingForChildren
                     ? html`
-                        <span class="shrink-0 text-mitto-warning animate-pulse tooltip tooltip-right" data-tip="Waiting for child conversations" aria-label="Waiting for child conversations">
+                        <span class="shrink-0 text-mitto-warning animate-pulse" data-tip="Waiting for child conversations" aria-label="Waiting for child conversations" ...${tipHandlers("Waiting for child conversations")}>
                           <${HourglassIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}
                   ${session.isWaitingForUserInput
                     ? html`
-                        <span class="shrink-0 text-purple-400 animate-pulse tooltip tooltip-right" data-tip="Waiting for user input" aria-label="Waiting for user input">
+                        <span class="shrink-0 text-purple-400 animate-pulse" data-tip="Waiting for user input" aria-label="Waiting for user input" ...${tipHandlers("Waiting for user input")}>
                           <${QuestionMarkIcon} className="w-4 h-4" />
                         </span>
                       `
@@ -515,9 +601,10 @@ export function SessionItem({
                 : !isArchived
                     ? html`
                         <span
-                          class="w-2 h-2 bg-amber-400 rounded-full shrink-0 tooltip tooltip-left"
+                          class="w-2 h-2 bg-amber-400 rounded-full shrink-0"
                           data-tip="Not connected"
                           aria-label="Not connected"
+                          ...${tipHandlers("Not connected")}
                         ></span>
                       `
                     : null}
@@ -559,7 +646,10 @@ export function SessionItem({
                       if (onToggleExpand) onToggleExpand();
                     }
                   }}
-                  class="badge badge-sm badge-ghost shrink-0 tabular-nums cursor-pointer tooltip tooltip-left ${isActive
+                  ...${tipHandlers(
+                    `${isExpanded ? "Collapse" : "Expand"} ${childCount} child conversation${childCount === 1 ? "" : "s"}`,
+                  )}
+                  class="badge badge-sm badge-ghost shrink-0 tabular-nums cursor-pointer ${isActive
                     ? "bg-mitto-accent-fg text-mitto-accent"
                     : ""}"
                   aria-expanded=${isExpanded}
@@ -573,7 +663,8 @@ export function SessionItem({
               <button
                 type="button"
                 onClick=${handleMenuButtonClick}
-                class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 tooltip tooltip-left ${trailingControlClass}"
+                ...${tipHandlers("More actions")}
+                class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 ${trailingControlClass}"
                 data-tip="More actions"
                 aria-label="More actions"
                 data-testid="session-item-menu"

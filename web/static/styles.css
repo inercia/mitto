@@ -346,6 +346,47 @@
   flex: 0 0 auto;
 }
 
+/* Single grid shared by every dependency row (existing rows + the add-row) so
+   their columns line up exactly: status badge | type dropdown | issue | action.
+   Col 1 is max-content so it hugs the badge (no wide gap before the dropdown);
+   col 2 matches .beads-dep-type-select's fixed 8rem; col 3 fills the rest and is
+   allowed to shrink to zero (minmax(0,1fr)) so the issue text can truncate; col 4
+   hugs the square action button. */
+.beads-deps-grid {
+  display: grid;
+  grid-template-columns: max-content 8rem minmax(0, 1fr) max-content;
+  align-items: center;
+  column-gap: 0.5rem;
+  row-gap: 0.375rem;
+  margin-top: 0.25rem;
+}
+.beads-dep-badge {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+.beads-dep-empty {
+  grid-column: 1 / -1;
+}
+
+/* Dependency status badges show the full status label normally and collapse to
+   a single-letter abbreviation on small screens (the full label stays in the
+   element's `title` for hover/accessibility). */
+.beads-badge-abbr {
+  display: none;
+}
+.beads-badge-full {
+  display: inline;
+}
+@media (max-width: 640px) {
+  .beads-badge-abbr {
+    display: inline;
+  }
+  .beads-badge-full {
+    display: none;
+  }
+}
+
 /* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
 .filter-tab-streaming {
   position: relative;
