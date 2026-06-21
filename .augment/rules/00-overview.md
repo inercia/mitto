@@ -40,6 +40,7 @@ internal/processors/  → Command processors (pre/post processing via external c
 internal/runner/      → Restricted runner, sandbox execution (go-restricted-runner)
 internal/secrets/     → Secure credential storage (Keychain on macOS)
 internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/Flags)
+internal/conversation/→ Conversation management, lifecycle, observer patterns
 internal/web/         → Web interface server (HTTP, WebSocket, MarkdownBuffer)
 web/static/           → Frontend (Preact/HTM)
   ├── components/     → UI components (ChatInput, QueueDropdown, Message, etc.)

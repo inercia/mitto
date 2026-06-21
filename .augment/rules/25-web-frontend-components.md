@@ -65,88 +65,85 @@ Menu prompt selections (prompts menu, Cmd+/ slash picker) call `onSend("", [], [
 
 Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min: 100, max: 500). Auto-closes after 5s inactivity; paused on hover and drag.
 
+## Tooltip Patterns
+
+### PortalTooltip (Viewport-Clamped)
+
+For overflow-clipped rows (e.g., SessionList), render tooltips in a body-level portal to escape clip bounds:
+
+```javascript
+html`<${PortalTooltip} text=${"Long text..."} position=${"top"} >
+  <div class="truncate">Clipped row</div>
+</PortalTooltip>`
+```
+
+**Features**:
+- Escapes overflow:hidden containers via `createPortal()`
+- Auto-clamps position to viewport (e.g., "top" → "bottom" if near top edge)
+- Applies background blur behind tooltip (`.tooltip-blur`)
+- Used in `SessionItem.js` for session titles/paths
+
+### daisyUI Tooltip
+
+For non-clipped content (in-component tooltips), use daisyUI `tooltip`:
+
+```javascript
+html`<div class="tooltip tooltip-top" data-tip=${"Hover text"}>
+  <button>Action</button>
+</div>`
+```
+
 ## Icons
 
 Naming: `[Name]Icon` (e.g., `TrashIcon`, `QueueIcon`). Always `CloseIcon` SVG, never `✕`. Sizes: `w-4 h-4` (toasts), `w-5 h-5` (dialogs).
 
 ## daisyUI Badges (Pills / Tags)
 
-All badge/pill components use daisyUI's `badge` class family, managed via a centralized helper function.
-
-**Single-point helper pattern** (BeadsView.js):
+Centralized helper (e.g., `BeadsView.js`):
 ```javascript
 function badge(label, className = "") {
   return html`<span class="badge badge-sm ${className}">${label}</span>`;
 }
-// Call sites: badge("P1", "bg-red-600"), badge("active", "bg-accent")
 ```
 
-**Color preservation**: When migrating custom pills → daisyUI, preserve existing color schemes:
-- Solid background colors (e.g., `bg-red-600`) kept for contrast (e.g., red hover state)
-- Colored dots (status indicators) preserved separately from badge styling
-- Accent/secondary badges use semantic daisyUI colors, not custom tailwind
-
-**Scope**: Pills appear in BeadsView (priority/status), SettingsDialog (server/tags), WorkspacesDialog (source badges), side panels (status/ACP-server/runner-type).
+**When migrating**: Preserve solid colors (e.g., `bg-red-600` for contrast); use semantic daisyUI colors elsewhere. Used in BeadsView, SettingsDialog, WorkspacesDialog, side panels.
 
 ## Side Panel Overlay Pattern
 
-`SessionPanel` is a unified tabbed panel (replaces old `ConversationPropertiesPanel`/`UserDataPanel`) with three tabs: **Changes**, **Properties**, **User Data**. Parent (`app.js`) manages open/close state. Changes tab fetches `GET /api/sessions/{id}/changes`, displays file list with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` pair (150ms).
+`SessionPanel`: unified tabbed panel (Changes/Properties/User Data). Parent manages open/close. Changes: `GET /api/sessions/{id}/changes` with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` (150ms).
 
-## useToast Hook (Unified Notification System)
+## useToast Hook
 
-**All in-app notifications must go through `useToast`** — never add standalone toast state/timers in `app.js`.
+**All notifications go through `useToast`** — never add standalone toast state/timers in `app.js`.
 
 ```javascript
 const { showToast, dismissToast, toasts } = useToast();
 showToast({ message: "Saved", style: "success" }); // auto-dismiss 5s
-showToast({ message: "Pinned", sticky: true });     // no auto-dismiss
 ```
 
-Severity durations: info/success=5s, warning/error=10s. Max 5 simultaneous. Render via `<ToastContainer toasts=${toasts} onDismiss=${dismissToast} />`. Use `error` (red) for actual errors only.
+Durations: info/success=5s, warning/error=10s. Max 5 simultaneous. Render via `<ToastContainer />`. Use `error` (red) for actual errors only.
 
 ## useResizeHandle / useSwipeNavigation
 
 - `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key)
 - `useSwipeNavigation`: swipe left/right with threshold, 500ms window
 
-## daisyUI Tabs (Radio-based + State-Driven Content)
+## daisyUI Tabs (Radio-based + State-Driven)
 
-The **radio tabs-border** pattern (WorkspacesDialog, folder/workspace tabs) uses daisyUI radio inputs with a separate state-driven content region:
+**radio tabs-border** pattern: radio inputs + separate state-driven content region (NOT CSS-interleaved `tab-content`). This preserves lazy-loading.
 
 ```javascript
-// Tab bar: radio inputs with daisyUI styling
-html`
-  <div class="tabs tabs-border">
-    ${tabDefs.map(tab => html`
-      <input
-        type="radio"
-        name="ws-folder-tabs"
-        role="tab"
-        aria-label=${tab.label}
-        data-testid=${`ws-tab-${tab.id}`}
-        checked=${activeTab === tab.id}
-        onChange=${() => setActiveTab(tab.id)}
-        class=${"tab " + (activeTab === tab.id ? "tab-active text-mitto-accent" : "")}
-      />
-    `)}
-  </div>
-
-  <!-- Separate content region (state-driven, NOT pure CSS) -->
-  <div data-testid="ws-tab-content" class="mt-4">
-    ${activeTab === "folders" && html`<${FolderPanel} />`}
-    ${activeTab === "workspaces" && html`<${WorkspacePanel} />`}
-  </div>
-`
+html`<div class="tabs tabs-border">
+  ${tabDefs.map(tab => html`
+    <input type="radio" name="group" role="tab" aria-label=${tab.label}
+      checked=${activeTab === tab.id} onChange=${() => setActiveTab(tab.id)}
+      class=${"tab " + (activeTab === tab.id ? "tab-active text-mitto-accent" : "")} />
+  `)}
+</div>`
 ```
 
-**Key points**:
-- `type="radio"` with `tabs-border` class (daisyUI variant)
-- `aria-label` provides visible tab text (radio inputs can't have text children)
-- `onChange` (not `onInput`) for checkable inputs
-- Preserve `role="tab"`, `data-testid`, distinct radio-group names, and active accent styling
-- **Content kept state-driven** (conditional rendering) rather than pure-CSS interleaved `tab-content` divs — preserves lazy-loading effects (panels load only when active)
-- Content region must satisfy test assertions like `ws-tab-content > *`
+**Key**: `aria-label` (radio text), `onChange` (not `onInput`), state-driven content region.
 
 ## Session List Tab Filtering
 
-SessionList filters conversations by tab (Conversations, Periodic, Archived) via `getFilterTabForSession(session)`. On tab click, restore the last-focused conversation using `getLastActiveSessionIdForTab(tab)` — but only on user clicks, not programmatic changes. Guard against races with `(prevTab, prevSession)` refs to avoid redundant localStorage updates during streaming.
+Filters by tab (Conversations, Periodic, Archived) via `getFilterTabForSession()`. On click, restore last-focused session via `getLastActiveSessionIdForTab()` — **user-clicks only**, not programmatic. Guard races with refs to avoid redundant localStorage updates.
