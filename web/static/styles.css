@@ -48,6 +48,18 @@
   overflow-x: hidden;
 }
 
+/* daisyUI tooltips ship with z-index:2, which lets adjacent positioned chrome
+   (the chat-input textarea, toolbars, side panels) paint over the bubble —
+   the "tooltip hidden behind other UI" symptom. Raise the bubble/arrow so a
+   hover tooltip always renders above surrounding UI within its stacking
+   context. Selectors mirror daisyUI's specificity; styles.css loads after
+   tailwind.css so source order wins the ties. */
+.tooltip[data-tip]:before,
+.tooltip > .tooltip-content,
+.tooltip:after {
+  z-index: 1000;
+}
+
 /* Messages container scrollbar - show scrollbar for better Edge compatibility.
    Edge (Chromium) can have scrolling issues when scrollbar is hidden with
    flex-col-reverse layouts. We show a thin, styled scrollbar instead. */

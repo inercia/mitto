@@ -16,7 +16,7 @@ const { useState, useRef, useEffect, useLayoutEffect, useCallback } =
  * @param {Object} deps
  * @param {Array} deps.messages - Current conversation messages.
  * @param {string|null} deps.activeSessionId - Focused conversation id.
- * @param {string} deps.mainView - Active main view ("conversation" | "beads" | "beadsIssue" | "dashboard").
+ * @param {string} deps.mainView - Active main view ("conversation" | "beads" | "dashboard").
  * @param {boolean} deps.isStreaming - Whether the agent is actively streaming.
  * @param {boolean} deps.isLoadingMore - Whether older messages are loading (prepend).
  * @param {Object} deps.messagesContainerRef - Ref to the scrollable container.
