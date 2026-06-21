@@ -195,6 +195,12 @@ type BackgroundSession interface {
 	// TryProcessQueuedMessage attempts to process the next queued message if the session is idle.
 	// Returns true if a message was sent.
 	TryProcessQueuedMessage() bool
+	// HasQueuedDeliveryInProgress returns true if a queued message has been popped and is
+	// sleeping through a configured delay before dispatch. The session appears idle during
+	// this window but will become prompting shortly — do not auto-complete.
+	HasQueuedDeliveryInProgress() bool
+	// GetQueueConfig returns the queue configuration for this session. May return nil.
+	GetQueueConfig() *config.QueueConfig
 	// WaitForResponseComplete waits for the current prompt to complete, if one is in progress.
 	// Returns true if the prompt completed within the timeout, false if it timed out.
 	// If no prompt is in progress, returns immediately with true.
@@ -4616,6 +4622,38 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 					if bs.IsPrompting() {
 						// Child is actively processing — reset idle timer
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					// Signal 2 (Path B): message was popped but is sleeping through the
+					// configured delay before dispatch — session appears idle but will
+					// become prompting shortly.
+					if bs.HasQueuedDeliveryInProgress() {
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					// Re-kick delivery each poll so Path A messages are dispatched once
+					// their delay elapses without waiting for the next natural trigger.
+					go bs.TryProcessQueuedMessage()
+
+					// Signal 1 (Path A): parent message still in queue (undelivered, not
+					// future-scheduled). Prevent false idle while it awaits dispatch.
+					parentMsgPending := false
+					if store != nil && bs.GetQueueConfig().IsEnabled() {
+						childQueue := store.Queue(childID)
+						if msgs, _ := childQueue.List(); len(msgs) > 0 {
+							now := time.Now()
+							for _, m := range msgs {
+								if m.ClientID == realSessionID && (m.ScheduledTime == nil || !m.ScheduledTime.After(now)) {
+									parentMsgPending = true
+									break
+								}
+							}
+						}
+					}
+					if parentMsgPending {
 						delete(childIdleSince, childID)
 						continue
 					}

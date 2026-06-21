@@ -94,12 +94,13 @@ type BackgroundSession struct {
 	lastActivityAt atomic.Int64 // Unix nanos
 
 	// Prompt state
-	promptMu             sync.Mutex
-	promptCond           *sync.Cond // Condition variable for waiting on prompt completion
-	isPrompting          bool
-	promptCount          int
-	promptStartTime      time.Time // When the current prompt started (for logging)
-	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
+	promptMu                 sync.Mutex
+	promptCond               *sync.Cond // Condition variable for waiting on prompt completion
+	isPrompting              bool
+	promptCount              int
+	promptStartTime          time.Time // When the current prompt started (for logging)
+	lastResponseComplete     time.Time // When the agent last completed a response (for queue delay)
+	queuedDeliveryInProgress bool      // true while a popped message is sleeping through delay
 
 	// lastAgentActivityAt records the time (Unix nanos) of the most recent streamed
 	// update received from the agent during a prompt. It is reset when a prompt starts
@@ -882,6 +883,22 @@ func (bs *BackgroundSession) GetLastResponseCompleteTime() time.Time {
 	bs.promptMu.Lock()
 	defer bs.promptMu.Unlock()
 	return bs.lastResponseComplete
+}
+
+// setQueuedDeliveryInProgress sets or clears the queuedDeliveryInProgress flag under promptMu.
+func (bs *BackgroundSession) setQueuedDeliveryInProgress(v bool) {
+	bs.promptMu.Lock()
+	bs.queuedDeliveryInProgress = v
+	bs.promptMu.Unlock()
+}
+
+// HasQueuedDeliveryInProgress returns true if a queued message has been popped and is in the
+// process of being delivered (e.g. sleeping through a configured delay). The session appears
+// idle during this window even though it will become prompting shortly.
+func (bs *BackgroundSession) HasQueuedDeliveryInProgress() bool {
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+	return bs.queuedDeliveryInProgress
 }
 
 // WaitForResponseComplete waits for the current prompt to complete, if one is in progress.
@@ -4860,6 +4877,11 @@ func (bs *BackgroundSession) processNextQueuedMessage() bool {
 		bs.restoreBaselineIfOverride()
 		return false
 	}
+
+	// Signal delivery in progress so idle-detection polls (e.g. mitto_children_tasks_wait)
+	// don't prematurely classify this session as agent_idle while we sleep through the delay.
+	bs.setQueuedDeliveryInProgress(true)
+	defer bs.setQueuedDeliveryInProgress(false)
 
 	// Notify observers that we're sending a queued message
 	bs.notifyObservers(func(o SessionObserver) {

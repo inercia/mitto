@@ -3715,9 +3715,12 @@ func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 
 // mockBackgroundSessionForWait implements BackgroundSession for testing the wait tool.
 type mockBackgroundSessionForWait struct {
-	prompting          atomic.Bool
-	waitCompleted      chan struct{} // close to simulate prompt completion
-	selfDestructCalled atomic.Bool   // records whether RequestSelfDestruct was called
+	prompting             atomic.Bool
+	queuedDeliveryInProg  atomic.Bool
+	waitCompleted         chan struct{} // close to simulate prompt completion
+	selfDestructCalled    atomic.Bool   // records whether RequestSelfDestruct was called
+	tryProcessCalledCount atomic.Int32  // records how many times TryProcessQueuedMessage was called
+	queueConfig           *config.QueueConfig
 }
 
 func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWait {
@@ -3728,10 +3731,17 @@ func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWa
 	return m
 }
 
-func (m *mockBackgroundSessionForWait) IsPrompting() bool                                 { return m.prompting.Load() }
-func (m *mockBackgroundSessionForWait) GetEventCount() int                                { return 0 }
-func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64                          { return 0 }
-func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool                     { return false }
+func (m *mockBackgroundSessionForWait) IsPrompting() bool { return m.prompting.Load() }
+func (m *mockBackgroundSessionForWait) HasQueuedDeliveryInProgress() bool {
+	return m.queuedDeliveryInProg.Load()
+}
+func (m *mockBackgroundSessionForWait) GetQueueConfig() *config.QueueConfig { return m.queueConfig }
+func (m *mockBackgroundSessionForWait) GetEventCount() int                  { return 0 }
+func (m *mockBackgroundSessionForWait) GetMaxAssignedSeq() int64            { return 0 }
+func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool {
+	m.tryProcessCalledCount.Add(1)
+	return false
+}
 func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string)                     {}
 func (m *mockBackgroundSessionForWait) TriggerTitleGenerationFromPeriodic(string, string) {}
 func (m *mockBackgroundSessionForWait) RequestSelfDestruct()                              { m.selfDestructCalled.Store(true) }
@@ -4454,6 +4464,124 @@ func TestChildReportCollector_IsWaiting(t *testing.T) {
 	}
 }
 
+func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) {
+	// A child that reports with a different task_id than the active wait must NOT
+	// unblock the wait; it should still appear as pending in getPendingAndReported.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	// Report arrives with a STALE task id.
+	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+
+	// The wait channel must NOT be closed.
+	select {
+	case <-waitCh:
+		t.Error("Wait channel was closed by a stale-task report — expected it to remain open")
+	default:
+		// correct: still open
+	}
+
+	// getPendingAndReported must show child-a as pending, not reported.
+	pending, reported := collector.getPendingAndReported()
+	if len(reported) != 0 {
+		t.Errorf("Expected 0 reported, got %d: %v", len(reported), reported)
+	}
+	if len(pending) != 1 || pending[0] != "child-a" {
+		t.Errorf("Expected child-a in pending, got pending=%v reported=%v", pending, reported)
+	}
+}
+
+func TestChildReportCollector_MatchingTaskReport_CompletesWait(t *testing.T) {
+	// A child that reports with the SAME task_id as the active wait must unblock it.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	collector.addReport("child-a", "T1", []byte(`{"status":"completed"}`))
+
+	select {
+	case <-waitCh:
+		// correct: closed
+	default:
+		t.Error("Wait channel was NOT closed after matching-task report — expected completion")
+	}
+
+	pending, reported := collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_AutoCompleted_CountsTowardWait(t *testing.T) {
+	// An auto-completed entry (agent_idle / session_stopped) carries no real task_id
+	// but must still satisfy the wait and close the wait channel.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	collector.markChildAutoCompleted("child-a", "agent_idle")
+
+	select {
+	case <-waitCh:
+		// correct: closed
+	default:
+		t.Error("Wait channel was NOT closed after auto-completed entry — expected completion")
+	}
+
+	pending, reported := collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_NoTaskID_AnyCompletedReportCounts(t *testing.T) {
+	// When the wait has no task_id (currentTaskID == ""), any completed report counts —
+	// this preserves the original behaviour for callers that don't use task scoping.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	collector.addReport("child-a", "whatever-task", []byte(`{"status":"completed"}`))
+
+	select {
+	case <-waitCh:
+		// correct
+	default:
+		t.Error("Wait channel was NOT closed — expected any completed report to count when no task_id is set")
+	}
+}
+
 // =============================================================================
 // Orphaned Report Detection Tests
 // =============================================================================
@@ -4828,6 +4956,339 @@ func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	}
 }
 
+// TestChildrenTasksWait_Signal2_DeliveryInProgress verifies that a child with
+// HasQueuedDeliveryInProgress=true is NOT auto-completed even when idle (Path B fix).
+func TestChildrenTasksWait_Signal2_DeliveryInProgress(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child With Delivery In Progress",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child: not prompting, but has delivery in progress (Path B — popped, sleeping through delay)
+	mockBS := newMockBackgroundSessionForWait(false)
+	mockBS.queuedDeliveryInProg.Store(true)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	// Use a timeout shorter than the idle grace period + poll — should time out, not agent_idle.
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 8,
+	})
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Error("Expected TimedOut=true (delivery in progress should prevent agent_idle)")
+	}
+	// The child should NOT have been auto-completed with agent_idle
+	report, ok := output.Reports[childID]
+	if ok && report.Reason == "agent_idle" {
+		t.Errorf("Child was wrongly auto-completed with agent_idle while delivery was in progress")
+	}
+}
+
+// TestChildrenTasksWait_Signal1_ParentMsgInQueue verifies that a child with an
+// undelivered parent message in its queue is NOT auto-completed (Path A fix).
+func TestChildrenTasksWait_Signal1_ParentMsgInQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child With Queued Parent Msg",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Add parent's progress-inquiry message to child's queue (simulates delay_seconds > 15)
+	childQueue := store.Queue(childID)
+	if _, err := childQueue.Add("Please report progress.", nil, nil, parentID, nil, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add parent message to child queue: %v", err)
+	}
+
+	// Child: not prompting, queue enabled (default)
+	mockBS := newMockBackgroundSessionForWait(false)
+	// queueConfig nil → IsEnabled() returns true (default)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	// Timeout shorter than idle grace — should time out, NOT auto-complete via agent_idle.
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 8,
+	})
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Error("Expected TimedOut=true (parent msg in queue should prevent agent_idle)")
+	}
+	report, ok := output.Reports[childID]
+	if ok && report.Reason == "agent_idle" {
+		t.Errorf("Child was wrongly auto-completed with agent_idle while parent message was still in queue")
+	}
+	// TryProcessQueuedMessage should have been called by the poll re-kick
+	if mockBS.tryProcessCalledCount.Load() == 0 {
+		t.Error("Expected TryProcessQueuedMessage to be called at least once by poll re-kick")
+	}
+}
+
+// TestChildrenTasksWait_Signal1_DisabledQueue verifies that when the child's queue is
+// disabled, a queued parent message does NOT prevent agent_idle auto-complete.
+func TestChildrenTasksWait_Signal1_DisabledQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child Disabled Queue",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Add parent message to queue — but queue processing is disabled
+	childQueue := store.Queue(childID)
+	if _, err := childQueue.Add("Please report progress.", nil, nil, parentID, nil, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add message: %v", err)
+	}
+
+	enabled := false
+	mockBS := newMockBackgroundSessionForWait(false)
+	mockBS.queueConfig = &config.QueueConfig{Enabled: &enabled}
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	start := time.Now()
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 60, // generous — should auto-complete via agent_idle well before this
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if output.TimedOut {
+		t.Error("Expected to auto-complete via agent_idle (queue disabled), not timeout")
+	}
+	report, ok := output.Reports[childID]
+	if !ok {
+		t.Fatalf("Expected report for child %s", childID)
+	}
+	if report.Reason != "agent_idle" {
+		t.Errorf("Expected reason 'agent_idle' (queue disabled), got '%s'", report.Reason)
+	}
+	// Should auto-complete within ~20s (5s poll + 15s grace)
+	if elapsed > 30*time.Second {
+		t.Errorf("Expected agent_idle within 30s, took %v", elapsed)
+	}
+}
+
+// TestChildrenTasksWait_Signal1_FutureScheduledOnly verifies that a future-scheduled
+// queue message does NOT prevent agent_idle auto-complete.
+func TestChildrenTasksWait_Signal1_FutureScheduledOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child Future Scheduled",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Add a future-scheduled message from the parent — should NOT prevent agent_idle
+	futureTime := time.Now().Add(1 * time.Hour)
+	childQueue := store.Queue(childID)
+	if _, err := childQueue.Add("Scheduled report request.", nil, nil, parentID, &futureTime, 0, nil, ""); err != nil {
+		t.Fatalf("Failed to add scheduled message: %v", err)
+	}
+
+	mockBS := newMockBackgroundSessionForWait(false)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	start := time.Now()
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 60, // generous — should auto-complete via agent_idle well before this
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if output.TimedOut {
+		t.Error("Expected agent_idle auto-complete (future-scheduled msg should not block), not timeout")
+	}
+	report, ok := output.Reports[childID]
+	if !ok {
+		t.Fatalf("Expected report for child %s", childID)
+	}
+	if report.Reason != "agent_idle" {
+		t.Errorf("Expected reason 'agent_idle' (future-scheduled only), got '%s'", report.Reason)
+	}
+	if elapsed > 30*time.Second {
+		t.Errorf("Expected agent_idle within 30s, took %v", elapsed)
+	}
+}
+
 func TestChildrenTasksWait_AutoCompletesStoppedChild(t *testing.T) {
 	// Child session disappears from the session manager mid-wait.
 	// The parent should unblock quickly via "session_stopped" auto-completion.
@@ -4946,6 +5407,8 @@ type mockBackgroundSessionForAutoResume struct {
 }
 
 func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                                 { return false }
+func (m *mockBackgroundSessionForAutoResume) HasQueuedDeliveryInProgress() bool                 { return false }
+func (m *mockBackgroundSessionForAutoResume) GetQueueConfig() *config.QueueConfig               { return nil }
 func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                                { return 0 }
 func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                          { return 0 }
 func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool        { return true }

@@ -841,6 +841,55 @@ func TestBackgroundSession_CreatedAt(t *testing.T) {
 
 // --- Queue Processing Tests ---
 
+func TestBackgroundSession_HasQueuedDeliveryInProgress_ClearedOnAllExits(t *testing.T) {
+	// Verifies that queuedDeliveryInProgress is cleared on every exit of processNextQueuedMessage.
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-delivery-flag"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+
+	// Initially false
+	if bs.HasQueuedDeliveryInProgress() {
+		t.Error("Expected HasQueuedDeliveryInProgress=false initially")
+	}
+
+	// Exit path: empty queue — flag must not be set
+	bs.processNextQueuedMessage()
+	if bs.HasQueuedDeliveryInProgress() {
+		t.Error("Expected HasQueuedDeliveryInProgress=false after empty-queue exit")
+	}
+
+	// Exit path: queue disabled — flag must not be set
+	enabled := false
+	bs.queueConfig = &config.QueueConfig{Enabled: &enabled}
+	queue := store.Queue(sessionID)
+	if _, err := queue.Add("msg", nil, nil, "client1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	bs.processNextQueuedMessage()
+	if bs.HasQueuedDeliveryInProgress() {
+		t.Error("Expected HasQueuedDeliveryInProgress=false after disabled-queue exit")
+	}
+}
+
 func TestBackgroundSession_ProcessNextQueuedMessage_NoStore(t *testing.T) {
 	bs := &BackgroundSession{
 		persistedID: "test-session",
