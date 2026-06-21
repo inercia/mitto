@@ -382,15 +382,21 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]E
 	defer f.Close()
 
 	var events []Event
+	log := logging.Session()
 	scanner := bufio.NewScanner(f)
 	// Increase buffer size to handle large events (e.g., agent messages with code blocks)
 	// Default is 64KB, increase to 10MB to handle very long lines
 	const maxScannerBuffer = 10 * 1024 * 1024
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+			// Skip corrupt lines (e.g. a torn write) so a single bad line does
+			// not make the whole conversation unreadable. Don't log content (user data).
+			log.Warn("skipping corrupt event line", "session_id", sessionID, "line", lineNum, "bytes", len(scanner.Bytes()), "error", err)
+			continue
 		}
 		// Only include events after the specified sequence number
 		if event.Seq > afterSeq {
@@ -431,15 +437,21 @@ func (s *Store) ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]
 
 	// Read all matching events first (we need to know total count to get last N)
 	var allEvents []Event
+	log := logging.Session()
 	scanner := bufio.NewScanner(f)
 	// Increase buffer size to handle large events (e.g., agent messages with code blocks)
 	// Default is 64KB, increase to 10MB to handle very long lines
 	const maxScannerBuffer = 10 * 1024 * 1024
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+			// Skip corrupt lines (e.g. a torn write) so a single bad line does
+			// not make the whole conversation unreadable. Don't log content (user data).
+			log.Warn("skipping corrupt event line", "session_id", sessionID, "line", lineNum, "bytes", len(scanner.Bytes()), "error", err)
+			continue
 		}
 		// If beforeSeq is specified, only include events before it
 		if beforeSeq > 0 && event.Seq >= beforeSeq {
