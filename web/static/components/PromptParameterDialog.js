@@ -365,7 +365,14 @@ export function PromptParameterDialog({
     );
     if (!needsWsOrAgents) return;
     setLoadingWorkspaces(true);
-    authFetch(apiUrl("/api/workspaces"))
+    // Scope the ACP server list to the current folder when known, so the
+    // acpServer dropdown only offers agents configured for this workspace.
+    const wsUrl = workingDir
+      ? apiUrl("/api/workspaces") +
+        "?working_dir=" +
+        encodeURIComponent(workingDir)
+      : apiUrl("/api/workspaces");
+    authFetch(wsUrl)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
         setWorkspaces(Array.isArray(data?.workspaces) ? data.workspaces : []);
@@ -377,7 +384,7 @@ export function PromptParameterDialog({
         setAcpServers([]);
       })
       .finally(() => setLoadingWorkspaces(false));
-  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen, workingDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFieldChange = useCallback((fieldName, val) => {
     setValues((prev) => ({ ...prev, [fieldName]: val }));

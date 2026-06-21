@@ -290,6 +290,29 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
+
+  // Close the mobile left sidebar when the user clicks outside of it (e.g. on the
+  // conversation peek to its right). Below the md breakpoint the sidebar's
+  // dimming .drawer-overlay backdrop is display:none (styles.css, mitto-cdf) — a
+  // full-area overlay over the conversation dropped its GPU backing store on
+  // pointer-move — so outside clicks are detected with a document listener (no
+  // DOM overlay) instead, mirroring the right-side SessionPanel. Clicks inside
+  // the sidebar panel (.drawer-side), or inside any modal dialog (.modal),
+  // are ignored so those surfaces keep working. Guarded to the mobile breakpoint
+  // (and showSidebar) so the always-open desktop sidebar (md:drawer-open) is
+  // never dismissed.
+  useEffect(() => {
+    if (!showSidebar) return undefined;
+    const onDocMouseDown = (e) => {
+      if (!window.matchMedia("(max-width: 767.98px)").matches) return;
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest(".drawer-side") || t.closest(".modal")) return;
+      setShowSidebar(false);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [showSidebar]);
   // Quick "new task" create panel shown as an overlay over the current content
   // (e.g. a conversation) via the New task shortcut, without switching to the
   // beads list view. { open, workingDir } — workingDir is kept during the
