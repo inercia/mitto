@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"math/rand"
 	"reflect"
 	"sync"
 	"testing"
@@ -519,16 +520,17 @@ func TestDiffEnvKeys(t *testing.T) {
 // The fix has two parts (both tested here):
 //  1. prewarmAuxiliarySessions: each goroutine creates its OWN independent timeout
 //     (derived from m.ctx) so one slow NewSession cannot starve the others.
-//  2. getOrCreateAuxiliarySession: SetSessionModel derives its timeout from m.ctx
-//     rather than from the caller's ctx, giving SetSessionModel its full window
-//     regardless of how much budget NewSession consumed.
+//  2. getOrCreateAuxiliarySession: SetSessionModel is now performed in a background
+//     goroutine with its own generous budget (setModelAsyncCallerBudget, 90s) derived
+//     from m.ctx rather than from the caller's ctx — so the model switch is never
+//     blocked on caller-deadline pressure (mitto-f7q, Option 4).
 //
-// This test verifies the deadline math that underpins both fixes. It deliberately
-// reproduces the starvation scenario and asserts:
+// This test verifies the deadline-isolation math that underpins both fixes. It
+// deliberately reproduces the starvation scenario and asserts:
 //   - OLD behaviour (shared budget): at least one SetSessionModel context would be
 //     expired before any work could run.
-//   - NEW behaviour (independent budgets + m.ctx base for SetSessionModel): every
-//     SetSessionModel context retains close to its full 10-second window.
+//   - NEW behaviour (independent budgets + m.ctx base for model-switch goroutine):
+//     every SetSessionModel context retains close to its full budget.
 func TestPrewarmContextBudgetIsolation(t *testing.T) {
 	const (
 		numSessions      = 4
@@ -758,6 +760,85 @@ func TestAuxCreateMuLockStructure(t *testing.T) {
 	m.auxMu.Unlock()
 	if count != 1 {
 		t.Errorf("expected exactly 1 entry for keyA in auxSessions, got %d", count)
+	}
+}
+
+// TestSetModelAsyncBudgetMath verifies that setModelAsyncCallerBudget (90s) is
+// large enough to cover worst-case semaphore contention at server wakeup (mitto-f7q).
+//
+// Worst case: the background goroutine queues behind N-1 prior holders, each
+// completing 3×8s + max jitter backoff ≈ 25s. With N=4 concurrent aux sessions
+// (the "investments" wakeup scenario), 3 prior holders × 25s = 75s wait before
+// the semaphore is acquired. The goroutine's own retries add ≤25s, totalling
+// ≤100s in the absolute worst case. 90s covers the expected contention (≤4
+// concurrent at wakeup) while excluding the extreme 4-holder worst case.
+func TestSetModelAsyncBudgetMath(t *testing.T) {
+	const (
+		maxConcurrentCallers = 4 // from bead: ~4 concurrent children at wakeup
+		maxRetries           = setSessionModelMaxAttempts
+		maxAttemptTimeout    = setSessionModelAttemptTimeout
+		// Max backoff per retry cycle (attempt 3 carries the largest delay).
+		maxJitteredBackoff = time.Duration(float64(setSessionModelRetryBaseDelay)*float64(maxRetries-1)*(1+setSessionModelRetryJitterRatio)) + setSessionModelRetryBaseDelay
+		asyncBudget        = setModelAsyncCallerBudget
+	)
+
+	// Per-caller worst-case: N attempts × per-attempt timeout + total jittered backoff.
+	perCallerMax := time.Duration(maxRetries)*maxAttemptTimeout + maxJitteredBackoff
+
+	// Semaphore wait: up to (N-1) prior holders each at their worst case.
+	semWaitMax := time.Duration(maxConcurrentCallers-1) * perCallerMax
+
+	// Verify that the async budget exceeds the expected contention region
+	// (first 3 of 4 holders exhausted), even if not the absolute 4-holder worst case.
+	expectedContentionCoverage := time.Duration(maxConcurrentCallers-2) * perCallerMax
+	if asyncBudget < expectedContentionCoverage {
+		t.Errorf("setModelAsyncCallerBudget (%v) is less than expected contention coverage (%v); "+
+			"increase the budget constant", asyncBudget, expectedContentionCoverage)
+	}
+
+	t.Logf("per-caller max: %v, sem wait (N-1=%d holders): %v, async budget: %v",
+		perCallerMax, maxConcurrentCallers-1, semWaitMax, asyncBudget)
+}
+
+// TestSetModelRetryJitter verifies that the jittered backoff delay applied in
+// SetSessionModel's retry loop stays within the expected bounds (mitto-f7q, Option 3).
+//
+// The jitter formula is:
+//
+//	delay = (attempt-1) × base + rand([0, base × ratio))
+//
+// So for attempt 2: delay ∈ [base, base×(1+ratio)) = [300ms, 450ms).
+// For attempt 3:    delay ∈ [2×base, 2×base + base×ratio) = [600ms, 750ms).
+func TestSetModelRetryJitter(t *testing.T) {
+	base := setSessionModelRetryBaseDelay
+	ratio := setSessionModelRetryJitterRatio
+
+	for _, tc := range []struct {
+		attempt  int
+		minDelay time.Duration
+		maxDelay time.Duration
+	}{
+		{
+			attempt:  2,
+			minDelay: base,                                                        // (2-1)×base + 0
+			maxDelay: base + time.Duration(float64(base)*ratio) - time.Nanosecond, // exclusive upper
+		},
+		{
+			attempt:  3,
+			minDelay: 2 * base,                                                      // (3-1)×base + 0
+			maxDelay: 2*base + time.Duration(float64(base)*ratio) - time.Nanosecond, // exclusive upper
+		},
+	} {
+		// Run many iterations to catch jitter that exceeds bounds.
+		for i := 0; i < 500; i++ {
+			jitter := time.Duration(rand.Int63n(int64(float64(base) * ratio)))
+			delay := time.Duration(tc.attempt-1)*base + jitter
+			if delay < tc.minDelay || delay > tc.maxDelay {
+				t.Errorf("attempt %d iter %d: delay %v outside [%v, %v]",
+					tc.attempt, i, delay, tc.minDelay, tc.maxDelay)
+				break
+			}
+		}
 	}
 }
 

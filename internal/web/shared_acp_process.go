@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os/exec"
 	"strings"
 	"sync"
@@ -30,13 +31,30 @@ const (
 	processStartRetryJitterRatio = 0.3
 
 	// setSessionModelMaxAttempts is the maximum number of set_model RPC attempts per call.
-	// With 3 attempts and up to 8s per attempt, worst-case is ~26s (fits in the 30s caller budget).
+	// Per-attempt deadline (8s) × 3 + jittered backoffs (≤900ms total) ≈ 25s per caller.
+	// Do NOT increase — widening per-attempt deadlines is explicitly discouraged (mitto-f7q).
 	setSessionModelMaxAttempts = 3
 	// setSessionModelAttemptTimeout is the per-attempt timeout for set_model RPCs.
 	// Each attempt gets a fresh 8s budget so a queued caller is not penalised by the wait.
+	// Do NOT increase (mitto-f7q: Option 1 is explicitly discouraged).
 	setSessionModelAttemptTimeout = 8 * time.Second
 	// setSessionModelRetryBaseDelay is the base backoff between set_model retry attempts.
 	setSessionModelRetryBaseDelay = 300 * time.Millisecond
+	// setSessionModelRetryJitterRatio is the maximum jitter as a fraction of the base delay
+	// added to each retry backoff. Jitter in [0, base×ratio) de-correlates concurrent callers
+	// that would otherwise retry in lock-step (mitto-f7q, Option 3).
+	// With ratio=0.5: attempt-2 delay ∈ [300ms, 450ms), attempt-3 ∈ [600ms, 750ms).
+	// Total per-caller worst-case: 3×8s + 750ms ≈ 25s.
+	setSessionModelRetryJitterRatio = 0.5
+
+	// setModelAsyncCallerBudget is the context timeout given to the background goroutine
+	// that performs the aux-session model switch asynchronously (mitto-f7q, Option 4).
+	// Budget reasoning: the capacity-1 setModelSem may be held by up to ~3 concurrent callers,
+	// each taking at most ~25s (3×8s + jitter). Semaphore wait ≤ 3×25s = 75s; adding slack
+	// for our own retries gives ~100s worst-case. 90s covers the expected contention at server
+	// wakeup (≤4 concurrent aux sessions) while avoiding an indefinite hang if the process
+	// is unhealthy. m.ctx cancels on manager shutdown as a hard backstop.
+	setModelAsyncCallerBudget = 90 * time.Second
 
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
@@ -994,8 +1012,12 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		// Backoff between retries (skip before first attempt).
+		// Jitter (mitto-f7q, Option 3): add a random fraction up to 50% of the base
+		// delay so concurrent callers de-correlate instead of retrying in lock-step.
+		// attempt 2: delay ∈ [300ms, 450ms); attempt 3: ∈ [600ms, 750ms).
 		if attempt > 1 {
-			delay := time.Duration(attempt-1) * setSessionModelRetryBaseDelay
+			jitter := time.Duration(rand.Int63n(int64(float64(setSessionModelRetryBaseDelay) * setSessionModelRetryJitterRatio)))
+			delay := time.Duration(attempt-1)*setSessionModelRetryBaseDelay + jitter
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():

@@ -785,30 +785,46 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			matched, shouldSet := resolveAuxModelSwitch(ws.AuxiliaryModelSelection, sessionHandle.Models)
 			switch {
 			case shouldSet:
-				// Derive from m.ctx, NOT from ctx: NewSession above may have consumed most
-				// of ctx's budget (e.g., in prewarmAuxiliarySessions where multiple goroutines
-				// were previously sharing a single deadline), making ctx already expired by the
-				// time SetSessionModel runs. Using m.ctx gives SetSessionModel its full 30-second
-				// window regardless of caller-deadline pressure. 30s accommodates up to 3 retry
-				// attempts (≤8s each + backoff) that may queue behind concurrent callers on the
-				// same shared process (mitto-3q9). m.ctx is cancelled on manager shutdown,
-				// providing a safety backstop so this never hangs indefinitely.
-				setCtx, setCancel := context.WithTimeout(m.ctx, 30*time.Second)
-				defer setCancel()
-				if setErr := process.SetSessionModel(setCtx, acp.SessionId(sessionHandle.SessionID), matched); setErr != nil {
-					if m.logger != nil {
-						m.logger.Warn("Auxiliary session: failed to set model",
-							"workspace_uuid", workspaceUUID,
-							"purpose", purpose,
-							"model_id", matched,
-							"error", setErr)
+				// Best-effort async model switch (mitto-f7q, Option 4): return the aux
+				// session immediately on the server-default model and perform the preferred-
+				// model switch in a background goroutine. This prevents the capacity-1
+				// setModelSem from blocking aux-session creation — and all callers queued
+				// behind it — during server wakeup when several concurrent aux sessions
+				// start simultaneously.
+				//
+				// The first aux prompt may run on the default model; this is explicitly
+				// acceptable per the bead.
+				//
+				// Budget: setModelAsyncCallerBudget (90s) derived from m.ctx (NOT the caller
+				// ctx, which is short-lived and may expire before the goroutine runs).
+				// Worst-case: setModelSem queued behind ~3 other holders each taking up to
+				// 3×8s + jitter backoff (≤25s each) → ~75s wait before the semaphore is
+				// acquired. Since this is off the critical path, a generous budget has no
+				// UX cost. m.ctx cancels on manager shutdown as a safety backstop.
+				capturedWorkspaceUUID := workspaceUUID
+				capturedPurpose := purpose
+				capturedMatched := matched
+				capturedProcess := process
+				capturedSessionID := acp.SessionId(sessionHandle.SessionID)
+				capturedLogger := m.logger
+				go func() {
+					setCtx, setCancel := context.WithTimeout(m.ctx, setModelAsyncCallerBudget)
+					defer setCancel()
+					if setErr := capturedProcess.SetSessionModel(setCtx, capturedSessionID, capturedMatched); setErr != nil {
+						if capturedLogger != nil {
+							capturedLogger.Warn("Auxiliary session: failed to set model",
+								"workspace_uuid", capturedWorkspaceUUID,
+								"purpose", capturedPurpose,
+								"model_id", capturedMatched,
+								"error", setErr)
+						}
+					} else if capturedLogger != nil {
+						capturedLogger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
+							"workspace_uuid", capturedWorkspaceUUID,
+							"purpose", capturedPurpose,
+							"model_id", capturedMatched)
 					}
-				} else if m.logger != nil {
-					m.logger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
-						"workspace_uuid", workspaceUUID,
-						"purpose", purpose,
-						"model_id", matched)
-				}
+				}()
 			case matched != "":
 				// The freshly-created session already runs the preferred model, so the
 				// set_model RPC is needless — skip it to avoid the per-process serialisation
