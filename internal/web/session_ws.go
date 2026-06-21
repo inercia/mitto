@@ -111,6 +111,13 @@ type SessionWSClient struct {
 	// clear signal (empty buttons). Thread-safe because OnActionButtons is called
 	// from the observer notification goroutine, which is serialised per-client.
 	lastSentButtonsKey string
+
+	// pendingMeta stores generic event metadata keyed by event seq.
+	// It is populated by OnEventMeta (which fires before OnUserPrompt) and
+	// consumed+deleted inside OnUserPrompt to attach the meta bag to the
+	// outgoing WebSocket payload. guarded by pendingMetaMu.
+	pendingMeta   map[int64]map[string]any
+	pendingMetaMu sync.Mutex
 }
 
 func hasRenderableConversationEvent(events []session.Event) bool {
@@ -2415,12 +2422,42 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	if argumentCount > 0 {
 		data["argument_count"] = argumentCount
 	}
+
+	// Attach and clear any pending generic metadata stored by OnEventMeta.
+	if seq > 0 {
+		c.pendingMetaMu.Lock()
+		if eventMeta, ok := c.pendingMeta[seq]; ok {
+			data["meta"] = eventMeta
+			delete(c.pendingMeta, seq)
+		}
+		c.pendingMetaMu.Unlock()
+	}
+
 	c.sendMessage(WSMsgTypeUserPrompt, data)
 }
 
 // GetClientID returns the unique identifier for this client.
 func (c *SessionWSClient) GetClientID() string {
 	return c.clientID
+}
+
+// OnEventMeta implements EventMetaObserver. It stores the meta keyed by seq so
+// that the next OnUserPrompt (or other typed notification with the same seq) can
+// attach it to the outgoing WebSocket payload.
+//
+// This method is always called BEFORE the matching typed notification (guaranteed
+// by the ordering in BackgroundSession.PromptWithMeta), so the map entry is
+// always present when OnUserPrompt runs.
+func (c *SessionWSClient) OnEventMeta(seq int64, meta map[string]any) {
+	if seq <= 0 || len(meta) == 0 {
+		return
+	}
+	c.pendingMetaMu.Lock()
+	if c.pendingMeta == nil {
+		c.pendingMeta = make(map[int64]map[string]any)
+	}
+	c.pendingMeta[seq] = meta
+	c.pendingMetaMu.Unlock()
 }
 
 // OnError is called when an error occurs.

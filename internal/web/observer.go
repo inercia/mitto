@@ -46,6 +46,21 @@ const (
 	UIPromptOptionStyleSuccess   = mcpserver.UIPromptOptionStyleSuccess
 )
 
+// EventMetaObserver is an optional sibling of SessionObserver. Observers that
+// implement it receive generic per-event metadata alongside the typed OnXxx
+// notification, so new low-traffic annotations can flow through without
+// requiring new per-event-type methods.
+//
+// Implementations of OnEventMeta must be safe to call concurrently from the
+// same goroutine that invokes notifyObservers.
+type EventMetaObserver interface {
+	// OnEventMeta is called with the seq of a persisted event and its generic
+	// metadata bag. It is called only when len(meta) > 0. Observers should
+	// store meta keyed by seq and attach it to the matching typed notification
+	// when it arrives.
+	OnEventMeta(seq int64, meta map[string]any)
+}
+
 // SessionObserver defines the interface for receiving session events.
 // This allows multiple clients (WebSocket connections) to observe a single session.
 //

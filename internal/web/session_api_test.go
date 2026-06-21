@@ -1260,6 +1260,67 @@ func TestHandleGetWorkspaces_WithWorkspaces(t *testing.T) {
 	}
 }
 
+func TestHandleGetWorkspaces_FilterByWorkingDir(t *testing.T) {
+	sm := NewSessionManager("test-cmd", "server1", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/workspace1", ACPServer: "server1"},
+		{WorkingDir: "/workspace2", ACPServer: "server2"},
+	})
+
+	server := &Server{
+		sessionManager: sm,
+		config: Config{
+			MittoConfig: &config.Config{
+				ACPServers: []config.ACPServer{
+					{Name: "server1", Command: "cmd1"},
+					{Name: "server2", Command: "cmd2"},
+					{Name: "server3", Command: "cmd3"},
+				},
+			},
+		},
+	}
+
+	getACPServerNames := func(url string) []string {
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		w := httptest.NewRecorder()
+		server.handleGetWorkspaces(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+		}
+		var resp struct {
+			ACPServers []struct {
+				Name string `json:"name"`
+			} `json:"acp_servers"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+		names := make([]string, 0, len(resp.ACPServers))
+		for _, s := range resp.ACPServers {
+			names = append(names, s.Name)
+		}
+		return names
+	}
+
+	// With working_dir → only the server configured for that folder.
+	if got := getACPServerNames("/api/workspaces?working_dir=/workspace1"); len(got) != 1 || got[0] != "server1" {
+		t.Errorf("acp_servers for /workspace1 = %v, want [server1]", got)
+	}
+	if got := getACPServerNames("/api/workspaces?working_dir=/workspace2"); len(got) != 1 || got[0] != "server2" {
+		t.Errorf("acp_servers for /workspace2 = %v, want [server2]", got)
+	}
+
+	// Folder with no configured workspace → empty list.
+	if got := getACPServerNames("/api/workspaces?working_dir=/unknown"); len(got) != 0 {
+		t.Errorf("acp_servers for /unknown = %v, want []", got)
+	}
+
+	// Without working_dir → all configured servers (backward compatible).
+	if got := getACPServerNames("/api/workspaces"); len(got) != 3 {
+		t.Errorf("acp_servers without working_dir = %v, want 3 servers", got)
+	}
+}
+
 func TestHandleGetWorkspaces_Empty(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 

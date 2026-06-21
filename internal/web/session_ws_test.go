@@ -1023,3 +1023,112 @@ func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionWSClient_OnEventMeta_AttachedToUserPrompt verifies that meta stored via
+// OnEventMeta is attached to the subsequent user_prompt WebSocket payload, and that
+// without OnEventMeta the "meta" key is absent from the payload.
+func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
+	t.Run("meta present when OnEventMeta called before OnUserPrompt", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		const seq = int64(42)
+		metaIn := map[string]any{"source": "test", "count": 7}
+
+		// Simulate the ordering guarantee: OnEventMeta fires before OnUserPrompt.
+		client.OnEventMeta(seq, metaIn)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if msg.Type != WSMsgTypeUserPrompt {
+				t.Fatalf("msg type = %q, want %q", msg.Type, WSMsgTypeUserPrompt)
+			}
+			metaOut, hasMeta := msg.Data["meta"]
+			if !hasMeta {
+				t.Fatal("expected \"meta\" key in WS payload, got none")
+			}
+			metaMap, ok := metaOut.(map[string]interface{})
+			if !ok {
+				t.Fatalf("meta has type %T, want map[string]interface{}", metaOut)
+			}
+			if metaMap["source"] != "test" {
+				t.Errorf(`meta["source"] = %v, want "test"`, metaMap["source"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("meta absent when OnEventMeta not called", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, hasMeta := msg.Data["meta"]; hasMeta {
+				t.Errorf("expected \"meta\" key absent from WS payload, but it was present: %v", msg.Data["meta"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("meta consumed: second OnUserPrompt for same seq has no meta", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		const seq = int64(10)
+		client.OnEventMeta(seq, map[string]any{"once": true})
+		// First call consumes the meta.
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0)
+		<-mockWS.send // drain first message
+
+		// Second call for same seq must NOT have meta.
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, hasMeta := msg.Data["meta"]; hasMeta {
+				t.Errorf("second call: expected \"meta\" absent, got %v", msg.Data["meta"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected second user_prompt on send channel, got none")
+		}
+	})
+}

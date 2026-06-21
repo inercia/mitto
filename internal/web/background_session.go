@@ -3235,6 +3235,12 @@ type PromptMeta struct {
 	// session's baseline model. When empty and PromptName is set, the list is resolved
 	// from the prompt definition via preferredModelsResolver inside PromptWithMeta.
 	PreferredModels []string
+	// Meta is an optional generic metadata bag attached to the persisted user-prompt
+	// event. Same sensitivity rules as session.RecordOption apply: no secrets,
+	// credentials, full argument values, or full prompt text.
+	// When non-empty, the bag is forwarded to EventMetaObserver.OnEventMeta so it
+	// can flow through to the WebSocket payload without per-field wiring.
+	Meta map[string]any
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -3531,7 +3537,11 @@ retryAfterRestart:
 	// The prompt ID is included so clients can clear pending prompts on reconnect
 	var userPromptSeq int64
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount); err != nil && bs.logger != nil {
+		var recordOpts []session.RecordOption
+		if len(meta.Meta) > 0 {
+			recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
+		}
+		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, recordOpts...); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 		// Get the seq that was assigned to the user prompt (it's the current event count)
@@ -3546,6 +3556,19 @@ retryAfterRestart:
 	for i, f := range fileRefs {
 		fileIDStrings[i] = f.ID
 	}
+
+	// Propagate generic event metadata to observers that implement EventMetaObserver.
+	// This must happen BEFORE OnUserPrompt so observers can store the meta keyed by seq
+	// and attach it to the outgoing payload inside OnUserPrompt.
+	if userPromptSeq > 0 && len(meta.Meta) > 0 {
+		eventMeta := meta.Meta
+		bs.notifyObservers(func(o SessionObserver) {
+			if m, ok := o.(EventMetaObserver); ok {
+				m.OnEventMeta(userPromptSeq, eventMeta)
+			}
+		})
+	}
+
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount)
 	})

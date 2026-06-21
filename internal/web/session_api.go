@@ -883,14 +883,32 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGetWorkspaces returns the list of workspaces and available ACP servers
+// handleGetWorkspaces returns the list of workspaces and available ACP servers.
+// When the optional working_dir query parameter is provided, the acp_servers list
+// is scoped to only the servers that have a workspace configured for that folder
+// (the same set the MCP conversation-creation tools accept). When absent, all
+// configured ACP servers are returned.
 func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces := s.sessionManager.GetWorkspaces()
 
-	// Get available ACP servers from config
+	// Optional folder scoping for the ACP server list.
+	workingDir := strings.TrimSpace(r.URL.Query().Get("working_dir"))
+	var folderServerSet map[string]bool
+	if workingDir != "" {
+		folderWorkspaces := s.sessionManager.GetWorkspacesForFolder(workingDir)
+		folderServerSet = make(map[string]bool, len(folderWorkspaces))
+		for _, ws := range folderWorkspaces {
+			folderServerSet[ws.ACPServer] = true
+		}
+	}
+
+	// Get available ACP servers from config, filtered to the folder when requested.
 	var acpServers []map[string]string
 	if s.config.MittoConfig != nil {
 		for _, srv := range s.config.MittoConfig.ACPServers {
+			if folderServerSet != nil && !folderServerSet[srv.Name] {
+				continue
+			}
 			acpServers = append(acpServers, map[string]string{
 				"name":    srv.Name,
 				"command": srv.Command,
