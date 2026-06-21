@@ -61,6 +61,16 @@ function formatMessageTime(timestamp) {
  */
 function NamedPromptPill({ message }) {
   const timeStr = formatMessageTime(message.timestamp);
+  // When argument names are present in the generic event metadata, list them in
+  // the tooltip (names only, never values); otherwise fall back to the count.
+  const argNames =
+    message.meta && Array.isArray(message.meta.argument_names)
+      ? message.meta.argument_names
+      : null;
+  const argTip =
+    argNames && argNames.length > 0
+      ? `Arguments: ${argNames.join(", ")}`
+      : `${message.argumentCount} argument(s)`;
   return html`
     <div class="message-enter flex justify-end items-center gap-2 mb-3">
       ${timeStr &&
@@ -84,7 +94,7 @@ function NamedPromptPill({ message }) {
         </svg>
         <span class="text-sm font-medium">${message.promptName}</span>
         ${message.argumentCount > 0 &&
-        html`<${Tooltip} tip="${message.argumentCount} argument(s)">
+        html`<${Tooltip} tip=${argTip}>
           <span
             class="badge badge-sm"
             data-testid="prompt-arg-count"
@@ -450,6 +460,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
             <${Tooltip}
               tip=${userCopied ? "Copied!" : "Copy as Markdown"}
               open=${userCopied}
+              placement="top"
             >
               <button
                 type="button"
@@ -553,6 +564,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
             <${Tooltip}
               tip=${agentCopied ? "Copied!" : "Copy as Markdown"}
               open=${agentCopied}
+              placement="top"
             >
               <button
                 type="button"

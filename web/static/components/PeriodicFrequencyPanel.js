@@ -14,6 +14,7 @@ import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 import { CountdownDisplay } from "./CountdownDisplay.js";
+import { PortalTooltip } from "./ContextMenu.js";
 
 /** Minimum delay for on-completion trigger (seconds). Used for client-side clamp helper text. */
 const MIN_COMPLETION_DELAY_SECONDS = 5;
@@ -24,6 +25,17 @@ const MIN_COMPLETION_DELAY_SECONDS = 5;
  * dangerous-config warning on save. 5 minutes.
  */
 const DANGEROUS_FREQUENCY_SECONDS = 5 * 60;
+
+// Hover-only tooltips are pointless on touch devices (no hover); gate the portal
+// header tooltips the same way daisyUI gates its CSS tooltips so taps never
+// trigger a stuck bubble.
+const PERIODIC_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+
+// Delay before a header tooltip appears on hover (ms).
+const PERIODIC_TOOLTIP_DELAY_MS = 250;
 
 /**
  * Convert a numeric value + unit string into total seconds.
@@ -203,6 +215,33 @@ export function PeriodicFrequencyPanel({
   const [isSavingEnabled, setIsSavingEnabled] = useState(false);
   // Tracks previous expanded value to detect collapse (for discarding staged edits)
   const prevExpandedRef = useRef(expanded);
+
+  // Header tooltips can't use daisyUI's CSS tooltip: the play/pause buttons sit
+  // at the panel's left edge, and a centered tooltip-bottom bubble extends left
+  // into the conversations side panel, which sits in a higher stacking context
+  // and paints over it (a z-index bump can't escape that context). Render those
+  // through a body-level PortalTooltip instead, anchored at the cursor and
+  // clamped to the viewport — same approach as the SessionItem/Beads tooltips.
+  // `data-tip`/`aria-label` are kept on the buttons (test selectors and a11y),
+  // but the `tooltip` classes are dropped so the occluded CSS bubble no longer
+  // renders.
+  const [headerTip, setHeaderTip] = useState(null);
+  const headerTipTimerRef = useRef(null);
+  const showHeaderTip = useCallback((e, text) => {
+    if (!PERIODIC_SUPPORTS_HOVER || !text) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    clearTimeout(headerTipTimerRef.current);
+    headerTipTimerRef.current = setTimeout(
+      () => setHeaderTip({ x, y, text }),
+      PERIODIC_TOOLTIP_DELAY_MS,
+    );
+  }, []);
+  const hideHeaderTip = useCallback(() => {
+    clearTimeout(headerTipTimerRef.current);
+    setHeaderTip(null);
+  }, []);
+  useEffect(() => () => clearTimeout(headerTipTimerRef.current), []);
 
   // Calculate estimated next run time based on frequency
   const calculateNextRun = useCallback((value, unit) => {
@@ -749,8 +788,11 @@ export function PeriodicFrequencyPanel({
           <button
             type="button"
             onClick=${periodicPaused ? handleRestoreClick : handleIconClick}
+            onMouseEnter=${(e) => showHeaderTip(e, periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now")}
+            onMouseLeave=${hideHeaderTip}
+            onMouseDown=${hideHeaderTip}
             disabled=${periodicPaused ? isSavingEnabled : isTriggering || isStreaming}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors tooltip tooltip-bottom ${(periodicPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(periodicPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
             data-tip=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
             aria-label=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
             data-testid="periodic-run-now-button"
@@ -771,8 +813,11 @@ export function PeriodicFrequencyPanel({
           <button
             type="button"
             onClick=${handlePauseResume}
+            onMouseEnter=${(e) => showHeaderTip(e, periodicPaused ? "Periodic runs are paused" : "Pause periodic runs")}
+            onMouseLeave=${hideHeaderTip}
+            onMouseDown=${hideHeaderTip}
             disabled=${periodicPaused || isSavingEnabled}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors tooltip tooltip-bottom ${periodicPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${periodicPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
             data-tip=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
             aria-label=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
             data-testid="periodic-pause-resume-button"
@@ -859,7 +904,10 @@ export function PeriodicFrequencyPanel({
           <button
             type="button"
             onClick=${onToggleExpanded}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors tooltip tooltip-bottom"
+            onMouseEnter=${(e) => showHeaderTip(e, expanded ? "Collapse settings" : "Expand settings")}
+            onMouseLeave=${hideHeaderTip}
+            onMouseDown=${hideHeaderTip}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
             data-tip=${expanded ? "Collapse settings" : "Expand settings"}
             aria-label=${expanded ? "Collapse settings" : "Expand settings"}
             data-testid="periodic-expand-toggle"
@@ -874,6 +922,11 @@ export function PeriodicFrequencyPanel({
             </svg>
           </button>
         </div>
+
+        ${headerTip &&
+        html`
+          <${PortalTooltip} x=${headerTip.x} y=${headerTip.y} text=${headerTip.text} />
+        `}
 
         <!-- BODY: collapsed by default; expands when user clicks the chevron -->
         <div

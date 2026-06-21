@@ -7,7 +7,7 @@ import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBe
 import { getBasename, copyToClipboard } from "../lib.js";
 import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, CopyIcon, getPromptIconOrDefault, LinkIcon, ListIcon, BoldIcon, ItalicIcon, StrikethroughIcon, InlineCodeIcon, CodeBlockIcon, NumberedListIcon, HeadingIcon, QuoteIcon } from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
-import { ContextMenu, buildPromptGroupMenuItems } from "./ContextMenu.js";
+import { ContextMenu, buildPromptGroupMenuItems, PortalTooltip } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
@@ -107,6 +107,17 @@ const BEADS_STATUS_TOGGLES = [
 // hidden.
 let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 
+// Hover-only tooltips are pointless on touch devices (no hover); gate the portal
+// toolbar tooltip the same way daisyUI gates its CSS tooltips so taps never
+// trigger a stuck bubble.
+const BEADS_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+
+// Delay before a toolbar tooltip appears on hover (ms).
+const BEADS_TOOLTIP_DELAY_MS = 250;
+
 const TYPE_COLORS = {
   epic: "bg-purple-700 text-purple-100",
   feature: "bg-blue-700 text-blue-100 beads-type-feature",
@@ -127,6 +138,18 @@ function priorityBadge(p) {
 export function statusBadge(s) {
   const label = (s || "open").replace(/_/g, " ");
   return badge(label, STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong");
+}
+
+// Status badge for the (narrow) dependencies list: shows the full status label
+// on normal screens and collapses to a single-letter abbreviation on small
+// screens (see .beads-badge-abbr / .beads-badge-full in styles.css). The full
+// label is kept in `title` for hover/accessibility.
+function depStatusBadge(s) {
+  const label = (s || "open").replace(/_/g, " ");
+  const colorClass = STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong";
+  return html`<span class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}" title=${label}>
+    <span class="beads-badge-abbr">${label.charAt(0)}</span><span class="beads-badge-full">${label}</span>
+  </span>`;
 }
 
 function typeBadge(t) {
@@ -1317,75 +1340,72 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
       ${depsLoading
         ? html`<div class="flex items-center gap-2 text-xs text-mitto-text-secondary"><span class="loading loading-spinner w-3 h-3"></span> Loading…</div>`
         : html`
-          <${Fragment}>
-            <ul class="list">
-              ${deps.length === 0 && html`<li class="text-xs text-mitto-text-secondary italic px-2 py-1">No dependencies.</li>`}
-              ${deps.map(d => html`
-                <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
-                  <select
-                    class="select select-xs beads-dep-type-select shrink-0"
-                    value=${d.dependency_type || "blocks"}
-                    disabled=${depsBusy}
-                    onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
-                  >
-                    ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-                  </select>
-                  ${statusBadge(d.status)}
-                  <button
-                    type="button"
-                    onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                    class="list-col-grow inline-flex items-center gap-2 min-w-0 text-left hover:underline tooltip tooltip-top"
-                    data-tip=${"Open " + d.id}
-                  >
-                    <span class="font-mono text-xs text-mitto-accent-400 shrink-0">${d.id}</span>
-                    <span class="truncate text-xs text-mitto-text">${d.title}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
-                    aria-disabled=${depsBusy ? "true" : "false"}
-                    class="btn btn-ghost btn-square btn-xs shrink-0 group inline-flex tooltip tooltip-left ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
-                    data-tip="Remove dependency"
-                    aria-label="Remove dependency"
-                  >
-                    <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
-                  </button>
-                </li>
-              `)}
-            </ul>
-            <div class="join w-full mt-1">
-              <select
-                class="select select-xs beads-dep-type-select join-item"
-                value=${newDepType}
-                disabled=${depsBusy}
-                onInput=${e => setNewDepType(e.target.value)}
-              >
-                ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-              </select>
-              <input
-                type="text"
-                list="beads-dep-options"
-                placeholder="issue id…"
-                value=${newDepId}
-                disabled=${depsBusy}
-                onInput=${e => setNewDepId(e.target.value)}
-                onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
-                class="input input-xs flex-1 min-w-0 join-item"
-              />
-              <button
-                type="button"
-                onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
-                aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-top ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
-                data-tip="Add dependency"
-                aria-label="Add dependency"
-              >
-                ${depsBusy
-                  ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
-                  : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-              </button>
-            </div>
-          </${Fragment}>
+          <div class="beads-deps-grid">
+            ${deps.length === 0 && html`<span class="beads-dep-empty text-xs text-mitto-text-secondary italic py-1">No dependencies.</span>`}
+            ${deps.map(d => html`
+              <${Fragment} key=${d.id}>
+                <span class="beads-dep-badge">${depStatusBadge(d.status)}</span>
+                <select
+                  class="select select-xs beads-dep-type-select"
+                  value=${d.dependency_type || "blocks"}
+                  disabled=${depsBusy}
+                  onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
+                >
+                  ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                </select>
+                <button
+                  type="button"
+                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
+                  class="input input-xs w-full min-w-0 text-left hover:underline tooltip tooltip-top"
+                  data-tip=${"Open " + d.id}
+                >
+                  <span class="font-mono text-xs text-mitto-accent-400 shrink-0">${d.id}</span>
+                  <span class="truncate text-xs text-mitto-text min-w-0">${d.title}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
+                  aria-disabled=${depsBusy ? "true" : "false"}
+                  class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-left ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
+                  data-tip="Remove dependency"
+                  aria-label="Remove dependency"
+                >
+                  <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
+                </button>
+              </${Fragment}>
+            `)}
+            <span class="beads-dep-badge"></span>
+            <select
+              class="select select-xs beads-dep-type-select"
+              value=${newDepType}
+              disabled=${depsBusy}
+              onInput=${e => setNewDepType(e.target.value)}
+            >
+              ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+            </select>
+            <input
+              type="text"
+              list="beads-dep-options"
+              placeholder="issue id…"
+              value=${newDepId}
+              disabled=${depsBusy}
+              onInput=${e => setNewDepId(e.target.value)}
+              onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
+              class="input input-xs w-full min-w-0"
+            />
+            <button
+              type="button"
+              onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
+              aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-top ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
+              data-tip="Add dependency"
+              aria-label="Add dependency"
+            >
+              ${depsBusy
+                ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
+                : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+            </button>
+          </div>
         `}`;
   };
 
@@ -1684,6 +1704,11 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
   const [deletingIssue, setDeletingIssue] = useState(false);
   // Bumped to re-fetch the current issue after a status/defer/dep change.
   const [refreshNonce, setRefreshNonce] = useState(0);
+  // Full issue list for the workspace, used to compute the current issue's
+  // subtasks (children). /api/beads/show does not return children, so without
+  // the list the Subtasks section would never render here even though it does
+  // in the Tasks list view (which passes its already-loaded list as allIssues).
+  const [listIssues, setListIssues] = useState([]);
 
   // Reset to the externally-requested issue when the prop changes.
   useEffect(() => {
@@ -1713,6 +1738,28 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     })();
     return () => { cancelled = true; };
   }, [workingDir, currentIssueId, refreshNonce]);
+
+  // Fetch the full issue list so BeadsDetailPanel can derive subtasks for the
+  // current issue. Re-fetched on refreshNonce so children stay current after a
+  // status/defer/delete change. Non-fatal on failure: the single issue still
+  // loads; only the Subtasks section is omitted.
+  useEffect(() => {
+    if (!workingDir) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(apiUrl("/api/beads/list") + "?working_dir=" + encodeURIComponent(workingDir));
+        const data = await readBeadsResponse(res);
+        if (cancelled) return;
+        if (res.ok && !data.error && Array.isArray(data)) {
+          setListIssues(data);
+        }
+      } catch (_err) {
+        // Non-fatal: subtasks just won't render.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workingDir, refreshNonce]);
 
   const refresh = useCallback(() => setRefreshNonce(n => n + 1), []);
 
@@ -1799,7 +1846,7 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     <${Fragment}>
       <${BeadsDetailPanel}
         issue=${issue}
-        allIssues=${[]}
+        allIssues=${listIssues}
         isCreating=${false}
         workingDir=${workingDir}
         initialFullscreen=${false}
@@ -1951,6 +1998,32 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       return next;
     });
   }, []);
+
+  // Toolbar tooltips can't use daisyUI's CSS tooltip: the toolbar lives inside
+  // two `overflow-hidden` ancestors (panel root + column), so a centered
+  // tooltip-bottom bubble on a left-edge button (e.g. the status filters) is
+  // clipped at the panel edge. Render those through a body-level PortalTooltip
+  // instead, anchored at the cursor and clamped to the viewport — same approach
+  // as the SessionItem row tooltip. `data-tip`/`aria-label` are kept on the
+  // buttons (test selectors and a11y), but the `tooltip` classes are dropped so
+  // the clipped CSS bubble no longer renders.
+  const [toolbarTip, setToolbarTip] = useState(null);
+  const toolbarTipTimerRef = useRef(null);
+  const showToolbarTip = useCallback((e, text) => {
+    if (!BEADS_SUPPORTS_HOVER || !text) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    clearTimeout(toolbarTipTimerRef.current);
+    toolbarTipTimerRef.current = setTimeout(
+      () => setToolbarTip({ x, y, text }),
+      BEADS_TOOLTIP_DELAY_MS,
+    );
+  }, []);
+  const hideToolbarTip = useCallback(() => {
+    clearTimeout(toolbarTipTimerRef.current);
+    setToolbarTip(null);
+  }, []);
+  useEffect(() => () => clearTimeout(toolbarTipTimerRef.current), []);
 
   // Persist type and search filters whenever they change.
   useEffect(() => {
@@ -2812,27 +2885,38 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
       <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
         <div class="join shrink-0" role="group" aria-label="Filter by status">
-          ${BEADS_STATUS_TOGGLES.map(t => html`
+          ${BEADS_STATUS_TOGGLES.map(t => {
+            const tip = statusToggles[t.key]
+              ? `Hide ${t.label} issues`
+              : `Show ${t.label} issues`;
+            return html`
             <button
               type="button"
               onClick=${() => toggleStatus(t.key)}
+              onMouseEnter=${(e) => showToolbarTip(e, tip)}
+              onMouseLeave=${hideToolbarTip}
+              onMouseDown=${hideToolbarTip}
               aria-pressed=${statusToggles[t.key] ? "true" : "false"}
-              aria-label=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              data-tip=${statusToggles[t.key] ? `Hide ${t.label} issues` : `Show ${t.label} issues`}
-              class="btn btn-xs btn-square join-item inline-flex tooltip tooltip-bottom ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
+              aria-label=${tip}
+              data-tip=${tip}
+              class="btn btn-xs btn-square join-item inline-flex ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
             >
               <${t.Icon} className="w-3.5 h-3.5" />
             </button>
-          `)}
+          `;
+          })}
         </div>
         <div class="join shrink-0" role="group" aria-label="View mode">
           <button
             type="button"
             onClick=${() => setGrouping(g => !g)}
+            onMouseEnter=${(e) => showToolbarTip(e, grouping ? "Switch to flat list" : "Group issues by epic")}
+            onMouseLeave=${hideToolbarTip}
+            onMouseDown=${hideToolbarTip}
             aria-pressed=${grouping ? "true" : "false"}
             data-tip=${grouping ? "Switch to flat list" : "Group issues by epic"}
             aria-label=${grouping ? "Switch to flat list" : "Group issues by epic"}
-            class="btn btn-xs join-item inline-flex tooltip tooltip-bottom ${grouping ? "btn-active" : "btn-ghost"}"
+            class="btn btn-xs join-item inline-flex ${grouping ? "btn-active" : "btn-ghost"}"
           >
             <${LayersIcon} className="w-3.5 h-3.5" />
           </button>
@@ -2856,9 +2940,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           <button
             type="button"
             onClick=${() => setShowSortMenu(o => !o)}
+            onMouseEnter=${(e) => showToolbarTip(e, `Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`)}
+            onMouseLeave=${hideToolbarTip}
+            onMouseDown=${hideToolbarTip}
             aria-haspopup="true"
             aria-expanded=${showSortMenu ? "true" : "false"}
-            class="btn btn-xs gap-1 inline-flex tooltip tooltip-bottom ${showSortMenu ? "btn-active" : "btn-ghost"}"
+            class="btn btn-xs gap-1 inline-flex ${showSortMenu ? "btn-active" : "btn-ghost"}"
             data-tip=${`Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`}
             aria-label=${`Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`}
             data-testid="beads-sort-button"
@@ -2904,6 +2991,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             </ul>
           `}
         </div>
+        ${toolbarTip &&
+        html`
+          <${PortalTooltip} x=${toolbarTip.x} y=${toolbarTip.y} text=${toolbarTip.text} />
+        `}
       </div>
 
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll" ref=${scrollContainerRef}>
