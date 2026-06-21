@@ -530,6 +530,22 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	c.checkAndSignalWait()
 }
 
+// reportSatisfiesCurrentTask returns true if the given report counts as a completed
+// result for the current wait's task. Must be called with c.mu held.
+//
+// A report satisfies the current task when:
+//   - it is non-nil and marked Completed, AND
+//   - either: no task scoping is in effect (currentTaskID == ""),
+//     OR: the report carries the matching task_id,
+//     OR: the entry was auto-completed (agent_idle / session_stopped, which carry
+//     no real task_id and must always count toward completion).
+func (c *childReportCollector) reportSatisfiesCurrentTask(r *childReport) bool {
+	if r == nil || !r.Completed {
+		return false
+	}
+	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted
+}
+
 // checkAndSignalWait checks if all waited-on children have reported and signals if so.
 // Must be called with c.mu held.
 func (c *childReportCollector) checkAndSignalWait() {
@@ -538,7 +554,7 @@ func (c *childReportCollector) checkAndSignalWait() {
 	}
 	for childID := range c.waitingFor {
 		r := c.reports[childID]
-		if r == nil || !r.Completed {
+		if !c.reportSatisfiesCurrentTask(r) {
 			return // Still waiting on this child
 		}
 	}
@@ -638,12 +654,14 @@ func (c *childReportCollector) clearWait() {
 
 // getPendingAndReported returns the lists of child IDs that are still pending
 // and those that have already reported, from the current waitingFor set.
+// Uses the same task-matching logic as checkAndSignalWait so the two views
+// stay consistent: a stale-task report is treated as pending here too.
 func (c *childReportCollector) getPendingAndReported() (pending []string, reported []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for childID := range c.waitingFor {
 		r := c.reports[childID]
-		if r != nil && r.Completed {
+		if c.reportSatisfiesCurrentTask(r) {
 			reported = append(reported, childID)
 		} else {
 			pending = append(pending, childID)
