@@ -287,7 +287,7 @@ func TestHandleBeadsCreate_BothEmpty(t *testing.T) {
 }
 
 func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T) {
-	// Empty title + non-empty description: GenerateQuickTitle fallback is used
+	// Empty title + non-empty description: conversation.GenerateQuickTitle fallback is used
 	// (no auxiliaryManager wired), and the request reaches bd.Create → 200.
 	sm := NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
@@ -319,7 +319,7 @@ func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T)
 	}
 	// The quick-title fallback should derive something meaningful from the description.
 	if capturedTitle == "New Issue" {
-		// Only acceptable if GenerateQuickTitle returned ""; log but don't fail hard.
+		// Only acceptable if conversation.GenerateQuickTitle returned ""; log but don't fail hard.
 		t.Logf("note: capturedTitle=%q (last-resort fallback used)", capturedTitle)
 	}
 }

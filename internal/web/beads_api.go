@@ -12,6 +12,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 // beadsClient returns the injectable beads Client. When the server was
@@ -166,7 +167,7 @@ type beadsCreateRequest struct {
 // handleBeadsCreate handles POST /api/beads/create.
 // Runs "bd create <title> --json [--type T] [--priority N] [-d D]" in the workspace directory.
 // When title is empty but description is non-empty, the title is auto-generated via the
-// auxiliary session (with a 60s timeout) and falls back to GenerateQuickTitle, then "New Issue".
+// auxiliary session (with a 60s timeout) and falls back to conversation.GenerateQuickTitle, then "New Issue".
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -223,7 +224,7 @@ func (s *Server) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 
 		// Fallback: derive a quick title from the description text.
 		if title == "" {
-			title = GenerateQuickTitle(description)
+			title = conversation.GenerateQuickTitle(description)
 		}
 		// Last resort.
 		if title == "" {
