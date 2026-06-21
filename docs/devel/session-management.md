@@ -197,7 +197,11 @@ In `BackgroundSession.PromptWithMeta`, `OnEventMeta` is called **before** `OnUse
 
 `SessionWSClient` implements `EventMetaObserver`: it stores pending meta in a `map[int64]map[string]any` (guarded by a mutex), consumes and deletes the entry inside `OnUserPrompt`, and attaches it to the WebSocket payload as `data["meta"]`. If no meta was stored for a given seq, the key is absent from the payload.
 
-Frontend (`useWebSocket.js`): the `meta` field is extracted from the `user_prompt` message payload and stored on the message object as a conduit. No component renders it yet; this is the propagation foundation for future consumers.
+Frontend (`useWebSocket.js`): the `meta` field is extracted from the live `user_prompt` message payload and stored on the message object. For **persisted** events, `lib.js` `convertEventsToMessages` also maps `event.data.meta` onto the message so annotations survive a reload.
+
+### Concrete consumer: `argument_names`
+
+When a named/workspace prompt is dispatched with user-supplied arguments, `BackgroundSession.PromptWithMeta` records the **names only** (sorted, never the values) of the substituted `${VAR}` arguments under `meta["argument_names"]`. Values are substituted into the prompt text before persistence and are forbidden by the sensitivity policy above. The frontend `NamedPromptPill` (in `Message.js`) surfaces these names in the argument-count badge's tooltip (e.g. `Arguments: ISSUE_ID, PROJECT`), falling back to `N argument(s)` when names are unavailable (older events).
 
 ## Session State Ownership Model
 
