@@ -41,6 +41,12 @@ type SessionListResponse struct {
 	PeriodicDelaySeconds int `json:"periodic_delay_seconds,omitempty"`
 	// PeriodicMaxDurationSeconds is the wall-clock cap in seconds since iterating started (0 = unlimited).
 	PeriodicMaxDurationSeconds int `json:"periodic_max_duration_seconds,omitempty"`
+	// PeriodicHasPrompt is true when the periodic config has a prompt set
+	// (either a free-text Prompt body or a named PromptName).
+	PeriodicHasPrompt bool `json:"periodic_has_prompt,omitempty"`
+	// PeriodicPromptPreview is a short preview of the free-text Prompt body only
+	// (first line, trimmed, truncated to ~80 runes). Empty for named-prompt-only configs.
+	PeriodicPromptPreview string `json:"periodic_prompt_preview,omitempty"`
 }
 
 // HandleListSessions handles GET /api/sessions
@@ -96,6 +102,9 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 			response[i].PeriodicMaxIterations = periodic.MaxIterations
 			response[i].PeriodicDelaySeconds = periodic.DelaySeconds
 			response[i].PeriodicMaxDurationSeconds = periodic.MaxDurationSeconds
+			// Prompt presence flag and free-text preview for the selector UI.
+			response[i].PeriodicHasPrompt = periodic.Prompt != "" || periodic.PromptName != ""
+			response[i].PeriodicPromptPreview = periodic.PromptPreview()
 		}
 		// Check if session is currently waiting for children (runtime state from SessionManager)
 		if h.deps.SessionManager != nil {

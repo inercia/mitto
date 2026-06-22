@@ -41,6 +41,11 @@ func BuildPeriodicUpdatedData(sessionID string, periodic *session.PeriodicPrompt
 		data["trigger"] = string(periodic.EffectiveTrigger())
 		data["delay_seconds"] = periodic.DelaySeconds
 		data["max_duration_seconds"] = periodic.MaxDurationSeconds
+		// Prompt presence flag and free-text preview for the selector UI.
+		data["periodic_has_prompt"] = periodic.Prompt != "" || periodic.PromptName != ""
+		if preview := periodic.PromptPreview(); preview != "" {
+			data["periodic_prompt_preview"] = preview
+		}
 	} else {
 		// No periodic config - session is not in periodic mode
 		data["periodic_configured"] = false

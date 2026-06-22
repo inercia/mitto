@@ -1286,3 +1286,68 @@ func TestPeriodicStore_Update_ArgumentsPersisted(t *testing.T) {
 		t.Errorf("Arguments[NEW] = %q, want %q", got.Arguments["NEW"], "value")
 	}
 }
+
+func TestPeriodicPrompt_PromptPreview(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{
+			name:   "empty prompt returns empty",
+			prompt: "",
+			want:   "",
+		},
+		{
+			name:   "pending placeholder returns empty",
+			prompt: "(pending)",
+			want:   "",
+		},
+		{
+			name:   "pending placeholder with surrounding whitespace returns empty",
+			prompt: "  (pending)  ",
+			want:   "",
+		},
+		{
+			name:   "short single-line prompt returned unchanged",
+			prompt: "Do some analysis",
+			want:   "Do some analysis",
+		},
+		{
+			name:   "multi-line prompt returns first line only",
+			prompt: "First line\nSecond line\nThird line",
+			want:   "First line",
+		},
+		{
+			name:   "first line with trailing whitespace is trimmed",
+			prompt: "First line   \nSecond line",
+			want:   "First line",
+		},
+		{
+			name:   "exactly 80 rune prompt returned unchanged",
+			prompt: "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+			want:   "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+		},
+		{
+			name:   "prompt longer than 80 runes is truncated with ellipsis",
+			prompt: "123456789012345678901234567890123456789012345678901234567890123456789012345678901",
+			want:   "12345678901234567890123456789012345678901234567890123456789012345678901234567890…",
+		},
+		{
+			// 72 Greek runes + 9 ASCII = 81 runes → truncated at 80 with "…"
+			name:   "rune-safe truncation on multibyte characters",
+			prompt: "αβγδεζηθικλμνξοπρστυφχψωαβγδεζηθικλμνξοπρστυφχψωαβγδεζηθικλμνξοπρστυφχψωABCDEFGHI",
+			want:   "αβγδεζηθικλμνξοπρστυφχψωαβγδεζηθικλμνξοπρστυφχψωαβγδεζηθικλμνξοπρστυφχψωABCDEFGH…",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &PeriodicPrompt{Prompt: tt.prompt}
+			got := p.PromptPreview()
+			if got != tt.want {
+				t.Errorf("PromptPreview() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

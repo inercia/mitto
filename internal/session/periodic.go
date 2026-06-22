@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/inercia/mitto/internal/fileutil"
 )
@@ -207,6 +209,35 @@ func (p *PeriodicPrompt) EffectiveTrigger() PeriodicTrigger {
 // IsOnCompletion returns true when this periodic prompt uses the onCompletion trigger.
 func (p *PeriodicPrompt) IsOnCompletion() bool {
 	return p.EffectiveTrigger() == TriggerOnCompletion
+}
+
+// pendingPlaceholder is the placeholder value treated as "no prompt" for preview purposes.
+const pendingPlaceholder = "(pending)"
+
+// promptPreviewMaxRunes is the maximum number of runes shown in PromptPreview.
+const promptPreviewMaxRunes = 80
+
+// PromptPreview returns a short preview of the free-text Prompt body.
+// Returns "" when Prompt is empty or the literal placeholder "(pending)".
+// Otherwise returns the first line, trimmed, truncated to 80 runes with a
+// trailing "…" appended when the original first line exceeded that length.
+// Named-prompt-only configs (PromptName set, Prompt empty) also return "".
+func (p *PeriodicPrompt) PromptPreview() string {
+	body := strings.TrimSpace(p.Prompt)
+	if body == "" || body == pendingPlaceholder {
+		return ""
+	}
+	// Use the first line only.
+	firstLine := body
+	if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+		firstLine = strings.TrimSpace(body[:idx])
+	}
+	if utf8.RuneCountInString(firstLine) <= promptPreviewMaxRunes {
+		return firstLine
+	}
+	// Truncate to promptPreviewMaxRunes runes and append ellipsis.
+	runes := []rune(firstLine)
+	return string(runes[:promptPreviewMaxRunes]) + "…"
 }
 
 // ReachedMaxDuration returns true if the elapsed time since the first run exceeds MaxDurationSeconds.
