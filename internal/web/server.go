@@ -679,27 +679,106 @@ func NewServer(config Config) (*Server, error) {
 	s.callbackIndex = conversation.NewCallbackIndex()
 	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()
 
+	// Bind the auxiliary title generator only when an auxiliary manager exists,
+	// so the beads create handler preserves its "no auxiliary → quick-title
+	// fallback" behaviour (a nil func signals no generator).
+	var genAuxTitle func(context.Context, string, string) (string, error)
+	if s.auxiliaryManager != nil {
+		genAuxTitle = s.auxiliaryManager.GenerateTitle
+	}
+
 	// Construct the REST handlers sub-package facade. Built here (not earlier)
 	// so the late-initialized callbackIndex, callbackRateLimiter and
 	// periodicRunner are non-nil when wired into Deps.
 	s.apiHandlers = handlers.New(handlers.Deps{
-		Logger:                    logger,
-		ConfigReadOnly:            config.ConfigReadOnly,
-		MittoConfig:               config.MittoConfig,
-		Store:                     store,
-		SessionManager:            sessionMgr,
-		APIPrefix:                 apiPrefix,
-		CallbackIndex:             s.callbackIndex,
-		CallbackRateLimiter:       s.callbackRateLimiter,
-		GetExternalPort:           s.GetExternalPort,
-		IsExternalListenerRunning: s.IsExternalListenerRunning,
-		TriggerPeriodicNow:        s.periodicRunner.TriggerNow,
-		ErrSessionBusy:            ErrSessionBusy,
-		ErrPeriodicNotEnabled:     ErrPeriodicNotEnabled,
-		PeriodicDelayFloor:        s.periodicDelayFloor,
-		BroadcastPeriodicUpdated:  s.BroadcastPeriodicUpdated,
-		BootstrapOnCompletion:     s.periodicRunner.BootstrapOnCompletion,
-		BroadcastSettingsUpdated:  s.BroadcastSessionSettingsUpdated,
+		Logger:                   logger,
+		ConfigReadOnly:           config.ConfigReadOnly,
+		MittoConfig:              config.MittoConfig,
+		RCFilePath:               config.RCFilePath,
+		HasRCFileServers:         config.HasRCFileServers,
+		PromptsCache:             config.PromptsCache,
+		HasExistingSimpleAuth:    s.hasExistingSimpleAuth,
+		ValidateAndPrepareConfig: s.validateAndPrepareSaveConfig,
+		BuildNewSettings:         s.buildNewSettings,
+		ApplyConfigChanges:       s.applyConfigChanges,
+		AuthEnabled:              func() bool { return s.authManager != nil && s.authManager.IsEnabled() },
+		FilterPromptsForSession: func(prompts []configPkg.WebPrompt, sessionID string) []configPkg.WebPrompt {
+			if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+				return s.filterPromptsByEnabled(prompts, visCtx)
+			}
+			return prompts
+		},
+		MigrateWorkspacePrompts:            s.migrateWorkspacePrompts,
+		LoadPromptsFromDirs:                s.loadPromptsFromDirs,
+		BuildPromptEnabledContext:          s.buildPromptEnabledContext,
+		ApplyWorkspaceNamespace:            s.applyWorkspaceNamespace,
+		BuildWorkspacePromptEnabledContext: s.buildWorkspacePromptEnabledContext,
+		FilterPromptsByEnabled:             s.filterPromptsByEnabled,
+		Store:                              store,
+		SessionManager:                     sessionMgr,
+		APIPrefix:                          apiPrefix,
+		CallbackIndex:                      s.callbackIndex,
+		CallbackRateLimiter:                s.callbackRateLimiter,
+		GetExternalPort:                    s.GetExternalPort,
+		IsExternalListenerRunning:          s.IsExternalListenerRunning,
+		TriggerPeriodicNow:                 s.periodicRunner.TriggerNow,
+		ErrSessionBusy:                     ErrSessionBusy,
+		ErrPeriodicNotEnabled:              ErrPeriodicNotEnabled,
+		PeriodicDelayFloor:                 s.periodicDelayFloor,
+		BroadcastPeriodicUpdated:           s.BroadcastPeriodicUpdated,
+		BootstrapOnCompletion:              s.periodicRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:           s.BroadcastSessionSettingsUpdated,
+		BroadcastSessionDeleted:            s.BroadcastSessionDeleted,
+		BroadcastACPStartFailed:            s.BroadcastACPStartFailed,
+		BroadcastACPStopped:                s.BroadcastACPStopped,
+		BroadcastACPStarted:                s.BroadcastACPStarted,
+		BroadcastSessionRenamed:            s.BroadcastSessionRenamed,
+		BroadcastSessionPinned:             s.BroadcastSessionPinned,
+		BroadcastSessionArchived:           s.BroadcastSessionArchived,
+		BroadcastSessionCreated: func(data map[string]interface{}) {
+			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
+		},
+		RemoveNegativeCache: func(sessionID string) {
+			if s.negativeSessionCache != nil {
+				s.negativeSessionCache.Remove(sessionID)
+			}
+		},
+		DefaultACPServer:       config.ACPServer,
+		QueueTitleWorker:       s.queueTitleWorker,
+		NotifyQueueUpdate:      s.notifyQueueUpdate,
+		NotifyQueueReorder:     s.notifyQueueReorder,
+		BeadsClient:            s.beads,
+		GenerateAuxTitle:       genAuxTitle,
+		GetWorkspacePromptsAll: s.getWorkspacePromptsAll,
+		MCPServerURL: func() string {
+			url := fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpserver.DefaultPort)
+			if s.mcpServer != nil && s.mcpServer.IsRunning() && s.mcpServer.Port() > 0 {
+				url = fmt.Sprintf("http://127.0.0.1:%d/mcp", s.mcpServer.Port())
+			}
+			return url
+		},
+		SyncConfigWorkspaces: func() {
+			s.config.Workspaces = s.sessionManager.GetWorkspaces()
+		},
+		RestartWorkspaceACP: func() func(string) error {
+			if s.acpProcessManager == nil {
+				return nil
+			}
+			return s.acpProcessManager.RestartProcess
+		}(),
+		IsShutdown: s.IsShutdown,
+		AuthInfo: func() (bool, bool) {
+			if s.authManager == nil {
+				return false, false
+			}
+			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess()
+		},
+		ImprovePrompt: func() func(context.Context, string, string) (string, error) {
+			if s.auxiliaryManager == nil {
+				return nil
+			}
+			return s.auxiliaryManager.ImprovePrompt
+		}(),
 	})
 
 	// Configure auto-archive inactive sessions if enabled
@@ -775,43 +854,43 @@ func NewServer(config Config) (*Server, error) {
 
 	// API routes - all use the API prefix for security through obscurity
 	mux.HandleFunc(apiPrefix+"/api/sessions", s.handleSessions)
-	mux.HandleFunc(apiPrefix+"/api/sessions/running", s.handleRunningSessions)
+	mux.HandleFunc(apiPrefix+"/api/sessions/running", s.apiHandlers.HandleRunningSessions)
 	mux.HandleFunc(apiPrefix+"/api/sessions/", s.handleSessionDetail)
-	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
-	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.handleWorkspaceDetail)
+	mux.HandleFunc(apiPrefix+"/api/workspaces", s.apiHandlers.HandleWorkspaces)
+	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.apiHandlers.HandleWorkspaceDetail)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
-	mux.HandleFunc(apiPrefix+"/api/workspace-prompts/toggle-enabled", s.handleWorkspacePromptsToggleEnabled)
-	mux.HandleFunc(apiPrefix+"/api/workspace-processors", s.handleWorkspaceProcessors)
-	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.handleWorkspaceProcessorsToggleEnabled)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.handleWorkspaceMCPTools)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.handleWorkspaceMCPInstall)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.handleWorkspaceMCPRemove)
-	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
-	mux.HandleFunc(apiPrefix+"/api/folder-group", s.handleFolderGroup)
+	mux.HandleFunc(apiPrefix+"/api/workspace-prompts/toggle-enabled", s.apiHandlers.HandleWorkspacePromptsToggleEnabled)
+	mux.HandleFunc(apiPrefix+"/api/workspace-processors", s.apiHandlers.HandleWorkspaceProcessors)
+	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.apiHandlers.HandleWorkspaceProcessorsToggleEnabled)
+	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.apiHandlers.HandleWorkspaceMCPTools)
+	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.apiHandlers.HandleWorkspaceMCPInstall)
+	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.apiHandlers.HandleWorkspaceMCPRemove)
+	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.apiHandlers.HandleWorkspaceMetadata)
+	mux.HandleFunc(apiPrefix+"/api/folder-group", s.apiHandlers.HandleFolderGroup)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.apiHandlers.HandleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
-	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)
+	mux.HandleFunc(apiPrefix+"/api/agent-types", s.apiHandlers.HandleAgentTypes)
 	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.apiHandlers.HandleScanAgents)
 	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.apiHandlers.HandleConfirmAgents)
-	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
-	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.handleRunnerDefaults)
-	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
+	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.apiHandlers.HandleSupportedRunners)
+	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.apiHandlers.HandleRunnerDefaults)
+	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.apiHandlers.HandleAdvancedFlags)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.apiHandlers.HandleExternalStatus)
-	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
+	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.apiHandlers.HandleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.apiHandlers.HandleBadgeClick)
-	mux.HandleFunc(apiPrefix+"/api/beads/list", s.handleBeadsList)
-	mux.HandleFunc(apiPrefix+"/api/beads/stats", s.handleBeadsStats)
-	mux.HandleFunc(apiPrefix+"/api/beads/show", s.handleBeadsShow)
-	mux.HandleFunc(apiPrefix+"/api/beads/create", s.handleBeadsCreate)
-	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.handleBeadsCleanup)
-	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.handleBeadsDelete)
-	mux.HandleFunc(apiPrefix+"/api/beads/status", s.handleBeadsStatus)
-	mux.HandleFunc(apiPrefix+"/api/beads/update", s.handleBeadsUpdate)
-	mux.HandleFunc(apiPrefix+"/api/beads/comment", s.handleBeadsComment)
-	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.handleBeadsDep)
-	mux.HandleFunc(apiPrefix+"/api/beads/config", s.handleBeadsConfig)
-	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.handleBeadsUpstream)
-	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.handleBeadsSync)
+	mux.HandleFunc(apiPrefix+"/api/beads/list", s.apiHandlers.HandleBeadsList)
+	mux.HandleFunc(apiPrefix+"/api/beads/stats", s.apiHandlers.HandleBeadsStats)
+	mux.HandleFunc(apiPrefix+"/api/beads/show", s.apiHandlers.HandleBeadsShow)
+	mux.HandleFunc(apiPrefix+"/api/beads/create", s.apiHandlers.HandleBeadsCreate)
+	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.apiHandlers.HandleBeadsCleanup)
+	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.apiHandlers.HandleBeadsDelete)
+	mux.HandleFunc(apiPrefix+"/api/beads/status", s.apiHandlers.HandleBeadsStatus)
+	mux.HandleFunc(apiPrefix+"/api/beads/update", s.apiHandlers.HandleBeadsUpdate)
+	mux.HandleFunc(apiPrefix+"/api/beads/comment", s.apiHandlers.HandleBeadsComment)
+	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.apiHandlers.HandleBeadsDep)
+	mux.HandleFunc(apiPrefix+"/api/beads/config", s.apiHandlers.HandleBeadsConfig)
+	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.apiHandlers.HandleBeadsUpstream)
+	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.apiHandlers.HandleBeadsSync)
 	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.apiHandlers.HandleUIPreferences)
 
 	// File save endpoints - restricted to localhost only (used by native macOS app)
@@ -819,11 +898,11 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/check-file-exists", s.apiHandlers.HandleCheckFileExists)
 
 	// Auth info endpoint (public, used by login page to adapt its UI)
-	mux.HandleFunc(apiPrefix+"/api/auth-info", s.HandleAuthInfo)
+	mux.HandleFunc(apiPrefix+"/api/auth-info", s.apiHandlers.HandleAuthInfo)
 
 	// M3: Health check endpoint for load balancer integration and monitoring
 	// This endpoint is intentionally NOT behind auth to allow health checks
-	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
+	mux.HandleFunc(apiPrefix+"/api/health", s.apiHandlers.HandleHealthCheck)
 
 	// Callback trigger endpoint (public, no auth required)
 	mux.HandleFunc(apiPrefix+"/api/callback/", s.apiHandlers.HandleCallbackTrigger)
@@ -1061,73 +1140,6 @@ func (s *Server) Store() *session.Store {
 // This is primarily used for testing to access session internals.
 func (s *Server) GetSessionManager() *conversation.SessionManager {
 	return s.sessionManager
-}
-
-// handleHealthCheck handles the health check endpoint for load balancer integration.
-// M3: This endpoint returns server health status and basic metrics.
-// It is intentionally NOT behind authentication to allow health checks from load balancers.
-func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Check if server is shutting down
-	if s.IsShutdown() {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"status":  "unhealthy",
-			"reason":  "server_shutting_down",
-			"message": "Server is shutting down",
-		})
-		return
-	}
-
-	// Gather health metrics
-	response := map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// Add session metrics if session manager is available
-	if s.sessionManager != nil {
-		activeSessions := s.sessionManager.ActiveSessionCount()
-		promptingSessions := s.sessionManager.PromptingSessionCount()
-		response["sessions"] = map[string]interface{}{
-			"active":    activeSessions,
-			"prompting": promptingSessions,
-		}
-	}
-
-	// Add store metrics if available
-	if s.store != nil {
-		storedCount, err := s.store.CountSessions()
-		if err == nil {
-			response["stored_sessions"] = storedCount
-		}
-	}
-
-	writeJSONOK(w, response)
-}
-
-// HandleAuthInfo returns information about configured authentication methods.
-// This is a public endpoint (no auth required) so the login page can adapt its UI.
-func (s *Server) HandleAuthInfo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-
-	info := map[string]bool{
-		"simple":     false,
-		"cloudflare": false,
-	}
-
-	if s.authManager != nil {
-		info["simple"] = s.authManager.HasValidCredentials()
-		info["cloudflare"] = s.authManager.HasCloudflareAccess()
-	}
-
-	writeJSONOK(w, info)
 }
 
 // handleRobotsTxt serves a robots.txt that disallows all crawling.

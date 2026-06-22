@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 )
@@ -21,6 +23,11 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // writeJSONOK writes a JSON response with status 200 OK.
 func writeJSONOK(w http.ResponseWriter, data interface{}) {
 	writeJSON(w, http.StatusOK, data)
+}
+
+// writeJSONCreated writes a JSON response with status 201 Created.
+func writeJSONCreated(w http.ResponseWriter, data interface{}) {
+	writeJSON(w, http.StatusCreated, data)
 }
 
 // methodNotAllowed writes a 405 Method Not Allowed response.
@@ -50,4 +57,32 @@ func parseJSONBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 		return false
 	}
 	return true
+}
+
+// writeJSONWithETag serializes data to JSON, computes an ETag from the response body,
+// and returns 304 Not Modified if the client's If-None-Match header matches.
+// This saves bandwidth for endpoints that are polled frequently with rarely-changing data.
+func writeJSONWithETag(w http.ResponseWriter, r *http.Request, data interface{}) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	// json.Encoder adds a trailing newline; match that for consistency
+	body = append(body, '\n')
+
+	hash := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(hash[:]) + `"`
+
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache") // Must revalidate, but can use ETag
+
+	if match := r.Header.Get("If-None-Match"); match == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(body) //nolint:errcheck
 }

@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"context"
@@ -74,15 +74,56 @@ func setupMittoDir(t *testing.T) string {
 	return tmpDir
 }
 
-// newBeadsTestServer returns a minimal *Server with a session manager
-// that has one known workspace at /test/workspace.
-func newBeadsTestServer() *Server {
+// newBeadsTestSM returns a session manager with one known workspace at
+// /test/workspace.
+func newBeadsTestSM() *conversation.SessionManager {
 	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
-	return &Server{sessionManager: sm}
+	return sm
 }
+
+// newBeadsTestServer returns a *Handlers with a session manager that has one
+// known workspace at /test/workspace.
+func newBeadsTestServer() *Handlers {
+	return New(Deps{SessionManager: newBeadsTestSM()})
+}
+
+// newBeadsTestServerWithClient returns a *Handlers wired with the given beads
+// client and the standard one-workspace session manager.
+func newBeadsTestServerWithClient(c beads.Client) *Handlers {
+	return New(Deps{SessionManager: newBeadsTestSM(), BeadsClient: c})
+}
+
+// Lowercase aliases so the migrated test bodies can keep calling the handlers
+// by their original (pre-extraction) names.
+func (h *Handlers) handleBeadsList(w http.ResponseWriter, r *http.Request)  { h.HandleBeadsList(w, r) }
+func (h *Handlers) handleBeadsStats(w http.ResponseWriter, r *http.Request) { h.HandleBeadsStats(w, r) }
+func (h *Handlers) handleBeadsShow(w http.ResponseWriter, r *http.Request)  { h.HandleBeadsShow(w, r) }
+func (h *Handlers) handleBeadsCreate(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsCreate(w, r)
+}
+func (h *Handlers) handleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsCleanup(w, r)
+}
+func (h *Handlers) handleBeadsDelete(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsDelete(w, r)
+}
+func (h *Handlers) handleBeadsStatus(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsStatus(w, r)
+}
+func (h *Handlers) handleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsUpdate(w, r)
+}
+func (h *Handlers) handleBeadsDep(w http.ResponseWriter, r *http.Request) { h.HandleBeadsDep(w, r) }
+func (h *Handlers) handleBeadsConfig(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsConfig(w, r)
+}
+func (h *Handlers) handleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsUpstream(w, r)
+}
+func (h *Handlers) handleBeadsSync(w http.ResponseWriter, r *http.Request) { h.HandleBeadsSync(w, r) }
 
 // localhostRequest creates a GET request arriving from localhost.
 func localhostRequest(url string) *http.Request {
@@ -198,7 +239,7 @@ func TestHandleBeadsStats_StubReturnsSummary(t *testing.T) {
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
-	s := &Server{sessionManager: sm, beads: &stubBeadsClient{}}
+	s := New(Deps{SessionManager: sm, BeadsClient: &stubBeadsClient{}})
 
 	req := localhostRequest("/api/beads/stats?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
@@ -304,7 +345,7 @@ func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T)
 		},
 	}
 
-	s := &Server{sessionManager: sm, beads: mock}
+	s := New(Deps{SessionManager: sm, BeadsClient: mock})
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
 		strings.NewReader(`{"working_dir":"/test/workspace","title":"","description":"Fix the authentication bug in the login flow"}`))
 	req.RemoteAddr = "127.0.0.1:1"
@@ -379,7 +420,7 @@ func TestHandleBeadsCreate_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsCreate_NilSessionManager(t *testing.T) {
-	s := &Server{sessionManager: nil}
+	s := New(Deps{})
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
 		strings.NewReader(`{"working_dir":"/test/workspace","title":"Test"}`))
 	req.RemoteAddr = "127.0.0.1:1"
@@ -857,13 +898,12 @@ func TestHandleBeadsUpdate_TypeAccepted(t *testing.T) {
 	// UpdateParams.Type must equal the submitted value.
 	setupMittoDir(t)
 	var captured beads.UpdateParams
-	s := newBeadsTestServer()
-	s.beads = &stubBeadsClient{
+	s := newBeadsTestServerWithClient(&stubBeadsClient{
 		updateFn: func(p beads.UpdateParams) error {
 			captured = p
 			return nil
 		},
-	}
+	})
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","type":"bug"}`))
 	req.RemoteAddr = "127.0.0.1:1"
@@ -1304,14 +1344,12 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *t
 			{Name: "id", Type: "text", Required: &required},
 		},
 	}
-	s := &Server{
-		sessionManager: sm,
-		config: Config{
-			MittoConfig: &config.Config{
-				Prompts: []config.WebPrompt{paramPrompt},
-			},
+	s := New(Deps{
+		SessionManager: sm,
+		GetWorkspacePromptsAll: func(string) []config.WebPrompt {
+			return []config.WebPrompt{paramPrompt}
 		},
-	}
+	})
 
 	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
 		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"parameterized-prompt"}`))
@@ -1336,14 +1374,12 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ValidPromptRoundTrip(t *testing.
 		Name:   "my-pull-prompt",
 		Prompt: "run the pull operation",
 	}
-	s := &Server{
-		sessionManager: sm,
-		config: Config{
-			MittoConfig: &config.Config{
-				Prompts: []config.WebPrompt{noParamPrompt},
-			},
+	s := New(Deps{
+		SessionManager: sm,
+		GetWorkspacePromptsAll: func(string) []config.WebPrompt {
+			return []config.WebPrompt{noParamPrompt}
 		},
-	}
+	})
 
 	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
 		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"my-pull-prompt"}`))
@@ -1383,14 +1419,12 @@ func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.
 		Name:   "pull-prompt",
 		Prompt: "run pull",
 	}
-	s := &Server{
-		sessionManager: sm,
-		config: Config{
-			MittoConfig: &config.Config{
-				Prompts: []config.WebPrompt{noParamPrompt},
-			},
+	s := New(Deps{
+		SessionManager: sm,
+		GetWorkspacePromptsAll: func(string) []config.WebPrompt {
+			return []config.WebPrompt{noParamPrompt}
 		},
-	}
+	})
 
 	// First, set prompts upstream.
 	put1 := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
@@ -1502,7 +1536,7 @@ func TestIsKnownWorkspaceDir(t *testing.T) {
 }
 
 func TestIsKnownWorkspaceDir_NilSessionManager(t *testing.T) {
-	s := &Server{sessionManager: nil}
+	s := New(Deps{})
 	if s.isKnownWorkspaceDir("/any/path") {
 		t.Error("isKnownWorkspaceDir should return false when sessionManager is nil")
 	}

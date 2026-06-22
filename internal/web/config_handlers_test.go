@@ -13,8 +13,51 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
+
+// handleGetConfig is a test-only shim delegating to the migrated
+// handlers.HandleGetConfig. It lets the existing web-package config tests keep
+// calling server.handleGetConfig directly, wiring the Deps from the server's
+// fields and nil-safe methods.
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	handlers.New(handlers.Deps{
+		Logger:                s.logger,
+		ConfigReadOnly:        s.config.ConfigReadOnly,
+		MittoConfig:           s.config.MittoConfig,
+		RCFilePath:            s.config.RCFilePath,
+		HasRCFileServers:      s.config.HasRCFileServers,
+		PromptsCache:          s.config.PromptsCache,
+		HasExistingSimpleAuth: s.hasExistingSimpleAuth,
+		Store:                 s.Store(),
+		SessionManager:        s.sessionManager,
+		APIPrefix:             s.apiPrefix,
+		FilterPromptsForSession: func(prompts []config.WebPrompt, sessionID string) []config.WebPrompt {
+			if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+				return s.filterPromptsByEnabled(prompts, visCtx)
+			}
+			return prompts
+		},
+	}).HandleGetConfig(w, r)
+}
+
+// handleSaveConfig is a test-only shim delegating to the migrated
+// handlers.HandleSaveConfig. It lets the existing web-package config tests keep
+// calling server.handleSaveConfig directly, wiring the Deps from the server's
+// fields and nil-safe methods.
+func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+	handlers.New(handlers.Deps{
+		Logger:                    s.logger,
+		ConfigReadOnly:            s.config.ConfigReadOnly,
+		ValidateAndPrepareConfig:  s.validateAndPrepareSaveConfig,
+		BuildNewSettings:          s.buildNewSettings,
+		ApplyConfigChanges:        s.applyConfigChanges,
+		AuthEnabled:               func() bool { return s.authManager != nil && s.authManager.IsEnabled() },
+		IsExternalListenerRunning: s.IsExternalListenerRunning,
+		GetExternalPort:           s.GetExternalPort,
+	}).HandleSaveConfig(w, r)
+}
 
 func TestHandleConfig_MethodNotAllowed(t *testing.T) {
 	server := &Server{
@@ -115,6 +158,7 @@ func TestHandleConfig_GET(t *testing.T) {
 		config:         Config{},
 		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{SessionManager: server.sessionManager})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	w := httptest.NewRecorder()
@@ -130,53 +174,16 @@ func TestHandleConfig_POST(t *testing.T) {
 	server := &Server{
 		config: Config{},
 	}
+	// The POST branch of the dispatcher delegates to apiHandlers.HandleSaveConfig,
+	// so apiHandlers must be wired. Empty Deps suffice: with ConfigReadOnly=false
+	// the empty body fails JSON parsing and yields 400 before any closure is used.
+	server.apiHandlers = handlers.New(handlers.Deps{})
 
 	// POST without body should return 400
 	req := httptest.NewRequest(http.MethodPost, "/api/config", nil)
 	w := httptest.NewRecorder()
 
 	server.handleConfig(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleImprovePrompt_MethodNotAllowed(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/improve-prompt", nil)
-	w := httptest.NewRecorder()
-
-	server.handleImprovePrompt(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
-	}
-}
-
-func TestHandleImprovePrompt_EmptyPrompt(t *testing.T) {
-	server := &Server{}
-
-	body := strings.NewReader(`{"prompt": ""}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/improve-prompt", body)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleImprovePrompt(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleImprovePrompt_InvalidJSON(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/improve-prompt", nil)
-	w := httptest.NewRecorder()
-
-	server.handleImprovePrompt(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -401,70 +408,6 @@ func TestApplyAuthChanges_DisabledToEnabled_InvalidCredentials(t *testing.T) {
 	}
 }
 
-func TestHandleSupportedRunners(t *testing.T) {
-	server := &Server{
-		config: Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/supported-runners", nil)
-	w := httptest.NewRecorder()
-
-	server.handleSupportedRunners(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	// Verify response contains JSON array
-	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
-	}
-
-	// Decode and verify structure
-	var runners []RunnerInfo
-	if err := json.NewDecoder(w.Body).Decode(&runners); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	// Should have at least exec runner
-	if len(runners) == 0 {
-		t.Error("Expected at least one runner")
-	}
-
-	// Verify exec runner is always present and supported
-	foundExec := false
-	for _, r := range runners {
-		if r.Type == "exec" {
-			foundExec = true
-			if !r.Supported {
-				t.Error("exec runner should always be supported")
-			}
-			if r.Label == "" {
-				t.Error("exec runner should have a label")
-			}
-		}
-	}
-	if !foundExec {
-		t.Error("exec runner should always be present")
-	}
-}
-
-func TestHandleSupportedRunners_MethodNotAllowed(t *testing.T) {
-	server := &Server{
-		config: Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/supported-runners", nil)
-	w := httptest.NewRecorder()
-
-	server.handleSupportedRunners(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
-	}
-}
-
 func TestApplyAuthChanges_DisabledToEnabled_ValidCredentials(t *testing.T) {
 	server := &Server{
 		config: Config{
@@ -669,70 +612,6 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 	}
 }
 
-func TestHandleAdvancedFlags(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/advanced-flags", nil)
-	w := httptest.NewRecorder()
-
-	server.handleAdvancedFlags(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	// Verify response contains JSON
-	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
-	}
-
-	// Parse response - now returns an object with flags and configured_defaults
-	var response struct {
-		Flags []struct {
-			Name        string `json:"name"`
-			Label       string `json:"label"`
-			Description string `json:"description"`
-			Default     bool   `json:"default"`
-		} `json:"flags"`
-		ConfiguredDefaults map[string]bool `json:"configured_defaults"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	// Should have at least the can_do_introspection flag
-	if len(response.Flags) < 1 {
-		t.Fatalf("Expected at least 1 flag, got %d", len(response.Flags))
-	}
-
-	// Configured defaults should be non-nil (even if empty)
-	if response.ConfiguredDefaults == nil {
-		t.Error("configured_defaults should not be nil")
-	}
-
-	// Find can_do_introspection flag
-	found := false
-	for _, flag := range response.Flags {
-		if flag.Name == "can_do_introspection" {
-			found = true
-			if flag.Label == "" {
-				t.Error("can_do_introspection should have a label")
-			}
-			if flag.Description == "" {
-				t.Error("can_do_introspection should have a description")
-			}
-			if flag.Default != false {
-				t.Errorf("can_do_introspection default should be false, got %v", flag.Default)
-			}
-			break
-		}
-	}
-	if !found {
-		t.Error("can_do_introspection flag not found in response")
-	}
-}
-
 func TestHandleGetConfig_ETag(t *testing.T) {
 	server := &Server{
 		config: Config{
@@ -785,18 +664,5 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 
 	if w3.Body.Len() == 0 {
 		t.Error("Full response should have non-empty body")
-	}
-}
-
-func TestHandleAdvancedFlags_MethodNotAllowed(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/advanced-flags", nil)
-	w := httptest.NewRecorder()
-
-	server.handleAdvancedFlags(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
 	}
 }

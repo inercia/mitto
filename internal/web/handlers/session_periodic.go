@@ -38,9 +38,12 @@ type PeriodicPromptPatchRequest struct {
 	Trigger            *session.PeriodicTrigger `json:"trigger,omitempty"`
 	DelaySeconds       *int                     `json:"delay_seconds,omitempty"`
 	MaxDurationSeconds *int                     `json:"max_duration_seconds,omitempty"`
-	// ResetCounters, when true, resets IterationCount=0 and FirstRunAt=nil so the
-	// elapsed iterations and elapsed time start from zero. Used when restoring a
-	// conversation that auto-stopped after reaching its max-iterations/max-duration cap.
+	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
+	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
+	// the loop looks never-sent. Used when restoring a conversation that auto-stopped
+	// after reaching its max-iterations/max-duration cap. Clearing LastSentAt makes
+	// the restore fire its first run immediately (like an initial run) instead of
+	// waiting out the onCompletion delay.
 	ResetCounters *bool `json:"reset_counters,omitempty"`
 }
 

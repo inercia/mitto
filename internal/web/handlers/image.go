@@ -1,7 +1,6 @@
-package web
+package handlers
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
-	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // Image upload limits
@@ -26,16 +24,16 @@ type ImageUploadResponse struct {
 	Size     int64  `json:"size"`
 }
 
-// handleSessionImages handles image operations for a session.
+// HandleSessionImages handles image operations for a session.
 // Routes:
 //   - POST /api/sessions/{id}/images - Upload an image
 //   - POST /api/sessions/{id}/images/from-path - Upload images from file paths (native app)
 //   - GET /api/sessions/{id}/images - List images
 //   - GET /api/sessions/{id}/images/{imageId} - Serve an image
 //   - DELETE /api/sessions/{id}/images/{imageId} - Delete an image
-func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request, sessionID string, imagePath string) {
+func (h *Handlers) HandleSessionImages(w http.ResponseWriter, r *http.Request, sessionID string, imagePath string) {
 	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
+	store := h.deps.Store
 	if store == nil {
 		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
@@ -50,7 +48,7 @@ func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request, ses
 	// Handle from-path endpoint (for native macOS app)
 	if imagePath == "from-path" {
 		if r.Method == http.MethodPost {
-			s.handleUploadImageFromPath(w, r, store, sessionID)
+			h.handleUploadImageFromPath(w, r, store, sessionID)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -61,9 +59,9 @@ func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request, ses
 	if imagePath == "" {
 		switch r.Method {
 		case http.MethodPost:
-			s.handleUploadImage(w, r, store, sessionID)
+			h.handleUploadImage(w, r, store, sessionID)
 		case http.MethodGet:
-			s.handleListImages(w, r, store, sessionID)
+			h.handleListImages(w, r, store, sessionID)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -73,16 +71,16 @@ func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request, ses
 	// Operating on a specific image
 	switch r.Method {
 	case http.MethodGet:
-		s.handleServeImage(w, r, store, sessionID, imagePath)
+		h.handleServeImage(w, r, store, sessionID, imagePath)
 	case http.MethodDelete:
-		s.handleDeleteImage(w, r, store, sessionID, imagePath)
+		h.handleDeleteImage(w, r, store, sessionID, imagePath)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 // handleUploadImage handles POST /api/sessions/{id}/images
-func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
+func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
 	// Limit request body size
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
@@ -127,7 +125,7 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store
 	// Save the image
 	info, err := store.SaveImage(sessionID, data, mimeType, header.Filename)
 	if err != nil {
-		s.handleImageSaveError(w, err)
+		h.handleImageSaveError(w, err)
 		return
 	}
 
@@ -144,7 +142,7 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store
 }
 
 // handleImageSaveError handles errors from SaveImage and returns appropriate HTTP responses.
-func (s *Server) handleImageSaveError(w http.ResponseWriter, err error) {
+func (h *Handlers) handleImageSaveError(w http.ResponseWriter, err error) {
 	switch err {
 	case session.ErrImageTooLarge:
 		writeErrorJSON(w, http.StatusRequestEntityTooLarge, "image_too_large", "Image exceeds 10MB limit")
@@ -155,19 +153,19 @@ func (s *Server) handleImageSaveError(w http.ResponseWriter, err error) {
 	case session.ErrSessionStorageLimit:
 		writeErrorJSON(w, http.StatusBadRequest, "storage_limit", "Session has reached the maximum storage of 100MB for images")
 	default:
-		if s.logger != nil {
-			s.logger.Error("Failed to save image", "error", err)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to save image", "error", err)
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, "save_failed", "Failed to save image")
 	}
 }
 
 // handleListImages handles GET /api/sessions/{id}/images
-func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
+func (h *Handlers) handleListImages(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
 	images, err := store.ListImages(sessionID)
 	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to list images", "error", err, "session_id", sessionID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to list images", "error", err, "session_id", sessionID)
 		}
 		http.Error(w, "Failed to list images", http.StatusInternalServerError)
 		return
@@ -191,7 +189,7 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request, store 
 }
 
 // handleServeImage handles GET /api/sessions/{id}/images/{imageId}
-func (s *Server) handleServeImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, imageID string) {
+func (h *Handlers) handleServeImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, imageID string) {
 	// Validate image ID to prevent path traversal
 	if strings.Contains(imageID, "/") || strings.Contains(imageID, "..") {
 		http.Error(w, "Invalid image ID", http.StatusBadRequest)
@@ -204,8 +202,8 @@ func (s *Server) handleServeImage(w http.ResponseWriter, r *http.Request, store 
 			http.Error(w, "Image not found", http.StatusNotFound)
 			return
 		}
-		if s.logger != nil {
-			s.logger.Error("Failed to get image path", "error", err, "session_id", sessionID, "image_id", imageID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to get image path", "error", err, "session_id", sessionID, "image_id", imageID)
 		}
 		http.Error(w, "Failed to get image", http.StatusInternalServerError)
 		return
@@ -242,7 +240,7 @@ func (s *Server) handleServeImage(w http.ResponseWriter, r *http.Request, store 
 }
 
 // handleDeleteImage handles DELETE /api/sessions/{id}/images/{imageId}
-func (s *Server) handleDeleteImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, imageID string) {
+func (h *Handlers) handleDeleteImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, imageID string) {
 	// Validate image ID to prevent path traversal
 	if strings.Contains(imageID, "/") || strings.Contains(imageID, "..") {
 		http.Error(w, "Invalid image ID", http.StatusBadRequest)
@@ -255,136 +253,12 @@ func (s *Server) handleDeleteImage(w http.ResponseWriter, r *http.Request, store
 			http.Error(w, "Image not found", http.StatusNotFound)
 			return
 		}
-		if s.logger != nil {
-			s.logger.Error("Failed to delete image", "error", err, "session_id", sessionID, "image_id", imageID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to delete image", "error", err, "session_id", sessionID, "image_id", imageID)
 		}
 		http.Error(w, "Failed to delete image", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// UploadFromPathRequest is the request body for uploading images from file paths.
-type UploadFromPathRequest struct {
-	Paths []string `json:"paths"`
-}
-
-// handleUploadImageFromPath handles POST /api/sessions/{id}/images/from-path
-// This endpoint is used by the native macOS app to upload images from file paths.
-// SECURITY: This endpoint is restricted to localhost connections only to prevent
-// arbitrary file read attacks from remote clients.
-func (s *Server) handleUploadImageFromPath(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
-	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
-	// Even if an attacker spoofs X-Forwarded-For to appear as localhost, this check
-	// will block them because external listener requests are marked at the handler level.
-	if middleware.IsExternalConnection(r) {
-		if s.logger != nil {
-			s.logger.Warn("Rejected from-path request from external listener",
-				"session_id", sessionID,
-				"remote_addr", r.RemoteAddr,
-			)
-		}
-		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
-		return
-	}
-
-	// Security check 2: Only allow this endpoint from localhost (native macOS app).
-	// This prevents remote attackers from reading arbitrary files on the server.
-	clientIP := middleware.GetClientIPWithProxyCheck(r)
-	if !middleware.IsLoopbackIP(clientIP) {
-		if s.logger != nil {
-			s.logger.Warn("Rejected from-path request from non-localhost",
-				"client_ip", clientIP,
-				"session_id", sessionID,
-			)
-		}
-		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
-		return
-	}
-
-	// Parse JSON body
-	var req UploadFromPathRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Paths) == 0 {
-		http.Error(w, "No paths provided", http.StatusBadRequest)
-		return
-	}
-
-	// Process each file path
-	var responses []ImageUploadResponse
-	for _, filePath := range req.Paths {
-		// Validate the path exists and is a file
-		stat, err := os.Stat(filePath)
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Warn("File not found", "path", filePath, "error", err)
-			}
-			continue // Skip invalid paths
-		}
-		if stat.IsDir() {
-			if s.logger != nil {
-				s.logger.Warn("Path is a directory", "path", filePath)
-			}
-			continue
-		}
-
-		// Check file size
-		if stat.Size() > maxUploadSize {
-			if s.logger != nil {
-				s.logger.Warn("File too large", "path", filePath, "size", stat.Size())
-			}
-			continue
-		}
-
-		// Read the file
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Warn("Failed to read file", "path", filePath, "error", err)
-			}
-			continue
-		}
-
-		// Detect MIME type
-		mimeType := http.DetectContentType(data)
-
-		// Validate MIME type
-		if !session.IsSupportedImageType(mimeType) {
-			if s.logger != nil {
-				s.logger.Warn("Unsupported image type", "path", filePath, "mime_type", mimeType)
-			}
-			continue
-		}
-
-		// Get filename from path
-		filename := filePath[strings.LastIndex(filePath, "/")+1:]
-
-		// Save the image
-		info, err := store.SaveImage(sessionID, data, mimeType, filename)
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Warn("Failed to save image", "path", filePath, "error", err)
-			}
-			continue
-		}
-
-		responses = append(responses, ImageUploadResponse{
-			ID:       info.ID,
-			URL:      "/api/sessions/" + sessionID + "/images/" + info.ID,
-			Name:     info.Name,
-			MimeType: info.MimeType,
-			Size:     info.Size,
-		})
-	}
-
-	if len(responses) > 0 {
-		writeJSONCreated(w, responses)
-	} else {
-		writeJSONOK(w, responses)
-	}
 }
