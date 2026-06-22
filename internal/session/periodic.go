@@ -148,6 +148,10 @@ type PeriodicPrompt struct {
 	// When set, the prompt text is resolved from the workspace prompts at execution time.
 	// Either Prompt or PromptName must be set.
 	PromptName string `json:"prompt_name,omitempty"`
+	// Arguments holds user-supplied values for ${VAR}/${VAR:-default} substitution
+	// when PromptName is set. Substitution is applied to the resolved prompt text at
+	// execution time. Empty for free-text prompts (Prompt field only).
+	Arguments map[string]string `json:"arguments,omitempty"`
 	// Frequency defines how often the prompt should be sent.
 	Frequency Frequency `json:"frequency"`
 	// Enabled indicates whether the periodic prompt is active.
@@ -329,7 +333,7 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int) error {
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -369,6 +373,9 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if maxDurationSeconds != nil {
 		existing.MaxDurationSeconds = *maxDurationSeconds
+	}
+	if arguments != nil {
+		existing.Arguments = *arguments
 	}
 
 	if err := existing.Validate(); err != nil {

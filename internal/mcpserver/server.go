@@ -4014,7 +4014,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				}
 			}
 
-			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations, trigger, delaySeconds, input.PeriodicMaxDurationSeconds); err != nil {
+			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations, trigger, delaySeconds, input.PeriodicMaxDurationSeconds, nil); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update periodic: %v", err),

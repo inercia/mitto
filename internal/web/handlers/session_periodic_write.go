@@ -16,6 +16,7 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 	p := &session.PeriodicPrompt{
 		Prompt:             req.Prompt,
 		PromptName:         req.PromptName,
+		Arguments:          req.Arguments,
 		Frequency:          req.Frequency,
 		Enabled:            req.Enabled,
 		FreshContext:       req.FreshContext,
@@ -86,7 +87,7 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds); err != nil {
+	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments); err != nil {
 		if err == session.ErrPeriodicNotFound {
 			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
 			return

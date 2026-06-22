@@ -24,6 +24,9 @@ type PeriodicPromptRequest struct {
 	DelaySeconds int `json:"delay_seconds,omitempty"`
 	// MaxDurationSeconds is the wall-clock cap since iterating started (0 = unlimited).
 	MaxDurationSeconds int `json:"max_duration_seconds,omitempty"`
+	// Arguments holds user-supplied values for ${VAR}/${VAR:-default} substitution
+	// when PromptName is set. Ignored for free-text prompts.
+	Arguments map[string]string `json:"arguments,omitempty"`
 }
 
 // PeriodicPromptPatchRequest is the request body for partial updates.
@@ -38,6 +41,9 @@ type PeriodicPromptPatchRequest struct {
 	Trigger            *session.PeriodicTrigger `json:"trigger,omitempty"`
 	DelaySeconds       *int                     `json:"delay_seconds,omitempty"`
 	MaxDurationSeconds *int                     `json:"max_duration_seconds,omitempty"`
+	// Arguments is a partial update for the substitution arguments map.
+	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
+	Arguments *map[string]string `json:"arguments,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
 	// the loop looks never-sent. Used when restoring a conversation that auto-stopped

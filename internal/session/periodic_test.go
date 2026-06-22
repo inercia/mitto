@@ -317,7 +317,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil)
+	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil)
 	if err != ErrPeriodicNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrPeriodicNotFound", err)
 	}
@@ -334,7 +334,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -348,7 +348,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -359,7 +359,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -383,7 +383,7 @@ func TestPeriodicStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -551,7 +551,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil)
+	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -560,7 +560,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil)
+	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -775,7 +775,7 @@ func TestPeriodicStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 	// Update via partial update — should not touch IterationCount
 	newPrompt := "Updated"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -991,7 +991,7 @@ func TestPeriodicStore_Update_NewFields(t *testing.T) {
 	trig := TriggerOnCompletion
 	delay := 15
 	maxDur := 3600
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1011,7 +1011,7 @@ func TestPeriodicStore_Update_NewFields(t *testing.T) {
 	}
 
 	// Passing nil for new fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1173,7 +1173,7 @@ func TestPeriodicStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 
 	// Re-enable via Update — stopped state must be cleared.
 	enabled := true
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(enabled=true) error = %v", err)
 	}
 
@@ -1209,12 +1209,80 @@ func TestPeriodicStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T)
 
 	// Update with enabled=false should not clear the stopped state.
 	enabled := false
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(enabled=false) error = %v", err)
 	}
 
 	got, _ := ps.Get()
 	if got.StoppedReason != StoppedReasonMaxIterations {
 		t.Errorf("StoppedReason changed unexpectedly: got %q", got.StoppedReason)
+	}
+}
+
+// TestPeriodicStore_Set_ArgumentsPersisted verifies that Arguments set on a PeriodicPrompt
+// via Set() survive a round-trip through Get().
+func TestPeriodicStore_Set_ArgumentsPersisted(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	args := map[string]string{"ISSUE_ID": "mitto-42", "ENV": "prod"}
+	if err := ps.Set(&PeriodicPrompt{
+		PromptName: "my-prompt",
+		Arguments:  args,
+		Frequency:  Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(got.Arguments) != len(args) {
+		t.Fatalf("Arguments len = %d, want %d", len(got.Arguments), len(args))
+	}
+	for k, v := range args {
+		if got.Arguments[k] != v {
+			t.Errorf("Arguments[%q] = %q, want %q", k, got.Arguments[k], v)
+		}
+	}
+}
+
+// TestPeriodicStore_Update_ArgumentsPersisted verifies that the arguments field
+// is updated via Update() and that nil leaves it unchanged.
+func TestPeriodicStore_Update_ArgumentsPersisted(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	if err := ps.Set(&PeriodicPrompt{
+		PromptName: "my-prompt",
+		Arguments:  map[string]string{"KEY": "initial"},
+		Frequency:  Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// nil arguments → no change
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update(nil args) error = %v", err)
+	}
+	got, _ := ps.Get()
+	if got.Arguments["KEY"] != "initial" {
+		t.Errorf("Arguments[KEY] = %q after nil update, want %q", got.Arguments["KEY"], "initial")
+	}
+
+	// non-nil arguments → replace
+	newArgs := map[string]string{"KEY": "updated", "NEW": "value"}
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs); err != nil {
+		t.Fatalf("Update(newArgs) error = %v", err)
+	}
+	got, _ = ps.Get()
+	if got.Arguments["KEY"] != "updated" {
+		t.Errorf("Arguments[KEY] = %q, want %q", got.Arguments["KEY"], "updated")
+	}
+	if got.Arguments["NEW"] != "value" {
+		t.Errorf("Arguments[NEW] = %q, want %q", got.Arguments["NEW"], "value")
 	}
 }

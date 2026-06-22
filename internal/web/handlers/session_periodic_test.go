@@ -474,3 +474,107 @@ func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 		t.Errorf("title should be derived from the resolved prompt body; got %q", meta.Name)
 	}
 }
+
+// TestHandleSessionPeriodic_PUT_ArgumentsPersisted verifies that Arguments supplied in a
+// PUT request are stored in the periodic config and returned by Get.
+func TestHandleSessionPeriodic_PUT_ArgumentsPersisted(t *testing.T) {
+	store, h := newPeriodicStore(t)
+	tmpDir := t.TempDir()
+	sid := "put-args-session"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create session failed: %v", err)
+	}
+
+	args := map[string]string{"ISSUE_ID": "mitto-42", "ENV": "staging"}
+	got := putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+		PromptName: "check-status",
+		Arguments:  args,
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	})
+
+	if len(got.Arguments) != len(args) {
+		t.Fatalf("Arguments len = %d, want %d", len(got.Arguments), len(args))
+	}
+	for k, v := range args {
+		if got.Arguments[k] != v {
+			t.Errorf("Arguments[%q] = %q, want %q", k, got.Arguments[k], v)
+		}
+	}
+
+	// Verify round-trip via the store directly.
+	stored, err := store.Periodic(sid).Get()
+	if err != nil {
+		t.Fatalf("Periodic().Get() error = %v", err)
+	}
+	for k, v := range args {
+		if stored.Arguments[k] != v {
+			t.Errorf("Stored Arguments[%q] = %q, want %q", k, stored.Arguments[k], v)
+		}
+	}
+}
+
+// TestHandleSessionPeriodic_PATCH_ArgumentsPersisted verifies that Arguments supplied in a
+// PATCH request replace the existing arguments and are returned by Get.
+func TestHandleSessionPeriodic_PATCH_ArgumentsPersisted(t *testing.T) {
+	store, h := newPeriodicStore(t)
+	tmpDir := t.TempDir()
+	sid := "patch-args-session"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create session failed: %v", err)
+	}
+
+	// Seed via PUT with initial arguments.
+	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+		PromptName: "check-status",
+		Arguments:  map[string]string{"KEY": "initial"},
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	})
+
+	// PATCH with new arguments.
+	newArgs := map[string]string{"KEY": "patched", "EXTRA": "yes"}
+	body, _ := json.Marshal(PeriodicPromptPatchRequest{
+		Arguments: &newArgs,
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionPeriodic(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH periodic status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var got session.PeriodicPrompt
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode PATCH response: %v", err)
+	}
+	if got.Arguments["KEY"] != "patched" {
+		t.Errorf("Arguments[KEY] = %q, want %q", got.Arguments["KEY"], "patched")
+	}
+	if got.Arguments["EXTRA"] != "yes" {
+		t.Errorf("Arguments[EXTRA] = %q, want %q", got.Arguments["EXTRA"], "yes")
+	}
+
+	// Nil arguments in PATCH must leave stored map unchanged.
+	body2, _ := json.Marshal(PeriodicPromptPatchRequest{}) // nil Arguments
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionPeriodic(w2, req2, sid, "")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("PATCH (nil args) status = %d. Body: %s", w2.Code, w2.Body.String())
+	}
+	stored, _ := store.Periodic(sid).Get()
+	if stored.Arguments["KEY"] != "patched" {
+		t.Errorf("nil PATCH should not clear Arguments; KEY = %q", stored.Arguments["KEY"])
+	}
+}
