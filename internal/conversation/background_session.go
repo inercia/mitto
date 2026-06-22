@@ -1514,6 +1514,18 @@ func (bs *BackgroundSession) killACPProcess() {
 // response instead of a generic "Request timeout" from the middleware.
 const sessionCreationRPCTimeout = 25 * time.Second
 
+// constraintModelSwitchCallerBudget is the context timeout for the async ACP-server
+// constraint auto-select model switch in applyConfigConstraints (mitto-f7q, Option 4).
+// Budget reasoning (mirrors internal/web's setModelAsyncCallerBudget; this package must
+// NOT import internal/web): the capacity-1 setModelSem may be held by up to ~3 concurrent
+// callers, each taking at most ~25s (3×8s per-attempt + jitter). Semaphore wait ≤ 75s;
+// adding slack for our own retries gives ~100s worst-case. 90s covers the expected
+// wakeup contention (≤4 concurrent sessions). This widens ONLY the WAIT budget for a
+// queued caller; it does NOT change the per-attempt 8s RPC deadline (Option 1 / widening
+// per-attempt deadlines is explicitly discouraged by mitto-f7q because it lengthens the
+// semaphore hold).
+const constraintModelSwitchCallerBudget = 90 * time.Second
+
 // maxACPStartRetries is the maximum number of times to retry starting the ACP process
 // if the initial connection fails (e.g., "peer disconnected before response").
 const maxACPStartRetries = 3
@@ -5837,14 +5849,17 @@ func (bs *BackgroundSession) applyConfigConstraints(category string) {
 	}
 
 	// Use a background context since this is called during initialization.
-	// 30s budget accommodates up to 3 set_model retry attempts (≤8s each + backoff)
-	// that may queue behind concurrent callers on the same shared ACP process (mitto-3q9).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The caller budget accommodates set_model retries queued behind concurrent
+	// callers on the capacity-1 setModelSem at server wakeup (mitto-f7q, Option 4).
+	ctx, cancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
 	defer cancel()
 
 	if err := bs.SetConfigOption(ctx, category, matchedValue); err != nil {
+		// Best-effort: the constraint auto-select is off the prompt critical path, so a
+		// failure degrades gracefully — the session falls back to the current/baseline
+		// model (consistent with the aux and per-prompt model-switch paths).
 		if bs.logger != nil {
-			bs.logger.Error("ACP server constraint: failed to auto-select option",
+			bs.logger.Warn("ACP server constraint: failed to auto-select option (best-effort, falling back to current model)",
 				"category", category,
 				"value", matchedValue,
 				"error", err)

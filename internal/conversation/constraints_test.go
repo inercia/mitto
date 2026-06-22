@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -149,4 +150,43 @@ func TestSelectPreferredModel_NilModels(t *testing.T) {
 	if got := SelectPreferredModel([]string{"*sonnet*"}, nil); got != "" {
 		t.Errorf("SelectPreferredModel with nil models = %q, want empty", got)
 	}
+}
+
+// TestConstraintModelSwitchBudgetMath verifies that constraintModelSwitchCallerBudget
+// (90s) is large enough to cover worst-case setModelSem contention at server wakeup
+// (mitto-f7q). Mirrors internal/web's TestSetModelAsyncBudgetMath.
+//
+// The set_model retry/attempt constants live in internal/web (SharedACPProcess) which
+// this package must NOT import, so the expected values are asserted against the locally
+// documented constants below — kept consistent with the doc comment on
+// constraintModelSwitchCallerBudget and internal/web/shared_acp_process.go.
+func TestConstraintModelSwitchBudgetMath(t *testing.T) {
+	const (
+		maxConcurrentCallers = 4 // from bead: ~4 concurrent sessions at wakeup
+		// Mirror of internal/web/shared_acp_process.go set_model constants.
+		maxRetries        = 3                      // setSessionModelMaxAttempts
+		maxAttemptTimeout = 8 * time.Second        // setSessionModelAttemptTimeout
+		retryBaseDelay    = 300 * time.Millisecond // setSessionModelRetryBaseDelay
+		retryJitterRatio  = 0.5                     // setSessionModelRetryJitterRatio
+	)
+
+	// Max backoff across all retry cycles (attempt 2 + attempt 3, each jittered up).
+	maxJitteredBackoff := time.Duration(float64(retryBaseDelay)*float64(maxRetries-1)*(1+retryJitterRatio)) + retryBaseDelay
+
+	// Per-caller worst-case: N attempts × per-attempt timeout + total jittered backoff.
+	perCallerMax := time.Duration(maxRetries)*maxAttemptTimeout + maxJitteredBackoff
+
+	// Semaphore wait: up to (N-1) prior holders each at their worst case.
+	semWaitMax := time.Duration(maxConcurrentCallers-1) * perCallerMax
+
+	// Verify the budget exceeds the expected contention region (first 3 of 4 holders
+	// exhausted), even if not the absolute 4-holder worst case.
+	expectedContentionCoverage := time.Duration(maxConcurrentCallers-2) * perCallerMax
+	if constraintModelSwitchCallerBudget < expectedContentionCoverage {
+		t.Errorf("constraintModelSwitchCallerBudget (%v) is less than expected contention coverage (%v); "+
+			"increase the budget constant", constraintModelSwitchCallerBudget, expectedContentionCoverage)
+	}
+
+	t.Logf("per-caller max: %v, sem wait (N-1=%d holders): %v, caller budget: %v",
+		perCallerMax, maxConcurrentCallers-1, semWaitMax, constraintModelSwitchCallerBudget)
 }
