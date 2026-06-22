@@ -342,6 +342,32 @@ testWithCleanup.describe("PromptParameterDialog — conversation-menu invocation
       await expect(
         page.getByText(`Sent "${CONVO_PARAM_PROMPT}" to conversation`),
       ).toBeVisible({ timeout: timeouts.appReady });
+
+      // ── Arg-counter badge visibility (regression) ──────────────────────────
+      // The sent prompt substituted exactly one argument (TASK), so the
+      // NamedPromptPill must render a numeric arg-counter badge showing "1".
+      const pill = page
+        .locator('[data-testid="named-prompt-pill"]')
+        .filter({ hasText: CONVO_PARAM_PROMPT })
+        .first();
+      await expect(pill).toBeVisible({ timeout: 15_000 });
+
+      const argBadge = pill.locator('[data-testid="prompt-arg-count"]');
+      await expect(argBadge).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(argBadge).toHaveText("1");
+
+      // The counter must be visually distinct from the parent pill. The bug was
+      // that the inner badge inherited the parent's primary `--badge-color`, so
+      // its background matched the pill and the counter was effectively
+      // invisible. `badge-ghost` gives it an explicit base-200 background, so
+      // its computed background-color must differ from the pill's.
+      const pillBg = await pill.evaluate(
+        (el) => getComputedStyle(el).backgroundColor,
+      );
+      const badgeBg = await argBadge.evaluate(
+        (el) => getComputedStyle(el).backgroundColor,
+      );
+      expect(badgeBg).not.toBe(pillBg);
     },
   );
 
