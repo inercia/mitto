@@ -188,6 +188,9 @@ type BackgroundSession struct {
 	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
 	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
 	queueDisp            queueDispatcher                        // Queue tick / dispatch logic collaborator (composition)
+	callbackSink         acpCallbackSink                        // WebClient callback cluster collaborator (composition)
+	uiPromptCtr          uiPromptCenter                         // UI prompt + notify collaborator (composition)
+	followUpCoord        followUpCoordinator                    // Follow-up suggestions + action-button collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
