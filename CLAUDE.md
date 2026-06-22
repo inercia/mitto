@@ -68,6 +68,26 @@ go test -v -tags integration ./tests/integration/inprocess/
 4. Store in `useWebSocket.js` and pass through `app.js`
 5. Update mock ACP server and add integration test
 
+## Handler Migration Pattern (Incremental)
+
+**Issue**: `internal/web/` has 12+ flat `*_api.go` files (500–1000+ lines each) mixing dispatcher logic with handler implementations. **Goal**: Extract handlers into `internal/web/handlers/` sub-package one handler at a time.
+
+**Key insight**: Do NOT migrate all handlers at once. Instead, identify the **dispatcher-coupled** vs. **directly-registered** split:
+
+- **Dispatcher-coupled handlers**: Take `sessionID` arg, called by `handleSessionDetail()` dispatcher. Safe to migrate one per increment; dispatcher stays flat and delegates via method call.
+- **Directly-registered handlers**: Standard `(w, r)` signature registered in `server.go`. Larger/riskier; usually part of bigger files (e.g., `beads_api.go`).
+
+**Migration checklist (per handler)**:
+1. Identify all dependencies (Store, SessionManager, etc.) the handler needs
+2. Add new fields to `handlers.Deps` struct only if missing
+3. Create `internal/web/handlers/<name>.go` with `(h *Handlers) Handle<Name>(w, r, args...)` method
+4. Wire the new fields into `handlers.New()` call in `server.go`
+5. Update dispatcher call site to invoke the handler method instead of local function
+6. Delete the original flat function (no separate test file needed if tests already exist)
+7. Run: `go build ./...`, `go vet ./internal/web/...`, `go test ./internal/web/handlers/`
+
+**Stop condition**: When all handlers are extracted and flat `*_api.go` files can be retired.
+
 ## Model Selection & Preferred Models
 
 Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). **Key insight**: If the active model already satisfies the preference, it's kept; otherwise the preference is applied. This avoids unnecessary model switches in multi-model sessions.
@@ -78,6 +98,15 @@ Prompts can declare `preferredModels:` to route to specific ACP models. `selectP
 - **Processors**: Always see the real tool list (fail-open is disabled internally)
 - Once tools are fetched, evaluation uses the actual list. Useful for tool-gated prompt/processor gating via `enabledWhen`
 
+## Periodic Conversations
+
+**onCompletion trigger** (distinct from schedule-based periodic):
+- Re-fires automatically 30s after agent finishes each turn (configurable `delay_seconds`)
+- Green "Running" pill = `periodic_enabled: true`, NOT generic "agent is active" status
+- Limited by `max_iterations` and `max_duration_seconds`
+- Free-text periodic prompts NOT sent to frontend → selector can't display them (UI gap)
+- `app.js` line ~1928: `headerPeriodicState()` returns `{ state, label, badgeClass }` pill object
+- Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
 
 ## MANDATORY: No Explore Agents When Tokensave Is Available
 

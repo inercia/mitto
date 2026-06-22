@@ -144,3 +144,33 @@ bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acp
 // Client-scoped (auto-includes client_id, session_id)
 clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 ```
+
+## Handler Migration to Sub-packages
+
+The `internal/web/handlers/` sub-package incrementally extracts flat API handlers. Two categories:
+
+### Directly-Registered Handlers
+- Standard `func(w http.ResponseWriter, r *http.Request)` signature
+- Registered in `server.go` via `mux.HandleFunc()` or `mux.Handle()`
+- Clean migration: new handler file, extend `Deps` facade, wire in `NewServer()`
+- **Example**: `beads_api.go` handlers are directly-registered (large/risky, migrate by groups)
+
+### Dispatcher-Coupled Handlers
+- Take extra args like `sessionID` or sub-path from dispatcher
+- Called by `handleSessionDetail()` in `session_api.go` (the dispatcher stays flat)
+- Dispatcher invokes handler method: `s.apiHandlers.HandleSessionPrune(w, r, sessionID)`
+- **Examples**: Session settings, changes, periodic, queue, image, file, user-data, prune
+- Safe to migrate one-at-a-time without moving the dispatcher
+
+### Deps Facade
+Inject dependencies via `handlers.Deps` struct:
+```go
+handlers.New(handlers.Deps{
+    Store:          store,
+    SessionManager: sessionMgr,
+    // ... other fields
+})
+```
+- No circular imports: `conversation`/`session` packages never import `internal/web`
+- Extend conservatively; only add fields needed for the handler being migrated
+- Avoids coupling handlers to server internals
