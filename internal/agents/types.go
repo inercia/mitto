@@ -190,10 +190,11 @@ type MCPListInput struct {
 
 // MCPServer represents a single MCP server entry returned by mcp-list.sh.
 type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	URL     string   `json:"url,omitempty"`
+	Name    string            `json:"name"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // MCPListOutput is the expected JSON output from mcp-list.sh.

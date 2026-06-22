@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # List MCP servers configured for Augment
 # Input: {"path": "/optional/workspace/path"} (optional, via stdin)
-# Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "..."}]}
+# Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "...", "env": {...}}]}
+# Note: env is included when auggie mcp list --json exposes it per server.
 
 INPUT=$(cat 2>/dev/null || echo '{}')
 
@@ -26,7 +27,7 @@ if [ -z "$AUGGIE_OUTPUT" ]; then
     exit 0
 fi
 
-# Transform auggie output to expected format (keep only name, command, args, url)
+# Transform auggie output to expected format (keep only name, command, args, url, env)
 echo "$AUGGIE_OUTPUT" | python3 -c "
 import json, sys
 try:
@@ -40,6 +41,8 @@ try:
             entry['args'] = s['args']
         if 'url' in s:
             entry['url'] = s['url']
+        if 'env' in s:
+            entry['env'] = s['env']
         result.append(entry)
     print(json.dumps({'servers': result}))
 except Exception:

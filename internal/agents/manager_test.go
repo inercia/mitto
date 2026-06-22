@@ -432,3 +432,51 @@ func TestAgentMetadataDefaults_Absent(t *testing.T) {
 		t.Errorf("expected Defaults to be nil for agent without defaults block, got %+v", agent.Metadata.Defaults)
 	}
 }
+
+// TestMCPServer_EnvUnmarshal verifies that the MCPServer.Env field is populated
+// when an mcp-list.sh script emits an "env" object, so the value can be surfaced
+// by GET /api/workspace-mcp-tools and copied for round-trip into the Add dialog.
+func TestMCPServer_EnvUnmarshal(t *testing.T) {
+	raw := `{"servers":[{"name":"with-env","command":"node","args":["server.js"],"env":{"API_KEY":"secret","DEBUG":"1"}},{"name":"url-only","url":"http://127.0.0.1:5757/mcp"}]}`
+
+	var out MCPListOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("failed to unmarshal MCPListOutput: %v", err)
+	}
+	if len(out.Servers) != 2 {
+		t.Fatalf("servers = %d, want 2", len(out.Servers))
+	}
+
+	withEnv := out.Servers[0]
+	if got := withEnv.Env["API_KEY"]; got != "secret" {
+		t.Errorf("Env[API_KEY] = %q, want %q", got, "secret")
+	}
+	if got := withEnv.Env["DEBUG"]; got != "1" {
+		t.Errorf("Env[DEBUG] = %q, want %q", got, "1")
+	}
+
+	urlOnly := out.Servers[1]
+	if urlOnly.Env != nil {
+		t.Errorf("expected nil Env for server without env, got %+v", urlOnly.Env)
+	}
+}
+
+// TestMCPServer_EnvOmitEmpty verifies that an MCPServer with no env vars marshals
+// without an "env" key (json:",omitempty"), keeping the listing output clean.
+func TestMCPServer_EnvOmitEmpty(t *testing.T) {
+	b, err := json.Marshal(MCPServer{Name: "no-env", Command: "node"})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if got := string(b); got != `{"name":"no-env","command":"node"}` {
+		t.Errorf("marshaled = %s, want env omitted", got)
+	}
+
+	b, err = json.Marshal(MCPServer{Name: "with-env", Env: map[string]string{"K": "v"}})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if got := string(b); got != `{"name":"with-env","env":{"K":"v"}}` {
+		t.Errorf("marshaled = %s, want env included", got)
+	}
+}
