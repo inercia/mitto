@@ -1,5 +1,4 @@
-// Package web provides the web interface for Mitto.
-package web
+package handlers
 
 import (
 	"encoding/json"
@@ -26,10 +25,10 @@ type SaveFileToPathResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
-// handleCheckFileExists handles GET /api/check-file-exists?path=<absolutePath>
+// HandleCheckFileExists handles GET /api/check-file-exists?path=<absolutePath>
 // Returns whether a file exists at the given path.
 // SECURITY: This endpoint is restricted to localhost connections only.
-func (s *Server) handleCheckFileExists(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleCheckFileExists(w http.ResponseWriter, r *http.Request) {
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
 	if middleware.IsExternalConnection(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
@@ -70,15 +69,15 @@ func (s *Server) handleCheckFileExists(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, map[string]bool{"exists": exists})
 }
 
-// handleSaveFileToPath handles POST /api/save-file-to-path
+// HandleSaveFileToPath handles POST /api/save-file-to-path
 // This endpoint is used by the native macOS app to save files to arbitrary paths.
 // SECURITY: This endpoint is restricted to localhost connections only to prevent
 // arbitrary file write attacks from remote clients.
-func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
 	if middleware.IsExternalConnection(r) {
-		if s.logger != nil {
-			s.logger.Warn("Rejected save-file-to-path request from external listener",
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Rejected save-file-to-path request from external listener",
 				"remote_addr", r.RemoteAddr,
 			)
 		}
@@ -89,8 +88,8 @@ func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 	// Security check 2: Verify this is a localhost connection
 	// This is redundant with check 1 but provides defense in depth
 	if !middleware.IsLocalhostRequest(r) {
-		if s.logger != nil {
-			s.logger.Warn("Rejected save-file-to-path request from non-localhost",
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Rejected save-file-to-path request from non-localhost",
 				"remote_addr", r.RemoteAddr,
 			)
 		}
@@ -138,8 +137,8 @@ func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 	// Ensure parent directory exists
 	dir := filepath.Dir(cleanPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to create directory", "dir", dir, "error", err)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to create directory", "dir", dir, "error", err)
 		}
 		http.Error(w, fmt.Sprintf("Failed to create directory: %v", err), http.StatusInternalServerError)
 		return
@@ -147,15 +146,15 @@ func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 
 	// Write file
 	if err := os.WriteFile(cleanPath, []byte(req.Content), 0644); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to write file", "path", cleanPath, "error", err)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to write file", "path", cleanPath, "error", err)
 		}
 		http.Error(w, fmt.Sprintf("Failed to write file: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	if s.logger != nil {
-		s.logger.Info("File saved successfully", "path", cleanPath, "size", len(req.Content))
+	if h.deps.Logger != nil {
+		h.deps.Logger.Info("File saved successfully", "path", cleanPath, "size", len(req.Content))
 	}
 
 	// Return success response

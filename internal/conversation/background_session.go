@@ -185,11 +185,7 @@ type BackgroundSession struct {
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
-	restartCount         int                                    // Total number of restarts across the session lifetime
-	restartTimes         []time.Time                            // Timestamps of recent restarts (for rate limiting)
-	restartReasons       []RestartReason                        // Reasons for recent restarts (parallel to restartTimes)
-	permanentlyFailed    bool                                   // Circuit breaker: true when ACP cannot be restarted (permanent error or lifetime cap hit)
-	restartMu            sync.Mutex                             // Protects restart tracking fields (restartCount, restartTimes, restartReasons, permanentlyFailed)
+	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.

@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"encoding/json"
@@ -43,9 +43,9 @@ type AgentConfirmEntry struct {
 	Type string `json:"type,omitempty"`
 }
 
-// handleScanAgents handles POST /api/agents/scan.
+// HandleScanAgents handles POST /api/agents/scan.
 // It runs status.sh for all known agent definitions and returns the results.
-func (s *Server) handleScanAgents(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleScanAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -57,7 +57,7 @@ func (s *Server) handleScanAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mgr := agents.NewManager(agentsDir, s.logger)
+	mgr := agents.NewManager(agentsDir, h.deps.Logger)
 	allAgents, err := mgr.ListAgents()
 	if err != nil {
 		http.Error(w, "Failed to list agents: "+err.Error(), http.StatusInternalServerError)
@@ -88,16 +88,16 @@ func (s *Server) handleScanAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, results)
 }
 
-// handleConfirmAgents handles POST /api/agents/confirm.
+// HandleConfirmAgents handles POST /api/agents/confirm.
 // Saves the selected agents as ACP server entries in settings.json.
-func (s *Server) handleConfirmAgents(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
 
 	// Reject saves when config is read-only (loaded from --config file)
-	if s.config.ConfigReadOnly {
+	if h.deps.ConfigReadOnly {
 		http.Error(w, "Configuration is read-only (loaded from config file)", http.StatusForbidden)
 		return
 	}
@@ -167,12 +167,12 @@ func (s *Server) handleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply changes to the running server in-memory config
-	if s.config.MittoConfig != nil {
+	if h.deps.MittoConfig != nil {
 		newServers := make([]configPkg.ACPServer, len(settings.ACPServers))
 		for i, srv := range settings.ACPServers {
 			newServers[i] = configPkg.ACPServer(srv)
 		}
-		s.config.MittoConfig.ACPServers = newServers
+		h.deps.MittoConfig.ACPServers = newServers
 	}
 
 	writeJSONOK(w, map[string]interface{}{

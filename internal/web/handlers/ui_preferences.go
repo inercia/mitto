@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"net/http"
@@ -29,22 +29,22 @@ type UIPreferences struct {
 	PromptSortMode string `json:"prompt_sort_mode,omitempty"`
 }
 
-// handleUIPreferences handles GET and PUT /api/ui-preferences.
+// HandleUIPreferences handles GET and PUT /api/ui-preferences.
 // GET returns the current UI preferences.
 // PUT saves new UI preferences.
-func (s *Server) handleUIPreferences(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleUIPreferences(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.handleGetUIPreferences(w, r)
+		h.handleGetUIPreferences(w, r)
 	case http.MethodPut:
-		s.handleSaveUIPreferences(w, r)
+		h.handleSaveUIPreferences(w, r)
 	default:
 		methodNotAllowed(w)
 	}
 }
 
 // handleGetUIPreferences handles GET /api/ui-preferences.
-func (s *Server) handleGetUIPreferences(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) handleGetUIPreferences(w http.ResponseWriter, r *http.Request) {
 	prefs, err := loadUIPreferences()
 	if err != nil {
 		// If file doesn't exist, return empty preferences
@@ -52,8 +52,8 @@ func (s *Server) handleGetUIPreferences(w http.ResponseWriter, r *http.Request) 
 			writeJSONOK(w, UIPreferences{})
 			return
 		}
-		if s.logger != nil {
-			s.logger.Error("Failed to load UI preferences", "error", err)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to load UI preferences", "error", err)
 		}
 		http.Error(w, "Failed to load UI preferences", http.StatusInternalServerError)
 		return
@@ -63,7 +63,7 @@ func (s *Server) handleGetUIPreferences(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleSaveUIPreferences handles PUT /api/ui-preferences.
-func (s *Server) handleSaveUIPreferences(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Request) {
 	var prefs UIPreferences
 	if !parseJSONBody(w, r, &prefs) {
 		return
@@ -102,15 +102,15 @@ func (s *Server) handleSaveUIPreferences(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := saveUIPreferences(&prefs); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to save UI preferences", "error", err)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to save UI preferences", "error", err)
 		}
 		http.Error(w, "Failed to save UI preferences", http.StatusInternalServerError)
 		return
 	}
 
-	if s.logger != nil {
-		s.logger.Debug("UI preferences saved",
+	if h.deps.Logger != nil {
+		h.deps.Logger.Debug("UI preferences saved",
 			"grouping_mode", prefs.GroupingMode,
 			"expanded_groups_count", len(prefs.ExpandedGroups))
 	}

@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"encoding/json"
@@ -25,16 +25,16 @@ type PruneResponse struct {
 	NewMaxSeq int64 `json:"new_max_seq"`
 }
 
-// handleSessionPrune handles POST /api/sessions/{id}/prune
+// HandleSessionPrune handles POST /api/sessions/{id}/prune
 // It prunes old events from the session, keeping the last N events.
 // The session must not be actively processing a prompt when prune is called.
-func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (h *Handlers) HandleSessionPrune(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
 
-	store := s.Store()
+	store := h.deps.Store
 	if store == nil {
 		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
@@ -52,8 +52,8 @@ func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request, sess
 
 	// Reject pruning while a prompt is in progress — pruning changes seq numbers
 	// which would corrupt in-flight streaming events.
-	if s.sessionManager != nil {
-		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+	if h.deps.SessionManager != nil {
+		if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
 			if bs.IsPrompting() {
 				http.Error(w, "Session is currently processing a prompt — wait for it to finish before pruning", http.StatusConflict)
 				return
@@ -80,8 +80,8 @@ func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request, sess
 	// Perform the prune
 	result, err := store.PruneKeepLast(sessionID, keepLast)
 	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to prune session", "error", err, "session_id", sessionID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to prune session", "error", err, "session_id", sessionID)
 		}
 		http.Error(w, "Failed to prune session: "+err.Error(), http.StatusInternalServerError)
 		return

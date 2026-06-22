@@ -5,6 +5,7 @@ package conversation
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -24,6 +25,27 @@ import (
 // per-attempt deadlines is explicitly discouraged by mitto-f7q because it lengthens the
 // semaphore hold).
 const constraintModelSwitchCallerBudget = 90 * time.Second
+
+// constraintModelSwitchChildStartupJitter bounds a randomized startup delay applied to
+// the constraint-driven main-session model switch for CHILD sessions only (mitto-x4e).
+// When a periodic run spawns several children simultaneously (e.g. the Market Pulse
+// 08:01 run spawns ~4 children at once) each child's ACP init fires a set_model RPC in
+// the same instant, herding on the capacity-1 setModelSem so peers exhaust their caller
+// budget before they can be served. Spreading these initial calls over a few seconds
+// de-correlates the herd so they queue smoothly instead of colliding. This complements
+// mitto-f7q (which widened the wait budget and jittered retries but left the FIRST
+// attempts synchronized). Top-level (parent-less) sessions skip the jitter and switch
+// immediately — a single interactive session never herds, so it pays no startup latency.
+const constraintModelSwitchChildStartupJitter = 5 * time.Second
+
+// childStartupJitter returns a randomized startup delay in [0, max) used to de-stagger
+// concurrent child model switches (mitto-x4e). It returns 0 when max <= 0.
+func childStartupJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(max)))
+}
 
 // lookupACPServerConstraints returns the auto-selection constraints for the named
 // ACP server in the given config, or nil if cfg is nil or no matching server is found.
@@ -103,6 +125,27 @@ func (bs *BackgroundSession) applyConfigConstraints(category string) {
 			"match_mode", constraint.MatchMode,
 			"pattern", constraint.Pattern,
 			"selected_value", matchedValue)
+	}
+
+	// De-stagger concurrent child startups (mitto-x4e): when a periodic run spawns
+	// several children at once they would otherwise all hit the capacity-1 setModelSem
+	// in the same instant. A small randomized delay (child sessions only) spreads the
+	// initial set_model calls over a few seconds so they queue smoothly. Parent-less
+	// (top-level/interactive) sessions skip this so they switch immediately. The wait
+	// happens before the caller-budget context below, so it does not consume that budget.
+	if bs.HasParent() {
+		if jitter := childStartupJitter(constraintModelSwitchChildStartupJitter); jitter > 0 {
+			if bs.logger != nil {
+				bs.logger.Debug("ACP server constraint: staggering child startup model switch",
+					"category", category,
+					"jitter_ms", jitter.Milliseconds())
+			}
+			select {
+			case <-time.After(jitter):
+			case <-bs.ctx.Done():
+				return
+			}
+		}
 	}
 
 	// Use a background context since this is called during initialization.

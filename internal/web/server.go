@@ -25,6 +25,7 @@ import (
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
 	mittoWeb "github.com/inercia/mitto/web"
 )
@@ -218,6 +219,10 @@ type Server struct {
 	// concurrent workspace-prompts fetches don't race writing the same files and
 	// only the first caller observes (and reports) a given migration.
 	promptMigrationMu sync.Mutex
+
+	// apiHandlers holds the REST handlers extracted into the internal/web/handlers
+	// sub-package. Routing stays in server.go; the actual handler logic lives there.
+	apiHandlers *handlers.Handlers
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -548,6 +553,10 @@ func NewServer(config Config) (*Server, error) {
 		beads:                beads.NewClient(),
 	}
 
+	// The REST handlers sub-package facade is constructed later in NewServer,
+	// after callbackIndex, callbackRateLimiter and periodicRunner are
+	// initialized — see "Construct the REST handlers sub-package facade" below.
+
 	// Set events manager in session manager for broadcasting
 	sessionMgr.SetEventsManager(eventsManager)
 
@@ -670,6 +679,29 @@ func NewServer(config Config) (*Server, error) {
 	s.callbackIndex = conversation.NewCallbackIndex()
 	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()
 
+	// Construct the REST handlers sub-package facade. Built here (not earlier)
+	// so the late-initialized callbackIndex, callbackRateLimiter and
+	// periodicRunner are non-nil when wired into Deps.
+	s.apiHandlers = handlers.New(handlers.Deps{
+		Logger:                    logger,
+		ConfigReadOnly:            config.ConfigReadOnly,
+		MittoConfig:               config.MittoConfig,
+		Store:                     store,
+		SessionManager:            sessionMgr,
+		APIPrefix:                 apiPrefix,
+		CallbackIndex:             s.callbackIndex,
+		CallbackRateLimiter:       s.callbackRateLimiter,
+		GetExternalPort:           s.GetExternalPort,
+		IsExternalListenerRunning: s.IsExternalListenerRunning,
+		TriggerPeriodicNow:        s.periodicRunner.TriggerNow,
+		ErrSessionBusy:            ErrSessionBusy,
+		ErrPeriodicNotEnabled:     ErrPeriodicNotEnabled,
+		PeriodicDelayFloor:        s.periodicDelayFloor,
+		BroadcastPeriodicUpdated:  s.BroadcastPeriodicUpdated,
+		BootstrapOnCompletion:     s.periodicRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:  s.BroadcastSessionSettingsUpdated,
+	})
+
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
 		autoArchivePeriod := config.MittoConfig.Session.GetAutoArchiveInactiveAfter()
@@ -756,17 +788,17 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.handleWorkspaceMCPRemove)
 	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
 	mux.HandleFunc(apiPrefix+"/api/folder-group", s.handleFolderGroup)
-	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
+	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.apiHandlers.HandleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
 	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)
-	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.handleScanAgents)
-	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.handleConfirmAgents)
+	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.apiHandlers.HandleScanAgents)
+	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.apiHandlers.HandleConfirmAgents)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
 	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.handleRunnerDefaults)
 	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
-	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
+	mux.HandleFunc(apiPrefix+"/api/external-status", s.apiHandlers.HandleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
-	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
+	mux.HandleFunc(apiPrefix+"/api/badge-click", s.apiHandlers.HandleBadgeClick)
 	mux.HandleFunc(apiPrefix+"/api/beads/list", s.handleBeadsList)
 	mux.HandleFunc(apiPrefix+"/api/beads/stats", s.handleBeadsStats)
 	mux.HandleFunc(apiPrefix+"/api/beads/show", s.handleBeadsShow)
@@ -780,11 +812,11 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/beads/config", s.handleBeadsConfig)
 	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.handleBeadsUpstream)
 	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.handleBeadsSync)
-	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
+	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.apiHandlers.HandleUIPreferences)
 
 	// File save endpoints - restricted to localhost only (used by native macOS app)
-	mux.HandleFunc(apiPrefix+"/api/save-file-to-path", s.handleSaveFileToPath)
-	mux.HandleFunc(apiPrefix+"/api/check-file-exists", s.handleCheckFileExists)
+	mux.HandleFunc(apiPrefix+"/api/save-file-to-path", s.apiHandlers.HandleSaveFileToPath)
+	mux.HandleFunc(apiPrefix+"/api/check-file-exists", s.apiHandlers.HandleCheckFileExists)
 
 	// Auth info endpoint (public, used by login page to adapt its UI)
 	mux.HandleFunc(apiPrefix+"/api/auth-info", s.HandleAuthInfo)
@@ -794,7 +826,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
 
 	// Callback trigger endpoint (public, no auth required)
-	mux.HandleFunc(apiPrefix+"/api/callback/", s.handleCallbackTrigger)
+	mux.HandleFunc(apiPrefix+"/api/callback/", s.apiHandlers.HandleCallbackTrigger)
 
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)

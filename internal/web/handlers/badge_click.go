@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"encoding/json"
@@ -28,11 +28,11 @@ type badgeClickResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// handleBadgeClick handles POST /api/badge-click.
+// HandleBadgeClick handles POST /api/badge-click.
 // This endpoint executes the configured badge click action command.
 // SECURITY: This endpoint is restricted to localhost connections only to prevent
 // arbitrary command execution from remote clients.
-func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -42,8 +42,8 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	// This prevents remote attackers from executing arbitrary commands.
 	clientIP := middleware.GetClientIPWithProxyCheck(r)
 	if !middleware.IsLoopbackIP(clientIP) {
-		if s.logger != nil {
-			s.logger.Warn("Rejected badge-click request from non-localhost",
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Rejected badge-click request from non-localhost",
 				"client_ip", clientIP,
 			)
 		}
@@ -74,7 +74,7 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	var enabled bool
 	var command string
 
-	mittoConfig := s.config.MittoConfig
+	mittoConfig := h.deps.MittoConfig
 	if req.Action == "terminal" {
 		// Use terminal action config
 		if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.TerminalAction != nil {
@@ -120,8 +120,8 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to execute badge click command",
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to execute badge click command",
 				"command", finalCommand,
 				"workspace", req.WorkspacePath,
 				"error", err,
@@ -148,8 +148,8 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 			if errMsg == "" {
 				errMsg = err.Error()
 			}
-			if s.logger != nil {
-				s.logger.Error("Badge click command failed",
+			if h.deps.Logger != nil {
+				h.deps.Logger.Error("Badge click command failed",
 					"command", finalCommand,
 					"workspace", req.WorkspacePath,
 					"error", errMsg,
@@ -167,8 +167,8 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 		// and consider it successful
 	}
 
-	if s.logger != nil {
-		s.logger.Debug("Badge click command executed",
+	if h.deps.Logger != nil {
+		h.deps.Logger.Debug("Badge click command executed",
 			"command", finalCommand,
 			"workspace", req.WorkspacePath,
 		)

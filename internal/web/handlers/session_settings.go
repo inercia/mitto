@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"net/http"
@@ -16,22 +16,22 @@ type SettingsUpdateRequest struct {
 	Settings map[string]bool `json:"settings"`
 }
 
-// handleSessionSettings handles GET and PATCH /api/sessions/{id}/settings.
-func (s *Server) handleSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
+// HandleSessionSettings handles GET and PATCH /api/sessions/{id}/settings.
+func (h *Handlers) HandleSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
 	switch r.Method {
 	case http.MethodGet:
-		s.handleGetSessionSettings(w, r, sessionID)
+		h.HandleGetSessionSettings(w, r, sessionID)
 	case http.MethodPatch:
-		s.handleUpdateSessionSettings(w, r, sessionID)
+		h.HandleUpdateSessionSettings(w, r, sessionID)
 	default:
 		methodNotAllowed(w)
 	}
 }
 
-// handleGetSessionSettings handles GET /api/sessions/{id}/settings.
+// HandleGetSessionSettings handles GET /api/sessions/{id}/settings.
 // Returns the current advanced settings for a session.
-func (s *Server) handleGetSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
-	store := s.Store()
+func (h *Handlers) HandleGetSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
+	store := h.deps.Store
 	if store == nil {
 		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
@@ -43,8 +43,8 @@ func (s *Server) handleGetSessionSettings(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Session not found", http.StatusNotFound)
 			return
 		}
-		if s.logger != nil {
-			s.logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
 		}
 		http.Error(w, "Failed to get session metadata", http.StatusInternalServerError)
 		return
@@ -59,15 +59,15 @@ func (s *Server) handleGetSessionSettings(w http.ResponseWriter, r *http.Request
 	writeJSONOK(w, SettingsResponse{Settings: settings})
 }
 
-// handleUpdateSessionSettings handles PATCH /api/sessions/{id}/settings.
+// HandleUpdateSessionSettings handles PATCH /api/sessions/{id}/settings.
 // Performs a partial update of advanced settings (merges with existing settings).
-func (s *Server) handleUpdateSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (h *Handlers) HandleUpdateSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req SettingsUpdateRequest
 	if !parseJSONBody(w, r, &req) {
 		return
 	}
 
-	store := s.Store()
+	store := h.deps.Store
 	if store == nil {
 		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
@@ -89,8 +89,8 @@ func (s *Server) handleUpdateSessionSettings(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "Session not found", http.StatusNotFound)
 			return
 		}
-		if s.logger != nil {
-			s.logger.Error("Failed to update session settings", "error", err, "session_id", sessionID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to update session settings", "error", err, "session_id", sessionID)
 		}
 		http.Error(w, "Failed to update session settings", http.StatusInternalServerError)
 		return
@@ -99,15 +99,17 @@ func (s *Server) handleUpdateSessionSettings(w http.ResponseWriter, r *http.Requ
 	// Get updated metadata to return the full settings
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to get updated metadata", "error", err, "session_id", sessionID)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to get updated metadata", "error", err, "session_id", sessionID)
 		}
 		http.Error(w, "Failed to get updated settings", http.StatusInternalServerError)
 		return
 	}
 
 	// Broadcast the settings change to all connected clients
-	s.BroadcastSessionSettingsUpdated(sessionID, meta.AdvancedSettings)
+	if h.deps.BroadcastSettingsUpdated != nil {
+		h.deps.BroadcastSettingsUpdated(sessionID, meta.AdvancedSettings)
+	}
 
 	// Return the full settings after update
 	settings := meta.AdvancedSettings

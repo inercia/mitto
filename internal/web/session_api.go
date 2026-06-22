@@ -458,7 +458,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Handle user data operations
 	if isUserDataRequest {
-		s.handleSessionUserData(w, r, sessionID)
+		s.apiHandlers.HandleSessionUserData(w, r, sessionID)
 		return
 	}
 
@@ -469,31 +469,31 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		if len(parts) > 2 {
 			periodicSubPath = parts[2]
 		}
-		s.handleSessionPeriodic(w, r, sessionID, periodicSubPath)
+		s.apiHandlers.HandleSessionPeriodic(w, r, sessionID, periodicSubPath)
 		return
 	}
 
 	// Handle callback token operations
 	if isCallbackRequest {
-		s.handleSessionCallback(w, r, sessionID)
+		s.apiHandlers.HandleSessionCallback(w, r, sessionID)
 		return
 	}
 
 	// Handle advanced settings operations
 	if isSettingsRequest {
-		s.handleSessionSettings(w, r, sessionID)
+		s.apiHandlers.HandleSessionSettings(w, r, sessionID)
 		return
 	}
 
 	// Handle prune operations
 	if isPruneRequest {
-		s.handleSessionPrune(w, r, sessionID)
+		s.apiHandlers.HandleSessionPrune(w, r, sessionID)
 		return
 	}
 
 	// Handle git changes operations
 	if isChangesRequest {
-		s.handleSessionChanges(w, r, sessionID)
+		s.apiHandlers.HandleSessionChanges(w, r, sessionID)
 		return
 	}
 

@@ -1,4 +1,4 @@
-package web
+package handlers
 
 import (
 	"encoding/json"
@@ -9,16 +9,12 @@ import (
 
 // TestHandleCallbackTrigger_MethodNotAllowed verifies GET returns 405.
 func TestHandleCallbackTrigger_MethodNotAllowed(t *testing.T) {
-	// Create a minimal server for testing
-	s := &Server{
-		apiPrefix: "",
-		logger:    nil,
-	}
+	h := New(Deps{APIPrefix: ""})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/callback/test-token", nil)
 	rec := httptest.NewRecorder()
 
-	s.handleCallbackTrigger(rec, req)
+	h.HandleCallbackTrigger(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Expected status 405, got %d", rec.Code)
@@ -37,16 +33,13 @@ func TestHandleCallbackTrigger_MethodNotAllowed(t *testing.T) {
 
 // TestHandleCallbackTrigger_InvalidToken verifies malformed token returns 400.
 func TestHandleCallbackTrigger_InvalidToken(t *testing.T) {
-	s := &Server{
-		apiPrefix: "",
-		logger:    nil,
-	}
+	h := New(Deps{APIPrefix: ""})
 
 	// Invalid token (too short or wrong format)
 	req := httptest.NewRequest(http.MethodPost, "/api/callback/bad", nil)
 	rec := httptest.NewRecorder()
 
-	s.handleCallbackTrigger(rec, req)
+	h.HandleCallbackTrigger(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("Expected status 400, got %d", rec.Code)

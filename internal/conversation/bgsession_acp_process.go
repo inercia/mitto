@@ -4,7 +4,6 @@ package conversation
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -74,137 +73,26 @@ func (bs *BackgroundSession) killACPProcess() {
 // Returns true if restart is allowed, false if we've exceeded the limit.
 // This method is thread-safe.
 func (bs *BackgroundSession) canRestartACP() bool {
-	bs.restartMu.Lock()
-	defer bs.restartMu.Unlock()
-
-	// Circuit breaker: a permanent error (or lifetime cap) has already tripped this flag.
-	// Once set, no further restart attempts are made — the sliding window is irrelevant.
-	if bs.permanentlyFailed {
-		if bs.logger != nil {
-			bs.logger.Debug("canRestartACP: permanently failed, circuit breaker open",
-				"session_id", bs.persistedID,
-				"total_restarts", bs.restartCount)
-		}
-		return false
-	}
-
-	// Lifetime cap: even for transient errors, don't restart more than MaxACPTotalRestarts
-	// times in total. This prevents infinite retry cycles where the sliding window keeps
-	// resetting every ACPRestartWindow (e.g. dead pipe, repeatedly failing cold-start).
-	if bs.restartCount >= MaxACPTotalRestarts {
-		bs.permanentlyFailed = true
-		if bs.logger != nil {
-			bs.logger.Warn("canRestartACP: lifetime restart cap reached, circuit breaker opened",
-				"session_id", bs.persistedID,
-				"total_restarts", bs.restartCount,
-				"max_total_restarts", MaxACPTotalRestarts)
-		}
-		return false
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
-
-	// Filter out old restart times and corresponding reasons (keep indices in sync)
-	var recentRestarts []time.Time
-	var recentReasons []RestartReason
-	for i, t := range bs.restartTimes {
-		if t.After(cutoff) {
-			recentRestarts = append(recentRestarts, t)
-			// Keep reasons in sync with times
-			if i < len(bs.restartReasons) {
-				recentReasons = append(recentReasons, bs.restartReasons[i])
-			}
-		}
-	}
-	bs.restartTimes = recentRestarts
-	bs.restartReasons = recentReasons
-
-	return len(recentRestarts) < MaxACPRestarts
+	return bs.procCtl.canRestart(bs.logger, bs.persistedID)
 }
 
 // recordRestart records a restart attempt for rate limiting and telemetry.
 // This method is thread-safe.
 func (bs *BackgroundSession) recordRestart(reason RestartReason) {
-	bs.restartMu.Lock()
-	defer bs.restartMu.Unlock()
-
-	bs.restartCount++
-	now := time.Now()
-	bs.restartTimes = append(bs.restartTimes, now)
-	bs.restartReasons = append(bs.restartReasons, reason)
-
-	// Log restart reason for telemetry
-	if bs.logger != nil {
-		bs.logger.Info("Recording ACP restart",
-			"session_id", bs.persistedID,
-			"restart_count", bs.restartCount,
-			"reason", string(reason),
-			"timestamp", now.Format(time.RFC3339))
-	}
+	bs.procCtl.recordRestart(reason, bs.logger, bs.persistedID)
 }
 
 // getRestartInfo returns a human-readable restart attempt indicator like "(attempt 2 of 3)".
 // This is shown to the user so they understand the system is in a retry loop and won't retry forever.
 // This method is thread-safe.
 func (bs *BackgroundSession) getRestartInfo() string {
-	bs.restartMu.Lock()
-	defer bs.restartMu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
-	count := 0
-	for _, t := range bs.restartTimes {
-		if t.After(cutoff) {
-			count++
-		}
-	}
-	// count is the number of recent restarts already done; the next one will be count+1
-	return fmt.Sprintf("(attempt %d of %d)", count+1, MaxACPRestarts)
-}
-
-// RestartStats contains statistics about ACP process restarts.
-type RestartStats struct {
-	TotalRestarts   int                   // Total number of restarts in session lifetime
-	RecentRestarts  int                   // Number of restarts in the current window
-	ReasonCounts    map[RestartReason]int // Count of restarts by reason
-	LastRestartTime time.Time             // Timestamp of most recent restart
-	LastReason      RestartReason         // Reason for most recent restart
+	return bs.procCtl.getRestartInfo()
 }
 
 // GetRestartStats returns statistics about ACP process restarts for telemetry.
 // This method is thread-safe.
 func (bs *BackgroundSession) GetRestartStats() RestartStats {
-	bs.restartMu.Lock()
-	defer bs.restartMu.Unlock()
-
-	stats := RestartStats{
-		TotalRestarts: bs.restartCount,
-		ReasonCounts:  make(map[RestartReason]int),
-	}
-
-	// Count recent restarts and reasons
-	now := time.Now()
-	cutoff := now.Add(-ACPRestartWindow)
-	for i, t := range bs.restartTimes {
-		if t.After(cutoff) {
-			stats.RecentRestarts++
-		}
-		// Count all reasons (not just recent)
-		if i < len(bs.restartReasons) {
-			stats.ReasonCounts[bs.restartReasons[i]]++
-		}
-	}
-
-	// Get last restart info
-	if len(bs.restartTimes) > 0 {
-		stats.LastRestartTime = bs.restartTimes[len(bs.restartTimes)-1]
-		if len(bs.restartReasons) > 0 {
-			stats.LastReason = bs.restartReasons[len(bs.restartReasons)-1]
-		}
-	}
-
-	return stats
+	return bs.procCtl.stats()
 }
 
 // restartACPProcess attempts to restart the ACP process after it has died.
@@ -215,9 +103,7 @@ func (bs *BackgroundSession) GetRestartStats() RestartStats {
 // Returns an *ACPClassifiedError for permanent failures.
 func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 	// Apply backoff based on how many recent restarts have occurred.
-	bs.restartMu.Lock()
-	recentCount := len(bs.restartTimes)
-	bs.restartMu.Unlock()
+	recentCount := bs.procCtl.recentRestartCount()
 
 	if recentCount > 0 {
 		delay := BackoffDelay(recentCount-1, ACPRestartBaseDelay, ACPRestartMaxDelay, acpStartRetryJitterRatio)
@@ -240,7 +126,7 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 		bs.logger.Info("Restarting ACP process",
 			"session_id", bs.persistedID,
 			"acp_id", bs.acpID,
-			"restart_count", bs.restartCount+1,
+			"restart_count", bs.procCtl.totalRestarts()+1,
 			"reason", string(reason),
 			"command", bs.acpCommand,
 			"cwd", bs.acpCwd)
@@ -304,9 +190,7 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 		// This prevents the sliding-window timer from resetting and allowing further
 		// futile retry cycles (e.g. "write |1: file already closed" pipe errors).
 		if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
-			bs.restartMu.Lock()
-			bs.permanentlyFailed = true
-			bs.restartMu.Unlock()
+			bs.procCtl.markPermanentlyFailed()
 			if bs.logger != nil {
 				bs.logger.Warn("ACP restart returned permanent error, circuit breaker opened",
 					"session_id", bs.persistedID,

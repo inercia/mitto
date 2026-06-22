@@ -175,23 +175,3 @@ func (s *Server) GetExternalPort() int {
 	defer s.externalMu.Unlock()
 	return s.externalPort
 }
-
-// ExternalStatusResponse represents the response for the external status endpoint.
-type ExternalStatusResponse struct {
-	Enabled bool `json:"enabled"`
-	Port    int  `json:"port"`
-}
-
-// handleExternalStatus handles GET /api/external-status.
-// Returns the current status of the external listener.
-func (s *Server) handleExternalStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	writeJSONOK(w, ExternalStatusResponse{
-		Enabled: s.IsExternalListenerRunning(),
-		Port:    s.GetExternalPort(),
-	})
-}

@@ -190,3 +190,22 @@ func TestConstraintModelSwitchBudgetMath(t *testing.T) {
 	t.Logf("per-caller max: %v, sem wait (N-1=%d holders): %v, caller budget: %v",
 		perCallerMax, maxConcurrentCallers-1, semWaitMax, constraintModelSwitchCallerBudget)
 }
+
+// TestChildStartupJitter verifies the de-stagger jitter helper (mitto-x4e): values are
+// always within [0, max) for a positive bound, and 0 for a non-positive bound.
+func TestChildStartupJitter(t *testing.T) {
+	if got := childStartupJitter(0); got != 0 {
+		t.Errorf("childStartupJitter(0) = %v, want 0", got)
+	}
+	if got := childStartupJitter(-time.Second); got != 0 {
+		t.Errorf("childStartupJitter(-1s) = %v, want 0", got)
+	}
+
+	max := constraintModelSwitchChildStartupJitter
+	for i := 0; i < 1000; i++ {
+		got := childStartupJitter(max)
+		if got < 0 || got >= max {
+			t.Fatalf("childStartupJitter(%v) = %v, out of range [0, %v)", max, got, max)
+		}
+	}
+}

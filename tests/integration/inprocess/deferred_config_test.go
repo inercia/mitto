@@ -13,6 +13,7 @@ import (
 
 	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/web"
 )
 
@@ -102,10 +103,10 @@ func assertDeferredOrder(t *testing.T, path, method, wantValue, supersededValue 
 // deferAndAssertMidTurn waits for the slow turn to start, defers two changes to configID
 // (supersededValue then wantValue), and asserts the optimistic local state, that the turn
 // was not cancelled, and that no RPC for this method was issued mid-turn. It returns bs.
-func deferAndAssertMidTurn(t *testing.T, ts *TestServer, orderFile, sessionID, configID, method, supersededValue, wantValue string) *web.BackgroundSession {
+func deferAndAssertMidTurn(t *testing.T, ts *TestServer, orderFile, sessionID, configID, method, supersededValue, wantValue string) *conversation.BackgroundSession {
 	t.Helper()
 	sm := ts.Server.GetSessionManager()
-	var bs *web.BackgroundSession
+	var bs *conversation.BackgroundSession
 	waitFor(t, 10*time.Second, func() bool {
 		bs = sm.GetSession(sessionID)
 		return bs != nil && bs.IsPrompting()
@@ -138,7 +139,7 @@ func deferAndAssertMidTurn(t *testing.T, ts *TestServer, orderFile, sessionID, c
 // defer two config changes mid-turn (last-write-wins), enqueue a follow-up while still
 // prompting, then verify the deferred RPC is flushed before the queued prompt and that
 // the agent ends up on the last-write-wins value. confirm asserts the agent-applied value.
-func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, wantValue string, confirm func(t *testing.T, bs *web.BackgroundSession)) {
+func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, wantValue string, confirm func(t *testing.T, bs *conversation.BackgroundSession)) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
 	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "deferred-" + configID})
@@ -203,7 +204,7 @@ func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, want
 // applying only the last-write-wins value.
 func TestDeferredModelConfig_FlushesBeforeQueuedPrompt(t *testing.T) {
 	runDeferredConfigTest(t, "model", "set_model", "claude-opus-4-6", "claude-haiku-4-5",
-		func(t *testing.T, bs *web.BackgroundSession) {
+		func(t *testing.T, bs *conversation.BackgroundSession) {
 			waitFor(t, 10*time.Second, func() bool {
 				am := bs.AgentModels()
 				return am != nil && string(am.CurrentModelId) == "claude-haiku-4-5"
@@ -215,7 +216,7 @@ func TestDeferredModelConfig_FlushesBeforeQueuedPrompt(t *testing.T) {
 // TestDeferredModelConfig_FlushesBeforeQueuedPrompt (legacy set_mode API).
 func TestDeferredModeConfig_FlushesBeforeQueuedPrompt(t *testing.T) {
 	runDeferredConfigTest(t, "mode", "set_mode", "ask", "architect",
-		func(t *testing.T, bs *web.BackgroundSession) {
+		func(t *testing.T, bs *conversation.BackgroundSession) {
 			waitFor(t, 10*time.Second, func() bool {
 				return bs.GetConfigValue("mode") == "architect"
 			}, "agent-confirmed mode architect")

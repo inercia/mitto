@@ -1,34 +1,44 @@
-package web
+package handlers
 
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
-func TestHandleGetSessionUserData_NotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
+// newUserDataHandlers creates a temp store (optionally seeded with meta) plus a
+// SessionManager, returning the store and the Handlers under test.
+func newUserDataHandlers(t *testing.T, meta *session.Metadata) (*session.Store, *Handlers) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
 	}
-	defer store.Close()
-
-	server := &Server{
-		sessionManager: conversation.NewSessionManager("", "", false, nil),
-		store:          store,
+	t.Cleanup(func() { store.Close() })
+	if meta != nil {
+		if err := store.Create(*meta); err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
 	}
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetStore(store)
+	h := New(Deps{Store: store, SessionManager: sm})
+	return store, h
+}
+
+func TestHandleGetSessionUserData_NotFound(t *testing.T) {
+	_, h := newUserDataHandlers(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/nonexistent/user-data", nil)
 	w := httptest.NewRecorder()
 
-	server.handleGetSessionUserData(w, req, "nonexistent-session")
+	h.HandleGetSessionUserData(w, req, "nonexistent-session")
 
 	// Should return empty data, not 404 (session dir check happens on write)
 	if w.Code != http.StatusOK {
@@ -37,32 +47,16 @@ func TestHandleGetSessionUserData_NotFound(t *testing.T) {
 }
 
 func TestHandleGetSessionUserData_EmptyData(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session
-	meta := session.Metadata{
+	_, h := newUserDataHandlers(t, &session.Metadata{
 		SessionID:  "20260131-120000-abcd1234",
 		ACPServer:  "test-server",
 		WorkingDir: "/test/dir",
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: conversation.NewSessionManager("", "", false, nil),
-		store:          store,
-	}
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/20260131-120000-abcd1234/user-data", nil)
 	w := httptest.NewRecorder()
 
-	server.handleGetSessionUserData(w, req, "20260131-120000-abcd1234")
+	h.HandleGetSessionUserData(w, req, "20260131-120000-abcd1234")
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
@@ -79,14 +73,7 @@ func TestHandleGetSessionUserData_EmptyData(t *testing.T) {
 }
 
 func TestHandlePutSessionUserData(t *testing.T) {
-	tmpDir := t.TempDir()
 	workspaceDir := t.TempDir() // Separate workspace directory
-
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
 
 	// Create a .mittorc file with user data schema in the workspace
 	mittorc := `
@@ -101,23 +88,11 @@ metadata:
 		t.Fatalf("Failed to write .mittorc: %v", err)
 	}
 
-	// Create a session with the workspace directory
-	meta := session.Metadata{
+	store, h := newUserDataHandlers(t, &session.Metadata{
 		SessionID:  "20260131-120000-abcd1234",
 		ACPServer:  "test-server",
 		WorkingDir: workspaceDir,
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	sm := conversation.NewSessionManager("", "", false, nil)
-	sm.SetStore(store)
-
-	server := &Server{
-		sessionManager: sm,
-		store:          store,
-	}
+	})
 
 	// Set user data
 	reqBody := UserDataUpdateRequest{
@@ -132,7 +107,7 @@ metadata:
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	server.handlePutSessionUserData(w, req, "20260131-120000-abcd1234")
+	h.HandlePutSessionUserData(w, req, "20260131-120000-abcd1234")
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
@@ -150,32 +125,13 @@ metadata:
 }
 
 func TestHandlePutSessionUserData_NoSchema(t *testing.T) {
-	tmpDir := t.TempDir()
 	workspaceDir := t.TempDir() // Workspace without .mittorc
 
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session (no .mittorc in workspace)
-	meta := session.Metadata{
+	_, h := newUserDataHandlers(t, &session.Metadata{
 		SessionID:  "20260131-120000-abcd1234",
 		ACPServer:  "test-server",
 		WorkingDir: workspaceDir,
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	sm := conversation.NewSessionManager("", "", false, nil)
-	sm.SetStore(store)
-
-	server := &Server{
-		sessionManager: sm,
-		store:          store,
-	}
+	})
 
 	// Try to set user data without a schema
 	reqBody := UserDataUpdateRequest{
@@ -189,7 +145,7 @@ func TestHandlePutSessionUserData_NoSchema(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	server.handlePutSessionUserData(w, req, "20260131-120000-abcd1234")
+	h.HandlePutSessionUserData(w, req, "20260131-120000-abcd1234")
 
 	// Should fail with validation error
 	if w.Code != http.StatusBadRequest {
@@ -198,32 +154,13 @@ func TestHandlePutSessionUserData_NoSchema(t *testing.T) {
 }
 
 func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
-	tmpDir := t.TempDir()
 	workspaceDir := t.TempDir() // Workspace without .mittorc
 
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session (no .mittorc in workspace)
-	meta := session.Metadata{
+	_, h := newUserDataHandlers(t, &session.Metadata{
 		SessionID:  "20260131-120000-abcd1234",
 		ACPServer:  "test-server",
 		WorkingDir: workspaceDir,
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	sm := conversation.NewSessionManager("", "", false, nil)
-	sm.SetStore(store)
-
-	server := &Server{
-		sessionManager: sm,
-		store:          store,
-	}
+	})
 
 	// Set empty user data (should succeed even without schema)
 	reqBody := UserDataUpdateRequest{
@@ -235,7 +172,7 @@ func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	server.handlePutSessionUserData(w, req, "20260131-120000-abcd1234")
+	h.HandlePutSessionUserData(w, req, "20260131-120000-abcd1234")
 
 	// Should succeed
 	if w.Code != http.StatusOK {
@@ -244,14 +181,12 @@ func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
 }
 
 func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
-	server := &Server{
-		sessionManager: conversation.NewSessionManager("", "", false, nil),
-	}
+	_, h := newUserDataHandlers(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspace/user-data-schema?working_dir=/nonexistent", nil)
 	w := httptest.NewRecorder()
 
-	server.handleWorkspaceUserDataSchema(w, req)
+	h.HandleWorkspaceUserDataSchema(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
@@ -259,14 +194,12 @@ func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
 }
 
 func TestHandleWorkspaceUserDataSchema_MissingParam(t *testing.T) {
-	server := &Server{
-		sessionManager: conversation.NewSessionManager("", "", false, nil),
-	}
+	_, h := newUserDataHandlers(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspace/user-data-schema", nil)
 	w := httptest.NewRecorder()
 
-	server.handleWorkspaceUserDataSchema(w, req)
+	h.HandleWorkspaceUserDataSchema(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
