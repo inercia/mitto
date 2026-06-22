@@ -61,16 +61,24 @@ function formatMessageTime(timestamp) {
  */
 function NamedPromptPill({ message }) {
   const timeStr = formatMessageTime(message.timestamp);
-  // When argument names are present in the generic event metadata, list them in
-  // the tooltip (names only, never values); otherwise fall back to the count.
+  // Tooltip fallback chain: name=value pairs (when backend provided values) →
+  // names only → numeric count. Values are already truncated/redacted upstream.
+  const argPairs =
+    message.meta && Array.isArray(message.meta.arguments)
+      ? message.meta.arguments
+      : null;
   const argNames =
     message.meta && Array.isArray(message.meta.argument_names)
       ? message.meta.argument_names
       : null;
-  const argTip =
-    argNames && argNames.length > 0
-      ? `Arguments: ${argNames.join(", ")}`
-      : `${message.argumentCount} argument(s)`;
+  let argTip;
+  if (argPairs && argPairs.length > 0) {
+    argTip = argPairs.map((a) => `${a.name}=${a.value}`).join(", ");
+  } else if (argNames && argNames.length > 0) {
+    argTip = `Arguments: ${argNames.join(", ")}`;
+  } else {
+    argTip = `${message.argumentCount} argument(s)`;
+  }
   return html`
     <div class="message-enter flex justify-end items-center gap-2 mb-3">
       ${timeStr &&

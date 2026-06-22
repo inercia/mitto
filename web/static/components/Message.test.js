@@ -208,3 +208,116 @@ describe("NamedPromptPill argument count badge", () => {
     expect(shouldShowArgCountBadge({ argumentCount: null })).toBe(false);
   });
 });
+
+// =============================================================================
+// NamedPromptPill Tooltip Text Tests
+// =============================================================================
+
+/**
+ * Mirror of the NamedPromptPill tooltip fallback chain from Message.js.
+ * 1. message.meta.arguments (array of {name, value}) → "name=value, name=value"
+ * 2. message.meta.argument_names (array of strings) → "Arguments: A, B"
+ * 3. fallback → "N argument(s)"
+ */
+function buildArgTip(message) {
+  const argPairs =
+    message.meta && Array.isArray(message.meta.arguments)
+      ? message.meta.arguments
+      : null;
+  const argNames =
+    message.meta && Array.isArray(message.meta.argument_names)
+      ? message.meta.argument_names
+      : null;
+  if (argPairs && argPairs.length > 0) {
+    return argPairs.map((a) => `${a.name}=${a.value}`).join(", ");
+  }
+  if (argNames && argNames.length > 0) {
+    return `Arguments: ${argNames.join(", ")}`;
+  }
+  return `${message.argumentCount} argument(s)`;
+}
+
+describe("NamedPromptPill tooltip", () => {
+  test("renders name=value pairs when meta.arguments is non-empty", () => {
+    expect(
+      buildArgTip({
+        argumentCount: 2,
+        meta: {
+          arguments: [
+            { name: "ISSUE_ID", value: "mitto-42" },
+            { name: "TITLE", value: "Fix the thing" },
+          ],
+        },
+      }),
+    ).toBe("ISSUE_ID=mitto-42, TITLE=Fix the thing");
+  });
+
+  test("renders single name=value pair", () => {
+    expect(
+      buildArgTip({
+        argumentCount: 1,
+        meta: { arguments: [{ name: "FOO", value: "bar" }] },
+      }),
+    ).toBe("FOO=bar");
+  });
+
+  test("falls back to names when meta.arguments is absent but argument_names present", () => {
+    expect(
+      buildArgTip({
+        argumentCount: 2,
+        meta: { argument_names: ["A", "B"] },
+      }),
+    ).toBe("Arguments: A, B");
+  });
+
+  test("falls back to count when both meta.arguments and argument_names are absent", () => {
+    expect(buildArgTip({ argumentCount: 3 })).toBe("3 argument(s)");
+  });
+
+  test("falls back to count when meta is absent entirely", () => {
+    expect(buildArgTip({ argumentCount: 5, meta: undefined })).toBe(
+      "5 argument(s)",
+    );
+  });
+
+  test("falls back when meta.arguments is an empty array (uses names)", () => {
+    expect(
+      buildArgTip({
+        argumentCount: 2,
+        meta: { arguments: [], argument_names: ["X", "Y"] },
+      }),
+    ).toBe("Arguments: X, Y");
+  });
+
+  test("falls back to count when meta.arguments is empty and no names", () => {
+    expect(
+      buildArgTip({ argumentCount: 4, meta: { arguments: [] } }),
+    ).toBe("4 argument(s)");
+  });
+
+  test("falls back when meta.argument_names is an empty array", () => {
+    expect(
+      buildArgTip({ argumentCount: 2, meta: { argument_names: [] } }),
+    ).toBe("2 argument(s)");
+  });
+
+  test("ignores non-array meta.arguments", () => {
+    expect(
+      buildArgTip({
+        argumentCount: 1,
+        meta: { arguments: "not-an-array", argument_names: ["A"] },
+      }),
+    ).toBe("Arguments: A");
+  });
+
+  test("preserves value strings verbatim (already truncated/redacted upstream)", () => {
+    expect(
+      buildArgTip({
+        argumentCount: 1,
+        meta: {
+          arguments: [{ name: "LONG", value: "abc…(truncated)" }],
+        },
+      }),
+    ).toBe("LONG=abc…(truncated)");
+  });
+});
