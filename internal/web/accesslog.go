@@ -3,6 +3,7 @@ package web
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -266,6 +267,13 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 		clientIP := getClientIPWithProxyCheck(r)
 		isExternal := IsExternalConnection(r)
 
+		// Inject a mutable identity holder into the context BEFORE calling inner
+		// handlers. AuthMiddleware writes into this holder via setAuthIdentity so
+		// that the identity is visible here after ServeHTTP returns, even though
+		// context values only flow downward.
+		identity := &authIdentity{}
+		r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthIdentity, identity))
+
 		// Wrap response writer to capture status code
 		wrapped := &accessLogResponseWriter{
 			ResponseWriter: w,
@@ -281,11 +289,14 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 			return // Not a security-relevant event, skip logging
 		}
 
-		// Extract username: prefer identity set in context by auth middleware
-		// (covers IP allow list and Cloudflare JWT paths), then fall back to
-		// reading the session cookie directly.
+		// Extract username: prefer the mutable holder written by AuthMiddleware
+		// (covers loopback bypass, IP allow-list, Cloudflare JWT, and session
+		// auth), then the immutable context string (legacy path), then the
+		// cookie fallback.
 		username := ""
-		if ctxUser, ok := r.Context().Value(contextKeyAuthUser).(string); ok && ctxUser != "" {
+		if identity.user != "" {
+			username = identity.user
+		} else if ctxUser, ok := r.Context().Value(contextKeyAuthUser).(string); ok && ctxUser != "" {
 			username = ctxUser
 		} else if a.authMgr != nil {
 			if session, valid := a.authMgr.GetSessionFromRequest(r); valid {

@@ -506,6 +506,58 @@ func TestAccessLogger_MiddlewareLogsAllRequests(t *testing.T) {
 	}
 }
 
+func TestAccessLogger_MiddlewareRecordsAuthIdentity(t *testing.T) {
+	// Acceptance criterion: user= must appear in access.log for every authenticated
+	// request, regardless of which auth path was taken (IP allow-list, Cloudflare
+	// JWT, session cookie). The mutable *authIdentity holder propagates the identity
+	// from the inner AuthMiddleware back to the outer AccessLogger middleware.
+	cases := []struct {
+		name     string
+		identity string
+	}{
+		{"allowlist", "allowlist:1.2.3.4"},
+		{"session user", "alice"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			logPath := filepath.Join(tmpDir, "access.log")
+
+			logger := NewAccessLogger(AccessLogConfig{Path: logPath, LogAll: true})
+			if logger == nil {
+				t.Fatal("Expected non-nil logger")
+			}
+			defer logger.Close()
+
+			// Inner handler simulates what AuthMiddleware does: write the resolved
+			// identity into the holder that the outer Middleware injected.
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				setAuthIdentity(r, tc.identity)
+				w.WriteHeader(http.StatusOK)
+			})
+
+			wrapped := logger.Middleware(inner)
+
+			req := httptest.NewRequest("GET", "/api/sessions", nil)
+			rec := httptest.NewRecorder()
+			wrapped.ServeHTTP(rec, req)
+
+			logger.Close()
+
+			content, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("Failed to read log file: %v", err)
+			}
+
+			want := "user=" + tc.identity
+			if !strings.Contains(string(content), want) {
+				t.Errorf("Log should contain %q but got: %s", want, string(content))
+			}
+		})
+	}
+}
+
 func TestAccessLogger_MiddlewareSkipsNonSecurityEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "access.log")

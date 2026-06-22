@@ -800,6 +800,24 @@ const ContextKeyExternalConnection contextKey = "external_connection"
 //   - "allowlist:<ip>" for IP allow list bypass
 const contextKeyAuthUser contextKey = "authUser"
 
+// authIdentity is a mutable holder for the resolved identity, placed in the context
+// by the OUTER access-log middleware so that inner auth handlers can write back to it.
+// A shared pointer is required because context values set via WithContext only flow
+// downward; they never propagate back up to outer middleware.
+type authIdentity struct{ user string }
+
+// contextKeyAuthIdentity is the context key for the *authIdentity holder.
+const contextKeyAuthIdentity contextKey = "authIdentity"
+
+// setAuthIdentity records the resolved authenticated identity into the mutable holder
+// placed in the request context by the access-log middleware. Safe no-op if no holder
+// is present (e.g. access logging disabled).
+func setAuthIdentity(r *http.Request, user string) {
+	if id, ok := r.Context().Value(contextKeyAuthIdentity).(*authIdentity); ok && id != nil {
+		id.user = user
+	}
+}
+
 // IsExternalConnection returns true if the request came through the external listener.
 // External connections always require authentication, regardless of client IP.
 func IsExternalConnection(r *http.Request) bool {
@@ -836,6 +854,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		if !isExternal && isLoopbackIP(clientIP) {
 			logger.Debug("Auth bypass - loopback IP on internal listener",
 				"client_ip", clientIP, "path", r.URL.Path)
+			setAuthIdentity(r, "local")
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -853,6 +872,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		if a.IsIPAllowed(clientIP) {
 			logger.Debug("Auth bypass - allowed IP", "client_ip", clientIP, "path", r.URL.Path)
 			r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, "allowlist:"+clientIP))
+			setAuthIdentity(r, "allowlist:"+clientIP)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -887,6 +907,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 					"remote_addr", r.RemoteAddr,
 				)
 				r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, "cf:"+email))
+				setAuthIdentity(r, "cf:"+email)
 				next.ServeHTTP(w, r)
 				return
 			} else if hasJWTHeader {
@@ -943,6 +964,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			"username", session.Username,
 		)
 		r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, session.Username))
+		setAuthIdentity(r, session.Username)
 		next.ServeHTTP(w, r)
 	})
 }

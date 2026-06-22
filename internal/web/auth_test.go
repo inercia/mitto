@@ -5,6 +5,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1061,6 +1062,52 @@ func TestAuthManager_UpdateConfig_Nil(t *testing.T) {
 	// Auth should be disabled
 	if am.IsEnabled() {
 		t.Error("Auth should be disabled after nil config update")
+	}
+}
+
+func TestAuthMiddleware_SensitivePathsRequireAuth(t *testing.T) {
+	// Acceptance criterion: sensitive/write/delete API endpoints must return 401
+	// when accessed without a session cookie from a non-loopback external IP.
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "admin",
+			Password: "password",
+		},
+	})
+	am.SetAPIPrefix("")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	paths := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/api/config"},
+		{"GET", "/api/workspaces"},
+		{"GET", "/api/advanced-flags"},
+		{"GET", "/api/workspace-prompts"},
+		{"POST", "/api/sessions"},
+		{"DELETE", "/api/sessions/20260621-000238-bdefea3e"},
+	}
+
+	for _, tc := range paths {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			// Non-loopback RemoteAddr + external listener flag
+			req.RemoteAddr = "203.0.113.1:54321"
+			req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+			w := httptest.NewRecorder()
+			middleware.ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s: status = %d, want %d (Unauthorized)",
+					tc.method, tc.path, w.Code, http.StatusUnauthorized)
+			}
+		})
 	}
 }
 
