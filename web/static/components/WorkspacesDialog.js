@@ -14,6 +14,7 @@ import {
 import {
   getWorkspaceVisualInfo,
   getBasename,
+  copyToClipboard,
 } from "../lib.js";
 
 import {
@@ -33,6 +34,7 @@ import {
   RobotIcon,
   GlobeIcon,
   MittoIcon,
+  CopyIcon,
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -92,6 +94,18 @@ const BEADS_UPSTREAM_HELP = {
       { key: "linear.hash_length", desc: "Hash length 3-8 (default: 6)" },
     ],
   },
+};
+
+// Build the JSON payload copied to the clipboard for an MCP server row, in the
+// same `{ mcpServers: { <name>: {...} } }` wrapper accepted by the Add dialog.
+// Only non-empty fields are included; `env` is included only when it has keys.
+const buildMcpServerJson = (srv) => {
+  const cfg = {};
+  if (srv.command) cfg.command = srv.command;
+  if (Array.isArray(srv.args) && srv.args.length > 0) cfg.args = srv.args;
+  if (srv.url) cfg.url = srv.url;
+  if (srv.env && Object.keys(srv.env).length > 0) cfg.env = srv.env;
+  return JSON.stringify({ mcpServers: { [srv.name]: cfg } }, null, 2);
 };
 
 // When the tree has more folders than this, they start collapsed by default.
@@ -2572,7 +2586,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                   <colgroup>
                                     <col style="width: 140px;" />
                                     <col />
-                                    ${mcpTools?.has_mcp_remove && html`<col style="width: 44px;" />`}
+                                    ${mcpTools?.has_mcp_remove && html`<col style="width: 72px;" />`}
                                   </colgroup>
                                   <thead>
                                     <tr>
@@ -2589,7 +2603,22 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           ${srv.url || [srv.command, ...(srv.args || [])].join(" ")}
                                         </td>
                                         ${mcpTools?.has_mcp_remove && html`
-                                          <td class="text-center">
+                                          <td class="flex items-center justify-center gap-1">
+                                            <button
+                                              onClick=${async () => {
+                                                const ok = await copyToClipboard(buildMcpServerJson(srv));
+                                                showToast?.({
+                                                  style: ok ? "success" : "error",
+                                                  title: ok ? `Copied ${srv.name}` : "Copy failed",
+                                                  duration: 2000,
+                                                });
+                                              }}
+                                              class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
+                                              data-tip="Copy server config as JSON"
+                                              aria-label="Copy MCP server config"
+                                            >
+                                              <${CopyIcon} className="w-4 h-4 text-mitto-text-muted" />
+                                            </button>
                                             <button
                                               onClick=${() => { if (mcpRemoveLoading) return; handleMcpRemoveConfirm(srv.name); }}
                                               aria-disabled=${mcpRemoveLoading ? "true" : "false"}
