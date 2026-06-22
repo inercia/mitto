@@ -34,6 +34,13 @@ const (
 	// StoppedReasonResumeFailures is set when ACP resume fails MaxPeriodicResumeFailures
 	// consecutive times and the session is auto-archived.
 	StoppedReasonResumeFailures StoppedReason = "resumeFailures"
+
+	// StoppedReasonPausedByUser is a resumable (paused) reason set when the user manually
+	// disables the loop (e.g. via the pause button). Re-enabling clears it.
+	StoppedReasonPausedByUser StoppedReason = "pausedByUser"
+	// StoppedReasonDisabledByAgent is a resumable (paused) reason set when the agent
+	// self-disables the loop via mitto_conversation_update. Re-enabling clears it.
+	StoppedReasonDisabledByAgent StoppedReason = "disabledByAgent"
 )
 
 var (

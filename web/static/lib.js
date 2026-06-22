@@ -360,14 +360,17 @@ function _parseUndelimited(text, segments) {
  * @param {Array} storedSessions - Sessions loaded from storage
  * @returns {Array} Combined and sorted sessions
  */
-// Labels shown in the conversation-header subtitle when a periodic loop has stopped.
+// Labels shown in the conversation-header subtitle when a periodic loop has stopped or paused.
 // Keyed by the `periodic_stopped_reason` string sent by the backend.
+// Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
 export const PERIODIC_STOPPED_LABELS = {
-  maxDuration: "Stopped: max time",
-  maxIterations: "Stopped: max iters",
-  iterationSafeguard: "Stopped: max iters",
-  promptUnresolved: "Stopped: prompt missing",
-  resumeFailures: "Stopped: resume errors",
+  maxDuration:        { label: "Stopped: max time",       kind: "stopped" },
+  maxIterations:      { label: "Stopped: max iters",      kind: "stopped" },
+  iterationSafeguard: { label: "Stopped: max iters",      kind: "stopped" },
+  promptUnresolved:   { label: "Stopped: prompt missing", kind: "stopped" },
+  resumeFailures:     { label: "Stopped: resume errors",  kind: "stopped" },
+  pausedByUser:       { label: "Paused by you",           kind: "paused"  },
+  disabledByAgent:    { label: "Paused by the agent",     kind: "paused"  },
 };
 
 /**

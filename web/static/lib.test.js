@@ -5468,70 +5468,119 @@ describe("conversationToMarkdown", () => {
 // =============================================================================
 
 describe("PERIODIC_STOPPED_LABELS", () => {
-  test("maps all five known reason codes to the correct labels", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxDuration).toBe("Stopped: max time");
-    expect(PERIODIC_STOPPED_LABELS.maxIterations).toBe("Stopped: max iters");
-    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toBe("Stopped: max iters");
-    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toBe("Stopped: prompt missing");
-    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toBe("Stopped: resume errors");
+  test("maps all seven known reason codes to {label, kind} objects", () => {
+    expect(PERIODIC_STOPPED_LABELS.maxDuration).toEqual({ label: "Stopped: max time", kind: "stopped" });
+    expect(PERIODIC_STOPPED_LABELS.maxIterations).toEqual({ label: "Stopped: max iters", kind: "stopped" });
+    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toEqual({ label: "Stopped: max iters", kind: "stopped" });
+    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toEqual({ label: "Stopped: prompt missing", kind: "stopped" });
+    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toEqual({ label: "Stopped: resume errors", kind: "stopped" });
+    expect(PERIODIC_STOPPED_LABELS.pausedByUser).toEqual({ label: "Paused by you", kind: "paused" });
+    expect(PERIODIC_STOPPED_LABELS.disabledByAgent).toEqual({ label: "Paused by the agent", kind: "paused" });
   });
 
   test("maxIterations and iterationSafeguard share the same label", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxIterations).toBe(
-      PERIODIC_STOPPED_LABELS.iterationSafeguard,
+    expect(PERIODIC_STOPPED_LABELS.maxIterations.label).toBe(
+      PERIODIC_STOPPED_LABELS.iterationSafeguard.label,
     );
   });
 
-  test("unknown reason is not in the map (caller should fall back to 'Stopped')", () => {
+  test("unknown reason is not in the map", () => {
     expect(PERIODIC_STOPPED_LABELS["unknownReason"]).toBeUndefined();
   });
 
-  // Badge-vs-countdown selection logic
-  // Mirrors: const headerStoppedReason = (session?.periodic_configured && session?.periodic_stopped_reason) || null;
-  //          const headerStoppedLabel = (headerStoppedReason && PERIODIC_STOPPED_LABELS[headerStoppedReason]) || "Stopped";
+  test("all stopped reasons have kind='stopped'", () => {
+    const stoppedReasons = ["maxDuration", "maxIterations", "iterationSafeguard", "promptUnresolved", "resumeFailures"];
+    for (const reason of stoppedReasons) {
+      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("stopped");
+    }
+  });
 
-  function computeHeaderStoppedReason(session) {
-    return (session?.periodic_configured && session?.periodic_stopped_reason) || null;
+  test("all paused reasons have kind='paused'", () => {
+    const pausedReasons = ["pausedByUser", "disabledByAgent"];
+    for (const reason of pausedReasons) {
+      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("paused");
+    }
+  });
+
+  // headerPeriodicState derivation logic
+  // Mirrors the IIFE in app.js that computes headerPeriodicState from an activeSession.
+
+  function computeHeaderPeriodicState(session) {
+    if (!session?.periodic_configured) return null;
+    if (session?.periodic_enabled) {
+      return { state: "running", label: "Running", badgeClass: "badge-success badge-soft" };
+    }
+    const entry = PERIODIC_STOPPED_LABELS[session?.periodic_stopped_reason];
+    if (entry && entry.kind === "stopped") {
+      return { state: "stopped", label: entry.label, badgeClass: "badge-error badge-soft" };
+    }
+    if (entry && entry.kind === "paused") {
+      return { state: "paused", label: entry.label, badgeClass: "badge-warning badge-soft" };
+    }
+    return { state: "paused", label: "Paused", badgeClass: "badge-warning badge-soft" };
   }
 
-  function computeHeaderStoppedLabel(reason) {
-    return (reason && PERIODIC_STOPPED_LABELS[reason]) || "Stopped";
-  }
-
-  test("badge shown when periodic_configured=true and periodic_stopped_reason is set", () => {
-    const session = { periodic_configured: true, periodic_stopped_reason: "maxDuration" };
-    const reason = computeHeaderStoppedReason(session);
-    expect(reason).toBe("maxDuration");
-    expect(computeHeaderStoppedLabel(reason)).toBe("Stopped: max time");
+  test("non-periodic session yields null (no pill)", () => {
+    const session = { periodic_configured: false };
+    expect(computeHeaderPeriodicState(session)).toBeNull();
   });
 
-  test("badge NOT shown when periodic_configured=false even if stopped_reason is set", () => {
-    const session = { periodic_configured: false, periodic_stopped_reason: "maxDuration" };
-    expect(computeHeaderStoppedReason(session)).toBeNull();
+  test("null session yields null (no pill)", () => {
+    expect(computeHeaderPeriodicState(null)).toBeNull();
   });
 
-  test("badge NOT shown when periodic_stopped_reason is absent (loop still running)", () => {
-    const session = { periodic_configured: true, periodic_stopped_reason: null };
-    expect(computeHeaderStoppedReason(session)).toBeNull();
+  test("enabled periodic session yields Running/green", () => {
+    const session = { periodic_configured: true, periodic_enabled: true };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("running");
+    expect(result.label).toBe("Running");
+    expect(result.badgeClass).toContain("badge-success");
   });
 
-  test("badge NOT shown when periodic_stopped_reason is empty string", () => {
-    const session = { periodic_configured: true, periodic_stopped_reason: "" };
-    expect(computeHeaderStoppedReason(session)).toBeNull();
+  test("stopped reason yields Stopped/red", () => {
+    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "maxDuration" };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("stopped");
+    expect(result.label).toBe("Stopped: max time");
+    expect(result.badgeClass).toContain("badge-error");
   });
 
-  test("unknown reason falls back to 'Stopped' label", () => {
-    const session = { periodic_configured: true, periodic_stopped_reason: "someFutureReason" };
-    const reason = computeHeaderStoppedReason(session);
-    expect(reason).toBe("someFutureReason");
-    expect(computeHeaderStoppedLabel(reason)).toBe("Stopped");
+  test("pausedByUser reason yields Paused/amber", () => {
+    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "pausedByUser" };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused by you");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("disabledByAgent reason yields Paused/amber", () => {
+    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "disabledByAgent" };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused by the agent");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("no reason (manual pause) yields generic Paused/amber", () => {
+    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: null };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("unknown future reason falls back to generic Paused/amber", () => {
+    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "someFutureReason" };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused");
+    expect(result.badgeClass).toContain("badge-warning");
   });
 
   test("all known reasons produce a non-empty label", () => {
     const knownReasons = Object.keys(PERIODIC_STOPPED_LABELS);
     for (const reason of knownReasons) {
-      expect(computeHeaderStoppedLabel(reason)).toBeTruthy();
-      expect(computeHeaderStoppedLabel(reason)).not.toBe("Stopped");
+      expect(PERIODIC_STOPPED_LABELS[reason].label).toBeTruthy();
     }
   });
 });

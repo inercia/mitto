@@ -234,6 +234,14 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 		}
 	}
 
+	// Record WHY the loop was paused so the UI can show an amber "Paused by you"
+	// pill (resumable) instead of a blank glance line. Re-enabling clears it.
+	if req.Enabled != nil && !*req.Enabled {
+		if err := ps.MarkStopped(session.StoppedReasonPausedByUser); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to record pausedByUser reason", "error", err)
+		}
+	}
+
 	// Return the updated periodic prompt
 	updated, err := ps.Get()
 	if err != nil {

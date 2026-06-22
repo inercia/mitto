@@ -4020,6 +4020,14 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 					Error:   fmt.Sprintf("failed to update periodic: %v", err),
 				}, nil
 			}
+
+			// Agent self-disabled periodic — record it as a resumable "Paused by the agent"
+			// (amber) reason so the header pill is unambiguous. Re-enabling clears it.
+			if input.PeriodicEnabled != nil && !*input.PeriodicEnabled {
+				if err := periodicStore.MarkStopped(session.StoppedReasonDisabledByAgent); err != nil {
+					s.logger.Warn("Failed to record disabledByAgent reason", "error", err)
+				}
+			}
 		}
 
 		updated = append(updated, "periodic")

@@ -1922,11 +1922,27 @@ function App() {
   const headerNextScheduledAt =
     (activeSession?.periodic_configured && activeSession?.next_scheduled_at) || null;
   const headerPeriodicUnit = activeSession?.periodic_frequency?.unit || "hours";
-  // When the periodic loop has stopped for any reason, show a badge instead of the countdown.
+  // Derive a single 3-state pill for the periodic status: running | paused | stopped | null.
+  // null means not periodic (no pill rendered).
+  const headerPeriodicState = (() => {
+    if (!activeSession?.periodic_configured) return null;
+    if (activeSession?.periodic_enabled) {
+      return { state: "running", label: "Running", badgeClass: "badge-success badge-soft" };
+    }
+    // Loop is disabled — check the reason for stopped vs paused distinction
+    const entry = PERIODIC_STOPPED_LABELS[activeSession?.periodic_stopped_reason];
+    if (entry && entry.kind === "stopped") {
+      return { state: "stopped", label: entry.label, badgeClass: "badge-error badge-soft" };
+    }
+    if (entry && entry.kind === "paused") {
+      return { state: "paused", label: entry.label, badgeClass: "badge-warning badge-soft" };
+    }
+    // No reason set — manual pause / unknown
+    return { state: "paused", label: "Paused", badgeClass: "badge-warning badge-soft" };
+  })();
+  // Keep backwards-compat references used by cap-highlight logic below
   const headerStoppedReason =
     (activeSession?.periodic_configured && activeSession?.periodic_stopped_reason) || null;
-  const headerStoppedLabel =
-    (headerStoppedReason && PERIODIC_STOPPED_LABELS[headerStoppedReason]) || "Stopped";
 
   // Periodic "glance" badges shown in the subtitle for ALL periodic sessions
   // (running or stopped, schedule or onCompletion).
@@ -2268,12 +2284,23 @@ function App() {
             ${activeSessionId &&
             (headerAcpServer ||
               headerNextScheduledAt ||
-              headerStoppedReason ||
+              headerPeriodicState ||
               activeSession?.periodic_configured) &&
             html`<div
               class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
               data-testid="conversation-header-subtitle"
             >
+              ${headerPeriodicState &&
+              html`<span
+                class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap"
+                data-testid="periodic-status-pill"
+                title=${headerPeriodicState.state === "running"
+                  ? "Periodic loop is iterating"
+                  : (activeSession?.periodic_stopped_reason || "") +
+                    (activeSession?.stopped_at
+                      ? " · " + new Date(activeSession.stopped_at).toLocaleString()
+                      : "")}
+              >${headerPeriodicState.label}</span>`}
               ${headerAcpServer &&
               html`<span class="truncate min-w-0">${headerAcpServer}</span>`}
               ${headerTriggerLabel &&
@@ -2306,19 +2333,7 @@ function App() {
                     : null}
                 >${headerMaxTimeLabel}</span>
               </${Fragment}>`}
-              ${headerStoppedReason &&
-              html`<${Fragment}>
-                <span class="opacity-60">·</span>
-                <span
-                  class="badge badge-sm badge-error badge-soft whitespace-nowrap"
-                  data-testid="periodic-stopped-badge"
-                  title=${headerStoppedReason +
-                    (activeSession?.stopped_at
-                      ? " · " + new Date(activeSession.stopped_at).toLocaleString()
-                      : "")}
-                >${headerStoppedLabel}</span>
-              </${Fragment}>`}
-              ${!headerStoppedReason &&
+              ${headerPeriodicState?.state === "running" &&
               headerNextScheduledAt &&
               html`<${Fragment}>
                 ${headerAcpServer || headerTriggerLabel || headerRunCountLabel !== null || headerMaxTimeLabel
