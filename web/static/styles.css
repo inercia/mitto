@@ -1194,6 +1194,17 @@ a.mailto-link:hover {
   }
 }
 
+/* On small screens, collapse the categorical header badges (the periodic
+   status pill — Auto/Paused/Stopped — and the trigger badge) to icon-only by
+   hiding their text labels. The leading icon stays visible and conveys the
+   state. Numeric badges (Run N of M, max 2h, countdown) are intentionally left
+   untouched so their values remain readable. */
+@media (max-width: 640px) {
+  [data-testid="conversation-header-subtitle"] .badge-collapse-label {
+    display: none;
+  }
+}
+
 /* =============================================================================
    Queue Dropdown
    ============================================================================= */

@@ -1897,7 +1897,9 @@ export function SettingsDialog({
         }
       }
 
-      // Fetch updated external status to refresh the displayed port/state
+      // Fetch updated external status to refresh the displayed port/state.
+      // Hoist activeExternalPort so it is visible at the toast-building site below.
+      let activeExternalPort = null;
       try {
         const statusRes = await fetch(apiUrl("/api/external-status"), {
           credentials: "same-origin",
@@ -1906,16 +1908,40 @@ export function SettingsDialog({
           const status = await statusRes.json();
           setExternalEnabled(status.enabled);
           setCurrentExternalPort(status.port || null);
+          activeExternalPort = status.port || null;
         }
       } catch (e) {
         console.error("Failed to fetch external status:", e);
       }
 
-      // Notify success via the app-wide auto-dismissing toast
+      // If the save tore down the external listener (e.g. incomplete credentials),
+      // show a prominent sticky warning toast so the user cannot miss it.
+      if (result.external_access_warning) {
+        const warn = result.external_access_warning;
+        const msg =
+          warn.message ||
+          (warn.reason
+            ? `External access is DOWN: ${warn.reason}${warn.port ? ` (port ${warn.port})` : ""}.`
+            : "External access is DOWN.");
+        showToast?.({
+          style: "error",
+          title: "External access is DOWN",
+          message: msg,
+          sticky: true,
+        });
+      }
+
+      // Notify success via the app-wide auto-dismissing toast.
+      // When an external-access warning is present, skip the "external access
+      // enabled" detail to avoid a contradictory success message.
       const appliedDetails = [];
-      if (result.applied) {
+      if (result.applied && !result.external_access_warning) {
         if (result.applied.external_access_enabled) {
-          appliedDetails.push("external access enabled");
+          appliedDetails.push(
+            activeExternalPort
+              ? `External access active on port ${activeExternalPort}`
+              : "external access enabled"
+          );
         }
         if (result.applied.auth_enabled) {
           appliedDetails.push("authentication active");
@@ -3593,14 +3619,7 @@ export function SettingsDialog({
                                 >(leave empty for random)</span
                               >
                             </div>
-                            ${externalEnabled &&
-                            currentExternalPort &&
-                            html`
-                              <div class="text-xs text-mitto-success">
-                                ✓ External access active on port${" "}
-                                ${currentExternalPort}
-                              </div>
-                            `}
+
                           </div>
 
                           <!-- Authentication Methods -->

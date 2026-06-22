@@ -146,6 +146,10 @@ import {
   ListIcon,
   PeriodicIcon,
   PeriodicFilledIcon,
+  CheckIcon,
+  ClockIcon,
+  StopIcon,
+  PauseFilledIcon,
   ChatBubbleIcon,
   LayersIcon,
   TagIcon,
@@ -2330,16 +2334,26 @@ function App() {
                       : "")}
               >${headerPeriodicState.state === "running"
                   ? html`<${PeriodicIcon} className="w-3 h-3" />`
-                  : null}${headerPeriodicState.label}</span>`}
+                  : headerPeriodicState.state === "stopped"
+                    ? html`<${StopIcon} className="w-3 h-3" />`
+                    : html`<${PauseFilledIcon} className="w-3 h-3" />`}<span
+                  class="badge-collapse-label"
+                  >${headerPeriodicState.label}</span
+                ></span>`}
               ${headerAcpServer &&
               html`<span class="truncate min-w-0">${headerAcpServer}</span>`}
               ${headerTriggerLabel &&
               html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
-                  class="badge badge-sm badge-ghost whitespace-nowrap"
+                  class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
                   data-testid="periodic-trigger-badge"
-                >${headerTriggerLabel}</span>
+                >${headerPeriodicTrigger === "onCompletion"
+                    ? html`<${CheckIcon} className="w-3 h-3" />`
+                    : html`<${ClockIcon} className="w-3 h-3" />`}<span
+                    class="badge-collapse-label"
+                    >${headerTriggerLabel}</span
+                  ></span>
               </${Fragment}>`}
               ${headerRunCountLabel !== null &&
               html`<${Fragment}>

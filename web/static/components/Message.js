@@ -104,7 +104,7 @@ function NamedPromptPill({ message }) {
         ${message.argumentCount > 0 &&
         html`<${Tooltip} tip=${argTip}>
           <span
-            class="badge badge-sm"
+            class="badge badge-sm badge-ghost tabular-nums"
             data-testid="prompt-arg-count"
           >${message.argumentCount}</span>
         <//>`}
