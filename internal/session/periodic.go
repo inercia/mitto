@@ -400,10 +400,15 @@ func (ps *PeriodicStore) Delete() error {
 }
 
 // ResetCounters resets the iteration and elapsed-time anchors so the loop starts
-// fresh: IterationCount is set to 0 and FirstRunAt is cleared (elapsed time = 0).
-// This is used when restoring a periodic conversation that was auto-stopped after
-// reaching its max-iterations or max-duration cap. It does not change Enabled or
-// the prompt configuration; re-enabling is handled separately by Update.
+// fresh: IterationCount is set to 0, FirstRunAt is cleared (elapsed time = 0), and
+// LastSentAt is cleared (never-sent). This is used when restoring a periodic
+// conversation that was auto-stopped after reaching its max-iterations or
+// max-duration cap. Clearing LastSentAt makes the conversation look brand-new so
+// that the restore behaves like the initial run: an onCompletion loop bootstraps
+// its first run immediately (no delay_seconds wait — the delay is a between-runs
+// gap, not a pre-first-run delay) rather than waiting out the configured delay. It
+// does not change Enabled or the prompt configuration; re-enabling is handled
+// separately by Update.
 func (ps *PeriodicStore) ResetCounters() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -415,6 +420,7 @@ func (ps *PeriodicStore) ResetCounters() error {
 
 	existing.IterationCount = 0
 	existing.FirstRunAt = nil
+	existing.LastSentAt = nil
 	existing.UpdatedAt = time.Now().UTC()
 
 	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {

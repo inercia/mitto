@@ -505,6 +505,9 @@ func TestPeriodicStore_ResetCounters(t *testing.T) {
 	if before.FirstRunAt == nil {
 		t.Fatal("FirstRunAt should be set before reset")
 	}
+	if before.LastSentAt == nil {
+		t.Fatal("LastSentAt should be set before reset")
+	}
 
 	// Reset the counters.
 	if err := ps.ResetCounters(); err != nil {
@@ -517,6 +520,11 @@ func TestPeriodicStore_ResetCounters(t *testing.T) {
 	}
 	if after.FirstRunAt != nil {
 		t.Errorf("FirstRunAt = %v, want nil after reset", after.FirstRunAt)
+	}
+	// LastSentAt must be cleared so a restored loop looks never-sent and fires its
+	// first run immediately (no onCompletion delay).
+	if after.LastSentAt != nil {
+		t.Errorf("LastSentAt = %v, want nil after reset", after.LastSentAt)
 	}
 	// ResetCounters must not change the prompt configuration.
 	if after.Prompt != p.Prompt {
