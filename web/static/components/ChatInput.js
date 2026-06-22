@@ -944,30 +944,50 @@ export function ChatInput({
   // Handle periodic prompt selection from PeriodicPromptSelector
   const handlePeriodicPromptSelect = useCallback(async (promptName) => {
     if (!sessionId || isPeriodicSaving) return;
-    setIsPeriodicSaving(true);
-    try {
-      const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt_name: promptName, enabled: true }),
-        },
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setPeriodicPromptName(promptName);
-        setIsPeriodicLocked(true);
-        if (data.next_scheduled_at) {
-          setPeriodicNextScheduledAt(data.next_scheduled_at);
+
+    // Helper that performs the actual PATCH, optionally with arguments.
+    const doPatch = async (extraArgs) => {
+      setIsPeriodicSaving(true);
+      try {
+        const body = { prompt_name: promptName, enabled: true };
+        if (extraArgs && Object.keys(extraArgs).length > 0) {
+          body.arguments = extraArgs;
         }
+        const response = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        if (response.ok) {
+          const data = await response.json();
+          setPeriodicPromptName(promptName);
+          setIsPeriodicLocked(true);
+          if (data.next_scheduled_at) {
+            setPeriodicNextScheduledAt(data.next_scheduled_at);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to save periodic prompt selection:", err);
+      } finally {
+        setIsPeriodicSaving(false);
       }
-    } catch (err) {
-      console.error("Failed to save periodic prompt selection:", err);
-    } finally {
-      setIsPeriodicSaving(false);
+    };
+
+    // Check if the prompt declares parameters that need user input before saving.
+    const fullPrompt = periodicPrompts.find((p) => p.name === promptName);
+    const missing = fullPrompt ? getMissingPromptParameters(fullPrompt, "conversation") : [];
+    if (missing.length > 0 && onOpenPromptParamDialog) {
+      onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
+        await doPatch(userArgs);
+      });
+      return;
     }
-  }, [sessionId, isPeriodicSaving]);
+
+    await doPatch(undefined);
+  }, [sessionId, isPeriodicSaving, periodicPrompts, onOpenPromptParamDialog]);
 
   // Handle frequency change from the PeriodicFrequencyPanel
   const handlePeriodicFrequencyChange = useCallback(

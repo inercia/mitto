@@ -1760,6 +1760,23 @@ function App() {
         if (action === "make-periodic") {
           // Regular conversation: configure it as periodic now and fire the first run.
           const sessionId = session.session_id;
+          const missing = getMissingPromptParameters(prompt, "conversation");
+          if (missing.length > 0) {
+            setPromptParamDialog({
+              prompt,
+              parameters: missing,
+              hostSessionId: sessionId,
+              onSubmit: async (userArgs) => {
+                const result = await makePeriodicNow(sessionId, prompt, { arguments: userArgs });
+                if (result.success) {
+                  showToast({ style: "success", title: `Made conversation periodic with "${prompt.name}"`, duration: 3000 });
+                } else {
+                  showToast({ style: "warning", title: "Failed to configure periodic schedule", duration: 4000 });
+                }
+              },
+            });
+            return;
+          }
           const result = await makePeriodicNow(sessionId, prompt);
           if (result.success) {
             showToast({ style: "success", title: `Made conversation periodic with "${prompt.name}"`, duration: 3000 });
@@ -1800,26 +1817,40 @@ function App() {
         }
 
         // action === "new-periodic": no session — open schedule dialog → create NEW periodic conversation.
-        setPeriodicScheduleDialog({
-          prompt,
-          onSchedule: async (schedule) => {
-            setPeriodicScheduleDialog(null);
-            const workingDir = session?.working_dir;
-            const acpServer = session?.acp_server;
-            const result = await startConversationWithPrompt({
-              workingDir,
-              acpServer,
-              prompt,
-              periodic: schedule,
-            });
-            if (result?.sessionId) {
-              focusSession(result.sessionId);
-              showToast({ style: "success", title: `Started periodic "${prompt.name}"`, duration: 3000 });
-            } else {
-              showToast({ style: "warning", title: "Failed to start periodic conversation", duration: 4000 });
-            }
-          },
-        });
+        // When the prompt has parameters, collect them first, then open the schedule dialog.
+        const openScheduleDialog = (collectedArgs) => {
+          setPeriodicScheduleDialog({
+            prompt,
+            onSchedule: async (schedule) => {
+              setPeriodicScheduleDialog(null);
+              const workingDir = session?.working_dir;
+              const acpServer = session?.acp_server;
+              const result = await startConversationWithPrompt({
+                workingDir,
+                acpServer,
+                prompt,
+                ...(collectedArgs && Object.keys(collectedArgs).length > 0 ? { arguments: collectedArgs } : {}),
+                periodic: schedule,
+              });
+              if (result?.sessionId) {
+                focusSession(result.sessionId);
+                showToast({ style: "success", title: `Started periodic "${prompt.name}"`, duration: 3000 });
+              } else {
+                showToast({ style: "warning", title: "Failed to start periodic conversation", duration: 4000 });
+              }
+            },
+          });
+        };
+        const missingForNewPeriodic = getMissingPromptParameters(prompt, "conversation");
+        if (missingForNewPeriodic.length > 0) {
+          setPromptParamDialog({
+            prompt,
+            parameters: missingForNewPeriodic,
+            onSubmit: (userArgs) => openScheduleDialog(userArgs),
+          });
+          return;
+        }
+        openScheduleDialog(undefined);
         return;
       }
 

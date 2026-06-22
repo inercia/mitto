@@ -822,3 +822,159 @@ describe("makePeriodicNow — trigger/delay/maxDuration fields", () => {
     expect(body.max_duration_seconds).toBe(0);
   });
 });
+
+// =============================================================================
+// makePeriodicNow — arguments forwarding
+// =============================================================================
+
+describe("makePeriodicNow — arguments forwarding", () => {
+  const prompt = { name: "daily-standup", periodic: { value: 1, unit: "hours" } };
+
+  function makeFetchSequence(...responses) {
+    let i = 0;
+    return jest.fn(() => {
+      const r = responses[i++] || responses[responses.length - 1];
+      return Promise.resolve(r);
+    });
+  }
+
+  function makeResp(status, data = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(data),
+    };
+  }
+
+  test("includes arguments in PUT body when non-empty map is supplied", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-1", prompt, { arguments: { ENV: "prod", REGION: "us-east" }, fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.arguments).toEqual({ ENV: "prod", REGION: "us-east" });
+  });
+
+  test("omits arguments from PUT body when empty object is supplied", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-1", prompt, { arguments: {}, fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("arguments");
+  });
+
+  test("omits arguments from PUT body when undefined (no opts supplied)", async () => {
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makePeriodicNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("arguments");
+  });
+});
+
+// =============================================================================
+// configurePeriodicSchedule — arguments forwarding
+// =============================================================================
+
+describe("configurePeriodicSchedule — arguments forwarding", () => {
+  const prompt = { name: "daily-standup" };
+
+  function makeFetch(status, data = {}) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(data),
+      }),
+    );
+  }
+
+  test("includes arguments in PUT body when non-empty map is supplied", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { arguments: { KEY: "val" }, fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.arguments).toEqual({ KEY: "val" });
+  });
+
+  test("omits arguments from PUT body when empty object is supplied", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { arguments: {}, fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("arguments");
+  });
+
+  test("omits arguments from PUT body when not supplied", async () => {
+    const fetchImpl = makeFetch(200);
+    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("arguments");
+  });
+});
+
+// =============================================================================
+// startConversationWithPrompt periodic path — arguments forwarding
+// =============================================================================
+
+describe("useConversationSeeding — startConversationWithPrompt periodic path — arguments", () => {
+  function makeFetch(status, data = {}) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(data),
+      }),
+    );
+  }
+
+  test("periodic: forwards arguments into the PUT body when supplied", async () => {
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-p" });
+    const fetchImpl = makeFetch(200);
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    await startConversationWithPrompt({
+      prompt: { name: "daily-standup" },
+      workingDir: "/w",
+      periodic: { value: 1, unit: "hours" },
+      arguments: { TEAM: "backend" },
+      fetchImpl,
+    });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.arguments).toEqual({ TEAM: "backend" });
+  });
+
+  test("periodic: omits arguments from PUT body when not supplied", async () => {
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-p" });
+    const fetchImpl = makeFetch(200);
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    await startConversationWithPrompt({
+      prompt: { name: "daily-standup" },
+      workingDir: "/w",
+      periodic: { value: 1, unit: "hours" },
+      fetchImpl,
+    });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("arguments");
+  });
+
+  test("periodic: omits arguments from PUT body when empty object", async () => {
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-p" });
+    const fetchImpl = makeFetch(200);
+    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+
+    await startConversationWithPrompt({
+      prompt: { name: "daily-standup" },
+      workingDir: "/w",
+      periodic: { value: 1, unit: "hours" },
+      arguments: {},
+      fetchImpl,
+    });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("arguments");
+  });
+});

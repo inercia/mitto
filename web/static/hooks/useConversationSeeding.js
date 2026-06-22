@@ -57,10 +57,10 @@ export function decidePeriodicAction(session) {
  *
  * @param {string} sessionId
  * @param {{ name: string, periodic?: { value?: number, unit?: string, at?: string, maxIterations?: number } }} prompt
- * @param {{ fetchImpl?: Function }} [opts]
+ * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-export async function makePeriodicNow(sessionId, prompt, { fetchImpl } = {}) {
+export async function makePeriodicNow(sessionId, prompt, { arguments: args, fetchImpl } = {}) {
   if (!sessionId || !prompt?.name) {
     return { success: false, error: "invalid_request" };
   }
@@ -96,6 +96,7 @@ export async function makePeriodicNow(sessionId, prompt, { fetchImpl } = {}) {
         trigger,
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
+        ...(args && typeof args === "object" && Object.keys(args).length > 0 ? { arguments: args } : {}),
       }),
     });
     if (!putResp.ok) {
@@ -185,10 +186,10 @@ export async function seedConversationWithPrompt(sessionId, prompt, { arguments:
  * @param {string} sessionId
  * @param {{ name: string, periodic?: { maxIterations?: number } }} prompt
  * @param {{ value: number, unit: string, at?: string, maxIterations?: number }} periodic
- * @param {{ fetchImpl?: Function }} [opts]
+ * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-export async function configurePeriodicSchedule(sessionId, prompt, periodic, { fetchImpl } = {}) {
+export async function configurePeriodicSchedule(sessionId, prompt, periodic, { arguments: args, fetchImpl } = {}) {
   const { value, unit, at } = periodic;
   const frequency = { value, unit };
   // Only include 'at' for daily schedules (matches backend Frequency.Validate() rules)
@@ -224,6 +225,7 @@ export async function configurePeriodicSchedule(sessionId, prompt, periodic, { f
         trigger,
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
+        ...(args && typeof args === "object" && Object.keys(args).length > 0 ? { arguments: args } : {}),
       }),
     });
 
@@ -283,7 +285,7 @@ export function useConversationSeeding({ newSession }) {
       if (periodic) {
         // Periodic path: configure the schedule via PUT after creation.
         const putResult = await configurePeriodicSchedule(
-          result.sessionId, prompt, periodic, { fetchImpl },
+          result.sessionId, prompt, periodic, { arguments: args, fetchImpl },
         );
         if (!putResult.success) {
           // Session was created but periodic config failed — surface the error.
