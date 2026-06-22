@@ -475,6 +475,55 @@ func TestPeriodicStore_RecordSent(t *testing.T) {
 	}
 }
 
+func TestPeriodicStore_ResetCounters(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	// ResetCounters on non-existent should fail
+	if err := ps.ResetCounters(); err != ErrPeriodicNotFound {
+		t.Errorf("ResetCounters() on empty store error = %v, want ErrPeriodicNotFound", err)
+	}
+
+	// Create and run twice so IterationCount and FirstRunAt are populated.
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	ps.Set(p)
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	before, _ := ps.Get()
+	if before.IterationCount != 2 {
+		t.Fatalf("IterationCount = %d, want 2 before reset", before.IterationCount)
+	}
+	if before.FirstRunAt == nil {
+		t.Fatal("FirstRunAt should be set before reset")
+	}
+
+	// Reset the counters.
+	if err := ps.ResetCounters(); err != nil {
+		t.Fatalf("ResetCounters() error = %v", err)
+	}
+
+	after, _ := ps.Get()
+	if after.IterationCount != 0 {
+		t.Errorf("IterationCount = %d, want 0 after reset", after.IterationCount)
+	}
+	if after.FirstRunAt != nil {
+		t.Errorf("FirstRunAt = %v, want nil after reset", after.FirstRunAt)
+	}
+	// ResetCounters must not change the prompt configuration.
+	if after.Prompt != p.Prompt {
+		t.Errorf("Prompt = %q, want %q (unchanged by reset)", after.Prompt, p.Prompt)
+	}
+}
+
 func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewPeriodicStore(dir)
@@ -982,5 +1031,182 @@ func TestPeriodicStore_OnCompletion_NextScheduledAtIsNil(t *testing.T) {
 	got, _ := ps.Get()
 	if got.NextScheduledAt != nil {
 		t.Errorf("NextScheduledAt should be nil for onCompletion trigger, got %v", got.NextScheduledAt)
+	}
+}
+
+// --- MarkStopped tests ---
+
+func TestPeriodicStore_MarkStopped_SetsAllFields(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	if err := ps.Set(&PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	before := time.Now().UTC()
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	after := time.Now().UTC()
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() after MarkStopped error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled should be false after MarkStopped")
+	}
+	if got.StoppedReason != StoppedReasonMaxDuration {
+		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, StoppedReasonMaxDuration)
+	}
+	if got.StoppedAt == nil {
+		t.Fatal("StoppedAt should be non-nil after MarkStopped")
+	}
+	if got.StoppedAt.Before(before) || got.StoppedAt.After(after) {
+		t.Errorf("StoppedAt = %v is outside [%v, %v]", got.StoppedAt, before, after)
+	}
+	if got.NextScheduledAt != nil {
+		t.Errorf("NextScheduledAt should be nil after MarkStopped, got %v", got.NextScheduledAt)
+	}
+}
+
+func TestPeriodicStore_MarkStopped_AllReasons(t *testing.T) {
+	reasons := []StoppedReason{
+		StoppedReasonMaxDuration,
+		StoppedReasonMaxIterations,
+		StoppedReasonIterationSafeguard,
+		StoppedReasonPromptUnresolved,
+		StoppedReasonResumeFailures,
+	}
+
+	for _, reason := range reasons {
+		t.Run(string(reason), func(t *testing.T) {
+			dir := t.TempDir()
+			ps := NewPeriodicStore(dir)
+			if err := ps.Set(&PeriodicPrompt{
+				Prompt:    "Test",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   true,
+			}); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+			if err := ps.MarkStopped(reason); err != nil {
+				t.Fatalf("MarkStopped(%q) error = %v", reason, err)
+			}
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if got.StoppedReason != reason {
+				t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, reason)
+			}
+		})
+	}
+}
+
+func TestPeriodicStore_MarkStopped_PersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	if err := ps.Set(&PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate restart: create a fresh PeriodicStore for the same directory.
+	ps2 := NewPeriodicStore(dir)
+	got, err := ps2.Get()
+	if err != nil {
+		t.Fatalf("Get() on fresh store error = %v", err)
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason after restart = %q, want %q", got.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got.StoppedAt == nil {
+		t.Error("StoppedAt should be non-nil after restart")
+	}
+}
+
+func TestPeriodicStore_MarkStopped_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	err := ps.MarkStopped(StoppedReasonMaxDuration)
+	if !errors.Is(err, ErrPeriodicNotFound) {
+		t.Errorf("MarkStopped() on non-existent config error = %v, want ErrPeriodicNotFound", err)
+	}
+}
+
+func TestPeriodicStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	if err := ps.Set(&PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Re-enable via Update — stopped state must be cleared.
+	enabled := true
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update(enabled=true) error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !got.Enabled {
+		t.Error("Enabled should be true after re-enable")
+	}
+	if got.StoppedReason != "" {
+		t.Errorf("StoppedReason should be cleared after re-enable, got %q", got.StoppedReason)
+	}
+	if got.StoppedAt != nil {
+		t.Errorf("StoppedAt should be nil after re-enable, got %v", got.StoppedAt)
+	}
+}
+
+func TestPeriodicStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	if err := ps.Set(&PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Update with enabled=false should not clear the stopped state.
+	enabled := false
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update(enabled=false) error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason changed unexpectedly: got %q", got.StoppedReason)
 	}
 }

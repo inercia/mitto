@@ -39,6 +39,10 @@ type PeriodicPromptPatchRequest struct {
 	Trigger            *session.PeriodicTrigger `json:"trigger,omitempty"`
 	DelaySeconds       *int                     `json:"delay_seconds,omitempty"`
 	MaxDurationSeconds *int                     `json:"max_duration_seconds,omitempty"`
+	// ResetCounters, when true, resets IterationCount=0 and FirstRunAt=nil so the
+	// elapsed iterations and elapsed time start from zero. Used when restoring a
+	// conversation that auto-stopped after reaching its max-iterations/max-duration cap.
+	ResetCounters *bool `json:"reset_counters,omitempty"`
 }
 
 // periodicDelayFloor returns the configured global floor for the on-completion delay.
@@ -216,6 +220,18 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 		}
 		http.Error(w, "Failed to update periodic prompt", http.StatusInternalServerError)
 		return
+	}
+
+	// Reset the iteration/elapsed-time anchors when requested (e.g. restoring a
+	// conversation that auto-stopped after reaching its max-iterations/max-duration cap).
+	if req.ResetCounters != nil && *req.ResetCounters {
+		if err := ps.ResetCounters(); err != nil {
+			if s.logger != nil {
+				s.logger.Error("Failed to reset periodic counters", "error", err)
+			}
+			http.Error(w, "Failed to reset periodic counters", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return the updated periodic prompt

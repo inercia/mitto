@@ -16,6 +16,26 @@ const (
 	periodicFileName = "periodic.json"
 )
 
+// StoppedReason is the reason a periodic conversation was automatically stopped.
+// These values are part of the frontend contract — do not change.
+type StoppedReason string
+
+const (
+	// StoppedReasonMaxDuration is set when the wall-clock cap (MaxDurationSeconds) is reached.
+	StoppedReasonMaxDuration StoppedReason = "maxDuration"
+	// StoppedReasonMaxIterations is set when the per-prompt MaxIterations cap is reached.
+	StoppedReasonMaxIterations StoppedReason = "maxIterations"
+	// StoppedReasonIterationSafeguard is set when the global/config iteration backstop is hit
+	// (MaxIterations was 0/unlimited but the effective safeguard stopped the loop).
+	StoppedReasonIterationSafeguard StoppedReason = "iterationSafeguard"
+	// StoppedReasonPromptUnresolved is set when the prompt name cannot be resolved after
+	// MaxPromptResolveFailures consecutive failures.
+	StoppedReasonPromptUnresolved StoppedReason = "promptUnresolved"
+	// StoppedReasonResumeFailures is set when ACP resume fails MaxPeriodicResumeFailures
+	// consecutive times and the session is auto-archived.
+	StoppedReasonResumeFailures StoppedReason = "resumeFailures"
+)
+
 var (
 	// ErrPeriodicNotFound is returned when no periodic prompt is configured.
 	ErrPeriodicNotFound = errors.New("periodic prompt not found")
@@ -151,6 +171,11 @@ type PeriodicPrompt struct {
 	// FirstRunAt is the elapsed-time anchor: set on the first RecordSent call.
 	// Used by ReachedMaxDuration to compute how long iterating has been running.
 	FirstRunAt *time.Time `json:"first_run_at,omitempty"`
+	// StoppedReason records why the periodic loop was automatically stopped.
+	// Empty when still running or not yet stopped.
+	StoppedReason StoppedReason `json:"stopped_reason,omitempty"`
+	// StoppedAt is the timestamp when the loop was auto-stopped (nil when still running).
+	StoppedAt *time.Time `json:"stopped_at,omitempty"`
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
@@ -317,6 +342,11 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if enabled != nil {
 		existing.Enabled = *enabled
+		// Re-enabling a stopped loop removes the badge so the UI shows a clean slate.
+		if *enabled {
+			existing.StoppedReason = ""
+			existing.StoppedAt = nil
+		}
 	}
 	if freshContext != nil {
 		existing.FreshContext = *freshContext
@@ -362,6 +392,30 @@ func (ps *PeriodicStore) Delete() error {
 	return nil
 }
 
+// ResetCounters resets the iteration and elapsed-time anchors so the loop starts
+// fresh: IterationCount is set to 0 and FirstRunAt is cleared (elapsed time = 0).
+// This is used when restoring a periodic conversation that was auto-stopped after
+// reaching its max-iterations or max-duration cap. It does not change Enabled or
+// the prompt configuration; re-enabling is handled separately by Update.
+func (ps *PeriodicStore) ResetCounters() error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+
+	existing.IterationCount = 0
+	existing.FirstRunAt = nil
+	existing.UpdatedAt = time.Now().UTC()
+
+	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write periodic file: %w", err)
+	}
+	return nil
+}
+
 // RecordSent updates the last_sent_at timestamp, increments iteration_count, and computes next_scheduled_at.
 func (ps *PeriodicStore) RecordSent() error {
 	ps.mu.Lock()
@@ -381,6 +435,32 @@ func (ps *PeriodicStore) RecordSent() error {
 	existing.LastSentAt = &now
 	existing.UpdatedAt = now
 	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)
+
+	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write periodic file: %w", err)
+	}
+	return nil
+}
+
+// MarkStopped disables the periodic prompt and records the reason it was stopped.
+// It sets Enabled=false, StoppedReason=reason, StoppedAt=now (UTC),
+// NextScheduledAt=nil, and UpdatedAt=now.
+// Returns ErrPeriodicNotFound if no periodic config exists.
+func (ps *PeriodicStore) MarkStopped(reason StoppedReason) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	existing.Enabled = false
+	existing.StoppedReason = reason
+	existing.StoppedAt = &now
+	existing.NextScheduledAt = nil
+	existing.UpdatedAt = now
 
 	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
 		return fmt.Errorf("failed to write periodic file: %w", err)

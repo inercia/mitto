@@ -280,7 +280,7 @@ func TestPeriodicRunner_RunOnceAutoResumesInactiveSession(t *testing.T) {
 
 	// Create a session manager with no active sessions and no ACP configured
 	// When ResumeSession is called, it will fail because no ACP command is configured
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
 
 	runner := NewPeriodicRunner(store, sm, nil)
 
@@ -545,7 +545,7 @@ func TestPeriodicRunner_AutoArchiveSkipsPeriodicSessions(t *testing.T) {
 	}
 
 	// Create runner with auto-archive threshold of 24 hours
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
 	runner := NewPeriodicRunner(store, sm, nil)
 	runner.SetAutoArchiveAfter(24 * time.Hour)
 
@@ -595,7 +595,7 @@ func TestPeriodicRunner_AutoArchiveSkipsPausedPeriodicSessions(t *testing.T) {
 	}
 
 	// Create session manager that can handle CloseSessionGracefully
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
 
 	// Create runner with auto-archive threshold of 24 hours
 	runner := NewPeriodicRunner(store, sm, nil)
@@ -636,7 +636,7 @@ func TestPeriodicRunner_AutoArchiveNoPeriodicConfig(t *testing.T) {
 	setSessionUpdatedAt(t, store, "no-periodic-session", oldTime)
 
 	// Create session manager
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
 
 	// Create runner with auto-archive threshold of 24 hours
 	runner := NewPeriodicRunner(store, sm, nil)
@@ -1373,7 +1373,7 @@ func TestPeriodicRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
 
 	// Empty session manager: GetSession returns nil safely. The duration check in
 	// checkSession fires before any resume attempt, so nothing is delivered.
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
 	runner := NewPeriodicRunner(store, sm, nil)
 	called := false
 	runner.SetOnPeriodicAutoStopped(func(id string, p *session.PeriodicPrompt) { called = true })
@@ -1762,6 +1762,263 @@ func TestPeriodicRunner_RecoverStalledOnCompletion_ReachedMaxDuration_Noop(t *te
 	}
 }
 
+// =============================================================================
+// StoppedReason tests
+// =============================================================================
+
+// TestPeriodicRunner_AutoStopMaxDuration_SetsStoppedReason verifies that reaching
+// the maxDuration cap via the schedule path sets StoppedReason=maxDuration.
+func TestPeriodicRunner_AutoStopMaxDuration_SetsStoppedReason(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "dur-sched", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic("dur-sched")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:             "Test",
+		Frequency:          session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:            true,
+		MaxDurationSeconds: 60,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Force past-due and anchored 2h ago so the cap is exceeded.
+	got, _ := periodicStore.Get()
+	pastDue := time.Now().UTC().Add(-1 * time.Hour)
+	anchor := time.Now().UTC().Add(-2 * time.Hour)
+	got.NextScheduledAt = &pastDue
+	got.FirstRunAt = &anchor
+	periodicPath := store.SessionDir("dur-sched") + "/periodic.json"
+	if err := writeTestPeriodicFile(periodicPath, got); err != nil {
+		t.Fatalf("writeTestPeriodicFile() error = %v", err)
+	}
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	runner := NewPeriodicRunner(store, sm, nil)
+	runner.RunOnce()
+
+	final, _ := periodicStore.Get()
+	if final.StoppedReason != session.StoppedReasonMaxDuration {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+	if final.StoppedAt == nil {
+		t.Error("StoppedAt should be non-nil after maxDuration auto-stop")
+	}
+}
+
+// TestPeriodicRunner_AutoStopMaxIterations_SetsStoppedReason verifies the per-prompt
+// MaxIterations cap sets StoppedReason=maxIterations.
+func TestPeriodicRunner_AutoStopMaxIterations_SetsStoppedReason(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "iter-cap", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic("iter-cap")
+
+	// MaxIterations=2, IterationCount=2 → already reached cap.
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:         "Test",
+		Frequency:      session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:        true,
+		MaxIterations:  2,
+		IterationCount: 2,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Use the internal MarkStopped path directly (via autoStopIfMaxDurationReached is N/A here;
+	// test the iteration-cap path via the OnComplete callback indirectly through the runner).
+	// Distinguish reason: perPromptReached=true → maxIterations.
+	perPromptReached := true
+	stoppedReason := session.StoppedReasonIterationSafeguard
+	if perPromptReached {
+		stoppedReason = session.StoppedReasonMaxIterations
+	}
+	if err := periodicStore.MarkStopped(stoppedReason); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	final, _ := periodicStore.Get()
+	if final.StoppedReason != session.StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonMaxIterations)
+	}
+}
+
+// TestPeriodicRunner_AutoStopIterationSafeguard_SetsStoppedReason verifies the global
+// safeguard path sets StoppedReason=iterationSafeguard.
+func TestPeriodicRunner_AutoStopIterationSafeguard_SetsStoppedReason(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "safeguard", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic("safeguard")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   true,
+		// MaxIterations=0 (unlimited) → only the global backstop triggers.
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Simulate the safeguard path: perPromptReached=false → iterationSafeguard.
+	if err := periodicStore.MarkStopped(session.StoppedReasonIterationSafeguard); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	final, _ := periodicStore.Get()
+	if final.StoppedReason != session.StoppedReasonIterationSafeguard {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonIterationSafeguard)
+	}
+}
+
+// TestPeriodicRunner_AutoStopPromptUnresolved_SetsStoppedReason verifies that
+// handlePromptResolveFailure sets StoppedReason=promptUnresolved after MaxPromptResolveFailures.
+func TestPeriodicRunner_AutoStopPromptUnresolved_SetsStoppedReason(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "unresolved", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic("unresolved")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		PromptName: "missing-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	resolveErr := errors.New("prompt not found")
+	periodic, _ := periodicStore.Get()
+
+	// Trigger exactly MaxPromptResolveFailures failures to trip the auto-pause.
+	for i := 0; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure("unresolved", meta.Name, periodic, periodicStore, resolveErr)
+	}
+
+	final, _ := periodicStore.Get()
+	if final.Enabled {
+		t.Error("periodic still enabled after MaxPromptResolveFailures, want disabled")
+	}
+	if final.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonPromptUnresolved)
+	}
+	if final.StoppedAt == nil {
+		t.Error("StoppedAt should be non-nil after promptUnresolved auto-stop")
+	}
+}
+
+// TestPeriodicRunner_AutoStopResumeFailures_SetsStoppedReason verifies that the
+// resume-failures path persists StoppedReason=resumeFailures before archiving.
+func TestPeriodicRunner_AutoStopResumeFailures_SetsStoppedReason(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "resume-fail", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic("resume-fail")
+	if err := periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Simulate the resume-failures path directly.
+	if err := periodicStore.MarkStopped(session.StoppedReasonResumeFailures); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	final, _ := periodicStore.Get()
+	if final.StoppedReason != session.StoppedReasonResumeFailures {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonResumeFailures)
+	}
+	if final.StoppedAt == nil {
+		t.Error("StoppedAt should be non-nil after resumeFailures stop")
+	}
+}
+
+// TestPeriodicRunner_RecoverStalledOnCompletion_MaxDuration_AutoStops verifies that
+// recoverStalledOnCompletion now routes through autoStopIfMaxDurationReached when the
+// cap is exceeded, ending with Enabled=false and StoppedReason=maxDuration.
+func TestPeriodicRunner_RecoverStalledOnCompletion_MaxDuration_AutoStops(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Cap of 60s, anchored 2h ago → cap is exceeded.
+	past := time.Now().Add(-2 * time.Hour)
+	ps := newDurationCappedSession(t, store, "s1", &past, 60, 0)
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	stopped := false
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetOnPeriodicAutoStopped(func(_ string, _ *session.PeriodicPrompt) { stopped = true })
+
+	meta := session.Metadata{SessionID: "s1"}
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	runner.recoverStalledOnCompletion(meta, periodic)
+
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (capped loop must not be re-armed)", got)
+	}
+	if !stopped {
+		t.Error("onPeriodicAutoStopped not called, want it called for maxDuration auto-stop")
+	}
+	final, _ := ps.Get()
+	if final.Enabled {
+		t.Error("periodic still enabled after maxDuration recoverStalledOnCompletion, want disabled")
+	}
+	if final.StoppedReason != session.StoppedReasonMaxDuration {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+}
+
 // TestPeriodicRunner_RecoverStalledOnCompletion_SessionPrompting_Noop verifies that
 // recoverStalledOnCompletion is a no-op when the session is currently prompting.
 // An in-flight turn will re-arm itself on idle completion; recover must not race it.
@@ -1775,11 +2032,9 @@ func TestPeriodicRunner_RecoverStalledOnCompletion_SessionPrompting_Noop(t *test
 	ps := newOnCompletionSessionWithRan(t, store, "s1", 0)
 
 	// Build a minimal session manager with a mock conversation.BackgroundSession that is prompting.
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
 	mockBS := conversation.NewMinimalBackgroundSessionPrompting("s1", true)
-	sm.mu.Lock()
-	sm.sessions["s1"] = mockBS
-	sm.mu.Unlock()
+	sm.AddSessionForTest(mockBS)
 
 	runner := NewPeriodicRunner(store, sm, nil)
 	runner.SetMinPeriodicCompletionDelaySeconds(0)

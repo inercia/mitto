@@ -60,7 +60,7 @@ type PeriodicUpdatedCallback func(sessionID string, periodic *session.PeriodicPr
 // - Cleans up archived sessions past their retention period
 type PeriodicRunner struct {
 	store          *session.Store
-	sessionManager *SessionManager
+	sessionManager *conversation.SessionManager
 	logger         *slog.Logger
 
 	pollInterval time.Duration
@@ -130,7 +130,7 @@ type PeriodicRunner struct {
 }
 
 // NewPeriodicRunner creates a new periodic runner.
-func NewPeriodicRunner(store *session.Store, sm *SessionManager, logger *slog.Logger) *PeriodicRunner {
+func NewPeriodicRunner(store *session.Store, sm *conversation.SessionManager, logger *slog.Logger) *PeriodicRunner {
 	return &PeriodicRunner{
 		store:                     store,
 		sessionManager:            sm,
@@ -530,8 +530,14 @@ func (r *PeriodicRunner) recoverStalledOnCompletion(meta session.Metadata, perio
 		return
 	}
 
-	// Don't keep a loop alive past its wall-clock cap; let it auto-stop on fire.
+	// If the wall-clock cap is reached, auto-stop consistently with the schedule path
+	// (sets Enabled=false, StoppedReason=maxDuration, broadcasts). Without this the
+	// onCompletion loop stays Enabled=true but dormant, inconsistent with schedule loops.
 	if periodic.ReachedMaxDuration(time.Now()) {
+		if r.store != nil {
+			periodicStore := r.store.Periodic(meta.SessionID)
+			r.autoStopIfMaxDurationReached(meta.SessionID, periodic, periodicStore, time.Now())
+		}
 		return
 	}
 
@@ -918,6 +924,17 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 
 				// Note: the session is NOT running (resume failed), so no need to close it gracefully.
 
+				// Persist the stopped reason before archiving so it survives even though
+				// the session leaves the active view. Failures are non-fatal — archiving proceeds.
+				periodicStore := r.store.Periodic(sessionID)
+				if markErr := periodicStore.MarkStopped(session.StoppedReasonResumeFailures); markErr != nil {
+					if r.logger != nil {
+						r.logger.Warn("Failed to mark periodic stopped reason before archive",
+							"session_id", sessionID,
+							"error", markErr)
+					}
+				}
+
 				// Update metadata to mark as archived
 				if updateErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
 					m.Archived = true
@@ -1017,8 +1034,7 @@ func (r *PeriodicRunner) autoStopIfMaxDurationReached(sessionID string, periodic
 			"elapsed", elapsed)
 	}
 
-	disabled := false
-	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); err != nil {
+	if err := periodicStore.MarkStopped(session.StoppedReasonMaxDuration); err != nil {
 		if r.logger != nil {
 			r.logger.Warn("Failed to disable periodic after reaching max duration",
 				"session_id", sessionID,
@@ -1066,8 +1082,7 @@ func (r *PeriodicRunner) handlePromptResolveFailure(sessionID, sessionName strin
 		return
 	}
 
-	disabled := false
-	if updErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); updErr != nil {
+	if updErr := periodicStore.MarkStopped(session.StoppedReasonPromptUnresolved); updErr != nil {
 		if r.logger != nil {
 			r.logger.Warn("Failed to disable periodic after repeated resolve failures",
 				"session_id", sessionID, "error", updErr)
@@ -1190,8 +1205,12 @@ func (r *PeriodicRunner) deliverPrompt(bs *conversation.BackgroundSession, sessi
 									"backstop", config.GlobalMaxPeriodicIterations)
 							}
 						}
-						disabled := false
-						if disableErr := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil); disableErr != nil {
+						// Distinguish per-prompt cap from global/config backstop.
+						stoppedReason := session.StoppedReasonIterationSafeguard
+						if perPromptReached {
+							stoppedReason = session.StoppedReasonMaxIterations
+						}
+						if disableErr := periodicStore.MarkStopped(stoppedReason); disableErr != nil {
 							if r.logger != nil {
 								r.logger.Warn("Failed to disable periodic after reaching iteration cap",
 									"session_id", sessionID,
