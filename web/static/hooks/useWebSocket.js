@@ -1279,6 +1279,22 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   msg.data.periodic_enabled ??
                   session.info?.periodic_enabled ??
                   false,
+                periodic_stopped_reason:
+                  msg.data.periodic_stopped_reason ??
+                  session.info?.periodic_stopped_reason ??
+                  null,
+                periodic_trigger:
+                  msg.data.periodic_trigger ??
+                  session.info?.periodic_trigger ??
+                  null,
+                periodic_delay_seconds:
+                  msg.data.periodic_delay_seconds ??
+                  session.info?.periodic_delay_seconds ??
+                  null,
+                periodic_max_duration_seconds:
+                  msg.data.periodic_max_duration_seconds ??
+                  session.info?.periodic_max_duration_seconds ??
+                  null,
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
@@ -4172,6 +4188,10 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   periodic_frequency: msg.data.frequency || null,
                   periodic_iteration_count: msg.data.iteration_count ?? null,
                   periodic_max_iterations: msg.data.max_iterations ?? null,
+                  periodic_stopped_reason: msg.data.periodic_stopped_reason || null,
+                  periodic_trigger: msg.data.trigger ?? null,
+                  periodic_delay_seconds: msg.data.delay_seconds ?? null,
+                  periodic_max_duration_seconds: msg.data.max_duration_seconds ?? null,
                 }
               : s,
           ),
@@ -4194,6 +4214,10 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 periodic_frequency: msg.data.frequency || null,
                 periodic_iteration_count: msg.data.iteration_count ?? null,
                 periodic_max_iterations: msg.data.max_iterations ?? null,
+                periodic_stopped_reason: msg.data.periodic_stopped_reason || null,
+                periodic_trigger: msg.data.trigger ?? null,
+                periodic_delay_seconds: msg.data.delay_seconds ?? null,
+                periodic_max_duration_seconds: msg.data.max_duration_seconds ?? null,
               },
             },
           };
@@ -4213,6 +4237,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               freshContext: msg.data.fresh_context,
               iterationCount: msg.data.iteration_count,
               maxIterations: msg.data.max_iterations,
+              stoppedReason: msg.data.periodic_stopped_reason || null,
             },
           }),
         );

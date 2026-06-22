@@ -171,6 +171,9 @@ export function PeriodicFrequencyPanel({
   trigger = "schedule",
   delaySeconds = 5,
   maxDurationSeconds = 0,
+  // Reason the loop was auto-stopped (e.g. "maxDuration", "maxIterations",
+  // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
+  stoppedReason = "",
   minDelaySeconds = MIN_COMPLETION_DELAY_SECONDS,
   onTriggerChange,
   onDelayChange,
@@ -196,6 +199,9 @@ export function PeriodicFrequencyPanel({
   const [showDangerDialog, setShowDangerDialog] = useState(false);
   // Reset timer checkbox state (default true = reset the countdown after manual run)
   const [resetTimer, setResetTimer] = useState(true);
+  // Reset counters checkbox state in the restore dialog (default true = reset the
+  // elapsed iterations + elapsed time when restoring a loop that hit its cap).
+  const [resetCounters, setResetCounters] = useState(true);
   // Error dialog state (for showing errors like "session busy")
   const [errorMessage, setErrorMessage] = useState(null);
   // Local max iterations (synced from props)
@@ -637,12 +643,22 @@ export function PeriodicFrequencyPanel({
     if (!sessionId) return;
     setIsSavingEnabled(true);
     try {
+      // When the loop was auto-stopped by a cap, optionally reset the elapsed
+      // iterations/time so it can resume instead of immediately re-stopping.
+      const limitWasStopped =
+        stoppedReason === "maxDuration" ||
+        stoppedReason === "maxIterations" ||
+        stoppedReason === "iterationSafeguard";
+      const body = { enabled: true };
+      if (limitWasStopped && resetCounters) {
+        body.reset_counters = true;
+      }
       const response = await secureFetch(
         apiUrl(`/api/sessions/${sessionId}/periodic`),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: true }),
+          body: JSON.stringify(body),
         },
       );
       if (response.ok) {
@@ -662,7 +678,7 @@ export function PeriodicFrequencyPanel({
     } finally {
       setIsSavingEnabled(false);
     }
-  }, [sessionId, onPeriodicEnabledChange]);
+  }, [sessionId, onPeriodicEnabledChange, stoppedReason, resetCounters]);
 
   // Handle cancellation of the restore confirmation dialog
   const handleCancelRestore = useCallback(() => {
@@ -684,15 +700,29 @@ export function PeriodicFrequencyPanel({
   // play button restores the schedule and the pause button is greyed out.
   const periodicPaused = !disabled;
 
-  // Compact frequency label for the header glance row
-  const freqLabel = `every ${localValue}${localUnit === "minutes" ? "min" : localUnit === "hours" ? "h" : "d"}`;
-
-  // Run count for the header glance row
-  const runCountLabel =
-    maxIterations > 0
-      ? html`Run ${iterationCount} of ${maxIterations}`
-      : html`${iterationCount} run${iterationCount !== 1 ? "s" : ""} ·${" "}
-          <span class="text-lg leading-none align-middle">∞</span>`;
+  // When the loop was auto-stopped by a cap (max-duration / max-iterations), the
+  // restore dialog offers to reset the elapsed iterations and elapsed time so the
+  // loop can actually resume (otherwise it would immediately re-stop at the cap).
+  const limitStopped =
+    stoppedReason === "maxDuration" ||
+    stoppedReason === "maxIterations" ||
+    stoppedReason === "iterationSafeguard";
+  const hasMaxDuration = (maxDurationSeconds || 0) > 0;
+  const hasMaxIterations = (maxIterations || 0) > 0;
+  // Pick a checkbox label reflecting which caps are configured.
+  let resetCountersLabel = "Reset elapsed time and iteration count";
+  if (hasMaxDuration && !hasMaxIterations) {
+    resetCountersLabel = "Reset elapsed time";
+  } else if (!hasMaxDuration && hasMaxIterations) {
+    resetCountersLabel = "Reset iteration count";
+  }
+  const stoppedReasonText =
+    stoppedReason === "maxDuration"
+      ? "maximum run time"
+      : "maximum number of iterations";
+  const restoreMessage = limitStopped
+    ? `This conversation stopped because it reached its ${stoppedReasonText}. Restore it to keep iterating.`
+    : "Do you want to restore the periodic schedule for this conversation?";
 
   return html`
     <${Fragment}>
@@ -724,14 +754,31 @@ export function PeriodicFrequencyPanel({
       <${ConfirmDialog}
         isOpen=${showRestoreDialog}
         title="Restore periodic schedule"
-        message="Do you want to restore the periodic schedule for this conversation?"
+        message=${restoreMessage}
         confirmLabel="Restore"
         cancelLabel="Cancel"
         confirmVariant="primary"
         isLoading=${isSavingEnabled}
         onConfirm=${handleConfirmRestore}
         onCancel=${handleCancelRestore}
-      />
+      >
+        ${
+          limitStopped
+            ? html`<label
+                class="flex items-center gap-2 mt-3 text-sm text-mitto-text-secondary cursor-pointer select-none"
+              >
+                <input
+                  type="checkbox"
+                  checked=${resetCounters}
+                  onInput=${(e) => setResetCounters(e.target.checked)}
+                  class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer"
+                  data-testid="reset-counters-checkbox"
+                />
+                ${resetCountersLabel}
+              </label>`
+            : null
+        }
+      </${ConfirmDialog}>
 
       <!-- Error dialog for showing errors -->
       <${ConfirmDialog}
@@ -830,47 +877,21 @@ export function PeriodicFrequencyPanel({
           <!-- Flex spacer -->
           <div class="flex-1 min-w-0"></div>
 
-          <!-- While expanded: staged-edit Save button replaces the glance status.
-               While collapsed: trigger-aware frequency label + run count. The
-               live countdown + next-run time live in the conversation header
-               subtitle. The glance status is md+ only — on phones the frequency
-               label is surfaced inside the expanded properties body instead. -->
-          ${
-            expanded
-              ? html`<button
-                  type="button"
-                  onClick=${handleSaveAll}
-                  disabled=${isSaving}
-                  class="btn btn-primary btn-sm shrink-0"
-                  data-testid="periodic-save-button"
-                >
-                  ${isSaving
-                    ? html`<span
-                        class="loading loading-spinner w-4 h-4"
-                      ></span>`
-                    : "Save"}
-                </button>`
-              : html`<div class="hidden md:block shrink-0">
-                  <div class="flex items-center gap-1.5">
-                    ${isOnCompletion
-                      ? html`<span
-                          class="badge badge-sm badge-ghost whitespace-nowrap"
-                          >after agent
-                          finishes${localDelay > 0
-                            ? ` · +${localDelay}s`
-                            : ""}</span
-                        >`
-                      : html`<span
-                          class="badge badge-sm badge-ghost whitespace-nowrap"
-                          >${freqLabel}</span
-                        >`}
-                    <span
-                      class="badge badge-sm badge-ghost whitespace-nowrap"
-                      >${runCountLabel}</span
-                    >
-                  </div>
-                </div>`
-          }
+          <!-- While expanded: staged-edit Save button. While collapsed: nothing
+               (trigger, run-count, and max-time glance info now live in the
+               always-visible conversation-header subtitle). -->
+          ${expanded &&
+          html`<button
+            type="button"
+            onClick=${handleSaveAll}
+            disabled=${isSaving}
+            class="btn btn-primary btn-sm shrink-0"
+            data-testid="periodic-save-button"
+          >
+            ${isSaving
+              ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+              : "Save"}
+          </button>`}
 
           <!-- Expand/collapse chevron button -->
           <button
@@ -908,28 +929,6 @@ export function PeriodicFrequencyPanel({
               : "max-h-0 opacity-0 overflow-hidden pointer-events-none"
           }"
         >
-          <!-- Mobile-only next-run info: the header glance status is hidden on
-               phones, so surface the trigger/frequency label here at the top of
-               the expanded properties instead. The live countdown + next-run
-               time live in the conversation header subtitle. On md+ this label
-               lives in the header status row. -->
-          <div
-            class="md:hidden flex items-center gap-1.5 px-4 pt-2 pb-2 text-sm"
-            data-testid="periodic-next-run-info-mobile"
-          >
-            ${
-              isOnCompletion
-                ? html`<span
-                    class="badge badge-sm badge-ghost whitespace-nowrap"
-                    >after agent
-                    finishes${localDelay > 0 ? ` · +${localDelay}s` : ""}</span
-                  >`
-                : html`<span class="badge badge-sm badge-ghost whitespace-nowrap"
-                    >${freqLabel}</span
-                  >`
-            }
-          </div>
-
           <!-- Trigger tabs: Schedule | On completion -->
           <div class="tabs tabs-border px-4 pt-2">
             <input

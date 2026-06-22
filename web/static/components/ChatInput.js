@@ -378,6 +378,9 @@ export function ChatInput({
   const [periodicTrigger, setPeriodicTrigger] = useState("schedule");
   const [periodicDelaySeconds, setPeriodicDelaySeconds] = useState(5);
   const [periodicMaxDurationSeconds, setPeriodicMaxDurationSeconds] = useState(0);
+  // Reason the periodic loop was auto-stopped (e.g. "maxDuration", "maxIterations",
+  // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
+  const [periodicStoppedReason, setPeriodicStoppedReason] = useState("");
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -414,6 +417,7 @@ export function ChatInput({
     setPeriodicTrigger("schedule");
     setPeriodicDelaySeconds(5);
     setPeriodicMaxDurationSeconds(0);
+    setPeriodicStoppedReason("");
     // Collapse the periodic properties body by default when switching
     // conversations (the prompt composition area is collapsed separately by
     // the periodicConfigured effect below).
@@ -459,6 +463,7 @@ export function ChatInput({
       setPeriodicTrigger("schedule");
       setPeriodicDelaySeconds(5);
       setPeriodicMaxDurationSeconds(0);
+      setPeriodicStoppedReason("");
       // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
@@ -491,6 +496,7 @@ export function ChatInput({
           setPeriodicTrigger(config.trigger || "schedule");
           setPeriodicDelaySeconds(config.delay_seconds ?? 5);
           setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+          setPeriodicStoppedReason(config.stopped_reason || "");
           // Set lock state based on the enabled field
           const isLocked = config.enabled === true;
           setIsPeriodicLocked(isLocked);
@@ -521,6 +527,7 @@ export function ChatInput({
         nextScheduledAt,
         iterationCount,
         maxIterations,
+        stoppedReason,
       } = event.detail;
       // Only update if this is for our session
       if (updatedSessionId !== sessionId) return;
@@ -544,6 +551,9 @@ export function ChatInput({
       if (newPeriodicEnabled === false) {
         setIsPeriodicLocked(false);
         setPeriodicNextScheduledAt(null);
+        // Capture why the loop stopped so the restore dialog can offer to reset
+        // the elapsed iterations/time when a max-iterations/max-duration cap was hit.
+        setPeriodicStoppedReason(stoppedReason || "");
         // Don't clear the prompt - user may want to re-enable without re-typing
         return;
       }
@@ -565,6 +575,7 @@ export function ChatInput({
             setPeriodicTrigger(config.trigger || "schedule");
             setPeriodicDelaySeconds(config.delay_seconds ?? 5);
             setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+            setPeriodicStoppedReason(config.stopped_reason || "");
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
@@ -2258,6 +2269,7 @@ ${activeUIPrompt.text || ""}</textarea
           trigger=${periodicTrigger}
           delaySeconds=${periodicDelaySeconds}
           maxDurationSeconds=${periodicMaxDurationSeconds}
+          stoppedReason=${periodicStoppedReason}
           minDelaySeconds=${5}
           onTriggerChange=${setPeriodicTrigger}
           onDelayChange=${setPeriodicDelaySeconds}

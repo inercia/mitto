@@ -31,6 +31,8 @@ import {
   getArchiveReasonText,
   conversationToMarkdown,
   copyToClipboard,
+  PERIODIC_STOPPED_LABELS,
+  formatPeriodicMaxDuration,
 } from "./lib.js";
 
 // Import session tree utilities
@@ -1920,14 +1922,58 @@ function App() {
   const headerNextScheduledAt =
     (activeSession?.periodic_configured && activeSession?.next_scheduled_at) || null;
   const headerPeriodicUnit = activeSession?.periodic_frequency?.unit || "hours";
-  const headerNextRunDisplay = headerNextScheduledAt
-    ? new Date(headerNextScheduledAt).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : null;
+  // When the periodic loop has stopped for any reason, show a badge instead of the countdown.
+  const headerStoppedReason =
+    (activeSession?.periodic_configured && activeSession?.periodic_stopped_reason) || null;
+  const headerStoppedLabel =
+    (headerStoppedReason && PERIODIC_STOPPED_LABELS[headerStoppedReason]) || "Stopped";
+
+  // Periodic "glance" badges shown in the subtitle for ALL periodic sessions
+  // (running or stopped, schedule or onCompletion).
+  const headerPeriodicTrigger = activeSession?.periodic_trigger || null;
+  const headerIterationCount = activeSession?.periodic_iteration_count ?? 0;
+  const headerMaxIterations = activeSession?.periodic_max_iterations ?? 0;
+  const headerDelaySeconds = activeSession?.periodic_delay_seconds ?? 0;
+  const headerMaxDurationSecs = activeSession?.periodic_max_duration_seconds ?? 0;
+
+  // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for onCompletion
+  let headerTriggerLabel = null;
+  if (activeSession?.periodic_configured) {
+    if (headerPeriodicTrigger === "onCompletion") {
+      headerTriggerLabel = `after agent finishes${headerDelaySeconds > 0 ? ` · +${headerDelaySeconds}s` : ""}`;
+    } else {
+      const freq = activeSession?.periodic_frequency;
+      if (freq) {
+        const u = freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
+        headerTriggerLabel = `every ${freq.value}${u}`;
+      }
+    }
+  }
+  // Run-count badge: "Run N of M" or "N run(s) · ∞"
+  const headerRunCountLabel =
+    activeSession?.periodic_configured
+      ? headerMaxIterations > 0
+        ? `Run ${headerIterationCount} of ${headerMaxIterations}`
+        : `${headerIterationCount} run${headerIterationCount !== 1 ? "s" : ""} · ∞`
+      : null;
+  // Max-time badge: "max 2h" etc; omitted when not set (0 means unlimited)
+  const headerMaxTimeLabel =
+    activeSession?.periodic_configured && headerMaxDurationSecs > 0
+      ? `max ${formatPeriodicMaxDuration(headerMaxDurationSecs)}`
+      : null;
+  // When a periodic loop is auto-stopped by a cap, soft-red highlight the
+  // specific cap badge that was exceeded (and the Stopped badge) so the user
+  // can see at a glance which limit was hit.
+  const headerIterCapHit =
+    headerStoppedReason === "maxIterations" ||
+    headerStoppedReason === "iterationSafeguard";
+  const headerTimeCapHit = headerStoppedReason === "maxDuration";
+  const headerRunCountBadgeClass = headerIterCapHit
+    ? "badge-error badge-soft"
+    : "badge-ghost";
+  const headerMaxTimeBadgeClass = headerTimeCapHit
+    ? "badge-error badge-soft"
+    : "badge-ghost";
 
   const handleCopyConversation = useCallback(async () => {
     const md = conversationToMarkdown(messages);
@@ -2220,27 +2266,70 @@ function App() {
                 : "No Active Session"}
             </h1>
             ${activeSessionId &&
-            (headerAcpServer || headerNextScheduledAt) &&
+            (headerAcpServer ||
+              headerNextScheduledAt ||
+              headerStoppedReason ||
+              activeSession?.periodic_configured) &&
             html`<div
               class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
               data-testid="conversation-header-subtitle"
             >
               ${headerAcpServer &&
               html`<span class="truncate min-w-0">${headerAcpServer}</span>`}
-              ${headerNextScheduledAt &&
+              ${headerTriggerLabel &&
               html`<${Fragment}>
-                ${headerAcpServer &&
-                html`<span class="opacity-60">·</span>`}
+                <span class="opacity-60">·</span>
+                <span
+                  class="badge badge-sm badge-ghost whitespace-nowrap"
+                  data-testid="periodic-trigger-badge"
+                >${headerTriggerLabel}</span>
+              </${Fragment}>`}
+              ${headerRunCountLabel !== null &&
+              html`<${Fragment}>
+                <span class="opacity-60">·</span>
+                <span
+                  class="badge badge-sm ${headerRunCountBadgeClass} whitespace-nowrap"
+                  data-testid="periodic-run-count-badge"
+                  title=${headerIterCapHit
+                    ? "Reached the maximum number of iterations"
+                    : null}
+                >${headerRunCountLabel}</span>
+              </${Fragment}>`}
+              ${headerMaxTimeLabel &&
+              html`<${Fragment}>
+                <span class="opacity-60">·</span>
+                <span
+                  class="badge badge-sm ${headerMaxTimeBadgeClass} whitespace-nowrap"
+                  data-testid="periodic-max-time-badge"
+                  title=${headerTimeCapHit
+                    ? "Reached the maximum run time"
+                    : null}
+                >${headerMaxTimeLabel}</span>
+              </${Fragment}>`}
+              ${headerStoppedReason &&
+              html`<${Fragment}>
+                <span class="opacity-60">·</span>
+                <span
+                  class="badge badge-sm badge-error badge-soft whitespace-nowrap"
+                  data-testid="periodic-stopped-badge"
+                  title=${headerStoppedReason +
+                    (activeSession?.stopped_at
+                      ? " · " + new Date(activeSession.stopped_at).toLocaleString()
+                      : "")}
+                >${headerStoppedLabel}</span>
+              </${Fragment}>`}
+              ${!headerStoppedReason &&
+              headerNextScheduledAt &&
+              html`<${Fragment}>
+                ${headerAcpServer || headerTriggerLabel || headerRunCountLabel !== null || headerMaxTimeLabel
+                  ? html`<span class="opacity-60">·</span>`
+                  : null}
                 <${CountdownDisplay}
                   targetIso=${headerNextScheduledAt}
                   unit=${headerPeriodicUnit}
                   active=${true}
                   className="whitespace-nowrap"
                 />
-                <span class="opacity-60">·</span>
-                <span class="whitespace-nowrap"
-                  >Next: ${headerNextRunDisplay}</span
-                >
               </${Fragment}>`}
             </div>`}
           </div>

@@ -360,6 +360,29 @@ function _parseUndelimited(text, segments) {
  * @param {Array} storedSessions - Sessions loaded from storage
  * @returns {Array} Combined and sorted sessions
  */
+// Labels shown in the conversation-header subtitle when a periodic loop has stopped.
+// Keyed by the `periodic_stopped_reason` string sent by the backend.
+export const PERIODIC_STOPPED_LABELS = {
+  maxDuration: "Stopped: max time",
+  maxIterations: "Stopped: max iters",
+  iterationSafeguard: "Stopped: max iters",
+  promptUnresolved: "Stopped: prompt missing",
+  resumeFailures: "Stopped: resume errors",
+};
+
+/**
+ * Compact human-readable duration for a periodic max-duration cap.
+ * Rounds down to the largest whole unit (days > hours > minutes > seconds).
+ * @param {number} seconds
+ * @returns {string} e.g. "2d", "3h", "30min", "45s"
+ */
+export function formatPeriodicMaxDuration(seconds) {
+  if (seconds >= 86400 && seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60}min`;
+  return `${seconds}s`;
+}
+
 // Global map to store working_dir values from API responses
 // This is used as a fallback when React state updates haven't propagated yet
 const globalWorkingDirMap = new Map();
@@ -427,6 +450,15 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
         next_scheduled_at: s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
         periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,
+        // Reason the periodic loop stopped (maxDuration, maxIterations, etc.); null while running
+        periodic_stopped_reason: s.periodic_stopped_reason ?? stored.periodic_stopped_reason ?? null,
+        // Periodic glance fields (shown in the conversation-header subtitle)
+        periodic_trigger: s.periodic_trigger ?? stored.periodic_trigger ?? null,
+        periodic_iteration_count: s.periodic_iteration_count ?? stored.periodic_iteration_count ?? null,
+        periodic_max_iterations: s.periodic_max_iterations ?? stored.periodic_max_iterations ?? null,
+        periodic_delay_seconds: s.periodic_delay_seconds ?? stored.periodic_delay_seconds ?? null,
+        periodic_max_duration_seconds:
+          s.periodic_max_duration_seconds ?? stored.periodic_max_duration_seconds ?? null,
         // CRITICAL: Preserve parent_session_id for hierarchical conversation tree
         parent_session_id: s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)

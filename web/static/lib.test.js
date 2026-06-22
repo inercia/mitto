@@ -63,6 +63,8 @@ import {
   htmlToMarkdown,
   messageToMarkdown,
   conversationToMarkdown,
+  PERIODIC_STOPPED_LABELS,
+  formatPeriodicMaxDuration,
 } from "./lib.js";
 
 // =============================================================================
@@ -202,6 +204,50 @@ describe("computeAllSessions", () => {
     const result = computeAllSessions(active, stored);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("My Custom Name");
+  });
+
+  // ---------------------------------------------------------------------------
+  // periodic_stopped_reason merge tests
+  // ---------------------------------------------------------------------------
+
+  test("merges periodic_stopped_reason from stored session when active lacks it", () => {
+    const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
+    const stored = [
+      {
+        session_id: "1",
+        periodic_configured: true,
+        periodic_stopped_reason: "maxDuration",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result[0].periodic_stopped_reason).toBe("maxDuration");
+  });
+
+  test("active periodic_stopped_reason takes precedence over stored", () => {
+    const active = [
+      {
+        session_id: "1",
+        periodic_stopped_reason: "maxIterations",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        periodic_stopped_reason: "maxDuration",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result[0].periodic_stopped_reason).toBe("maxIterations");
+  });
+
+  test("periodic_stopped_reason is null when neither active nor stored has it", () => {
+    const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
+    const stored = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
+    const result = computeAllSessions(active, stored);
+    expect(result[0].periodic_stopped_reason).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -5414,5 +5460,245 @@ describe("conversationToMarkdown", () => {
     const thirdIdx = result.indexOf("Third");
     expect(firstIdx).toBeLessThan(secondIdx);
     expect(secondIdx).toBeLessThan(thirdIdx);
+  });
+});
+
+// =============================================================================
+// PERIODIC_STOPPED_LABELS Tests
+// =============================================================================
+
+describe("PERIODIC_STOPPED_LABELS", () => {
+  test("maps all five known reason codes to the correct labels", () => {
+    expect(PERIODIC_STOPPED_LABELS.maxDuration).toBe("Stopped: max time");
+    expect(PERIODIC_STOPPED_LABELS.maxIterations).toBe("Stopped: max iters");
+    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toBe("Stopped: max iters");
+    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toBe("Stopped: prompt missing");
+    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toBe("Stopped: resume errors");
+  });
+
+  test("maxIterations and iterationSafeguard share the same label", () => {
+    expect(PERIODIC_STOPPED_LABELS.maxIterations).toBe(
+      PERIODIC_STOPPED_LABELS.iterationSafeguard,
+    );
+  });
+
+  test("unknown reason is not in the map (caller should fall back to 'Stopped')", () => {
+    expect(PERIODIC_STOPPED_LABELS["unknownReason"]).toBeUndefined();
+  });
+
+  // Badge-vs-countdown selection logic
+  // Mirrors: const headerStoppedReason = (session?.periodic_configured && session?.periodic_stopped_reason) || null;
+  //          const headerStoppedLabel = (headerStoppedReason && PERIODIC_STOPPED_LABELS[headerStoppedReason]) || "Stopped";
+
+  function computeHeaderStoppedReason(session) {
+    return (session?.periodic_configured && session?.periodic_stopped_reason) || null;
+  }
+
+  function computeHeaderStoppedLabel(reason) {
+    return (reason && PERIODIC_STOPPED_LABELS[reason]) || "Stopped";
+  }
+
+  test("badge shown when periodic_configured=true and periodic_stopped_reason is set", () => {
+    const session = { periodic_configured: true, periodic_stopped_reason: "maxDuration" };
+    const reason = computeHeaderStoppedReason(session);
+    expect(reason).toBe("maxDuration");
+    expect(computeHeaderStoppedLabel(reason)).toBe("Stopped: max time");
+  });
+
+  test("badge NOT shown when periodic_configured=false even if stopped_reason is set", () => {
+    const session = { periodic_configured: false, periodic_stopped_reason: "maxDuration" };
+    expect(computeHeaderStoppedReason(session)).toBeNull();
+  });
+
+  test("badge NOT shown when periodic_stopped_reason is absent (loop still running)", () => {
+    const session = { periodic_configured: true, periodic_stopped_reason: null };
+    expect(computeHeaderStoppedReason(session)).toBeNull();
+  });
+
+  test("badge NOT shown when periodic_stopped_reason is empty string", () => {
+    const session = { periodic_configured: true, periodic_stopped_reason: "" };
+    expect(computeHeaderStoppedReason(session)).toBeNull();
+  });
+
+  test("unknown reason falls back to 'Stopped' label", () => {
+    const session = { periodic_configured: true, periodic_stopped_reason: "someFutureReason" };
+    const reason = computeHeaderStoppedReason(session);
+    expect(reason).toBe("someFutureReason");
+    expect(computeHeaderStoppedLabel(reason)).toBe("Stopped");
+  });
+
+  test("all known reasons produce a non-empty label", () => {
+    const knownReasons = Object.keys(PERIODIC_STOPPED_LABELS);
+    for (const reason of knownReasons) {
+      expect(computeHeaderStoppedLabel(reason)).toBeTruthy();
+      expect(computeHeaderStoppedLabel(reason)).not.toBe("Stopped");
+    }
+  });
+});
+
+// =============================================================================
+// formatPeriodicMaxDuration Tests
+// =============================================================================
+
+describe("formatPeriodicMaxDuration", () => {
+  test("formats whole days", () => {
+    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
+    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
+    expect(formatPeriodicMaxDuration(604800)).toBe("7d");
+  });
+
+  test("formats whole hours", () => {
+    expect(formatPeriodicMaxDuration(3600)).toBe("1h");
+    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
+    expect(formatPeriodicMaxDuration(18000)).toBe("5h");
+  });
+
+  test("formats whole minutes", () => {
+    expect(formatPeriodicMaxDuration(60)).toBe("1min");
+    expect(formatPeriodicMaxDuration(1800)).toBe("30min");
+    expect(formatPeriodicMaxDuration(3540)).toBe("59min");
+  });
+
+  test("formats seconds for non-round values", () => {
+    expect(formatPeriodicMaxDuration(1)).toBe("1s");
+    expect(formatPeriodicMaxDuration(45)).toBe("45s");
+    expect(formatPeriodicMaxDuration(90)).toBe("90s");
+    expect(formatPeriodicMaxDuration(3601)).toBe("3601s");
+  });
+
+  test("days takes priority over hours when divisible", () => {
+    // 86400 is both a multiple of 3600 and 86400 — days wins
+    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
+    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
+  });
+
+  test("hours takes priority over minutes when divisible by 3600", () => {
+    // 7200 is divisible by both 60 and 3600 — hours wins
+    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
+  });
+
+  test("non-divisible values fall through to seconds", () => {
+    // 3661 = 1 hour + 1 minute + 1 second — not cleanly divisible by any unit
+    expect(formatPeriodicMaxDuration(3661)).toBe("3661s");
+    expect(formatPeriodicMaxDuration(61)).toBe("61s");
+  });
+});
+
+// =============================================================================
+// Periodic header badge label logic tests
+// =============================================================================
+
+describe("Periodic header badge label logic", () => {
+  // Mirrors the logic in app.js for deriving the trigger badge text:
+  //   if (periodic_trigger === "onCompletion") → "after agent finishes[· +Ns]"
+  //   else if frequency set → "every <value><unit>"
+  function computeTriggerLabel(session) {
+    if (!session?.periodic_configured) return null;
+    if (session.periodic_trigger === "onCompletion") {
+      const delay = session.periodic_delay_seconds ?? 0;
+      return `after agent finishes${delay > 0 ? ` · +${delay}s` : ""}`;
+    }
+    const freq = session.periodic_frequency;
+    if (!freq) return null;
+    const u = freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
+    return `every ${freq.value}${u}`;
+  }
+
+  // Mirrors the run-count badge logic:
+  //   maxIterations > 0 → "Run N of M"
+  //   else → "N run(s) · ∞"
+  function computeRunCountLabel(iterationCount, maxIterations, configured) {
+    if (!configured) return null;
+    return maxIterations > 0
+      ? `Run ${iterationCount} of ${maxIterations}`
+      : `${iterationCount} run${iterationCount !== 1 ? "s" : ""} · ∞`;
+  }
+
+  describe("trigger badge", () => {
+    test("schedule trigger with hours frequency", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 2, unit: "hours" },
+      };
+      expect(computeTriggerLabel(session)).toBe("every 2h");
+    });
+
+    test("schedule trigger with minutes frequency", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 30, unit: "minutes" },
+      };
+      expect(computeTriggerLabel(session)).toBe("every 30min");
+    });
+
+    test("schedule trigger with days frequency", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 1, unit: "days" },
+      };
+      expect(computeTriggerLabel(session)).toBe("every 1d");
+    });
+
+    test("onCompletion trigger without delay", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "onCompletion",
+        periodic_delay_seconds: 0,
+      };
+      expect(computeTriggerLabel(session)).toBe("after agent finishes");
+    });
+
+    test("onCompletion trigger with delay", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "onCompletion",
+        periodic_delay_seconds: 30,
+      };
+      expect(computeTriggerLabel(session)).toBe("after agent finishes · +30s");
+    });
+
+    test("returns null when not periodic_configured", () => {
+      const session = {
+        periodic_configured: false,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 1, unit: "hours" },
+      };
+      expect(computeTriggerLabel(session)).toBeNull();
+    });
+
+    test("returns null when schedule has no frequency set", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: null,
+      };
+      expect(computeTriggerLabel(session)).toBeNull();
+    });
+  });
+
+  describe("run-count badge", () => {
+    test("finite max shows 'Run N of M'", () => {
+      expect(computeRunCountLabel(3, 10, true)).toBe("Run 3 of 10");
+    });
+
+    test("unlimited max shows singular 'run' for count 1", () => {
+      expect(computeRunCountLabel(1, 0, true)).toBe("1 run · ∞");
+    });
+
+    test("unlimited max shows plural 'runs' for count != 1", () => {
+      expect(computeRunCountLabel(0, 0, true)).toBe("0 runs · ∞");
+      expect(computeRunCountLabel(5, 0, true)).toBe("5 runs · ∞");
+    });
+
+    test("returns null when not configured", () => {
+      expect(computeRunCountLabel(5, 0, false)).toBeNull();
+    });
+
+    test("run 0 of N before first run", () => {
+      expect(computeRunCountLabel(0, 5, true)).toBe("Run 0 of 5");
+    });
   });
 });
