@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"context"
@@ -484,7 +484,7 @@ func parseClientIP(addr string) net.IP {
 
 // getClientIP extracts the client IP from the request using only RemoteAddr.
 // It does NOT trust X-Forwarded-For or X-Real-IP headers because those can be
-// spoofed by any client. Use getClientIPWithProxyCheck() instead, which only
+// spoofed by any client. Use GetClientIPWithProxyCheck() instead, which only
 // trusts forwarded headers from configured trusted proxies.
 func getClientIP(r *http.Request) string {
 	return r.RemoteAddr
@@ -793,28 +793,28 @@ type contextKey string
 // authentication, even from localhost.
 const ContextKeyExternalConnection contextKey = "external_connection"
 
-// contextKeyAuthUser is the context key used to store the authenticated user identity.
+// ContextKeyAuthUser is the context key used to store the authenticated user identity.
 // The value is a string in one of these forms:
 //   - session username (e.g. "alice") for session-cookie auth
 //   - "cf:<email>" for Cloudflare Access JWT auth
 //   - "allowlist:<ip>" for IP allow list bypass
-const contextKeyAuthUser contextKey = "authUser"
+const ContextKeyAuthUser contextKey = "authUser"
 
-// authIdentity is a mutable holder for the resolved identity, placed in the context
+// AuthIdentity is a mutable holder for the resolved identity, placed in the context
 // by the OUTER access-log middleware so that inner auth handlers can write back to it.
 // A shared pointer is required because context values set via WithContext only flow
 // downward; they never propagate back up to outer middleware.
-type authIdentity struct{ user string }
+type AuthIdentity struct{ User string }
 
-// contextKeyAuthIdentity is the context key for the *authIdentity holder.
-const contextKeyAuthIdentity contextKey = "authIdentity"
+// ContextKeyAuthIdentity is the context key for the *AuthIdentity holder.
+const ContextKeyAuthIdentity contextKey = "authIdentity"
 
-// setAuthIdentity records the resolved authenticated identity into the mutable holder
+// SetAuthIdentity records the resolved authenticated identity into the mutable holder
 // placed in the request context by the access-log middleware. Safe no-op if no holder
 // is present (e.g. access logging disabled).
-func setAuthIdentity(r *http.Request, user string) {
-	if id, ok := r.Context().Value(contextKeyAuthIdentity).(*authIdentity); ok && id != nil {
-		id.user = user
+func SetAuthIdentity(r *http.Request, user string) {
+	if id, ok := r.Context().Value(ContextKeyAuthIdentity).(*AuthIdentity); ok && id != nil {
+		id.User = user
 	}
 }
 
@@ -827,6 +827,19 @@ func IsExternalConnection(r *http.Request) bool {
 	}
 	b, ok := v.(bool)
 	return ok && b
+}
+
+// IsLoopbackIP checks if the given IP address is a loopback address.
+// This includes 127.0.0.0/8 for IPv4 and ::1 for IPv6.
+// This function is exported for use from web package files.
+func IsLoopbackIP(ipStr string) bool {
+	return isLoopbackIP(ipStr)
+}
+
+// IsLocalhostRequest checks if the request is coming from/to localhost.
+// This is exported for use from web package files.
+func IsLocalhostRequest(r *http.Request) bool {
+	return isLocalhostRequest(r)
 }
 
 // AuthMiddleware returns a middleware that enforces authentication.
@@ -843,18 +856,18 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// Check if this connection came through the external listener.
 		// External connections ALWAYS require authentication, even from localhost.
 		isExternal := IsExternalConnection(r)
-		clientIP := getClientIPWithProxyCheck(r)
+		clientIP := GetClientIPWithProxyCheck(r)
 
 		// Allow localhost/loopback connections without authentication ONLY for the
 		// internal listener (127.0.0.1). External listener always requires auth.
 		//
-		// SECURITY: Use getClientIPWithProxyCheck() to prevent authentication bypass
+		// SECURITY: Use GetClientIPWithProxyCheck() to prevent authentication bypass
 		// via spoofed X-Forwarded-For headers. This function only trusts proxy headers
 		// from configured trusted proxies.
 		if !isExternal && isLoopbackIP(clientIP) {
 			logger.Debug("Auth bypass - loopback IP on internal listener",
 				"client_ip", clientIP, "path", r.URL.Path)
-			setAuthIdentity(r, "local")
+			SetAuthIdentity(r, "local")
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -871,8 +884,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// Check if client IP is in the allow list (bypass auth)
 		if a.IsIPAllowed(clientIP) {
 			logger.Debug("Auth bypass - allowed IP", "client_ip", clientIP, "path", r.URL.Path)
-			r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, "allowlist:"+clientIP))
-			setAuthIdentity(r, "allowlist:"+clientIP)
+			r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, "allowlist:"+clientIP))
+			SetAuthIdentity(r, "allowlist:"+clientIP)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -906,8 +919,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 					"path", r.URL.Path,
 					"remote_addr", r.RemoteAddr,
 				)
-				r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, "cf:"+email))
-				setAuthIdentity(r, "cf:"+email)
+				r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, "cf:"+email))
+				SetAuthIdentity(r, "cf:"+email)
 				next.ServeHTTP(w, r)
 				return
 			} else if hasJWTHeader {
@@ -963,8 +976,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			"client_ip", clientIP,
 			"username", session.Username,
 		)
-		r = r.WithContext(context.WithValue(r.Context(), contextKeyAuthUser, session.Username))
-		setAuthIdentity(r, session.Username)
+		r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, session.Username))
+		SetAuthIdentity(r, session.Username)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -1001,9 +1014,9 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get client IP for rate limiting
-	// SECURITY: Use getClientIPWithProxyCheck() to prevent rate limit bypass
+	// SECURITY: Use GetClientIPWithProxyCheck() to prevent rate limit bypass
 	// via spoofed X-Forwarded-For headers.
-	clientIP := getClientIPWithProxyCheck(r)
+	clientIP := GetClientIPWithProxyCheck(r)
 	parsedIP := parseClientIP(clientIP)
 	ipKey := ""
 	if parsedIP != nil {

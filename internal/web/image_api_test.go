@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestHandleSessionImages_MethodNotAllowed(t *testing.T) {
@@ -267,7 +268,7 @@ func TestHandleUploadImageFromPath_ExternalConnection(t *testing.T) {
 		req.RemoteAddr = "127.0.0.1:12345" // Localhost IP, but marked as external connection
 
 		// Mark the request as coming from the external listener
-		ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+		ctx := context.WithValue(req.Context(), middleware.ContextKeyExternalConnection, true)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -285,7 +286,7 @@ func TestHandleUploadImageFromPath_ExternalConnection(t *testing.T) {
 		req.RemoteAddr = "100.64.0.1:12345" // Tailscale CGNAT IP range
 
 		// Mark the request as coming from the external listener
-		ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+		ctx := context.WithValue(req.Context(), middleware.ContextKeyExternalConnection, true)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -304,7 +305,7 @@ func TestHandleUploadImageFromPath_ExternalConnection(t *testing.T) {
 		req.Header.Set("X-Forwarded-For", "127.0.0.1") // Attacker tries to spoof localhost
 
 		// Mark the request as coming from the external listener
-		ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+		ctx := context.WithValue(req.Context(), middleware.ContextKeyExternalConnection, true)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()

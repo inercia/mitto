@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"bufio"
@@ -183,18 +183,18 @@ func (w *cspNonceResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-// cspNonceMiddlewareOptions contains options for the CSP nonce middleware.
-type cspNonceMiddlewareOptions struct {
-	config              SecurityConfig
-	apiPrefix           string
-	allowExternalImages bool
+// CSPNonceMiddlewareOptions contains options for the CSP nonce middleware.
+type CSPNonceMiddlewareOptions struct {
+	Config              SecurityConfig
+	APIPrefix           string
+	AllowExternalImages bool
 }
 
-// cspNonceMiddlewareWithOptions creates a CSP nonce middleware with additional options.
+// CSPNonceMiddlewareWithOptions creates a CSP nonce middleware with additional options.
 // It generates a CSP nonce for each request and injects it into HTML responses.
 // This allows inline scripts with the nonce attribute while blocking other inline scripts.
 // It also injects the API prefix for frontend JavaScript to use.
-func cspNonceMiddlewareWithOptions(opts cspNonceMiddlewareOptions) func(http.Handler) http.Handler {
+func CSPNonceMiddlewareWithOptions(opts CSPNonceMiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Generate a unique nonce for this request
@@ -210,10 +210,10 @@ func cspNonceMiddlewareWithOptions(opts cspNonceMiddlewareOptions) func(http.Han
 			wrapped := &cspNonceResponseWriter{
 				ResponseWriter:      w,
 				nonce:               nonce,
-				apiPrefix:           opts.apiPrefix,
+				apiPrefix:           opts.APIPrefix,
 				isExternal:          IsExternalConnection(r),
-				allowExternalImages: opts.allowExternalImages,
-				config:              opts.config,
+				allowExternalImages: opts.AllowExternalImages,
+				config:              opts.Config,
 			}
 
 			// Serve the request

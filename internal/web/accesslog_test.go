@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestDefaultAccessLogConfig(t *testing.T) {
@@ -533,7 +535,7 @@ func TestAccessLogger_MiddlewareRecordsAuthIdentity(t *testing.T) {
 			// Inner handler simulates what AuthMiddleware does: write the resolved
 			// identity into the holder that the outer Middleware injected.
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				setAuthIdentity(r, tc.identity)
+				middleware.SetAuthIdentity(r, tc.identity)
 				w.WriteHeader(http.StatusOK)
 			})
 

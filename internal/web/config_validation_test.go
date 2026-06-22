@@ -1,12 +1,13 @@
 package web
 
 import (
-	"github.com/inercia/mitto/internal/conversation"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 func TestConfigValidationError_Error(t *testing.T) {
@@ -214,6 +215,132 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 	err := server.validateConfigRequest(req)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+// authConfigBody is a minimal valid config save request (one workspace + matching
+// ACP server) carrying a simple-auth block with the given username/password. It is
+// built via JSON to avoid spelling out the anonymous structs in ConfigSaveRequest.
+func authConfigBody(username, password string) *ConfigSaveRequest {
+	body := `{
+		"workspaces": [{"working_dir": "/tmp", "acp_server": "test"}],
+		"acp_servers": [{"name": "test", "command": "cmd"}],
+		"web": {"auth": {"simple": {"username": "` + username + `", "password": "` + password + `"}}}
+	}`
+	var req ConfigSaveRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		panic(err)
+	}
+	return &req
+}
+
+// serverWithSimpleAuth returns a Server whose persisted config already contains a
+// simple-auth block with the given username/password.
+func serverWithSimpleAuth(username, password string) *Server {
+	return &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Web: config.WebConfig{
+					Auth: &config.WebAuth{
+						Simple: &config.SimpleAuth{Username: username, Password: password},
+					},
+				},
+			},
+		},
+	}
+}
+
+// Regression test: changing an unrelated setting (e.g. a workspace's ACP server)
+// must not be rejected just because the round-tripped simple-auth block has an empty
+// password (the backend always redacts the password before sending config to the
+// client, and the stored password may live only in the keychain or be absent).
+func TestValidateConfigRequest_RoundTripEmptyPasswordExistingBlock(t *testing.T) {
+	// Existing config has a partial simple-auth block (username set, no stored password).
+	server := serverWithSimpleAuth("admin", "")
+
+	// Frontend round-trips the auth block with an empty (redacted) password.
+	req := authConfigBody("admin", "")
+
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error round-tripping existing simple-auth block: %v", err)
+	}
+}
+
+// When a non-empty password already exists, an empty round-tripped password is still
+// accepted (the existing password is preserved by buildNewSettings).
+func TestValidateConfigRequest_RoundTripEmptyPasswordExistingPassword(t *testing.T) {
+	server := serverWithSimpleAuth("admin", "S0meStoredPass!")
+	req := authConfigBody("admin", "")
+
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error round-tripping with stored password: %v", err)
+	}
+}
+
+// A brand-new simple-auth setup (no pre-existing block) with an empty password must
+// still be rejected with "Password is required".
+func TestValidateConfigRequest_NewAuthEmptyPasswordRejected(t *testing.T) {
+	server := &Server{} // no existing MittoConfig / auth block
+	req := authConfigBody("admin", "")
+
+	err := server.validateConfigRequest(req)
+	if err == nil {
+		t.Fatal("expected error for new simple auth with empty password")
+	}
+	if err.Message != "Password is required" {
+		t.Errorf("Message = %q, want %q", err.Message, "Password is required")
+	}
+	if err.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d", err.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// A brand-new simple-auth setup with a valid password is accepted.
+func TestValidateConfigRequest_NewAuthValidPassword(t *testing.T) {
+	server := &Server{}
+	req := authConfigBody("admin", "Str0ngPassphrase!")
+
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error for new auth with valid password: %v", err)
+	}
+}
+
+// workspacesOnlyBody is the payload the Workspaces dialog sends: workspaces and ACP
+// servers but NO web section. req.Web is therefore nil and external-access auth must
+// not be validated or touched.
+func workspacesOnlyBody() *ConfigSaveRequest {
+	body := `{
+		"workspaces": [{"working_dir": "/tmp", "acp_server": "test"}],
+		"acp_servers": [{"name": "test", "command": "cmd"}]
+	}`
+	var req ConfigSaveRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		panic(err)
+	}
+	return &req
+}
+
+// Regression test for the "Password is required" bug: a Workspaces-dialog save omits the
+// web section entirely, so it must validate cleanly even when the existing config has a
+// partial (username-only) simple-auth block with no stored password.
+func TestValidateConfigRequest_OmittedWebPartialAuth(t *testing.T) {
+	server := serverWithSimpleAuth("admin", "")
+	req := workspacesOnlyBody()
+	if req.Web != nil {
+		t.Fatalf("expected req.Web to be nil when the web section is omitted")
+	}
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error validating a workspaces-only save: %v", err)
+	}
+}
+
+// A workspaces-only save (no web section) is also accepted when there is no existing
+// auth configured at all.
+func TestValidateConfigRequest_OmittedWebNoExistingAuth(t *testing.T) {
+	server := &Server{}
+	req := workspacesOnlyBody()
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error validating a workspaces-only save: %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"net/http"
@@ -10,7 +10,7 @@ import (
 func TestSecurityHeadersMiddleware(t *testing.T) {
 	config := DefaultSecurityConfig()
 
-	handler := securityHeadersMiddleware(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeadersMiddleware(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -53,7 +53,7 @@ func TestSecurityHeadersMiddleware_WithHSTS(t *testing.T) {
 		HSTSMaxAge: 3600,
 	}
 
-	handler := securityHeadersMiddleware(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeadersMiddleware(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -74,7 +74,7 @@ func TestSecurityHeadersMiddleware_WithHSTS(t *testing.T) {
 func TestRequestSizeLimitMiddleware(t *testing.T) {
 	maxBytes := int64(100)
 
-	handler := requestSizeLimitMiddleware(maxBytes)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestSizeLimitMiddleware(maxBytes)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try to read the body
 		buf := make([]byte, 200)
 		_, err := r.Body.Read(buf)
@@ -98,7 +98,7 @@ func TestRequestSizeLimitMiddleware(t *testing.T) {
 }
 
 func TestHideServerInfoMiddleware(t *testing.T) {
-	handler := hideServerInfoMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := HideServerInfoMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try to set server headers
 		w.Header().Set("Server", "MyServer/1.0")
 		w.Header().Set("X-Powered-By", "Go")
@@ -141,7 +141,7 @@ func TestItoa(t *testing.T) {
 }
 
 func TestHideServerInfoResponseWriter_Write(t *testing.T) {
-	handler := hideServerInfoMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := HideServerInfoMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Write without calling WriteHeader first
 		w.Write([]byte("Hello, World!"))
 	}))
@@ -163,7 +163,7 @@ func TestHideServerInfoResponseWriter_Write(t *testing.T) {
 }
 
 func TestRequestTimeoutMiddleware(t *testing.T) {
-	handler := requestTimeoutMiddleware(DefaultRequestTimeout)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestTimeoutMiddleware(DefaultRequestTimeout)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	}))
@@ -179,7 +179,7 @@ func TestRequestTimeoutMiddleware(t *testing.T) {
 }
 
 func TestRequestTimeoutMiddleware_WebSocketExcluded(t *testing.T) {
-	handler := requestTimeoutMiddleware(DefaultRequestTimeout)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestTimeoutMiddleware(DefaultRequestTimeout)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

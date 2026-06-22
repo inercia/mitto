@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // File upload limits
@@ -287,7 +288,7 @@ type UploadFileFromPathRequest struct {
 // arbitrary file read attacks from remote clients.
 func (s *Server) handleUploadFileFromPath(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
-	if IsExternalConnection(r) {
+	if middleware.IsExternalConnection(r) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected file from-path request from external listener",
 				"session_id", sessionID,
@@ -299,8 +300,8 @@ func (s *Server) handleUploadFileFromPath(w http.ResponseWriter, r *http.Request
 	}
 
 	// Security check 2: Only allow this endpoint from localhost (native macOS app).
-	clientIP := getClientIPWithProxyCheck(r)
-	if !isLoopbackIP(clientIP) {
+	clientIP := middleware.GetClientIPWithProxyCheck(r)
+	if !middleware.IsLoopbackIP(clientIP) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected file from-path request from non-localhost",
 				"client_ip", clientIP,

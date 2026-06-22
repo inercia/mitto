@@ -25,6 +25,7 @@ import (
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 	mittoWeb "github.com/inercia/mitto/web"
 )
 
@@ -147,15 +148,15 @@ type Server struct {
 	store *session.Store
 
 	// Auth manager for handling authentication (nil if auth is disabled)
-	authManager *AuthManager
+	authManager *middleware.AuthManager
 
 	// CSRF manager for protecting state-changing requests
-	csrfManager *CSRFManager
+	csrfManager *middleware.CSRFManager
 
 	// Security components
-	rateLimiter      *GeneralRateLimiter
-	wsSecurityConfig WebSocketSecurityConfig
-	proxyChecker     *TrustedProxyChecker
+	rateLimiter      *middleware.GeneralRateLimiter
+	wsSecurityConfig middleware.WebSocketSecurityConfig
+	proxyChecker     *middleware.TrustedProxyChecker
 
 	// External access listener management
 	externalListener   net.Listener
@@ -381,9 +382,9 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize auth manager if auth is configured
-	var authMgr *AuthManager
+	var authMgr *middleware.AuthManager
 	if config.MittoConfig != nil && config.MittoConfig.Web.Auth != nil {
-		authMgr = NewAuthManager(config.MittoConfig.Web.Auth)
+		authMgr = middleware.NewAuthManager(config.MittoConfig.Web.Auth)
 		logger.Info("Authentication enabled", "type", "simple")
 	}
 
@@ -428,15 +429,15 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize trusted proxy checker
-	var proxyChecker *TrustedProxyChecker
+	var proxyChecker *middleware.TrustedProxyChecker
 	if securityCfg != nil && len(securityCfg.TrustedProxies) > 0 {
-		proxyChecker = NewTrustedProxyChecker(securityCfg.TrustedProxies)
-		SetDefaultProxyChecker(proxyChecker)
+		proxyChecker = middleware.NewTrustedProxyChecker(securityCfg.TrustedProxies)
+		middleware.SetDefaultProxyChecker(proxyChecker)
 		logger.Info("Trusted proxies configured", "count", len(securityCfg.TrustedProxies))
 	}
 
 	// Initialize rate limiter
-	rateLimitConfig := DefaultRateLimitConfig()
+	rateLimitConfig := middleware.DefaultRateLimitConfig()
 	if securityCfg != nil {
 		if securityCfg.RateLimitRPS > 0 {
 			rateLimitConfig.RequestsPerSecond = securityCfg.RateLimitRPS
@@ -445,10 +446,10 @@ func NewServer(config Config) (*Server, error) {
 			rateLimitConfig.BurstSize = securityCfg.RateLimitBurst
 		}
 	}
-	rateLimiter := NewGeneralRateLimiter(rateLimitConfig)
+	rateLimiter := middleware.NewGeneralRateLimiter(rateLimitConfig)
 
 	// Initialize WebSocket security config
-	wsSecurityConfig := DefaultWebSocketSecurityConfig()
+	wsSecurityConfig := middleware.DefaultWebSocketSecurityConfig()
 	if securityCfg != nil {
 		if len(securityCfg.AllowedOrigins) > 0 {
 			wsSecurityConfig.AllowedOrigins = securityCfg.AllowedOrigins
@@ -459,7 +460,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize CSRF manager
-	csrfMgr := NewCSRFManager()
+	csrfMgr := middleware.NewCSRFManager()
 
 	// Set API prefix on auth manager for public path matching
 	if authMgr != nil {
@@ -496,15 +497,15 @@ func NewServer(config Config) (*Server, error) {
 	if config.MittoConfig != nil {
 		webConfig = &config.MittoConfig.Web
 	}
-	if shouldEnableScannerDefense(webConfig) {
-		defenseConfig := configToDefenseConfig(getScannerDefenseConfig(webConfig), true)
+	if middleware.ShouldEnableScannerDefense(webConfig) {
+		defenseConfig := middleware.ConfigToDefenseConfig(middleware.GetScannerDefenseConfig(webConfig), true)
 
 		// When a tunnel hook is configured, increase rate limits if the user
 		// hasn't explicitly set them. Tunnel proxies (cloudflared, ngrok) forward
 		// all browser requests through a single origin, so a page load generating
 		// ~30 requests can easily exceed the default 100 req/min limit.
 		if hasTunnelHook {
-			explicitCfg := getScannerDefenseConfig(webConfig)
+			explicitCfg := middleware.GetScannerDefenseConfig(webConfig)
 			if explicitCfg == nil || explicitCfg.RateLimit == 0 {
 				defenseConfig.RateLimit = 500 // 5x default for tunnel traffic
 				logger.Info("Tunnel hook detected, increased scanner defense rate limit",
@@ -847,17 +848,17 @@ func NewServer(config Config) (*Server, error) {
 
 	// Wrap with security middlewares (applied in reverse order)
 	// 1. Request size limit (1MB max for request bodies)
-	handler = requestSizeLimitMiddleware(1 * 1024 * 1024)(handler)
+	handler = middleware.RequestSizeLimitMiddleware(1 * 1024 * 1024)(handler)
 
 	// 2. Rate limiting for API endpoints
 	handler = rateLimiter.Middleware(handler)
 
 	// 3. Request timeout (excludes WebSocket connections)
-	handler = requestTimeoutMiddleware(DefaultRequestTimeout)(handler)
+	handler = middleware.RequestTimeoutMiddleware(middleware.DefaultRequestTimeout)(handler)
 
 	// 4. Security headers (non-CSP headers)
-	headerSecurityConfig := DefaultSecurityConfig()
-	handler = securityHeadersMiddleware(headerSecurityConfig)(handler)
+	headerSecurityConfig := middleware.DefaultSecurityConfig()
+	handler = middleware.SecurityHeadersMiddleware(headerSecurityConfig)(handler)
 
 	// 5. CSP nonce injection for HTML responses
 	// This must come after security headers but before hide server info
@@ -867,10 +868,10 @@ func NewServer(config Config) (*Server, error) {
 	if config.MittoConfig != nil && config.MittoConfig.Conversations != nil {
 		allowExternalImages = config.MittoConfig.Conversations.AreExternalImagesEnabled()
 	}
-	handler = cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
-		config:              headerSecurityConfig,
-		apiPrefix:           apiPrefix,
-		allowExternalImages: allowExternalImages,
+	handler = middleware.CSPNonceMiddlewareWithOptions(middleware.CSPNonceMiddlewareOptions{
+		Config:              headerSecurityConfig,
+		APIPrefix:           apiPrefix,
+		AllowExternalImages: allowExternalImages,
 	})(handler)
 
 	// 6. Gzip compression for external connections only
@@ -880,7 +881,7 @@ func NewServer(config Config) (*Server, error) {
 	handler = gzipMiddleware(handler)
 
 	// 7. Hide server info (outermost to catch all responses)
-	handler = hideServerInfoMiddleware(handler)
+	handler = middleware.HideServerInfoMiddleware(handler)
 
 	// Wrap with logging middleware
 	handler = s.loggingMiddleware(handler)
@@ -1112,7 +1113,7 @@ func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		clientIP := getClientIPWithProxyCheck(r)
+		clientIP := middleware.GetClientIPWithProxyCheck(r)
 
 		// Log static assets at debug level, others at info level
 		if isStaticAsset(path) {

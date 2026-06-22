@@ -19,6 +19,7 @@ import (
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // generateClientID creates a unique client identifier for sender tracking.
@@ -149,7 +150,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := parts[0]
-	clientIP := getClientIPWithProxyCheck(r)
+	clientIP := middleware.GetClientIPWithProxyCheck(r)
 
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)
@@ -174,7 +175,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// The macOS app sends large prompts over localhost; external connections keep the
 	// smaller limit (default: 64KB) to bound the attack surface for remote callers.
 	wsConfig := s.wsSecurityConfig
-	if !IsExternalConnection(r) && wsConfig.LocalMaxMessageSize > 0 {
+	if !middleware.IsExternalConnection(r) && wsConfig.LocalMaxMessageSize > 0 {
 		wsConfig.MaxMessageSize = wsConfig.LocalMaxMessageSize
 	}
 

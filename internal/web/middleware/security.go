@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"bufio"
@@ -28,8 +28,8 @@ func DefaultSecurityConfig() SecurityConfig {
 	}
 }
 
-// securityHeadersMiddleware adds security headers to all responses.
-func securityHeadersMiddleware(config SecurityConfig) func(http.Handler) http.Handler {
+// SecurityHeadersMiddleware adds security headers to all responses.
+func SecurityHeadersMiddleware(config SecurityConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Prevent MIME type sniffing
@@ -91,8 +91,8 @@ func itoa(n int) string {
 	return string(digits)
 }
 
-// requestSizeLimitMiddleware limits the size of request bodies.
-func requestSizeLimitMiddleware(maxBytes int64) func(http.Handler) http.Handler {
+// RequestSizeLimitMiddleware limits the size of request bodies.
+func RequestSizeLimitMiddleware(maxBytes int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Only limit POST, PUT, PATCH requests
@@ -150,7 +150,8 @@ func (w *hideServerInfoResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-func hideServerInfoMiddleware(next http.Handler) http.Handler {
+// HideServerInfoMiddleware removes or obscures server identification from responses.
+func HideServerInfoMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wrapped := &hideServerInfoResponseWriter{ResponseWriter: w}
 		next.ServeHTTP(wrapped, r)
@@ -160,12 +161,12 @@ func hideServerInfoMiddleware(next http.Handler) http.Handler {
 // DefaultRequestTimeout is the default timeout for HTTP requests.
 const DefaultRequestTimeout = 30 * time.Second
 
-// requestTimeoutMiddleware adds a timeout to HTTP requests.
+// RequestTimeoutMiddleware adds a timeout to HTTP requests.
 // WebSocket upgrade requests are excluded from the timeout.
 // This middleware includes panic recovery to handle the known issue where
 // http.TimeoutHandler can cause nil pointer dereferences when the underlying
 // handler writes to the ResponseWriter after a timeout has occurred.
-func requestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
+func RequestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Create the timeout handler once during middleware setup, not per-request.
 		// This avoids potential race conditions and is more efficient.

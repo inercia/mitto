@@ -13,6 +13,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestHandleConfig_MethodNotAllowed(t *testing.T) {
@@ -501,7 +502,7 @@ func TestApplyAuthChanges_EnabledToDisabled(t *testing.T) {
 
 	server := &Server{
 		config:      Config{},
-		authManager: NewAuthManager(authConfig),
+		authManager: middleware.NewAuthManager(authConfig),
 	}
 
 	server.applyAuthChanges(true, false, nil)
@@ -529,7 +530,7 @@ func TestApplyAuthChanges_EnabledToEnabled_UpdateCredentials(t *testing.T) {
 				},
 			},
 		},
-		authManager:  NewAuthManager(oldConfig),
+		authManager:  middleware.NewAuthManager(oldConfig),
 		externalPort: -1, // Also set the server's external port to disabled
 	}
 
@@ -558,7 +559,7 @@ func TestApplyAuthChanges_EnabledToEnabled_InvalidCredentials(t *testing.T) {
 
 	server := &Server{
 		config:      Config{},
-		authManager: NewAuthManager(oldConfig),
+		authManager: middleware.NewAuthManager(oldConfig),
 	}
 
 	// Update with invalid credentials

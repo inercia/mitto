@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"testing"
@@ -56,9 +56,9 @@ func TestShouldEnableScannerDefense(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldEnableScannerDefense(tt.config)
+			got := ShouldEnableScannerDefense(tt.config)
 			if got != tt.expected {
-				t.Errorf("shouldEnableScannerDefense() = %v, want %v", got, tt.expected)
+				t.Errorf("ShouldEnableScannerDefense() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
@@ -66,14 +66,14 @@ func TestShouldEnableScannerDefense(t *testing.T) {
 
 func TestGetScannerDefenseConfig(t *testing.T) {
 	t.Run("nil web config", func(t *testing.T) {
-		got := getScannerDefenseConfig(nil)
+		got := GetScannerDefenseConfig(nil)
 		if got != nil {
 			t.Error("Expected nil for nil web config")
 		}
 	})
 
 	t.Run("nil security", func(t *testing.T) {
-		got := getScannerDefenseConfig(&config.WebConfig{})
+		got := GetScannerDefenseConfig(&config.WebConfig{})
 		if got != nil {
 			t.Error("Expected nil for nil security")
 		}
@@ -88,7 +88,7 @@ func TestGetScannerDefenseConfig(t *testing.T) {
 				},
 			},
 		}
-		got := getScannerDefenseConfig(cfg)
+		got := GetScannerDefenseConfig(cfg)
 		if got == nil {
 			t.Fatal("Expected non-nil scanner defense config")
 		}
@@ -100,7 +100,7 @@ func TestGetScannerDefenseConfig(t *testing.T) {
 
 func TestConfigToDefenseConfig(t *testing.T) {
 	t.Run("nil config uses defaults with enabled flag", func(t *testing.T) {
-		got := configToDefenseConfig(nil, true)
+		got := ConfigToDefenseConfig(nil, true)
 		if !got.Enabled {
 			t.Error("Expected Enabled to be true")
 		}
@@ -115,7 +115,7 @@ func TestConfigToDefenseConfig(t *testing.T) {
 			RateWindowSeconds:    120,
 			BlockDurationSeconds: 3600,
 		}
-		got := configToDefenseConfig(cfg, true)
+		got := ConfigToDefenseConfig(cfg, true)
 		if got.RateLimit != 50 {
 			t.Errorf("RateLimit = %d, want 50", got.RateLimit)
 		}

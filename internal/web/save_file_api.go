@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // SaveFileToPathRequest represents a request to save a file to a specific path.
@@ -29,13 +31,13 @@ type SaveFileToPathResponse struct {
 // SECURITY: This endpoint is restricted to localhost connections only.
 func (s *Server) handleCheckFileExists(w http.ResponseWriter, r *http.Request) {
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
-	if IsExternalConnection(r) {
+	if middleware.IsExternalConnection(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
 	// Security check 2: Verify this is a localhost connection
-	if !isLocalhostRequest(r) {
+	if !middleware.IsLocalhostRequest(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -74,7 +76,7 @@ func (s *Server) handleCheckFileExists(w http.ResponseWriter, r *http.Request) {
 // arbitrary file write attacks from remote clients.
 func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
-	if IsExternalConnection(r) {
+	if middleware.IsExternalConnection(r) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected save-file-to-path request from external listener",
 				"remote_addr", r.RemoteAddr,
@@ -86,7 +88,7 @@ func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 
 	// Security check 2: Verify this is a localhost connection
 	// This is redundant with check 1 but provides defense in depth
-	if !isLocalhostRequest(r) {
+	if !middleware.IsLocalhostRequest(r) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected save-file-to-path request from non-localhost",
 				"remote_addr", r.RemoteAddr,

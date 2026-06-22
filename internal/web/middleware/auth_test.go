@@ -1,8 +1,8 @@
-// Package web provides HTTP server and authentication functionality.
+// Package middleware provides HTTP security/middleware functionality for Mitto.
 //
 // Auth tests use table-driven test patterns for comprehensive coverage.
 // See TestAuthManager_ValidateCredentials, TestParseClientIP, etc. for examples.
-package web
+package middleware
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"net/http"
@@ -111,7 +111,7 @@ func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 		// Use getClientIPWithProxyCheck to only trust X-Forwarded-For headers
 		// from configured trusted proxies. This prevents IP spoofing attacks
 		// where attackers set fake X-Forwarded-For headers to bypass rate limiting.
-		clientIP := getClientIPWithProxyCheck(r)
+		clientIP := GetClientIPWithProxyCheck(r)
 
 		if !rl.Allow(clientIP) {
 			w.Header().Set("Retry-After", "1")

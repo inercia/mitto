@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // Image upload limits
@@ -277,7 +278,7 @@ func (s *Server) handleUploadImageFromPath(w http.ResponseWriter, r *http.Reques
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
 	// Even if an attacker spoofs X-Forwarded-For to appear as localhost, this check
 	// will block them because external listener requests are marked at the handler level.
-	if IsExternalConnection(r) {
+	if middleware.IsExternalConnection(r) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected from-path request from external listener",
 				"session_id", sessionID,
@@ -290,8 +291,8 @@ func (s *Server) handleUploadImageFromPath(w http.ResponseWriter, r *http.Reques
 
 	// Security check 2: Only allow this endpoint from localhost (native macOS app).
 	// This prevents remote attackers from reading arbitrary files on the server.
-	clientIP := getClientIPWithProxyCheck(r)
-	if !isLoopbackIP(clientIP) {
+	clientIP := middleware.GetClientIPWithProxyCheck(r)
+	if !middleware.IsLoopbackIP(clientIP) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected from-path request from non-localhost",
 				"client_ip", clientIP,

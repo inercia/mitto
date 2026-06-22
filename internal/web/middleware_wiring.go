@@ -1,84 +1,51 @@
 package web
 
+// middleware_wiring.go contains Server methods that bridge internal/web and
+// internal/web/middleware. These two methods must live in package web because
+// they reference Server fields (s.wsSecurityConfig, s.defense, s.accessLogger).
+// All pure middleware logic lives in the middleware sub-package.
+
 import (
 	"bufio"
 	"net"
 	"net/http"
 	"time"
 
-	"github.com/inercia/mitto/internal/appdir"
-	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/gorilla/websocket"
 	"github.com/inercia/mitto/internal/defense"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
-// shouldEnableScannerDefense determines whether scanner defense should be enabled.
-// It is enabled by default when external access is configured (ExternalPort >= 0),
-// unless explicitly disabled in config.
-func shouldEnableScannerDefense(webConfig *configPkg.WebConfig) bool {
-	if webConfig == nil {
-		return false
+// getSecureUpgraderForRequest returns a WebSocket upgrader with security checks,
+// with compression enabled only for external connections.
+//
+// Compression trade-offs:
+//   - External (Tailscale, etc.): High latency, limited bandwidth → compression beneficial
+//   - Local (macOS app, localhost): Zero latency, unlimited bandwidth → compression overhead not worth it
+func (s *Server) getSecureUpgraderForRequest(r *http.Request) websocket.Upgrader {
+	var logger middleware.OriginCheckLogger
+	if s.logger != nil {
+		logger = func(origin, host string, allowed bool, reason string) {
+			s.logger.Debug("WS: Origin check",
+				"origin", origin,
+				"host", host,
+				"allowed", allowed,
+				"reason", reason)
+		}
 	}
 
-	// Check if explicitly configured
-	if webConfig.Security != nil && webConfig.Security.ScannerDefense != nil {
-		return webConfig.Security.ScannerDefense.Enabled
+	// Enable compression only for external connections where bandwidth savings matter.
+	// Local connections skip compression to avoid unnecessary CPU overhead.
+	enableCompression := middleware.IsExternalConnection(r)
+
+	if enableCompression && s.logger != nil {
+		s.logger.Debug("WS: Enabling compression for external connection",
+			"client_ip", middleware.GetClientIPWithProxyCheck(r))
 	}
 
-	// Enable by default when external access is configured
-	// External port >= 0 means external access is enabled (0 = random, >0 = specific port)
-	return webConfig.ExternalPort >= 0
-}
-
-// getScannerDefenseConfig returns the scanner defense config from WebSecurity.
-func getScannerDefenseConfig(webConfig *configPkg.WebConfig) *configPkg.ScannerDefenseConfig {
-	if webConfig == nil || webConfig.Security == nil {
-		return nil
-	}
-	return webConfig.Security.ScannerDefense
-}
-
-// configToDefenseConfig converts ScannerDefenseConfig to defense.Config.
-// If cfg is nil, returns defaults with Enabled set based on externalAccessEnabled.
-func configToDefenseConfig(cfg *configPkg.ScannerDefenseConfig, enabled bool) defense.Config {
-	c := defense.DefaultConfig()
-	c.Enabled = enabled
-
-	// Set persistence path
-	if path, err := appdir.DefenseBlocklistPath(); err == nil {
-		c.PersistPath = path
-	}
-
-	if cfg == nil {
-		return c
-	}
-
-	// Apply explicit configuration values
-	if cfg.RateLimit > 0 {
-		c.RateLimit = cfg.RateLimit
-	}
-	if cfg.RateWindowSeconds > 0 {
-		c.RateWindow = time.Duration(cfg.RateWindowSeconds) * time.Second
-	}
-	if cfg.ErrorRateThreshold > 0 {
-		c.ErrorRateThreshold = cfg.ErrorRateThreshold
-	}
-	if cfg.MinRequestsForAnalysis > 0 {
-		c.MinRequestsForAnalysis = cfg.MinRequestsForAnalysis
-	}
-	if cfg.SuspiciousPathThreshold > 0 {
-		c.SuspiciousPathThreshold = cfg.SuspiciousPathThreshold
-	}
-	if cfg.BlockDurationSeconds > 0 {
-		c.BlockDuration = time.Duration(cfg.BlockDurationSeconds) * time.Second
-	}
-	if len(cfg.Whitelist) > 0 {
-		c.Whitelist = cfg.Whitelist
-	}
-	if cfg.IPBlockCommand != "" {
-		c.BlockCommand = cfg.IPBlockCommand
-	}
-
-	return c
+	// Allow authenticated external connections (e.g., Tailscale funnel)
+	// These have already been authenticated by the auth middleware
+	return middleware.CreateSecureUpgrader(s.wsSecurityConfig, logger, middleware.IsExternalConnection, enableCompression)
 }
 
 // defenseRecordingMiddleware records requests for analysis by the scanner defense system.
@@ -94,13 +61,13 @@ func (s *Server) defenseRecordingMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Only apply to external connections
-		isExternal, _ := r.Context().Value(ContextKeyExternalConnection).(bool)
+		isExternal, _ := r.Context().Value(middleware.ContextKeyExternalConnection).(bool)
 		if !isExternal {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		ip := getClientIPWithProxyCheck(r)
+		ip := middleware.GetClientIPWithProxyCheck(r)
 
 		// For already-blocked IPs: silently drop the connection.
 		// Don't send any response — not even a 403 — to give the scanner

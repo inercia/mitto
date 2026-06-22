@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"crypto/rand"
@@ -160,7 +160,7 @@ func (c *CSRFManager) HandleCSRFToken(w http.ResponseWriter, r *http.Request) {
 	// The double-submit cookie pattern (cookie == header) is unchanged because
 	// both the cookie and the JavaScript-read header value carry the same full
 	// string (token + "." + ip-hash).
-	ip := getClientIPWithProxyCheck(r)
+	ip := GetClientIPWithProxyCheck(r)
 	tokenWithIP := embedIPInToken(token, ip)
 
 	c.SetCSRFCookie(w, r, tokenWithIP)
@@ -251,7 +251,7 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 				"path", r.URL.Path,
 				"has_header", headerToken != "",
 				"has_cookie", cookieToken != "",
-				"client_ip", getClientIPWithProxyCheck(r))
+				"client_ip", GetClientIPWithProxyCheck(r))
 			http.Error(w, "CSRF token required", http.StatusForbidden)
 			return
 		}
@@ -261,7 +261,7 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 			logging.Web().Warn("CSRF token mismatch",
 				"method", r.Method,
 				"path", r.URL.Path,
-				"client_ip", getClientIPWithProxyCheck(r))
+				"client_ip", GetClientIPWithProxyCheck(r))
 			http.Error(w, "CSRF token mismatch", http.StatusForbidden)
 			return
 		}

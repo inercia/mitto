@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // badgeClickRequest represents a request to execute the badge click action.
@@ -38,8 +40,8 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 
 	// Security check: Only allow this endpoint from localhost (native macOS app).
 	// This prevents remote attackers from executing arbitrary commands.
-	clientIP := getClientIPWithProxyCheck(r)
-	if !isLoopbackIP(clientIP) {
+	clientIP := middleware.GetClientIPWithProxyCheck(r)
+	if !middleware.IsLoopbackIP(clientIP) {
 		if s.logger != nil {
 			s.logger.Warn("Rejected badge-click request from non-localhost",
 				"client_ip", clientIP,

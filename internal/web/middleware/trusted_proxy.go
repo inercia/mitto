@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"net"
@@ -143,9 +143,9 @@ func SetDefaultProxyChecker(tpc *TrustedProxyChecker) {
 	defaultProxyChecker = tpc
 }
 
-// getClientIPWithProxyCheck extracts the client IP using the global proxy checker.
+// GetClientIPWithProxyCheck extracts the client IP using the global proxy checker.
 // This replaces the old getClientIP function when trusted proxies are configured.
-func getClientIPWithProxyCheck(r *http.Request) string {
+func GetClientIPWithProxyCheck(r *http.Request) string {
 	defaultProxyCheckerMu.RLock()
 	tpc := defaultProxyChecker
 	defaultProxyCheckerMu.RUnlock()

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestServer_ExternalListener(t *testing.T) {
@@ -230,7 +232,7 @@ func TestExternalConnectionMiddleware(t *testing.T) {
 	var contextValue interface{}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		contextValue = r.Context().Value(ContextKeyExternalConnection)
+		contextValue = r.Context().Value(middleware.ContextKeyExternalConnection)
 		w.WriteHeader(http.StatusOK)
 	})
 

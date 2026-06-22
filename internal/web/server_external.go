@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/defense"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // SetExternalPort sets the port to use for external access.
@@ -24,7 +25,7 @@ func (s *Server) SetExternalPort(port int) {
 func ExternalConnectionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Add context value indicating this is an external connection
-		ctx := context.WithValue(r.Context(), ContextKeyExternalConnection, true)
+		ctx := context.WithValue(r.Context(), middleware.ContextKeyExternalConnection, true)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

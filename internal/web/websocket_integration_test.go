@@ -10,6 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // testWSDialer is a WebSocket dialer for tests
@@ -79,7 +80,7 @@ func TestGlobalEventsWebSocket_Connect(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -147,7 +148,7 @@ func TestGlobalEventsWebSocket_Broadcast(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -283,7 +284,7 @@ func TestWSConn_SendMessage_Integration(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		// Start write pump
@@ -346,7 +347,7 @@ func TestSessionWSClient_MessageHandling(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		// Start write pump
@@ -443,7 +444,7 @@ func TestSessionWSClient_SyncSession(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		go wsConn.WritePump(r.Context(), nil)
@@ -542,7 +543,7 @@ func TestSessionSync_EventOrdering(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		go wsConn.WritePump(r.Context(), nil)
@@ -665,7 +666,7 @@ func TestSessionSync_ToolCallDeduplication(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		go wsConn.WritePump(r.Context(), nil)
@@ -743,7 +744,7 @@ func TestWebSocketReconnection(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -819,7 +820,7 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		// Start write pump
@@ -914,7 +915,7 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{

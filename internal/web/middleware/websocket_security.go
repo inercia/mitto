@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"net"
@@ -67,11 +67,11 @@ const (
 	wsBufferSizeExternal = 4096
 )
 
-// createSecureUpgrader creates a WebSocket upgrader with all security options.
+// CreateSecureUpgrader creates a WebSocket upgrader with all security options.
 // enableCompression should be true for external connections (Tailscale, etc.) where
 // bandwidth is limited and latency is high. For local connections, compression adds
 // CPU overhead without network benefit.
-func createSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker, enableCompression bool) websocket.Upgrader {
+func CreateSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker, enableCompression bool) websocket.Upgrader {
 	bufferSize := wsBufferSizeInternal
 	if enableCompression {
 		bufferSize = wsBufferSizeExternal
@@ -202,8 +202,8 @@ func isSameOrigin(r *http.Request, originURL *url.URL) bool {
 	return requestPort == originPort
 }
 
-// configureWebSocketConn applies security settings to a WebSocket connection.
-func configureWebSocketConn(conn *websocket.Conn, config WebSocketSecurityConfig) {
+// ConfigureWebSocketConn applies security settings to a WebSocket connection.
+func ConfigureWebSocketConn(conn *websocket.Conn, config WebSocketSecurityConfig) {
 	// Set maximum message size
 	conn.SetReadLimit(config.MaxMessageSize)
 
@@ -215,36 +215,4 @@ func configureWebSocketConn(conn *websocket.Conn, config WebSocketSecurityConfig
 		conn.SetReadDeadline(time.Now().Add(config.PongWait))
 		return nil
 	})
-}
-
-// getSecureUpgraderForRequest returns a WebSocket upgrader with security checks,
-// with compression enabled only for external connections.
-//
-// Compression trade-offs:
-//   - External (Tailscale, etc.): High latency, limited bandwidth → compression beneficial
-//   - Local (macOS app, localhost): Zero latency, unlimited bandwidth → compression overhead not worth it
-func (s *Server) getSecureUpgraderForRequest(r *http.Request) websocket.Upgrader {
-	var logger OriginCheckLogger
-	if s.logger != nil {
-		logger = func(origin, host string, allowed bool, reason string) {
-			s.logger.Debug("WS: Origin check",
-				"origin", origin,
-				"host", host,
-				"allowed", allowed,
-				"reason", reason)
-		}
-	}
-
-	// Enable compression only for external connections where bandwidth savings matter.
-	// Local connections skip compression to avoid unnecessary CPU overhead.
-	enableCompression := IsExternalConnection(r)
-
-	if enableCompression && s.logger != nil {
-		s.logger.Debug("WS: Enabling compression for external connection",
-			"client_ip", getClientIPWithProxyCheck(r))
-	}
-
-	// Allow authenticated external connections (e.g., Tailscale funnel)
-	// These have already been authenticated by the auth middleware
-	return createSecureUpgrader(s.wsSecurityConfig, logger, IsExternalConnection, enableCompression)
 }

@@ -93,19 +93,31 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		}
 	}
 
-	// Validate auth settings
-	if req.Web.Auth != nil && req.Web.Auth.Simple != nil {
+	// Validate auth settings. When the web section is omitted entirely (req.Web == nil,
+	// e.g. the Workspaces dialog), there is no auth to validate — the existing config is
+	// preserved untouched in buildNewSettings.
+	if req.Web != nil && req.Web.Auth != nil && req.Web.Auth.Simple != nil {
 		if errMsg := ValidateUsername(req.Web.Auth.Simple.Username); errMsg != "" {
 			return &configValidationError{
 				StatusCode: http.StatusBadRequest,
 				Message:    errMsg,
 			}
 		}
-		// Skip password validation when the password is empty and auth is already configured.
-		// The frontend sends an empty password when the user hasn't changed it (the backend
-		// sanitizes the password before sending config to the client for security).
-		// In this case, the existing password will be preserved in buildNewSettings.
-		if req.Web.Auth.Simple.Password != "" || !s.hasExistingSimpleAuth() {
+		// Skip password validation when the password is empty and a simple-auth block
+		// already exists in the persisted config. The frontend always receives an empty
+		// password (the backend redacts it before sending config to the client), so any
+		// config save that round-trips the existing auth block — for example changing a
+		// workspace's ACP server in the Workspaces dialog — sends back an empty password
+		// it never intended to modify. Re-validating it here would reject those unrelated
+		// saves with "Password is required" whenever the stored password lives only in the
+		// keychain or is absent (a username-only/partial auth config). Skipping is safe:
+		// buildNewSettings preserves any existing password, and applyAuthChanges refuses to
+		// start a passwordless external listener (see hasValidCredentials). A brand-new auth
+		// setup (no existing simple-auth block) is still validated and requires a password.
+		existingSimpleAuth := s.config.MittoConfig != nil &&
+			s.config.MittoConfig.Web.Auth != nil &&
+			s.config.MittoConfig.Web.Auth.Simple != nil
+		if req.Web.Auth.Simple.Password != "" || !existingSimpleAuth {
 			if errMsg := ValidatePassword(req.Web.Auth.Simple.Password); errMsg != "" {
 				return &configValidationError{
 					StatusCode: http.StatusBadRequest,

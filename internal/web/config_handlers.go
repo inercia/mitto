@@ -20,6 +20,7 @@ import (
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // ConfigSaveRequest represents the request body for saving configuration.
@@ -38,7 +39,11 @@ type ConfigSaveRequest struct {
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
-	Web     struct {
+	// Web is a pointer so the backend can distinguish "section omitted" (preserve the
+	// existing web/auth/host/port config — e.g. the Workspaces dialog, which must never
+	// touch external-access auth) from "section present" (apply it — the Settings dialog,
+	// which always sends a complete web object).
+	Web *struct {
 		Host         string `json:"host,omitempty"`
 		ExternalPort int    `json:"external_port,omitempty"`
 		Auth         *struct {
@@ -53,7 +58,7 @@ type ConfigSaveRequest struct {
 		} `json:"auth,omitempty"`
 		Hooks     *configPkg.WebHooks        `json:"hooks,omitempty"`
 		AccessLog *configPkg.AccessLogConfig `json:"access_log,omitempty"`
-	} `json:"web"`
+	} `json:"web,omitempty"`
 	UI            *configPkg.UIConfig            `json:"ui,omitempty"`
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
@@ -498,80 +503,92 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newWebConfig = s.config.MittoConfig.Web
 	}
 
-	// Update host setting if provided
-	if req.Web.Host != "" {
-		newWebConfig.Host = req.Web.Host
-	}
-
-	// Update external port setting (0 means random)
-	newWebConfig.ExternalPort = req.Web.ExternalPort
-
-	// Update auth settings
-	hasSimple := req.Web.Auth != nil && req.Web.Auth.Simple != nil
-	hasCloudflare := req.Web.Auth != nil && req.Web.Auth.Cloudflare != nil
-
-	if hasSimple || hasCloudflare {
-		newWebConfig.Auth = &configPkg.WebAuth{}
-
-		// Simple auth (username/password)
-		if hasSimple {
-			password := req.Web.Auth.Simple.Password
-
-			// If the password is empty, preserve the existing password.
-			// The frontend sends an empty password when the user hasn't changed it
-			// (the backend sanitizes the password before sending config to the client).
-			if password == "" && s.hasExistingSimpleAuth() {
-				password = s.config.MittoConfig.Web.Auth.Simple.Password
-			}
-
-			// On platforms with secure storage, store password in Keychain
-			// and omit it from settings.json
-			if secrets.IsSupported() {
-				if err := secrets.SetExternalAccessPassword(password); err != nil {
-					return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
-				}
-				// Omit password from settings.json when stored in Keychain
-				password = ""
-			}
-
-			newWebConfig.Auth.Simple = &configPkg.SimpleAuth{
-				Username: req.Web.Auth.Simple.Username,
-				Password: password, // Empty when stored in Keychain
-			}
-		} else if secrets.IsSupported() {
-			// Clean up stored password when simple auth is disabled
-			_ = secrets.DeleteExternalAccessPassword()
-		}
-
-		// Cloudflare Access auth
-		if hasCloudflare {
-			newWebConfig.Auth.Cloudflare = &configPkg.CloudflareAuth{
-				TeamDomain: req.Web.Auth.Cloudflare.TeamDomain,
-				Audience:   req.Web.Auth.Cloudflare.Audience,
-			}
-		}
-	} else {
-		newWebConfig.Auth = nil
-		// Clean up any stored password when auth is disabled
+	// When the request omits the web section entirely (req.Web == nil) — e.g. the
+	// Workspaces dialog, which has no business touching external-access auth/host/port —
+	// preserve the existing web config untouched. On secure-storage platforms the real
+	// password lives in the runtime config (loaded from the keychain at startup), so
+	// redact it before it is persisted to settings.json; the keychain copy is left intact
+	// and the runtime auth (with the real password) is restored in applyConfigChanges.
+	if req.Web == nil {
 		if secrets.IsSupported() {
-			_ = secrets.DeleteExternalAccessPassword() // Ignore errors
+			newWebConfig = sanitizeWebConfig(newWebConfig)
 		}
-	}
-
-	// Update hooks
-	if req.Web.Hooks != nil {
-		newWebConfig.Hooks = *req.Web.Hooks
 	} else {
-		// Clear hooks if not provided
-		newWebConfig.Hooks = configPkg.WebHooks{}
-	}
+		// Update host setting if provided
+		if req.Web.Host != "" {
+			newWebConfig.Host = req.Web.Host
+		}
 
-	// Update health monitor based on new hooks configuration
-	s.updateHealthMonitor(newWebConfig.Hooks)
+		// Update external port setting (0 means random)
+		newWebConfig.ExternalPort = req.Web.ExternalPort
 
-	// Update access log settings
-	if req.Web.AccessLog != nil {
-		newWebConfig.AccessLog = req.Web.AccessLog
+		// Update auth settings
+		hasSimple := req.Web.Auth != nil && req.Web.Auth.Simple != nil
+		hasCloudflare := req.Web.Auth != nil && req.Web.Auth.Cloudflare != nil
+
+		if hasSimple || hasCloudflare {
+			newWebConfig.Auth = &configPkg.WebAuth{}
+
+			// Simple auth (username/password)
+			if hasSimple {
+				password := req.Web.Auth.Simple.Password
+
+				// If the password is empty, preserve the existing password.
+				// The frontend sends an empty password when the user hasn't changed it
+				// (the backend sanitizes the password before sending config to the client).
+				if password == "" && s.hasExistingSimpleAuth() {
+					password = s.config.MittoConfig.Web.Auth.Simple.Password
+				}
+
+				// On platforms with secure storage, store password in Keychain
+				// and omit it from settings.json
+				if secrets.IsSupported() {
+					if err := secrets.SetExternalAccessPassword(password); err != nil {
+						return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
+					}
+					// Omit password from settings.json when stored in Keychain
+					password = ""
+				}
+
+				newWebConfig.Auth.Simple = &configPkg.SimpleAuth{
+					Username: req.Web.Auth.Simple.Username,
+					Password: password, // Empty when stored in Keychain
+				}
+			} else if secrets.IsSupported() {
+				// Clean up stored password when simple auth is disabled
+				_ = secrets.DeleteExternalAccessPassword()
+			}
+
+			// Cloudflare Access auth
+			if hasCloudflare {
+				newWebConfig.Auth.Cloudflare = &configPkg.CloudflareAuth{
+					TeamDomain: req.Web.Auth.Cloudflare.TeamDomain,
+					Audience:   req.Web.Auth.Cloudflare.Audience,
+				}
+			}
+		} else {
+			newWebConfig.Auth = nil
+			// Clean up any stored password when auth is disabled
+			if secrets.IsSupported() {
+				_ = secrets.DeleteExternalAccessPassword() // Ignore errors
+			}
+		}
+
+		// Update hooks
+		if req.Web.Hooks != nil {
+			newWebConfig.Hooks = *req.Web.Hooks
+		} else {
+			// Clear hooks if not provided
+			newWebConfig.Hooks = configPkg.WebHooks{}
+		}
+
+		// Update health monitor based on new hooks configuration
+		s.updateHealthMonitor(newWebConfig.Hooks)
+
+		// Update access log settings
+		if req.Web.AccessLog != nil {
+			newWebConfig.AccessLog = req.Web.AccessLog
+		}
 	}
 
 	// Build UI config - preserve existing settings, update from request if provided
@@ -647,7 +664,15 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	// Build runtime web config with the actual password (from request, not settings)
 	// This is needed because settings may have an empty password when Keychain is used
 	runtimeWebConfig := settings.Web
-	if newAuthEnabled && req.Web.Auth != nil && req.Web.Auth.Simple != nil {
+	if req.Web == nil {
+		// The web section was omitted (e.g. the Workspaces dialog). Restore the real
+		// runtime auth — including the keychain-loaded password — so applyAuthChanges
+		// does not tear down the external listener over the redacted/empty password that
+		// buildNewSettings persisted to settings.json.
+		if s.config.MittoConfig != nil {
+			runtimeWebConfig.Auth = s.config.MittoConfig.Web.Auth
+		}
+	} else if newAuthEnabled && req.Web.Auth != nil && req.Web.Auth.Simple != nil {
 		password := req.Web.Auth.Simple.Password
 		// If request password is empty, preserve the existing runtime password
 		if password == "" && oldAuthEnabled && s.config.MittoConfig.Web.Auth.Simple != nil {
@@ -784,7 +809,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 
 		// Create new auth manager if it doesn't exist
 		if s.authManager == nil {
-			s.authManager = NewAuthManager(newAuthConfig)
+			s.authManager = middleware.NewAuthManager(newAuthConfig)
 			if s.logger != nil {
 				s.logger.Info("Authentication enabled dynamically")
 			}

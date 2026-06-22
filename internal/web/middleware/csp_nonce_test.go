@@ -1,4 +1,4 @@
-package web
+package middleware
 
 import (
 	"context"
@@ -44,7 +44,7 @@ func TestCSPNonceMiddleware_HTMLResponse(t *testing.T) {
 	})
 
 	// Wrap with CSP nonce middleware
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{Config: DefaultSecurityConfig()})(handler)
 
 	// Make a request
 	req := httptest.NewRequest("GET", "/", nil)
@@ -92,7 +92,7 @@ func TestCSPNonceMiddleware_NonHTMLResponse(t *testing.T) {
 	})
 
 	// Wrap with CSP nonce middleware
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{Config: DefaultSecurityConfig()})(handler)
 
 	// Make a request
 	req := httptest.NewRequest("GET", "/api/test", nil)
@@ -131,7 +131,7 @@ func TestCSPNonceMiddleware_MultipleNoncePlaceholders(t *testing.T) {
 <script nonce="{{CSP_NONCE}}" src="c.js"></script>`))
 	})
 
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{Config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -187,11 +187,11 @@ func TestCSPNonceMiddleware_APIPrefixInjection(t *testing.T) {
 				w.Write([]byte(`<script>window.mittoApiPrefix = "{{API_PREFIX}}";</script>`))
 			})
 
-			opts := cspNonceMiddlewareOptions{
-				config:    DefaultSecurityConfig(),
-				apiPrefix: tt.apiPrefix,
+			opts := CSPNonceMiddlewareOptions{
+				Config:    DefaultSecurityConfig(),
+				APIPrefix: tt.apiPrefix,
 			}
-			wrapped := cspNonceMiddlewareWithOptions(opts)(handler)
+			wrapped := CSPNonceMiddlewareWithOptions(opts)(handler)
 
 			req := httptest.NewRequest("GET", "/", nil)
 			rec := httptest.NewRecorder()
@@ -227,11 +227,11 @@ func TestCSPNonceMiddleware_BothPlaceholders(t *testing.T) {
 </html>`))
 	})
 
-	opts := cspNonceMiddlewareOptions{
-		config:    DefaultSecurityConfig(),
-		apiPrefix: "/mitto",
+	opts := CSPNonceMiddlewareOptions{
+		Config:    DefaultSecurityConfig(),
+		APIPrefix: "/mitto",
 	}
-	wrapped := cspNonceMiddlewareWithOptions(opts)(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(opts)(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -285,11 +285,11 @@ func TestCSPNonceMiddleware_ExternalConnection(t *testing.T) {
 </html>`))
 	})
 
-	opts := cspNonceMiddlewareOptions{
-		config:    DefaultSecurityConfig(),
-		apiPrefix: "/mitto",
+	opts := CSPNonceMiddlewareOptions{
+		Config:    DefaultSecurityConfig(),
+		APIPrefix: "/mitto",
 	}
-	wrapped := cspNonceMiddlewareWithOptions(opts)(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(opts)(handler)
 
 	// Create a request with external connection context
 	req := httptest.NewRequest("GET", "/", nil)
@@ -320,11 +320,11 @@ func TestCSPNonceMiddleware_NonHTMLDoesNotReplacePrefix(t *testing.T) {
 		w.Write([]byte(`const prefix = "{{API_PREFIX}}";`))
 	})
 
-	opts := cspNonceMiddlewareOptions{
-		config:    DefaultSecurityConfig(),
-		apiPrefix: "/mitto",
+	opts := CSPNonceMiddlewareOptions{
+		Config:    DefaultSecurityConfig(),
+		APIPrefix: "/mitto",
 	}
-	wrapped := cspNonceMiddlewareWithOptions(opts)(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(opts)(handler)
 
 	req := httptest.NewRequest("GET", "/app.js", nil)
 	rec := httptest.NewRecorder()
@@ -349,7 +349,7 @@ func TestCSPNonceMiddleware_ContentLengthUpdated(t *testing.T) {
 		w.Write([]byte(originalContent))
 	})
 
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{Config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -375,7 +375,7 @@ func TestCSPNonceMiddleware_WriteHeaderHTML(t *testing.T) {
 		w.Write([]byte(`<html><body>Test</body></html>`))
 	})
 
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{Config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -400,7 +400,7 @@ func TestCSPNonceMiddleware_WriteHeaderNonHTML(t *testing.T) {
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{Config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -419,9 +419,9 @@ func TestCSPNonceMiddleware_ExternalImagesDisabled(t *testing.T) {
 	})
 
 	// Test with external images disabled (default)
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
-		config:              DefaultSecurityConfig(),
-		allowExternalImages: false,
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{
+		Config:              DefaultSecurityConfig(),
+		AllowExternalImages: false,
 	})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
@@ -451,9 +451,9 @@ func TestCSPNonceMiddleware_ExternalImagesEnabled(t *testing.T) {
 	})
 
 	// Test with external images enabled
-	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
-		config:              DefaultSecurityConfig(),
-		allowExternalImages: true,
+	wrapped := CSPNonceMiddlewareWithOptions(CSPNonceMiddlewareOptions{
+		Config:              DefaultSecurityConfig(),
+		AllowExternalImages: true,
 	})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
