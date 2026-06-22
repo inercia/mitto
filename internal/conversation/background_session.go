@@ -191,6 +191,7 @@ type BackgroundSession struct {
 	callbackSink         acpCallbackSink                        // WebClient callback cluster collaborator (composition)
 	uiPromptCtr          uiPromptCenter                         // UI prompt + notify collaborator (composition)
 	followUpCoord        followUpCoordinator                    // Follow-up suggestions + action-button collaborator (composition)
+	configMgr            configManager                          // Session-config / model-baseline collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
