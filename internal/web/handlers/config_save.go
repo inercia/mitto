@@ -7,6 +7,15 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 )
 
+// ExternalAccessWarning is included in the save-config response when the settings
+// save results in the external listener NOT running even though external access
+// was intended to be enabled. The frontend renders this as a sticky warning toast.
+type ExternalAccessWarning struct {
+	Reason  string `json:"reason"`  // human-readable reason, e.g. "authentication credentials are incomplete (no password)"
+	Port    int    `json:"port"`    // the port that was attempted or was running; 0 if unknown
+	Message string `json:"message"` // full sentence for the toast
+}
+
 // ConfigSaveRequest represents the request body for saving configuration.
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
@@ -128,8 +137,8 @@ func (h *Handlers) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply changes to running server
-	h.deps.ApplyConfigChanges(&req, settings)
+	// Apply changes to running server; capture any external-listener warning.
+	warning := h.deps.ApplyConfigChanges(&req, settings)
 
 	// Build response with applied changes info
 	authEnabled := false
@@ -144,7 +153,7 @@ func (h *Handlers) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	if h.deps.GetExternalPort != nil {
 		externalPort = h.deps.GetExternalPort()
 	}
-	writeJSONOK(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"success": true,
 		"message": "Configuration saved successfully",
 		"applied": map[string]interface{}{
@@ -152,5 +161,9 @@ func (h *Handlers) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 			"external_port":           externalPort,
 			"auth_enabled":            authEnabled,
 		},
-	})
+	}
+	if warning != nil {
+		resp["external_access_warning"] = warning
+	}
+	writeJSONOK(w, resp)
 }

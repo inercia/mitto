@@ -76,8 +76,12 @@ type Deps struct {
 
 	// ApplyConfigChanges mirrors Server.applyConfigChanges: it applies the new
 	// configuration to the running server (ACP servers, workspaces, web/auth
-	// config, external listener). Required by HandleSaveConfig.
-	ApplyConfigChanges func(req *ConfigSaveRequest, settings *configPkg.Settings)
+	// config, external listener). Required by HandleSaveConfig. Returns a non-nil
+	// *ExternalAccessWarning when the save results in the external listener not
+	// running even though external access was intended to be on (e.g. incomplete
+	// credentials tore down the listener, or StartExternalListener failed). Nil
+	// means everything is fine.
+	ApplyConfigChanges func(req *ConfigSaveRequest, settings *configPkg.Settings) *ExternalAccessWarning
 
 	// AuthEnabled reports whether the auth manager is currently enabled, surfaced
 	// in the save-config response's "applied" block. May be nil; the handler then

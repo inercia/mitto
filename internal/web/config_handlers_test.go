@@ -529,6 +529,85 @@ func TestApplyAuthChanges_DisabledToDisabled(t *testing.T) {
 	}
 }
 
+// TestApplyAuthChanges_Case3_IncompleteCredentials_ReturnsWarning verifies that a
+// Case-3 (auth enabled → still enabled) save with incomplete credentials tears down
+// the listener AND returns a non-nil ExternalAccessWarning with the attempted port.
+func TestApplyAuthChanges_Case3_IncompleteCredentials_ReturnsWarning(t *testing.T) {
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	const expectedPort = 58343
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Web: config.WebConfig{
+					ExternalPort: expectedPort,
+				},
+			},
+		},
+		authManager:  middleware.NewAuthManager(oldConfig),
+		externalPort: expectedPort,
+	}
+
+	// Update with incomplete credentials (nil config = no password) — Case 3.
+	warning := server.applyAuthChanges(true, true, nil)
+
+	if warning == nil {
+		t.Fatal("Expected non-nil ExternalAccessWarning for Case-3 incomplete-credentials teardown")
+	}
+	if warning.Port != expectedPort {
+		t.Errorf("warning.Port = %d, want %d", warning.Port, expectedPort)
+	}
+	if warning.Reason == "" {
+		t.Error("warning.Reason should not be empty")
+	}
+	if warning.Message == "" {
+		t.Error("warning.Message should not be empty")
+	}
+}
+
+// TestApplyAuthChanges_Case2_IntentionalDisable_ReturnsNil verifies that
+// intentionally disabling auth (Case 2) returns nil — no user-facing warning.
+func TestApplyAuthChanges_Case2_IntentionalDisable_ReturnsNil(t *testing.T) {
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	server := &Server{
+		config:      Config{},
+		authManager: middleware.NewAuthManager(oldConfig),
+	}
+
+	// Disable auth intentionally (Case 2) — must not warn.
+	warning := server.applyAuthChanges(true, false, nil)
+
+	if warning != nil {
+		t.Errorf("Expected nil warning when auth is intentionally disabled, got: %+v", warning)
+	}
+}
+
+// TestApplyAuthChanges_DisabledToDisabled_ReturnsNil verifies Case 4 (never
+// enabled) also returns nil.
+func TestApplyAuthChanges_DisabledToDisabled_ReturnsNil(t *testing.T) {
+	server := &Server{
+		config:       Config{},
+		externalPort: -1,
+	}
+
+	warning := server.applyAuthChanges(false, false, nil)
+
+	if warning != nil {
+		t.Errorf("Expected nil warning for disabled-to-disabled, got: %+v", warning)
+	}
+}
+
 func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 	// Use temp dir to avoid writing to real settings file
 	tmpDir := t.TempDir()

@@ -18,6 +18,11 @@ import (
 // checkWorkspaceConflicts) and their tests keep referring to it unqualified.
 type ConfigSaveRequest = handlers.ConfigSaveRequest
 
+// ExternalAccessWarning is aliased from handlers.ExternalAccessWarning so the
+// web-package helpers (applyAuthChanges, ensureExternalListenerStarted,
+// applyConfigChanges) can return it without a package qualifier.
+type ExternalAccessWarning = handlers.ExternalAccessWarning
+
 // handleConfig handles GET and POST /api/config.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -306,7 +311,9 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 // applyConfigChanges applies the new configuration to the running server.
 // Note: The settings parameter may have an empty password when Keychain is used,
 // so we use the original password from req for runtime auth configuration.
-func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.Settings) {
+// Returns a non-nil *ExternalAccessWarning when the save results in the external
+// listener not running even though external access was intended to be on.
+func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.Settings) *ExternalAccessWarning {
 	// Build ACP server list for internal config (including per-server prompts)
 	newACPServers := make([]configPkg.ACPServer, len(settings.ACPServers))
 	for i, srv := range settings.ACPServers {
@@ -405,8 +412,9 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	}
 	s.SetExternalPort(newExternalPort)
 
-	// Handle auth manager and external listener changes (use runtimeWebConfig with actual password)
-	s.applyAuthChanges(oldAuthEnabled, newAuthEnabled, runtimeWebConfig.Auth)
+	// Handle auth manager and external listener changes (use runtimeWebConfig with actual password).
+	// Capture any warning so we can propagate it to the HTTP response.
+	warning := s.applyAuthChanges(oldAuthEnabled, newAuthEnabled, runtimeWebConfig.Auth)
 
 	if s.logger != nil {
 		s.logger.Info("Configuration saved",
@@ -415,6 +423,8 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 			"auth_enabled", newAuthEnabled,
 			"external_listener", s.IsExternalListenerRunning())
 	}
+
+	return warning
 }
 
 // hasValidCredentials checks if auth config has non-empty username and password.
@@ -426,9 +436,11 @@ func hasValidCredentials(authConfig *configPkg.WebAuth) bool {
 }
 
 // ensureExternalListenerStarted starts the external listener if not already running.
-func (s *Server) ensureExternalListenerStarted() {
+// Returns a non-nil *ExternalAccessWarning when StartExternalListener fails; returns
+// nil on success or when the listener is intentionally disabled (port = -1).
+func (s *Server) ensureExternalListenerStarted() *ExternalAccessWarning {
 	if s.IsExternalListenerRunning() {
-		return
+		return nil
 	}
 
 	// Use configured external port: -1 = disabled, 0 = random, >0 = specific port
@@ -438,31 +450,49 @@ func (s *Server) ensureExternalListenerStarted() {
 	}
 
 	// Only start if port is >= 0 (port 0 = random, port > 0 = specific)
-	// Port -1 means disabled
+	// Port -1 means disabled — no warning, this is intentional.
 	if port < 0 {
 		if s.logger != nil {
 			s.logger.Debug("External listener disabled (port = -1)")
 		}
-		return
+		return nil
 	}
 
 	_, err := s.StartExternalListener(port)
-	if err != nil && s.logger != nil {
-		s.logger.Error("Failed to start external listener", "error", err)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to start external listener", "error", err)
+		}
+		return &ExternalAccessWarning{
+			Reason:  err.Error(),
+			Port:    port,
+			Message: fmt.Sprintf("External access failed to start on port %d: %s", port, err.Error()),
+		}
 	}
 	// Note: StartExternalListener already logs success
+	return nil
 }
 
 // applyAuthChanges handles dynamic changes to authentication and external access.
 // It validates that credentials are non-empty before enabling external access.
-func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthConfig *configPkg.WebAuth) {
+// Returns a non-nil *ExternalAccessWarning when the save results in the external
+// listener not running even though external access was intended to be on.
+func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthConfig *configPkg.WebAuth) *ExternalAccessWarning {
 	// Case 1: Auth was disabled, now enabled -> create auth manager and start external listener
 	if !oldAuthEnabled && newAuthEnabled {
 		if !hasValidCredentials(newAuthConfig) {
 			if s.logger != nil {
 				s.logger.Error("Cannot enable external access: credentials are incomplete")
 			}
-			return
+			attemptedPort := s.GetExternalPort()
+			if attemptedPort == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
+				attemptedPort = s.config.MittoConfig.Web.ExternalPort
+			}
+			return &ExternalAccessWarning{
+				Reason:  "authentication credentials are incomplete (no password)",
+				Port:    attemptedPort,
+				Message: fmt.Sprintf("External access is DOWN: authentication credentials are incomplete (no password). The external listener on port %d could not be started.", attemptedPort),
+			}
 		}
 
 		// Create new auth manager if it doesn't exist
@@ -475,11 +505,11 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			s.authManager.UpdateConfig(newAuthConfig)
 		}
 
-		s.ensureExternalListenerStarted()
-		return
+		return s.ensureExternalListenerStarted()
 	}
 
-	// Case 2: Auth was enabled, now disabled -> stop external listener
+	// Case 2: Auth was enabled, now disabled -> stop external listener.
+	// This is an intentional user action — no warning.
 	if oldAuthEnabled && !newAuthEnabled {
 		s.StopExternalListener()
 
@@ -492,7 +522,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 				s.logger.Info("Authentication disabled dynamically")
 			}
 		}
-		return
+		return nil
 	}
 
 	// Case 3: Auth was enabled and still enabled -> update credentials and ensure listener is running
@@ -501,11 +531,20 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			if s.logger != nil {
 				s.logger.Error("Cannot update external access: credentials are incomplete, stopping listener")
 			}
+			// Capture the currently-running port BEFORE stopping the listener.
+			attemptedPort := s.GetExternalPort()
+			if attemptedPort == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
+				attemptedPort = s.config.MittoConfig.Web.ExternalPort
+			}
 			s.StopExternalListener()
 			if s.authManager != nil {
 				s.authManager.UpdateConfig(nil)
 			}
-			return
+			return &ExternalAccessWarning{
+				Reason:  "authentication credentials are incomplete (no password)",
+				Port:    attemptedPort,
+				Message: fmt.Sprintf("External access is DOWN: authentication credentials are incomplete (no password). The external listener on port %d was stopped.", attemptedPort),
+			}
 		}
 
 		if s.authManager != nil {
@@ -515,9 +554,9 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			}
 		}
 
-		s.ensureExternalListenerStarted()
-		return
+		return s.ensureExternalListenerStarted()
 	}
 
 	// Case 4: Auth was disabled and still disabled -> nothing to do
+	return nil
 }
