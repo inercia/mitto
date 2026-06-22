@@ -6,7 +6,11 @@ const { useState, useEffect, useCallback, useRef, html } = window.preact;
 
 import { PromptsMenu } from "./PromptsMenu.js";
 import { ChatBubbleIcon } from "./Icons.js";
+import { PortalTooltip } from "./ContextMenu.js";
 import { getPromptSortMode } from "../utils/storage.js";
+
+/** Max characters of the free-text body preview rendered on the trigger button. */
+const FREE_TEXT_PREVIEW_MAX = 40;
 
 /**
  * PeriodicPromptSelector - inline dropdown for selecting a workspace prompt as the periodic prompt.
@@ -16,6 +20,7 @@ import { getPromptSortMode } from "../utils/storage.js";
  * @param {Object} props
  * @param {Array} props.prompts - Available workspace prompts (same as predefinedPrompts)
  * @param {string} props.selectedPromptName - Currently selected prompt name (from periodic config)
+ * @param {string} props.selectedPromptBody - Free-text periodic prompt body (used when no named prompt is set)
  * @param {boolean} props.disabled - Whether the selector is read-only
  * @param {Function} props.onSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isOpen - Kept for API compat; parent card controls visibility now (ignored here)
@@ -25,6 +30,7 @@ import { getPromptSortMode } from "../utils/storage.js";
 export function PeriodicPromptSelector({
   prompts = [],
   selectedPromptName = "",
+  selectedPromptBody = "",
   disabled = false,
   onSelect,
   isOpen = false,
@@ -80,7 +86,48 @@ export function PeriodicPromptSelector({
     [onSelect],
   );
 
-  const displayName = selectedPromptName || "Select a prompt...";
+  // Three display modes: named prompt > free-text body preview > empty placeholder.
+  // The free-text case shows the first non-empty line, trimmed and truncated to
+  // FREE_TEXT_PREVIEW_MAX, with the full body available on hover via PortalTooltip.
+  const freeTextBody = !selectedPromptName ? (selectedPromptBody || "").trim() : "";
+  let freeTextPreview = "";
+  if (freeTextBody) {
+    const firstLine = freeTextBody.split(/\r?\n/, 1)[0].trim();
+    freeTextPreview =
+      firstLine.length > FREE_TEXT_PREVIEW_MAX
+        ? firstLine.slice(0, FREE_TEXT_PREVIEW_MAX) + "…"
+        : firstLine;
+  }
+  const hasFreeText = freeTextPreview.length > 0;
+  const displayName = selectedPromptName || freeTextPreview || "Select a prompt...";
+  const isConfigured = !!selectedPromptName || hasFreeText;
+
+  // Cursor-anchored tooltip showing the full free-text body on hover. Gated on
+  // hover-capable pointers so taps on touch devices don't strand a bubble.
+  const [bodyTip, setBodyTip] = useState(null);
+  const bodyTipTimerRef = useRef(null);
+  const supportsHover =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(hover: hover)").matches;
+  const showBodyTip = useCallback(
+    (e) => {
+      if (!supportsHover || !hasFreeText) return;
+      const x = e.clientX;
+      const y = e.clientY;
+      clearTimeout(bodyTipTimerRef.current);
+      bodyTipTimerRef.current = setTimeout(
+        () => setBodyTip({ x, y, text: freeTextBody }),
+        250,
+      );
+    },
+    [supportsHover, hasFreeText, freeTextBody],
+  );
+  const hideBodyTip = useCallback(() => {
+    clearTimeout(bodyTipTimerRef.current);
+    setBodyTip(null);
+  }, []);
+  useEffect(() => () => clearTimeout(bodyTipTimerRef.current), []);
 
   // Respect the user's global prompt sort preference (name vs color).
   const sortMode = getPromptSortMode();
@@ -100,6 +147,9 @@ export function PeriodicPromptSelector({
         type="button"
         onClick=${handleToggle}
         disabled=${disabled}
+        onMouseEnter=${showBodyTip}
+        onMouseLeave=${hideBodyTip}
+        onMouseDown=${hideBodyTip}
         class="h-8 px-3 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm text-left flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors min-w-0 ${fullWidth
           ? "w-full flex-1"
           : "max-w-48"} ${disabled
@@ -108,7 +158,7 @@ export function PeriodicPromptSelector({
         data-testid="${idPrefix}-button"
       >
         <span
-          class="truncate flex-1 ${selectedPromptName
+          class="truncate flex-1 ${isConfigured
             ? "text-mitto-text-strong"
             : "text-mitto-text-secondary dark:text-mitto-text-500"}"
           >${displayName}</span
@@ -129,6 +179,9 @@ export function PeriodicPromptSelector({
           />
         </svg>
       </button>
+
+      ${bodyTip &&
+      html`<${PortalTooltip} x=${bodyTip.x} y=${bodyTip.y} text=${bodyTip.text} />`}
 
       <!-- Dropdown panel (appears ABOVE the trigger button) -->
       ${showDropdown &&

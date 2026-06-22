@@ -5508,7 +5508,7 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   function computeHeaderPeriodicState(session) {
     if (!session?.periodic_configured) return null;
     if (session?.periodic_enabled) {
-      return { state: "running", label: "Running", badgeClass: "badge-success badge-soft" };
+      return { state: "running", label: "Auto", badgeClass: "badge-success badge-soft" };
     }
     const entry = PERIODIC_STOPPED_LABELS[session?.periodic_stopped_reason];
     if (entry && entry.kind === "stopped") {
@@ -5529,11 +5529,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
     expect(computeHeaderPeriodicState(null)).toBeNull();
   });
 
-  test("enabled periodic session yields Running/green", () => {
+  test("enabled periodic session yields Auto/green", () => {
     const session = { periodic_configured: true, periodic_enabled: true };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("running");
-    expect(result.label).toBe("Running");
+    expect(result.label).toBe("Auto");
     expect(result.badgeClass).toContain("badge-success");
   });
 

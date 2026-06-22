@@ -1958,7 +1958,7 @@ function App() {
   const headerPeriodicState = (() => {
     if (!activeSession?.periodic_configured) return null;
     if (activeSession?.periodic_enabled) {
-      return { state: "running", label: "Running", badgeClass: "badge-success badge-soft" };
+      return { state: "running", label: "Auto", badgeClass: "badge-success badge-soft" };
     }
     // Loop is disabled — check the reason for stopped vs paused distinction
     const entry = PERIODIC_STOPPED_LABELS[activeSession?.periodic_stopped_reason];
@@ -2320,7 +2320,7 @@ function App() {
             >
               ${headerPeriodicState &&
               html`<span
-                class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap"
+                class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
                 data-testid="periodic-status-pill"
                 title=${headerPeriodicState.state === "running"
                   ? "Periodic loop is iterating"
@@ -2328,7 +2328,9 @@ function App() {
                     (activeSession?.stopped_at
                       ? " · " + new Date(activeSession.stopped_at).toLocaleString()
                       : "")}
-              >${headerPeriodicState.label}</span>`}
+              >${headerPeriodicState.state === "running"
+                  ? html`<${PeriodicIcon} className="w-3 h-3" />`
+                  : null}${headerPeriodicState.label}</span>`}
               ${headerAcpServer &&
               html`<span class="truncate min-w-0">${headerAcpServer}</span>`}
               ${headerTriggerLabel &&

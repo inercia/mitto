@@ -140,6 +140,7 @@ function localToUtcTime(localTime) {
  * @param {Function} props.onPeriodicEnabledChange - Callback when periodic is paused/resumed
  * @param {Array} props.prompts - Available workspace prompts for the inline selector
  * @param {string} props.selectedPromptName - Currently selected periodic prompt name
+ * @param {string} props.selectedPromptBody - Free-text periodic prompt body (used when no named prompt is set)
  * @param {Function} props.onPromptSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isPromptAreaVisible - Whether the prompt composition area is visible
  * @param {Function} props.onTogglePromptArea - Callback to toggle prompt composition area visibility
@@ -160,6 +161,7 @@ export function PeriodicFrequencyPanel({
   onPeriodicEnabledChange,
   prompts = [],
   selectedPromptName = "",
+  selectedPromptBody = "",
   onPromptSelect,
   isPromptAreaVisible = false,
   onTogglePromptArea,
@@ -867,6 +869,7 @@ export function PeriodicFrequencyPanel({
             <${PeriodicPromptSelector}
               prompts=${prompts}
               selectedPromptName=${selectedPromptName}
+              selectedPromptBody=${selectedPromptBody}
               disabled=${false}
               onSelect=${onPromptSelect}
               isPromptAreaVisible=${isPromptAreaVisible}

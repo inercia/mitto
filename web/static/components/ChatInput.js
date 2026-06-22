@@ -2269,6 +2269,7 @@ ${activeUIPrompt.text || ""}</textarea
           onPeriodicEnabledChange=${handlePeriodicEnabledChange}
           prompts=${periodicPrompts}
           selectedPromptName=${periodicPromptName}
+          selectedPromptBody=${periodicPrompt}
           onPromptSelect=${handlePeriodicPromptSelect}
           isPromptAreaVisible=${!isPromptCollapsed}
           onTogglePromptArea=${() =>
