@@ -2,8 +2,11 @@ package conversation
 
 import (
 	"context"
+	"log/slog"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/runner"
 )
 
 // SharedProcess is the interface that a shared ACP OS process must satisfy.
@@ -45,3 +48,22 @@ type SharedProcess interface {
 // It is used by BackgroundSession, SessionManager, and PeriodicRunner to look up
 // named workspace prompts at execution time.
 type PromptResolver func(promptName string, workingDir string) (string, error)
+
+// ProcessManager abstracts the shared ACP process manager (web.ACPProcessManager)
+// so the domain layer does not depend on the web infrastructure package.
+type ProcessManager interface {
+	GetOrCreateProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner, prewarm bool) (SharedProcess, error)
+	EnsurePrewarmed(workspaceUUID string, logger *slog.Logger)
+	ClearGCSuspended(sessionID string)
+	IsGCSuspended(sessionID string) bool
+	StopGC()
+	Close()
+	ProcessCount() int
+}
+
+// EventsBroadcaster abstracts the global events manager (web.GlobalEventsManager)
+// for broadcasting WebSocket events to connected clients.
+type EventsBroadcaster interface {
+	Broadcast(msgType string, data interface{})
+	ClientCount() int
+}

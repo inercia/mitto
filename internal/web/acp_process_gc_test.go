@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 // newTestLogger returns a logger that discards all output, suitable for tests.
@@ -52,7 +54,7 @@ func newTestSharedProcess() *SharedACPProcess {
 // TestGCTier1_ClosesIdleSessions verifies that sessions with no active state
 // (not prompting, no observers, empty queue, no periodic) are closed by Tier 1.
 func TestGCTier1_ClosesIdleSessions(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{SessionID: "sess-a", WorkspaceUUID: "ws-1"},
 			{SessionID: "sess-b", WorkspaceUUID: "ws-1"},
@@ -63,7 +65,7 @@ func TestGCTier1_ClosesIdleSessions(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -88,7 +90,7 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 	// NextPeriodicAt within 2×interval (60s) — should be skipped.
 	soon := time.Now().Add(10 * time.Second)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{SessionID: "prompting", WorkspaceUUID: "ws-1", IsPrompting: true},
 			{SessionID: "observers", WorkspaceUUID: "ws-1", HasObservers: true},
@@ -102,7 +104,7 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -125,7 +127,7 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 func TestGCTier1_ClosesSessionWithDistantPeriodic(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour) // well beyond 2×30s = 60s threshold
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{SessionID: "distant-periodic", WorkspaceUUID: "ws-1", NextPeriodicAt: &far},
 		},
@@ -135,7 +137,7 @@ func TestGCTier1_ClosesSessionWithDistantPeriodic(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -161,7 +163,7 @@ func TestGCTier2_GracePeriod(t *testing.T) {
 	proc := newTestSharedProcess()
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return map[string][]SessionInfo{} }, // no sessions
+		func() map[string][]conversation.SessionInfo { return map[string][]conversation.SessionInfo{} }, // no sessions
 		func(id string) {}, // no-op close
 	)
 	m.mu.Lock()
@@ -205,8 +207,8 @@ func TestGCTier2_ProcessWithActiveSessionsNotStopped(t *testing.T) {
 	// but from Tier 2's perspective the workspace still has sessions, so the
 	// process must not be stopped.
 	m := newTestGCManager(
-		func() map[string][]SessionInfo {
-			return map[string][]SessionInfo{
+		func() map[string][]conversation.SessionInfo {
+			return map[string][]conversation.SessionInfo{
 				workspaceUUID: {{SessionID: "s1", WorkspaceUUID: workspaceUUID}},
 			}
 		},
@@ -241,11 +243,11 @@ func TestGCStartStop(t *testing.T) {
 
 	m.StartGC(
 		GCConfig{Interval: 10 * time.Millisecond, GracePeriod: 60 * time.Second},
-		func() map[string][]SessionInfo {
+		func() map[string][]conversation.SessionInfo {
 			mu.Lock()
 			queryCalled++
 			mu.Unlock()
-			return map[string][]SessionInfo{}
+			return map[string][]conversation.SessionInfo{}
 		},
 		func(id string) {},
 	)
@@ -280,7 +282,7 @@ func TestGCTier2_SkipsProcessWithActiveRPCs(t *testing.T) {
 	proc.activeRPCs.Add(1)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return map[string][]SessionInfo{} }, // no sessions
+		func() map[string][]conversation.SessionInfo { return map[string][]conversation.SessionInfo{} }, // no sessions
 		func(id string) {},
 	)
 	m.mu.Lock()
@@ -325,7 +327,7 @@ func TestGCTier2_SkipsProcessWithActiveRPCs(t *testing.T) {
 // This prevents the race where an async resume goroutine hasn't yet completed
 // load_events / observer registration before the first GC cycle fires.
 func TestGCTier1_SkipsRecentlyResumedSession(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:     "recently-resumed",
@@ -350,7 +352,7 @@ func TestGCTier1_SkipsRecentlyResumedSession(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -379,7 +381,7 @@ func TestGCStartStop_DoubleStartIsNoop(t *testing.T) {
 	}
 
 	cfg := GCConfig{Interval: 10 * time.Millisecond, GracePeriod: 60 * time.Second}
-	query := func() map[string][]SessionInfo { return map[string][]SessionInfo{} }
+	query := func() map[string][]conversation.SessionInfo { return map[string][]conversation.SessionInfo{} }
 	closeF := func(id string) {}
 
 	m.StartGC(cfg, query, closeF)
@@ -396,7 +398,7 @@ func TestGCStartStop_DoubleStartIsNoop(t *testing.T) {
 // closed by the GC, even if the resume grace period has expired. This prevents
 // sessions from being closed during staggered reconnects (e.g., macOS app activation).
 func TestGCTier1_SkipsRecentlyDisconnectedObservers(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:             "recent-disconnect",
@@ -424,7 +426,7 @@ func TestGCTier1_SkipsRecentlyDisconnectedObservers(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -447,7 +449,7 @@ func TestGCTier1_SkipsRecentlyDisconnectedObservers(t *testing.T) {
 // TestGCTier1_ObserverGracePeriodDoesNotProtectForever verifies that the observer
 // grace period eventually expires and the session is GC'd.
 func TestGCTier1_ObserverGracePeriodDoesNotProtectForever(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:             "expired-grace",
@@ -466,7 +468,7 @@ func TestGCTier1_ObserverGracePeriodDoesNotProtectForever(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -488,7 +490,7 @@ func TestGCTier1_ObserverGracePeriodDoesNotProtectForever(t *testing.T) {
 // registered observers. Sessions with no connected clients and no observers
 // are still eligible for closure.
 func TestGCTier1_SkipsSessionsWithConnectedClients(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:           "connected-clients",
@@ -509,7 +511,7 @@ func TestGCTier1_SkipsSessionsWithConnectedClients(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -533,7 +535,7 @@ func TestGCTier1_SkipsSessionsWithConnectedClients(t *testing.T) {
 // activity (within IdleTimeout) are not GC'd, but sessions whose last activity
 // exceeds the timeout are closed normally.
 func TestGCTier1_IdleTimeoutPreventsEarlyClosure(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "recent-activity",
@@ -554,7 +556,7 @@ func TestGCTier1_IdleTimeoutPreventsEarlyClosure(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -581,7 +583,7 @@ func TestGCTier1_MaxClosuresPerCycle(t *testing.T) {
 	var mu sync.Mutex
 	closed := make(map[string]bool)
 
-	allSessions := []SessionInfo{
+	allSessions := []conversation.SessionInfo{
 		{SessionID: "idle-1", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
 		{SessionID: "idle-2", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
 		{SessionID: "idle-3", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
@@ -590,16 +592,16 @@ func TestGCTier1_MaxClosuresPerCycle(t *testing.T) {
 	}
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo {
+		func() map[string][]conversation.SessionInfo {
 			mu.Lock()
 			defer mu.Unlock()
-			var remaining []SessionInfo
+			var remaining []conversation.SessionInfo
 			for _, s := range allSessions {
 				if !closed[s.SessionID] {
 					remaining = append(remaining, s)
 				}
 			}
-			return map[string][]SessionInfo{"ws-1": remaining}
+			return map[string][]conversation.SessionInfo{"ws-1": remaining}
 		},
 		func(id string) {
 			mu.Lock()
@@ -632,7 +634,7 @@ func TestGCTier1_MaxClosuresPerCycle(t *testing.T) {
 // TestGCTier1_MaxClosuresUnlimited verifies that MaxClosuresPerCycle=0 (unlimited)
 // closes all idle sessions in a single GC cycle.
 func TestGCTier1_MaxClosuresUnlimited(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{SessionID: "idle-1", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
 			{SessionID: "idle-2", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
@@ -646,7 +648,7 @@ func TestGCTier1_MaxClosuresUnlimited(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -668,7 +670,7 @@ func TestGCTier1_MaxClosuresUnlimited(t *testing.T) {
 // longer than AuxIdleTimeout are removed by Tier 3, while fresh sessions remain.
 func TestGCTier3_CleansUpStaleAuxiliarySessions(t *testing.T) {
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return map[string][]SessionInfo{} },
+		func() map[string][]conversation.SessionInfo { return map[string][]conversation.SessionInfo{} },
 		func(id string) {},
 	)
 
@@ -703,7 +705,7 @@ func TestGCTier3_CleansUpStaleAuxiliarySessions(t *testing.T) {
 // sessions that are within the AuxIdleTimeout window.
 func TestGCTier3_NoCleanupWhenAllFresh(t *testing.T) {
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return map[string][]SessionInfo{} },
+		func() map[string][]conversation.SessionInfo { return map[string][]conversation.SessionInfo{} },
 		func(id string) {},
 	)
 
@@ -737,7 +739,7 @@ func TestGCTier3_NoCleanupWhenAllFresh(t *testing.T) {
 // TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers verifies that sessions
 // WITH observers are kept alive regardless of LastObserverRemovedAt.
 func TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:             "has-observers",
@@ -755,7 +757,7 @@ func TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -783,7 +785,7 @@ func TestGCTier1_PeriodicSuspend_ClosesWithObservers(t *testing.T) {
 	// Next periodic is 2 hours away — well beyond the 30m threshold.
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-far",
@@ -800,7 +802,7 @@ func TestGCTier1_PeriodicSuspend_ClosesWithObservers(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -825,7 +827,7 @@ func TestGCTier1_PeriodicSuspend_ClosesWithObservers(t *testing.T) {
 // removes the flag and IsGCSuspended returns false for non-suspended sessions.
 func TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared(t *testing.T) {
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return nil },
+		func() map[string][]conversation.SessionInfo { return nil },
 		func(id string) {},
 	)
 
@@ -850,7 +852,7 @@ func TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared(t *testing.T) {
 // TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended verifies that regular
 // idle session closures do NOT set the GC-suspended flag (only periodic suspensions do).
 func TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "idle-session",
@@ -863,7 +865,7 @@ func TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended(t *testing.T) {
 	}
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {},
 	)
 
@@ -881,7 +883,7 @@ func TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers(t *testing.T) {
 	// Next periodic is 10 minutes away — within the 30m threshold.
 	close_ := time.Now().Add(10 * time.Minute)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-close",
@@ -897,7 +899,7 @@ func TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -918,7 +920,7 @@ func TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers(t *testing.T) {
 // non-periodic session with observers is never closed (the periodic suspend
 // heuristic does not apply to non-periodic sessions).
 func TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers(t *testing.T) {
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:     "non-periodic",
@@ -933,7 +935,7 @@ func TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -955,7 +957,7 @@ func TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_SkipsPrompting(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-prompting",
@@ -972,7 +974,7 @@ func TestGCTier1_PeriodicSuspend_SkipsPrompting(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -994,7 +996,7 @@ func TestGCTier1_PeriodicSuspend_SkipsPrompting(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-queue",
@@ -1011,7 +1013,7 @@ func TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1034,7 +1036,7 @@ func TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-just-resumed",
@@ -1050,7 +1052,7 @@ func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1075,7 +1077,7 @@ func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-grace",
@@ -1094,7 +1096,7 @@ func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1121,7 +1123,7 @@ func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:              "periodic-past-grace",
@@ -1139,7 +1141,7 @@ func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1166,7 +1168,7 @@ func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_WithConnectedClients(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:           "periodic-clients",
@@ -1184,7 +1186,7 @@ func TestGCTier1_PeriodicSuspend_WithConnectedClients(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1206,7 +1208,7 @@ func TestGCTier1_PeriodicSuspend_WithConnectedClients(t *testing.T) {
 func TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
 				SessionID:      "periodic-no-suspend",
@@ -1222,7 +1224,7 @@ func TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1253,7 +1255,7 @@ func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
 	workspaceUUID := "ws-bloat"
 	proc := newTestSharedProcess()
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		workspaceUUID: {
 			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
 			{SessionID: "s2", WorkspaceUUID: workspaceUUID, HasObservers: true},
@@ -1264,7 +1266,7 @@ func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
 	closed := make(map[string]bool)
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1338,14 +1340,14 @@ func TestGCTier4_SkipsPromptingSession(t *testing.T) {
 	workspaceUUID := "ws-prompting"
 	proc := newTestSharedProcess()
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		workspaceUUID: {
 			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true, IsPrompting: true},
 		},
 	}
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {},
 	)
 	m.mu.Lock()
@@ -1372,14 +1374,14 @@ func TestGCTier4_SkipsActiveRPCs(t *testing.T) {
 	proc := newTestSharedProcess()
 	proc.activeRPCs.Add(1)
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		workspaceUUID: {
 			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
 		},
 	}
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {},
 	)
 	m.mu.Lock()
@@ -1405,14 +1407,14 @@ func TestGCTier4_SkipsNonEmptyQueue(t *testing.T) {
 	workspaceUUID := "ws-queue"
 	proc := newTestSharedProcess()
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		workspaceUUID: {
 			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true, QueueLength: 1},
 		},
 	}
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {},
 	)
 	m.mu.Lock()
@@ -1439,14 +1441,14 @@ func TestGCTier4_DisabledWhenThresholdZero(t *testing.T) {
 	workspaceUUID := "ws-disabled"
 	proc := newTestSharedProcess()
 
-	sessions := map[string][]SessionInfo{
+	sessions := map[string][]conversation.SessionInfo{
 		workspaceUUID: {
 			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
 		},
 	}
 
 	m := newTestGCManager(
-		func() map[string][]SessionInfo { return sessions },
+		func() map[string][]conversation.SessionInfo { return sessions },
 		func(id string) {},
 	)
 	m.mu.Lock()

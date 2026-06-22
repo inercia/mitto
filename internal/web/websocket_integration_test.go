@@ -182,20 +182,20 @@ func TestGlobalEventsWebSocket_Broadcast(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Broadcast a session_created event
-	eventsManager.Broadcast(WSMsgTypeSessionCreated, map[string]string{
+	eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, map[string]string{
 		"session_id": "test-session-123",
 		"name":       "Test Session",
 	})
 
 	// Both clients should receive the broadcast
 	msg1 := readWSMessage(t, conn1, 2*time.Second)
-	if msg1.Type != WSMsgTypeSessionCreated {
-		t.Errorf("Client 1: Expected message type %q, got %q", WSMsgTypeSessionCreated, msg1.Type)
+	if msg1.Type != conversation.WSMsgTypeSessionCreated {
+		t.Errorf("Client 1: Expected message type %q, got %q", conversation.WSMsgTypeSessionCreated, msg1.Type)
 	}
 
 	msg2 := readWSMessage(t, conn2, 2*time.Second)
-	if msg2.Type != WSMsgTypeSessionCreated {
-		t.Errorf("Client 2: Expected message type %q, got %q", WSMsgTypeSessionCreated, msg2.Type)
+	if msg2.Type != conversation.WSMsgTypeSessionCreated {
+		t.Errorf("Client 2: Expected message type %q, got %q", conversation.WSMsgTypeSessionCreated, msg2.Type)
 	}
 
 	// Verify client count
@@ -953,7 +953,7 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 	readWSMessage(t, conn, 2*time.Second)
 
 	// Broadcast a config option changed event
-	eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+	eventsManager.Broadcast(conversation.WSMsgTypeConfigOptionChanged, map[string]interface{}{
 		"session_id": "test-session",
 		"config_id":  conversation.ConfigOptionCategoryMode,
 		"value":      "architect",
@@ -961,8 +961,8 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 
 	// Read the broadcast message
 	changedMsg := readWSMessage(t, conn, 2*time.Second)
-	if changedMsg.Type != WSMsgTypeConfigOptionChanged {
-		t.Errorf("Expected %q, got %q", WSMsgTypeConfigOptionChanged, changedMsg.Type)
+	if changedMsg.Type != conversation.WSMsgTypeConfigOptionChanged {
+		t.Errorf("Expected %q, got %q", conversation.WSMsgTypeConfigOptionChanged, changedMsg.Type)
 	}
 
 	// Verify the data

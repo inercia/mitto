@@ -1,6 +1,7 @@
 package web
 
 import (
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -258,7 +259,7 @@ func TestWriteConfigError_WithDetails(t *testing.T) {
 }
 
 func TestCheckWorkspaceConflicts_NoRemovedWorkspaces(t *testing.T) {
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1"},
 	})
@@ -280,7 +281,7 @@ func TestCheckWorkspaceConflicts_NoRemovedWorkspaces(t *testing.T) {
 }
 
 func TestCheckWorkspaceConflicts_NilStore(t *testing.T) {
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1"},
 		{WorkingDir: "/workspace2"},

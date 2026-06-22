@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,7 +30,7 @@ func TestHandleGetSessionSettings_EmptySettings(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -79,7 +80,7 @@ func TestHandleGetSessionSettings_WithSettings(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -117,7 +118,7 @@ func TestHandleGetSessionSettings_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -153,7 +154,7 @@ func TestHandleUpdateSessionSettings_PartialUpdate(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -224,7 +225,7 @@ func TestHandleUpdateSessionSettings_OverwriteExisting(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -276,7 +277,7 @@ func TestHandleUpdateSessionSettings_InitializeFromNil(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -318,7 +319,7 @@ func TestHandleUpdateSessionSettings_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -343,7 +344,7 @@ func TestHandleUpdateSessionSettings_NotFound(t *testing.T) {
 
 func TestHandleSessionSettings_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/someid/settings", nil)

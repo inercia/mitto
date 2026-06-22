@@ -1236,7 +1236,7 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 					// Tools already fetched for this workspace — broadcast cached result
 					// via the global events WebSocket (where the frontend handler lives).
 					if cached, ok := c.server.auxiliaryManager.GetCachedMCPTools(workspaceUUID); ok && len(cached) > 0 {
-						c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+						c.server.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
 							"workspace_uuid": workspaceUUID,
 							"tools":          cached,
 						})
@@ -1492,13 +1492,13 @@ func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
 		AuxiliaryManager: c.bgSession.GetAuxiliaryManager(),
 		OnTitleGenerated: func(sessionID, title string) {
 			// Notify this client
-			c.sendMessage(WSMsgTypeSessionRenamed, map[string]string{
+			c.sendMessage(conversation.WSMsgTypeSessionRenamed, map[string]string{
 				"session_id": sessionID,
 				"name":       title,
 			})
 
 			// Broadcast to global events
-			c.server.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+			c.server.eventsManager.Broadcast(conversation.WSMsgTypeSessionRenamed, map[string]string{
 				"session_id": sessionID,
 				"name":       title,
 			})
@@ -1633,7 +1633,7 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	// The frontend handler for mcp_tools_available is in the global events handler,
 	// not the per-session handler.
 	if c.server != nil && c.server.eventsManager != nil {
-		c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+		c.server.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
 			"workspace_uuid": workspaceUUID,
 			"tools":          tools,
 		})
@@ -2511,7 +2511,7 @@ func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []conversation.Ava
 // OnConfigOptionChanged is called when a session config option changes.
 // This is used to notify clients of mode changes and other config option updates.
 func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
-	c.sendMessage(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+	c.sendMessage(conversation.WSMsgTypeConfigOptionChanged, map[string]interface{}{
 		"session_id": c.sessionID,
 		"config_id":  configID,
 		"value":      value,

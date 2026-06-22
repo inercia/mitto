@@ -10,6 +10,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/web"
 )
@@ -181,7 +182,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// and WorkspaceAuxiliaryManager. No global initialization needed here.
 
 	// Create workspace save callback (only used when not from CLI)
-	var onWorkspaceSave web.WorkspaceSaveFunc
+	var onWorkspaceSave conversation.WorkspaceSaveFunc
 	if !fromCLI {
 		onWorkspaceSave = config.SaveWorkspaces
 	}

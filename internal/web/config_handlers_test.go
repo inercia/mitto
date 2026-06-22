@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,7 +40,7 @@ func TestHandleGetConfig(t *testing.T) {
 				},
 			},
 		},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
@@ -61,7 +62,7 @@ func TestHandleGetConfig(t *testing.T) {
 func TestHandleGetConfig_NilMittoConfig(t *testing.T) {
 	server := &Server{
 		config:         Config{},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
@@ -111,7 +112,7 @@ func TestHandleSaveConfig_ReadOnly(t *testing.T) {
 func TestHandleConfig_GET(t *testing.T) {
 	server := &Server{
 		config:         Config{},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
@@ -188,7 +189,7 @@ func TestHandleSaveConfig_ValidRequest(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "test-server"},
 	})
@@ -242,7 +243,7 @@ func TestHandleSaveConfig_ServerRenames_MigratesConversation(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("test-cmd", "old-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "old-server", false, nil)
 	sm.SetStore(store)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "old-server"},
@@ -292,7 +293,7 @@ func TestHandleSaveConfig_EmptyWorkspaces(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		config:         Config{},
@@ -321,7 +322,7 @@ func TestHandleSaveConfig_EmptyACPServers(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		config:         Config{},
@@ -591,7 +592,7 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "test-server"},
 	})
@@ -740,7 +741,7 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 				},
 			},
 		},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// First request — should get 200 with ETag

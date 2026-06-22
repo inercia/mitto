@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,7 +77,7 @@ func setupMittoDir(t *testing.T) string {
 // newBeadsTestServer returns a minimal *Server with a session manager
 // that has one known workspace at /test/workspace.
 func newBeadsTestServer() *Server {
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
@@ -193,7 +194,7 @@ func TestHandleBeadsStats_UnknownWorkspace(t *testing.T) {
 // TestHandleBeadsStats_StubReturnsSummary injects a stub client so the success
 // path is deterministic: a known workspace returns 200 with the summary JSON.
 func TestHandleBeadsStats_StubReturnsSummary(t *testing.T) {
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
@@ -289,7 +290,7 @@ func TestHandleBeadsCreate_BothEmpty(t *testing.T) {
 func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T) {
 	// Empty title + non-empty description: conversation.GenerateQuickTitle fallback is used
 	// (no auxiliaryManager wired), and the request reaches bd.Create → 200.
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
@@ -1290,7 +1291,7 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_NonExistentPrompt(t *testing.T) 
 func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *testing.T) {
 	// A prompt with parameters must be rejected with 400.
 	setupMittoDir(t)
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
@@ -1326,7 +1327,7 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *t
 func TestHandleBeadsUpstream_SetPromptsUpstream_ValidPromptRoundTrip(t *testing.T) {
 	// A valid (no-param) prompt name must be accepted and round-tripped via GET.
 	setupMittoDir(t)
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})
@@ -1373,7 +1374,7 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ValidPromptRoundTrip(t *testing.
 func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.T) {
 	// Switching from "prompts" to a regular tracker must clear the stored prompt names.
 	setupMittoDir(t)
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/test/workspace", ACPServer: "test-server"},
 	})

@@ -47,7 +47,7 @@ func TestFileServer_ServeFile(t *testing.T) {
 
 	// Create a session manager with the workspace
 	workspaceUUID := "test-workspace-uuid-123"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       workspaceUUID,
 			WorkingDir: tmpDir,
@@ -171,7 +171,7 @@ func TestFileServer_SymlinkSecurity(t *testing.T) {
 
 	// Create a session manager with the workspace
 	wsUUID := "symlink-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: workspaceDir,
@@ -193,7 +193,7 @@ func TestFileServer_SymlinkSecurity(t *testing.T) {
 
 func TestFileServer_MethodNotAllowed(t *testing.T) {
 	wsUUID := "method-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: "/tmp",
@@ -238,7 +238,7 @@ func TestFileServer_ContentType(t *testing.T) {
 	}
 
 	wsUUID := "content-type-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
@@ -280,7 +280,7 @@ func TestFileServer_ActiveSessionWorkspace(t *testing.T) {
 	}
 
 	// Create a session manager with the workspace configured
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: sessionWorkspace,
@@ -289,9 +289,7 @@ func TestFileServer_ActiveSessionWorkspace(t *testing.T) {
 	})
 
 	// Add an active session with a working directory
-	sm.mu.Lock()
-	sm.sessions["test-session"] = conversation.NewMinimalBackgroundSession("test-session", sessionWorkspace, wsUUID)
-	sm.mu.Unlock()
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSession("test-session", sessionWorkspace, wsUUID))
 
 	fs := NewFileServer(sm, nil)
 
@@ -410,7 +408,7 @@ func main() {
 	}
 
 	wsUUID := "markdown-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
@@ -514,7 +512,7 @@ func TestFileServer_MarkdownRenderingSecurityHeaders(t *testing.T) {
 	}
 
 	wsUUID := "md-security-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
@@ -563,7 +561,7 @@ func TestFileServer_MarkdownRenderingCodeHighlighting(t *testing.T) {
 	}
 
 	wsUUID := "md-code-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
@@ -609,7 +607,7 @@ func TestFileServer_MarkdownRenderingDarkLightMode(t *testing.T) {
 	}
 
 	wsUUID := "md-theme-test-uuid"
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,
@@ -658,7 +656,7 @@ func createPUTTestSetup(t *testing.T) (tmpDir, wsUUID string, fs *FileServer) {
 		t.Fatalf("Failed to create executable file: %v", err)
 	}
 
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces: []config.WorkspaceSettings{{
 			UUID:       wsUUID,
 			WorkingDir: tmpDir,

@@ -52,7 +52,7 @@ type Config struct {
 	// When true, workspace changes are NOT persisted to disk.
 	FromCLI bool
 	// OnWorkspaceSave is called when workspaces are modified (only if FromCLI is false).
-	OnWorkspaceSave WorkspaceSaveFunc
+	OnWorkspaceSave conversation.WorkspaceSaveFunc
 	// ConfigReadOnly indicates that configuration was loaded from a custom config file
 	// (via --config flag). When true, the Settings dialog is disabled in the UI.
 	// Note: RC file config is NOT fully read-only anymore - users can add servers via UI.
@@ -141,7 +141,7 @@ type Server struct {
 	eventsManager *GlobalEventsManager
 
 	// Session manager for background sessions that persist across WebSocket disconnects
-	sessionManager *SessionManager
+	sessionManager *conversation.SessionManager
 
 	// Session store for persistence (owned by the server, shared across handlers)
 	store *session.Store
@@ -164,7 +164,7 @@ type Server struct {
 	externalPort       int // Port for external listener (same as main port by default)
 
 	// Queue title worker for generating titles for queued messages
-	queueTitleWorker *QueueTitleWorker
+	queueTitleWorker *conversation.QueueTitleWorker
 
 	// Periodic runner for scheduled prompt delivery
 	periodicRunner *PeriodicRunner
@@ -290,10 +290,10 @@ func NewServer(config Config) (*Server, error) {
 	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
 
 	// Create session manager with workspace support
-	var sessionMgr *SessionManager
+	var sessionMgr *conversation.SessionManager
 	if len(workspaces) > 0 || !config.FromCLI {
 		// Use new options-based constructor for workspace persistence support
-		sessionMgr = NewSessionManagerWithOptions(SessionManagerOptions{
+		sessionMgr = conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 			Workspaces:      workspaces,
 			AutoApprove:     config.AutoApprove,
 			Logger:          logger,
@@ -303,7 +303,7 @@ func NewServer(config Config) (*Server, error) {
 		})
 	} else {
 		// Legacy single-workspace mode (CLI with no --dir flags and no saved workspaces)
-		sessionMgr = NewSessionManager(config.ACPCommand, config.ACPServer, config.AutoApprove, logger)
+		sessionMgr = conversation.NewSessionManager(config.ACPCommand, config.ACPServer, config.AutoApprove, logger)
 		sessionMgr.SetAPIPrefix(apiPrefix)
 	}
 	sessionMgr.SetStore(store)
@@ -321,7 +321,7 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
 		return sessionMgr.GetWorkspaceByUUID(workspaceUUID)
 	}
-	sessionMgr.SetACPProcessManager(acpProcessMgr)
+	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
 
 	// Start ACP process garbage collector to clean up idle sessions and processes.
 	// The GC periodically checks for sessions with no observers, no active prompts,
@@ -345,7 +345,7 @@ func NewServer(config Config) (*Server, error) {
 				gcConfig.MemoryRecycleThreshold = bytes
 			}
 		}
-		acpProcessMgr.StartGC(gcConfig, func() map[string][]SessionInfo {
+		acpProcessMgr.StartGC(gcConfig, func() map[string][]conversation.SessionInfo {
 			return sessionMgr.GetSessionInfoByWorkspace()
 		}, func(sessionID string) {
 			sessionMgr.CloseIdleSession(sessionID)
@@ -611,7 +611,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize queue title worker
-	s.queueTitleWorker = NewQueueTitleWorker(store, sessionMgr, auxiliaryManager, logger)
+	s.queueTitleWorker = conversation.NewQueueTitleWorker(store, sessionMgr, auxiliaryManager, logger)
 	s.queueTitleWorker.OnTitleGenerated = func(sessionID, messageID, title string) {
 		// Broadcast title update to all connected clients
 		s.eventsManager.Broadcast(WSMsgTypeQueueMessageTitled, map[string]string{
@@ -688,7 +688,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Set prompt resolver for periodic runner and session manager — resolves prompt names to text at execution time.
-	// Both use the same resolver: PeriodicRunner for scheduled prompts, SessionManager for interactive prompt-by-name.
+	// Both use the same resolver: PeriodicRunner for scheduled prompts, conversation.SessionManager for interactive prompt-by-name.
 	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
 	}
@@ -1026,7 +1026,7 @@ func (s *Server) Store() *session.Store {
 
 // GetSessionManager returns the server's session manager.
 // This is primarily used for testing to access session internals.
-func (s *Server) GetSessionManager() *SessionManager {
+func (s *Server) GetSessionManager() *conversation.SessionManager {
 	return s.sessionManager
 }
 
@@ -1138,7 +1138,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 // BroadcastSessionRenamed notifies all connected clients that a session was renamed.
 func (s *Server) BroadcastSessionRenamed(sessionID, newName string) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionRenamed, map[string]string{
 		"session_id": sessionID,
 		"name":       newName,
 	})
@@ -1171,7 +1171,7 @@ func (s *Server) BroadcastSessionArchived(sessionID string, archived bool, reaso
 	if len(reason) > 0 && reason[0] != "" {
 		data["archive_reason"] = string(reason[0])
 	}
-	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, data)
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionArchived, data)
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session archived", "session_id", sessionID, "archived", archived,
@@ -1198,7 +1198,7 @@ func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[
 
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionDeleted, map[string]string{
 		"session_id": sessionID,
 	})
 
@@ -1208,47 +1208,11 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	}
 }
 
-// buildPeriodicUpdatedData constructs the WebSocket payload map for a periodic_updated event.
-// periodic_configured: true if a periodic config exists (controls editor UI mode).
-// periodic_enabled: true if periodic runs are active (controls sidebar category + clock icon).
-func buildPeriodicUpdatedData(sessionID string, periodic *session.PeriodicPrompt) map[string]interface{} {
-	data := map[string]interface{}{
-		"session_id": sessionID,
-	}
-
-	if periodic != nil {
-		// periodic_configured: true means the session is in periodic mode (shows periodic UI)
-		data["periodic_configured"] = true
-		// periodic_enabled: true means periodic runs are active (locked state)
-		data["periodic_enabled"] = periodic.Enabled
-		// fresh_context: true means each scheduled run starts with a clean agent context
-		data["fresh_context"] = periodic.FreshContext
-		data["max_iterations"] = periodic.MaxIterations
-		data["iteration_count"] = periodic.IterationCount
-		data["frequency"] = map[string]interface{}{
-			"value": periodic.Frequency.Value,
-			"unit":  periodic.Frequency.Unit,
-		}
-		if periodic.Frequency.At != "" {
-			data["frequency"].(map[string]interface{})["at"] = periodic.Frequency.At
-		}
-		if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
-			data["next_scheduled_at"] = periodic.NextScheduledAt.Format(time.RFC3339)
-		}
-	} else {
-		// No periodic config - session is not in periodic mode
-		data["periodic_configured"] = false
-		data["periodic_enabled"] = false
-	}
-
-	return data
-}
-
 // BroadcastPeriodicUpdated notifies all connected clients that a session's periodic state changed.
 // This includes the full periodic config so clients can update their frequency panels.
 func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
-	data := buildPeriodicUpdatedData(sessionID, periodic)
-	s.eventsManager.Broadcast(WSMsgTypePeriodicUpdated, data)
+	data := conversation.BuildPeriodicUpdatedData(sessionID, periodic)
+	s.eventsManager.Broadcast(conversation.WSMsgTypePeriodicUpdated, data)
 
 	if s.logger != nil {
 		configured := periodic != nil
@@ -1262,7 +1226,7 @@ func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.Pe
 // BroadcastSessionStreaming notifies all connected clients that a session's streaming state changed.
 // This is called when a session starts (user sends a prompt) or stops streaming (agent completes).
 func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionStreaming, map[string]interface{}{
 		"session_id":   sessionID,
 		"is_streaming": isStreaming,
 	})
@@ -1507,9 +1471,9 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 	}
 }
 
-// sessionManagerAdapter adapts SessionManager to mcpserver.SessionManager interface.
+// sessionManagerAdapter adapts conversation.SessionManager to mcpserver.conversation.SessionManager interface.
 type sessionManagerAdapter struct {
-	sm *SessionManager
+	sm *conversation.SessionManager
 }
 
 // GetSession returns a running session by ID.

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,7 +30,7 @@ func TestHandleSessionImages_MethodNotAllowed(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -63,7 +64,7 @@ func TestHandleListImages_EmptyList(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -86,7 +87,7 @@ func TestHandleServeImage_SessionNotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -109,7 +110,7 @@ func TestHandleDeleteImage_SessionNotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -142,7 +143,7 @@ func TestHandleUploadImage_InvalidForm(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 

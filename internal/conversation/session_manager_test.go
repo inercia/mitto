@@ -1,4 +1,4 @@
-package web
+package conversation
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
-	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -148,7 +147,7 @@ func TestSessionManager_ResumeSession_AlreadyRunning(t *testing.T) {
 	}
 
 	// Manually add a mock background session to the manager
-	mockBS := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{SessionID: "test-session-123", ACPID: "acp-123"})
+	mockBS := NewTestBackgroundSession(BackgroundSessionTestOpts{SessionID: "test-session-123", ACPID: "acp-123"})
 	sm.mu.Lock()
 	sm.sessions["test-session-123"] = mockBS
 	sm.mu.Unlock()
@@ -645,7 +644,7 @@ func TestSessionManager_SessionCount(t *testing.T) {
 
 	// Add a mock session
 	sm.mu.Lock()
-	sm.sessions["test-1"] = conversation.NewMinimalBackgroundSession("test-1", "", "")
+	sm.sessions["test-1"] = NewMinimalBackgroundSession("test-1", "", "")
 	sm.mu.Unlock()
 
 	if sm.SessionCount() != 1 {
@@ -664,8 +663,8 @@ func TestSessionManager_ListRunningSessions(t *testing.T) {
 
 	// Add mock sessions
 	sm.mu.Lock()
-	sm.sessions["test-1"] = conversation.NewMinimalBackgroundSession("test-1", "", "")
-	sm.sessions["test-2"] = conversation.NewMinimalBackgroundSession("test-2", "", "")
+	sm.sessions["test-1"] = NewMinimalBackgroundSession("test-1", "", "")
+	sm.sessions["test-2"] = NewMinimalBackgroundSession("test-2", "", "")
 	sm.mu.Unlock()
 
 	sessions = sm.ListRunningSessions()
@@ -678,7 +677,7 @@ func TestSessionManager_GetSession(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 
 	// Add a mock session
-	bs := conversation.NewMinimalBackgroundSession("test-1", "", "")
+	bs := NewMinimalBackgroundSession("test-1", "", "")
 	sm.mu.Lock()
 	sm.sessions["test-1"] = bs
 	sm.mu.Unlock()
@@ -707,10 +706,10 @@ func TestSessionManager_GetActiveWorkingDirs(t *testing.T) {
 
 	// Add sessions with different working dirs
 	sm.mu.Lock()
-	sm.sessions["test-1"] = conversation.NewMinimalBackgroundSession("test-1", "/workspace1", "")
-	sm.sessions["test-2"] = conversation.NewMinimalBackgroundSession("test-2", "/workspace2", "")
-	sm.sessions["test-3"] = conversation.NewMinimalBackgroundSession("test-3", "/workspace1", "") // Duplicate
-	sm.sessions["test-4"] = conversation.NewMinimalBackgroundSession("test-4", "", "")            // Empty
+	sm.sessions["test-1"] = NewMinimalBackgroundSession("test-1", "/workspace1", "")
+	sm.sessions["test-2"] = NewMinimalBackgroundSession("test-2", "/workspace2", "")
+	sm.sessions["test-3"] = NewMinimalBackgroundSession("test-3", "/workspace1", "") // Duplicate
+	sm.sessions["test-4"] = NewMinimalBackgroundSession("test-4", "", "")            // Empty
 	sm.mu.Unlock()
 
 	dirs = sm.GetActiveWorkingDirs()
@@ -753,7 +752,7 @@ func TestSessionManager_ResolveWorkspaceIdentifier(t *testing.T) {
 
 	// Add an active session with the default workspace UUID but a specific working dir
 	sm.mu.Lock()
-	sm.sessions["test-session"] = conversation.NewMinimalBackgroundSession("test-session", "/my/project/dir", defaultUUID)
+	sm.sessions["test-session"] = NewMinimalBackgroundSession("test-session", "/my/project/dir", defaultUUID)
 	sm.mu.Unlock()
 
 	// Now ResolveWorkspaceIdentifier should return the session's working dir
@@ -889,7 +888,7 @@ func TestSessionManager_ActiveSessionCount(t *testing.T) {
 	}
 
 	// Add a mock session
-	mockSession := conversation.NewMinimalBackgroundSession("test-session-1", "", "")
+	mockSession := NewMinimalBackgroundSession("test-session-1", "", "")
 	sm.mu.Lock()
 	sm.sessions["test-session-1"] = mockSession
 	sm.mu.Unlock()
@@ -918,7 +917,7 @@ func TestSessionManager_PromptingSessionCount(t *testing.T) {
 	}
 
 	// Add a mock session that is prompting
-	mockSession := conversation.NewMinimalBackgroundSessionPrompting("test-session-1", true)
+	mockSession := NewMinimalBackgroundSessionPrompting("test-session-1", true)
 	sm.mu.Lock()
 	sm.sessions["test-session-1"] = mockSession
 	sm.mu.Unlock()
@@ -942,9 +941,9 @@ func TestSessionManager_ActiveAndPromptingCounts(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	// Add multiple sessions with different states
-	session1 := conversation.NewMinimalBackgroundSessionPrompting("s1", true)
-	session2 := conversation.NewMinimalBackgroundSessionPrompting("s2", false)
-	session3 := conversation.NewMinimalBackgroundSessionPrompting("s3", true)
+	session1 := NewMinimalBackgroundSessionPrompting("s1", true)
+	session2 := NewMinimalBackgroundSessionPrompting("s2", false)
+	session3 := NewMinimalBackgroundSessionPrompting("s3", true)
 
 	sm.mu.Lock()
 	sm.sessions["s1"] = session1
@@ -1009,7 +1008,7 @@ func TestSessionManager_CloseSessionGracefully_NotPrompting(t *testing.T) {
 
 	// Add a mock session that is not prompting
 	ctx, cancel := context.WithCancel(context.Background())
-	mockSession := conversation.NewTestBackgroundSessionPromptingWithCtx("test-session", false, ctx, cancel)
+	mockSession := NewTestBackgroundSessionPromptingWithCtx("test-session", false, ctx, cancel)
 
 	sm.mu.Lock()
 	sm.sessions["test-session"] = mockSession
@@ -1041,7 +1040,7 @@ func TestSessionManager_CloseSessionGracefully_WaitsForPrompt(t *testing.T) {
 
 	// Add a mock session that is prompting
 	ctx, cancel := context.WithCancel(context.Background())
-	mockSession := conversation.NewTestBackgroundSessionPromptingWithCtx("test-session", true, ctx, cancel)
+	mockSession := NewTestBackgroundSessionPromptingWithCtx("test-session", true, ctx, cancel)
 
 	sm.mu.Lock()
 	sm.sessions["test-session"] = mockSession
@@ -1080,7 +1079,7 @@ func TestSessionManager_CloseSessionGracefully_Timeout(t *testing.T) {
 	// Add a mock session that is prompting and won't complete
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // Clean up
-	mockSession := conversation.NewTestBackgroundSessionPromptingWithCtx("test-session", true, ctx, cancel)
+	mockSession := NewTestBackgroundSessionPromptingWithCtx("test-session", true, ctx, cancel)
 
 	sm.mu.Lock()
 	sm.sessions["test-session"] = mockSession
@@ -1185,7 +1184,7 @@ func TestSessionManager_PlanStateCache_SetAndGet(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	sessionID := "test-session-123"
-	entries := []conversation.PlanEntry{
+	entries := []PlanEntry{
 		{Content: "Task 1", Priority: "high", Status: "completed"},
 		{Content: "Task 2", Priority: "medium", Status: "in_progress"},
 		{Content: "Task 3", Priority: "low", Status: "pending"},
@@ -1227,7 +1226,7 @@ func TestSessionManager_PlanStateCache_ReturnsCopy(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	sessionID := "test-session-123"
-	entries := []conversation.PlanEntry{
+	entries := []PlanEntry{
 		{Content: "Task 1", Priority: "high", Status: "pending"},
 	}
 
@@ -1248,7 +1247,7 @@ func TestSessionManager_PlanStateCache_Clear(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	sessionID := "test-session-123"
-	entries := []conversation.PlanEntry{
+	entries := []PlanEntry{
 		{Content: "Task 1", Priority: "high", Status: "pending"},
 	}
 
@@ -1273,14 +1272,14 @@ func TestSessionManager_PlanStateCache_SetEmptyClears(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	sessionID := "test-session-123"
-	entries := []conversation.PlanEntry{
+	entries := []PlanEntry{
 		{Content: "Task 1", Priority: "high", Status: "pending"},
 	}
 
 	sm.SetCachedPlanState(sessionID, entries)
 
 	// Setting empty slice should clear
-	sm.SetCachedPlanState(sessionID, []conversation.PlanEntry{})
+	sm.SetCachedPlanState(sessionID, []PlanEntry{})
 
 	result := sm.GetCachedPlanState(sessionID)
 	if result != nil {
@@ -1303,8 +1302,8 @@ func TestSessionManager_PlanStateCache_MultipleSessions(t *testing.T) {
 	session1 := "session-1"
 	session2 := "session-2"
 
-	entries1 := []conversation.PlanEntry{{Content: "Session 1 Task", Priority: "high", Status: "pending"}}
-	entries2 := []conversation.PlanEntry{{Content: "Session 2 Task", Priority: "low", Status: "completed"}}
+	entries1 := []PlanEntry{{Content: "Session 1 Task", Priority: "high", Status: "pending"}}
+	entries2 := []PlanEntry{{Content: "Session 2 Task", Priority: "low", Status: "completed"}}
 
 	sm.SetCachedPlanState(session1, entries1)
 	sm.SetCachedPlanState(session2, entries2)
@@ -1335,7 +1334,7 @@ func TestSessionManager_PlanStateCache_ConcurrentAccess(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	sessionID := "test-session-123"
-	entries := []conversation.PlanEntry{
+	entries := []PlanEntry{
 		{Content: "Task 1", Priority: "high", Status: "pending"},
 	}
 
@@ -1368,7 +1367,7 @@ func TestSessionManager_CloseSession_ClearsPlanState(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	sessionID := "test-session-123"
-	entries := []conversation.PlanEntry{
+	entries := []PlanEntry{
 		{Content: "Task 1", Priority: "high", Status: "pending"},
 	}
 
@@ -1529,7 +1528,7 @@ func TestSessionManager_ResumeSession_WaitsForPending(t *testing.T) {
 	sm := NewSessionManager("", "test-server", true, nil)
 
 	sessionID := "pending-resume-session"
-	expectedBS := conversation.NewMinimalBackgroundSession(sessionID, "", "")
+	expectedBS := NewMinimalBackgroundSession(sessionID, "", "")
 
 	// Pre-register a pending resume entry as if a primary goroutine had already
 	// acquired the lock and registered it, but hasn't finished yet.
@@ -1539,7 +1538,7 @@ func TestSessionManager_ResumeSession_WaitsForPending(t *testing.T) {
 	sm.mu.Unlock()
 
 	const numWaiters = 5
-	results := make([]*conversation.BackgroundSession, numWaiters)
+	results := make([]*BackgroundSession, numWaiters)
 	errs := make([]error, numWaiters)
 
 	var wg sync.WaitGroup
@@ -1572,10 +1571,10 @@ func TestSessionManager_ResumeSession_WaitsForPending(t *testing.T) {
 		t.Fatal("goroutines deadlocked waiting for pending resume")
 	}
 
-	// Every goroutine should have received the same conversation.BackgroundSession pointer.
+	// Every goroutine should have received the same BackgroundSession pointer.
 	for i, result := range results {
 		if result != expectedBS {
-			t.Errorf("goroutine %d: got conversation.BackgroundSession %p, want %p (err=%v)",
+			t.Errorf("goroutine %d: got BackgroundSession %p, want %p (err=%v)",
 				i, result, expectedBS, errs[i])
 		}
 		if errs[i] != nil {
@@ -1612,7 +1611,7 @@ func TestSessionManager_ResumeSession_ConcurrentNoDeadlock(t *testing.T) {
 	sm.SetStore(store)
 
 	const goroutines = 8
-	results := make([]*conversation.BackgroundSession, goroutines)
+	results := make([]*BackgroundSession, goroutines)
 	errs := make([]error, goroutines)
 
 	// Release all goroutines simultaneously to maximise race likelihood.
@@ -1645,7 +1644,7 @@ func TestSessionManager_ResumeSession_ConcurrentNoDeadlock(t *testing.T) {
 	// (All will be nil / error since "echo test" is not a valid ACP server.)
 	for i := 1; i < goroutines; i++ {
 		if results[i] != results[0] {
-			t.Errorf("goroutine %d got different conversation.BackgroundSession than goroutine 0 (%p vs %p)",
+			t.Errorf("goroutine %d got different BackgroundSession than goroutine 0 (%p vs %p)",
 				i, results[i], results[0])
 		}
 		// Errors must match in nil-ness (exact pointer may differ for non-coalesced first run)

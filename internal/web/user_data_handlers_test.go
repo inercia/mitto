@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,7 +21,7 @@ func TestHandleGetSessionUserData_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -54,7 +55,7 @@ func TestHandleGetSessionUserData_EmptyData(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -110,7 +111,7 @@ metadata:
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetStore(store)
 
 	server := &Server{
@@ -168,7 +169,7 @@ func TestHandlePutSessionUserData_NoSchema(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetStore(store)
 
 	server := &Server{
@@ -216,7 +217,7 @@ func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetStore(store)
 
 	server := &Server{
@@ -244,7 +245,7 @@ func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
 
 func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspace/user-data-schema?working_dir=/nonexistent", nil)
@@ -259,7 +260,7 @@ func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
 
 func TestHandleWorkspaceUserDataSchema_MissingParam(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspace/user-data-schema", nil)

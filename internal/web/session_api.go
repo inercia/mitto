@@ -144,7 +144,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// blocks on a busy agent. r.Context() is still passed for the create call.
 	bs, err := s.sessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
 	if err != nil {
-		if err == ErrTooManySessions {
+		if err == conversation.ErrTooManySessions {
 			http.Error(w, "Maximum number of sessions reached (32)", http.StatusServiceUnavailable)
 			return
 		}
@@ -204,7 +204,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"status":         "active",
 		"beads_issue":    req.BeadsIssue,
 	}
-	s.eventsManager.Broadcast(WSMsgTypeSessionCreated, sessionData)
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, sessionData)
 
 	// Return session info
 	writeJSONCreated(w, sessionData)
@@ -305,6 +305,19 @@ type SessionListResponse struct {
 	// IsWaitingForChildren is true when the session is currently blocked on mitto_children_tasks_wait.
 	// This is a runtime state (not persisted) tracked by the SessionManager.
 	IsWaitingForChildren bool `json:"is_waiting_for_children,omitempty"`
+	// PeriodicStoppedReason is the reason the periodic loop was auto-stopped (empty when still running).
+	PeriodicStoppedReason string `json:"periodic_stopped_reason,omitempty"`
+	// PeriodicTrigger is "schedule" or "onCompletion" (resolved via EffectiveTrigger so schedule loops
+	// always report "schedule", never the empty-string default).
+	PeriodicTrigger string `json:"periodic_trigger,omitempty"`
+	// PeriodicIterationCount is the number of scheduled runs delivered so far.
+	PeriodicIterationCount int `json:"periodic_iteration_count,omitempty"`
+	// PeriodicMaxIterations is the per-prompt cap on scheduled runs (0 = unlimited).
+	PeriodicMaxIterations int `json:"periodic_max_iterations,omitempty"`
+	// PeriodicDelaySeconds is the wait in seconds after agent idle before the next onCompletion run.
+	PeriodicDelaySeconds int `json:"periodic_delay_seconds,omitempty"`
+	// PeriodicMaxDurationSeconds is the wall-clock cap in seconds since iterating started (0 = unlimited).
+	PeriodicMaxDurationSeconds int `json:"periodic_max_duration_seconds,omitempty"`
 }
 
 // handleListSessions handles GET /api/sessions
@@ -351,6 +364,15 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 				response[i].NextScheduledAt = periodic.NextScheduledAt
 			}
 			response[i].PeriodicFrequency = &periodic.Frequency
+			if periodic.StoppedReason != "" {
+				response[i].PeriodicStoppedReason = string(periodic.StoppedReason)
+			}
+			// Glance fields for conversation header display.
+			response[i].PeriodicTrigger = string(periodic.EffectiveTrigger())
+			response[i].PeriodicIterationCount = periodic.IterationCount
+			response[i].PeriodicMaxIterations = periodic.MaxIterations
+			response[i].PeriodicDelaySeconds = periodic.DelaySeconds
+			response[i].PeriodicMaxDurationSeconds = periodic.MaxDurationSeconds
 		}
 		// Check if session is currently waiting for children (runtime state from SessionManager)
 		if s.sessionManager != nil {
@@ -1905,10 +1927,7 @@ func (s *Server) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Requ
 
 	// Get global runner configs
 	sm := s.sessionManager
-	sm.mu.RLock()
-	globalRunnersByType := sm.globalRestrictedRunners
-	mittoConfig := sm.mittoConfig
-	sm.mu.RUnlock()
+	globalRunnersByType, mittoConfig := sm.GetGlobalRunnerInfo()
 
 	// Get agent-specific runner configs
 	var agentRunnersByType map[string]*config.WorkspaceRunnerConfig

@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"fmt"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"strings"
 	"time"
@@ -185,7 +186,7 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 
 	// Enqueue title generation if enabled (skip for named-prompt items — the prompt name is the label)
 	if s.queueTitleWorker != nil && queueConfig.ShouldAutoGenerateTitles() && req.PromptName == "" {
-		s.queueTitleWorker.Enqueue(QueueTitleRequest{
+		s.queueTitleWorker.Enqueue(conversation.QueueTitleRequest{
 			SessionID: sessionID,
 			MessageID: msg.ID,
 			Message:   req.Message,

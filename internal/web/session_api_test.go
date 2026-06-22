@@ -27,7 +27,7 @@ func TestHandleListSessions_EmptyStore(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -71,7 +71,7 @@ func TestHandleListSessions_WithSessions(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -96,7 +96,7 @@ func TestHandleListSessions_WithSessions(t *testing.T) {
 }
 
 func TestHandleGetWorkspaces(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.AddWorkspace(config.WorkspaceSettings{
 		WorkingDir: "/workspace1",
 		ACPServer:  "server1",
@@ -136,7 +136,7 @@ func TestHandleRunningSessions_Empty(t *testing.T) {
 	}
 	defer store.Close()
 
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -169,7 +169,7 @@ func TestHandleRunningSessions_Empty(t *testing.T) {
 
 func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// Test PUT method (not allowed)
@@ -185,7 +185,7 @@ func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 
 func TestHandleWorkspaces_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// Test PUT method (not allowed)
@@ -208,7 +208,7 @@ func TestHandleDeleteSession_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -230,7 +230,7 @@ func TestHandleSessionDetail_MethodNotAllowed(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -255,7 +255,7 @@ func TestHandleGetSession_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -289,7 +289,7 @@ func TestHandleGetSession_Found(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -312,7 +312,7 @@ func TestHandleUpdateSession_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -329,7 +329,7 @@ func TestHandleUpdateSession_NotFound(t *testing.T) {
 
 func TestHandleAddWorkspace_InvalidJSON(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		config:         Config{},
 	}
 
@@ -346,7 +346,7 @@ func TestHandleAddWorkspace_InvalidJSON(t *testing.T) {
 
 func TestHandleRemoveWorkspace_MissingDir(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		config:         Config{},
 	}
 
@@ -364,7 +364,7 @@ func TestHandleRemoveWorkspace_MissingDir(t *testing.T) {
 
 func TestHandleRemoveWorkspace_NotFound(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		config:         Config{},
 	}
 
@@ -382,7 +382,7 @@ func TestHandleRemoveWorkspace_NotFound(t *testing.T) {
 
 func TestHandleWorkspacePrompts_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// PUT is not supported (GET, POST, DELETE are)
@@ -398,7 +398,7 @@ func TestHandleWorkspacePrompts_MethodNotAllowed(t *testing.T) {
 
 func TestHandleWorkspacePrompts_MissingDir(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/prompts", nil)
@@ -413,7 +413,7 @@ func TestHandleWorkspacePrompts_MissingDir(t *testing.T) {
 
 func TestHandleWorkspacePrompts_Success(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/prompts?dir=/tmp", nil)
@@ -441,7 +441,7 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// First request - should return prompts with Last-Modified header
@@ -484,7 +484,7 @@ func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// First request - should return prompts
@@ -538,7 +538,7 @@ prompt: |
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// Request workspace prompts - should include the prompt from .mitto/prompts
@@ -614,7 +614,7 @@ prompt: |
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// Request workspace prompts
@@ -655,7 +655,7 @@ func TestHandleCreateSession_NoWorkspace(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		config:         Config{},
 	}
@@ -681,7 +681,7 @@ func TestHandleSessions_GET(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -714,7 +714,7 @@ func TestHandleGetSession_Events(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -747,7 +747,7 @@ func TestHandleDeleteSession_Success(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -806,7 +806,7 @@ func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -834,7 +834,7 @@ func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
 }
 
 func TestHandleWorkspaces_GET(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -851,7 +851,7 @@ func TestHandleWorkspaces_GET(t *testing.T) {
 }
 
 func TestHandleWorkspaces_POST_InvalidJSON(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -887,7 +887,7 @@ func TestHandleSessionDetail_GET(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -920,7 +920,7 @@ func TestHandleSessionDetail_DELETE(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -954,7 +954,7 @@ func TestHandleUpdateSession_Success(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -992,7 +992,7 @@ func TestHandleListSessions_Pagination(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1009,7 +1009,7 @@ func TestHandleListSessions_Pagination(t *testing.T) {
 
 func TestHandleRunningSessions_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/running", nil)
@@ -1050,7 +1050,7 @@ func TestHandleListSessions_WorkspaceFilter(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1086,7 +1086,7 @@ func TestHandleListSessions_Offset(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1121,7 +1121,7 @@ func TestHandleListSessions_WithSearch(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1137,7 +1137,7 @@ func TestHandleListSessions_WithSearch(t *testing.T) {
 }
 
 func TestHandleAddWorkspace_MissingWorkingDir(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1157,7 +1157,7 @@ func TestHandleAddWorkspace_MissingWorkingDir(t *testing.T) {
 }
 
 func TestHandleAddWorkspace_MissingACPServer(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1177,7 +1177,7 @@ func TestHandleAddWorkspace_MissingACPServer(t *testing.T) {
 }
 
 func TestHandleRemoveWorkspace_WithDir(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "server1"},
 	})
@@ -1205,10 +1205,10 @@ func TestHandleCreateSession_InvalidWorkspace(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Use NewSessionManagerWithOptions with empty workspaces list to ensure
+	// Use conversation.NewSessionManagerWithOptions with empty workspaces list to ensure
 	// no default workspace is configured. This simulates the case where
 	// a user hasn't configured any workspaces yet.
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces:  []config.WorkspaceSettings{},
 		AutoApprove: false,
 		Logger:      nil,
@@ -1234,7 +1234,7 @@ func TestHandleCreateSession_InvalidWorkspace(t *testing.T) {
 }
 
 func TestHandleGetWorkspaces_WithWorkspaces(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "server1"},
 		{WorkingDir: "/workspace2", ACPServer: "server2"},
@@ -1261,7 +1261,7 @@ func TestHandleGetWorkspaces_WithWorkspaces(t *testing.T) {
 }
 
 func TestHandleGetWorkspaces_FilterByWorkingDir(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "server1", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "server1", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "server1"},
 		{WorkingDir: "/workspace2", ACPServer: "server2"},
@@ -1322,7 +1322,7 @@ func TestHandleGetWorkspaces_FilterByWorkingDir(t *testing.T) {
 }
 
 func TestHandleGetWorkspaces_Empty(t *testing.T) {
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1366,7 +1366,7 @@ func TestHandleListSessions_WithACPServer(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1400,7 +1400,7 @@ func TestHandleSessionDetail_PATCH(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -1437,7 +1437,7 @@ func TestHandleListSessions_WithName(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1471,7 +1471,7 @@ func TestHandleUpdateSession_InvalidJSON(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1506,11 +1506,9 @@ func TestHandleRunningSessions_WithSessions(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("", "", false, nil)
+	sm := conversation.NewSessionManager("", "", false, nil)
 	// Add a mock running session
-	sm.mu.Lock()
-	sm.sessions["20260131-120030-abcd1234"] = conversation.NewMinimalBackgroundSession("20260131-120030-abcd1234", "/tmp", "")
-	sm.mu.Unlock()
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSession("20260131-120030-abcd1234", "/tmp", ""))
 
 	server := &Server{
 		sessionManager: sm,
@@ -1528,7 +1526,7 @@ func TestHandleRunningSessions_WithSessions(t *testing.T) {
 }
 
 func TestHandleWorkspaces_DELETE(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1567,7 +1565,7 @@ func TestHandleListSessions_SortOrder(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1591,7 +1589,7 @@ func TestHandleListSessions_InvalidLimit(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1615,7 +1613,7 @@ func TestHandleListSessions_InvalidOffset(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1627,6 +1625,164 @@ func TestHandleListSessions_InvalidOffset(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// =============================================================================
+// Periodic glance-fields tests for handleListSessions / SessionListResponse
+// =============================================================================
+
+func TestHandleListSessions_PeriodicGlanceFields_Schedule(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "20260131-120090-abcd1234"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	// Schedule periodic with explicit cap and duration.
+	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+		Prompt:             "hello",
+		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
+		Enabled:            true,
+		Trigger:            session.TriggerSchedule,
+		MaxIterations:      10,
+		IterationCount:     3,
+		DelaySeconds:       0,
+		MaxDurationSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	server := &Server{sessionManager: conversation.NewSessionManager("", "", false, nil), store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	server.handleListSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var sessions []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	s := sessions[0]
+
+	if s["periodic_trigger"] != "schedule" {
+		t.Errorf("periodic_trigger = %v, want %q", s["periodic_trigger"], "schedule")
+	}
+	if s["periodic_iteration_count"] != float64(3) {
+		t.Errorf("periodic_iteration_count = %v, want 3", s["periodic_iteration_count"])
+	}
+	if s["periodic_max_iterations"] != float64(10) {
+		t.Errorf("periodic_max_iterations = %v, want 10", s["periodic_max_iterations"])
+	}
+	if s["periodic_max_duration_seconds"] != float64(3600) {
+		t.Errorf("periodic_max_duration_seconds = %v, want 3600", s["periodic_max_duration_seconds"])
+	}
+	// delay_seconds=0 is omitempty so it must be absent.
+	if _, ok := s["periodic_delay_seconds"]; ok {
+		t.Errorf("periodic_delay_seconds should be absent for schedule trigger with 0 delay")
+	}
+}
+
+func TestHandleListSessions_PeriodicGlanceFields_OnCompletion(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "20260131-120091-abcd1234"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	// onCompletion with delay and max duration.
+	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+		Prompt:             "run on idle",
+		Enabled:            true,
+		Trigger:            session.TriggerOnCompletion,
+		DelaySeconds:       60,
+		MaxDurationSeconds: 7200,
+	}); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	server := &Server{sessionManager: conversation.NewSessionManager("", "", false, nil), store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	server.handleListSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var sessions []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	s := sessions[0]
+
+	if s["periodic_trigger"] != "onCompletion" {
+		t.Errorf("periodic_trigger = %v, want %q", s["periodic_trigger"], "onCompletion")
+	}
+	if s["periodic_delay_seconds"] != float64(60) {
+		t.Errorf("periodic_delay_seconds = %v, want 60", s["periodic_delay_seconds"])
+	}
+	if s["periodic_max_duration_seconds"] != float64(7200) {
+		t.Errorf("periodic_max_duration_seconds = %v, want 7200", s["periodic_max_duration_seconds"])
+	}
+}
+
+func TestHandleListSessions_PeriodicGlanceFields_EmptyTriggerReportsSchedule(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "20260131-120092-abcd1234"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	// Trigger="" is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
+	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+		Prompt:    "hello",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+		Trigger:   "",
+	}); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	server := &Server{sessionManager: conversation.NewSessionManager("", "", false, nil), store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	server.handleListSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var sessions []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	if sessions[0]["periodic_trigger"] != "schedule" {
+		t.Errorf("periodic_trigger = %v, want %q for empty Trigger field", sessions[0]["periodic_trigger"], "schedule")
 	}
 }
 
@@ -1656,12 +1812,10 @@ func TestHandleUpdateSession_ArchiveStopsACP(t *testing.T) {
 	}
 
 	// Create session manager with a mock running session
-	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm := conversation.NewSessionManager("echo test", "test-server", true, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	mockSession := conversation.NewTestBackgroundSessionWithCtx("test-session-archive", ctx, cancel)
-	sm.mu.Lock()
-	sm.sessions["test-session-archive"] = mockSession
-	sm.mu.Unlock()
+	sm.AddSessionForTest(mockSession)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1722,12 +1876,10 @@ func TestHandleUpdateSession_ArchiveWaitsForPrompt(t *testing.T) {
 	}
 
 	// Create session manager with a mock running session that is prompting
-	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm := conversation.NewSessionManager("echo test", "test-server", true, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	mockSession := conversation.NewTestBackgroundSessionPromptingWithCtx("test-session-archive-wait", true, ctx, cancel)
-	sm.mu.Lock()
-	sm.sessions["test-session-archive-wait"] = mockSession
-	sm.mu.Unlock()
+	sm.AddSessionForTest(mockSession)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1791,7 +1943,7 @@ func TestHandleUpdateSession_UnarchiveDoesNotStartACP(t *testing.T) {
 	}
 
 	// Create session manager (no running sessions)
-	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm := conversation.NewSessionManager("echo test", "test-server", true, nil)
 	sm.SetStore(store)
 
 	server := &Server{
@@ -1865,7 +2017,7 @@ func TestHandleUpdateSession_ArchiveChildDeletesInstead(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -1910,7 +2062,7 @@ func TestHandleUpdateSession_ArchiveTopLevelAllowed(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -2164,6 +2316,75 @@ func TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields(t *testin
 	}
 	if stored.MaxDurationSeconds != 7200 {
 		t.Errorf("MaxDurationSeconds after PATCH = %d, want 7200", stored.MaxDurationSeconds)
+	}
+}
+
+// TestHandleSessionPeriodic_PatchResetCounters verifies that PATCHing with
+// reset_counters=true (used when restoring a loop that hit its cap) re-enables the
+// loop and resets IterationCount=0 and FirstRunAt=nil (elapsed time = 0).
+func TestHandleSessionPeriodic_PatchResetCounters(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-reset-counters-patch"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{store: store, eventsManager: NewGlobalEventsManager()}
+
+	// Seed an onCompletion config with a duration cap.
+	putPeriodicForTest(t, server, sid, PeriodicPromptRequest{
+		Prompt:             "keep going",
+		Enabled:            true,
+		Trigger:            session.TriggerOnCompletion,
+		DelaySeconds:       30,
+		MaxDurationSeconds: 60,
+	})
+
+	// Simulate two completed runs, then auto-stop on the duration cap.
+	ps := store.Periodic(sid)
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent: %v", err)
+	}
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent: %v", err)
+	}
+	if err := ps.MarkStopped(session.StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped: %v", err)
+	}
+
+	// PATCH restore with reset_counters=true.
+	enabled := true
+	reset := true
+	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{Enabled: &enabled, ResetCounters: &reset})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.handleSessionPeriodic(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get periodic after PATCH: %v", err)
+	}
+	if !stored.Enabled {
+		t.Error("Enabled after restore = false, want true")
+	}
+	if stored.IterationCount != 0 {
+		t.Errorf("IterationCount after reset = %d, want 0", stored.IterationCount)
+	}
+	if stored.FirstRunAt != nil {
+		t.Errorf("FirstRunAt after reset = %v, want nil", stored.FirstRunAt)
+	}
+	if stored.StoppedReason != "" {
+		t.Errorf("StoppedReason after restore = %q, want empty", stored.StoppedReason)
 	}
 }
 
@@ -2613,7 +2834,7 @@ func TestHandleUpdateSession_BeadsIssue(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -2673,7 +2894,7 @@ func TestToggleEnabled_SingleDocFile(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -2726,7 +2947,7 @@ func TestToggleEnabled_MultiDocFile(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -2775,7 +2996,7 @@ func TestToggleEnabled_GlobalProcessor(t *testing.T) {
 	// simulates a global/builtin processor.
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -2981,7 +3202,7 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	decode := func(t *testing.T, body []byte) ([]string, bool) {
@@ -3089,7 +3310,7 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -3161,10 +3382,8 @@ func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 		},
 	})
 
-	sm := NewSessionManager("", "", false, nil)
-	sm.mu.Lock()
-	sm.sessions[sid] = bs
-	sm.mu.Unlock()
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.AddSessionForTest(bs)
 
 	server := &Server{
 		store:          store,
