@@ -68,25 +68,32 @@ go test -v -tags integration ./tests/integration/inprocess/
 4. Store in `useWebSocket.js` and pass through `app.js`
 5. Update mock ACP server and add integration test
 
-## Handler Migration Pattern (Incremental)
+## Handler Migration Pattern (Complete)
 
-**Issue**: `internal/web/` has 12+ flat `*_api.go` files (500–1000+ lines each) mixing dispatcher logic with handler implementations. **Goal**: Extract handlers into `internal/web/handlers/` sub-package one handler at a time.
+**Status**: ✅ COMPLETE. All 16 REST handlers extracted from flat `*_api.go` files into `internal/web/handlers/` sub-package.
 
-**Key insight**: Do NOT migrate all handlers at once. Instead, identify the **dispatcher-coupled** vs. **directly-registered** split:
+**Routing dispatchers stay flat** in `server.go` (4 methods): `handleConfig`, `handleSessions`, `handleSessionDetail`, `handleWorkspacePrompts`. These are pure method/path routers that delegate to `s.apiHandlers.*`.
 
-- **Dispatcher-coupled handlers**: Take `sessionID` arg, called by `handleSessionDetail()` dispatcher. Safe to migrate one per increment; dispatcher stays flat and delegates via method call.
-- **Directly-registered handlers**: Standard `(w, r)` signature registered in `server.go`. Larger/riskier; usually part of bigger files (e.g., `beads_api.go`).
+**WebSocket transport handlers stay flat** in `server.go` (2 methods): `handleGlobalEventsWS`, `handleSessionWS`. These are outside REST handler scope (explicitly excluded from refactor scope).
 
-**Migration checklist (per handler)**:
-1. Identify all dependencies (Store, SessionManager, etc.) the handler needs
-2. Add new fields to `handlers.Deps` struct only if missing
-3. Create `internal/web/handlers/<name>.go` with `(h *Handlers) Handle<Name>(w, r, args...)` method
-4. Wire the new fields into `handlers.New()` call in `server.go`
-5. Update dispatcher call site to invoke the handler method instead of local function
-6. Delete the original flat function (no separate test file needed if tests already exist)
-7. Run: `go build ./...`, `go vet ./internal/web/...`, `go test ./internal/web/handlers/`
+**Two categories migrated**:
+- **Dispatcher-coupled handlers** (11): Called with `sessionID` arg by `handleSessionDetail()`. Safe incremental migration per handler.
+- **Directly-registered handlers** (5): Standard `(w, r)` signature. Migrated in groups from `beads_api.go`, etc.
 
-**Stop condition**: When all handlers are extracted and flat `*_api.go` files can be retired.
+**Wiring pattern**:
+```go
+// In NewServer:
+handlers.New(handlers.Deps{
+    Store:          store,
+    SessionManager: sessionMgr,
+    // ... extend conservatively
+})
+
+// Dispatcher delegates:
+s.apiHandlers.HandleSessionPrune(w, r, sessionID)
+```
+
+**Key constraint**: `handlers` pkg never imports `internal/web` to avoid circular deps. Dependencies flow only one direction: `web → handlers`.
 
 ## Model Selection & Preferred Models
 

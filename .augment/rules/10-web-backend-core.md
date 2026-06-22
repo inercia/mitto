@@ -145,32 +145,43 @@ bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acp
 clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 ```
 
-## Handler Migration to Sub-packages
+## Handler Migration to Sub-packages (Complete)
 
-The `internal/web/handlers/` sub-package incrementally extracts flat API handlers. Two categories:
+✅ All 16 REST handlers extracted into `internal/web/handlers/` sub-package.
 
-### Directly-Registered Handlers
-- Standard `func(w http.ResponseWriter, r *http.Request)` signature
-- Registered in `server.go` via `mux.HandleFunc()` or `mux.Handle()`
-- Clean migration: new handler file, extend `Deps` facade, wire in `NewServer()`
-- **Example**: `beads_api.go` handlers are directly-registered (large/risky, migrate by groups)
+### Scope Boundaries (Fixed)
 
-### Dispatcher-Coupled Handlers
-- Take extra args like `sessionID` or sub-path from dispatcher
-- Called by `handleSessionDetail()` in `session_api.go` (the dispatcher stays flat)
-- Dispatcher invokes handler method: `s.apiHandlers.HandleSessionPrune(w, r, sessionID)`
-- **Examples**: Session settings, changes, periodic, queue, image, file, user-data, prune
-- Safe to migrate one-at-a-time without moving the dispatcher
+**Routing dispatchers** (stay in `server.go`):
+- `handleConfig`, `handleSessions`, `handleSessionDetail`, `handleWorkspacePrompts`
+- Pure method/path switches → delegate to `s.apiHandlers.*`
+- No substantive REST logic; routing stays flat per acceptance criteria
+
+**WebSocket transport handlers** (stay in `server.go`):
+- `handleGlobalEventsWS`, `handleSessionWS`
+- Outside REST scope (not in affected-files list of refactor issue)
+- Connection upgrade/lifecycle, not REST request/response
+
+### Handler Categories (Migrated)
+
+**Dispatcher-coupled** (11 handlers):
+- Called by routing dispatcher with extra args (`sessionID`, etc.)
+- Examples: `HandleSessionPrune`, `HandleSessionChanges`, `HandleSessionSettings`, etc.
+- Safe incremental migration; dispatcher delegates via `s.apiHandlers.Handle<Name>(w, r, ...)`
+
+**Directly-registered** (5 handlers):
+- Standard `func(w, r)` signature registered in `server.go` routing
+- Examples: `HandleBeadsDetails`, `HandleImageUpload`, `HandleFileDownload`, etc.
+- Migrated in groups to reduce risk
 
 ### Deps Facade
-Inject dependencies via `handlers.Deps` struct:
+
 ```go
 handlers.New(handlers.Deps{
-    Store:          store,
-    SessionManager: sessionMgr,
-    // ... other fields
+    Store:             store,
+    SessionManager:    sessionMgr,
+    Logger:            logger,
+    // Add conservatively; only fields needed for current handler(s)
 })
 ```
-- No circular imports: `conversation`/`session` packages never import `internal/web`
-- Extend conservatively; only add fields needed for the handler being migrated
-- Avoids coupling handlers to server internals
+
+**Key constraint**: `handlers` pkg must NOT import `internal/web` (no circular deps). Dependency direction: `web → handlers` only. All dependencies injected via `Deps` struct.
