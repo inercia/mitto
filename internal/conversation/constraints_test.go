@@ -167,7 +167,7 @@ func TestConstraintModelSwitchBudgetMath(t *testing.T) {
 		maxRetries        = 3                      // setSessionModelMaxAttempts
 		maxAttemptTimeout = 8 * time.Second        // setSessionModelAttemptTimeout
 		retryBaseDelay    = 300 * time.Millisecond // setSessionModelRetryBaseDelay
-		retryJitterRatio  = 0.5                     // setSessionModelRetryJitterRatio
+		retryJitterRatio  = 0.5                    // setSessionModelRetryJitterRatio
 	)
 
 	// Max backoff across all retry cycles (attempt 2 + attempt 3, each jittered up).

@@ -3,6 +3,8 @@ package conversation
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -281,4 +283,134 @@ func BackoffDelay(attempt int, baseDelay, maxDelay time.Duration, jitterRatio fl
 	}
 
 	return delay
+}
+
+// httpStatusRegex matches HTTP status codes in ACP error strings.
+// It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
+var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
+
+// isContextTooLargeError returns true if the error indicates the AI model
+// rejected the prompt because the conversation context is too large (HTTP 413
+// or an equivalent model-specific error phrase).
+//
+// The ACP server forwards HTTP 413 responses as JSON-RPC -32603 "Internal error"
+// messages, so the numeric status code or the model-specific phrase may appear
+// anywhere in the error string.  We keep the list of patterns here (rather than
+// inlining them in formatACPError) so that the queue-advancement logic can reuse
+// the same predicate without duplicating strings.
+func isContextTooLargeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	errMsgLower := strings.ToLower(errMsg)
+	return strings.Contains(errMsg, "413") ||
+		strings.Contains(errMsgLower, "context too large") ||
+		strings.Contains(errMsgLower, "context_too_long") ||
+		strings.Contains(errMsgLower, "context_length_exceeded") ||
+		strings.Contains(errMsgLower, "context window is full") ||
+		strings.Contains(errMsgLower, "prompt is too long") ||
+		strings.Contains(errMsgLower, "maximum context length") ||
+		strings.Contains(errMsgLower, "context too large for model")
+}
+
+// isRateLimitError returns true if the error indicates the upstream API is
+// rate-limiting the session.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsgLower := strings.ToLower(err.Error())
+	return strings.Contains(errMsgLower, "rate limit") || strings.Contains(errMsgLower, "too many requests")
+}
+
+// formatACPError transforms ACP errors into user-friendly messages.
+// It detects common error patterns and provides actionable guidance.
+func formatACPError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	errMsg := err.Error()
+
+	// SDK control request timeout (CLI subprocess died, ACP tried to reconnect and timed out)
+	// This is the 60s DEFAULT_CONTROL_REQUEST_TIMEOUT in claude-code-agent-sdk
+	if strings.Contains(errMsg, "Control request timed out") ||
+		strings.Contains(errMsg, "control request timed out") {
+		return "The AI agent's internal connection to the CLI timed out. " +
+			"This usually means the CLI subprocess crashed. The agent will attempt to restart automatically."
+	}
+
+	// HTTP 413 / context-too-large errors from the AI model.
+	// Checked before the generic -32603 catch-all so users get an actionable message.
+	if isContextTooLargeError(err) {
+		return "⚠️ The conversation context is too large for the model. " +
+			"Please start a new conversation. You can ask the agent to summarize the key points first if needed."
+	}
+
+	// Timeout errors from ACP server (tool execution took too long)
+	if strings.Contains(errMsg, "aborted due to timeout") {
+		return "A tool operation timed out. The AI agent's tool call took too long to complete. " +
+			"Try breaking your request into smaller steps, or ask for a more specific task."
+	}
+
+	// Connection/transport errors
+	if strings.Contains(errMsg, "peer disconnected") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "stream ended unexpectedly") {
+		return "Lost connection to the AI agent. The agent process may have crashed or been restarted. " +
+			"Please try sending your message again."
+	}
+
+	// Context cancelled (user cancelled or session closed)
+	if strings.Contains(errMsg, "context canceled") ||
+		strings.Contains(errMsg, "context deadline exceeded") {
+		return "The request was cancelled. Please try again."
+	}
+
+	// Rate limiting
+	if isRateLimitError(err) {
+		return "Rate limit reached. Please wait a moment before sending another message."
+	}
+
+	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.
+	// Previously this required "details" to be present in the message; without it the
+	// raw JSON-RPC error string was shown to the user. Now we always return a
+	// user-friendly message whenever the -32603 code is detected.
+	if strings.Contains(errMsg, "-32603") && strings.Contains(errMsg, "Internal error") {
+		if httpStatus := extractHTTPStatus(errMsg); httpStatus > 0 {
+			switch httpStatus {
+			case 408:
+				return fmt.Sprintf("The AI service request timed out (HTTP %d). The service may be overloaded — please try again in a moment.", httpStatus)
+			case 500:
+				return fmt.Sprintf("The AI service encountered a server error (HTTP %d). Please try again.", httpStatus)
+			case 502, 503:
+				return fmt.Sprintf("The AI service is temporarily unavailable (HTTP %d). Please try again shortly.", httpStatus)
+			case 504:
+				return fmt.Sprintf("The AI service gateway timed out (HTTP %d). Please try again.", httpStatus)
+			default:
+				return fmt.Sprintf("The AI service returned an error (HTTP %d). Please try again, or simplify your request if the problem persists.", httpStatus)
+			}
+		}
+		return "The AI agent encountered an internal error. Please try again, " +
+			"or simplify your request if the problem persists."
+	}
+
+	// Default: return original error with prefix
+	return "Prompt failed: " + errMsg
+}
+
+// extractHTTPStatus tries to extract an HTTP status code from an error string.
+// It searches for common patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
+// Returns 0 if no HTTP status code is found or the extracted value is outside the 4xx–5xx range.
+func extractHTTPStatus(errMsg string) int {
+	matches := httpStatusRegex.FindStringSubmatch(errMsg)
+	if len(matches) >= 2 {
+		status, err := strconv.Atoi(matches[1])
+		if err == nil && status >= 400 && status < 600 {
+			return status
+		}
+	}
+	return 0
 }
