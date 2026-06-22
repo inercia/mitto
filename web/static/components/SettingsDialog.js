@@ -177,7 +177,7 @@ export function FolderListEditor({
               <button
                 type="button"
                 onClick=${() => removeFolder(idx)}
-                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
                 data-tip="Remove folder"
                 aria-label="Remove folder"
               >
@@ -295,7 +295,7 @@ export function AutoChildrenEditor({
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-left"
+                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom"
                       data-tip="Remove child"
                       aria-label="Remove child"
                     >
@@ -785,7 +785,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                       <button
                         type="button"
                         onClick=${() => removeEnvVar(idx)}
-                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
                         data-tip="Remove variable"
                         aria-label="Remove variable"
                       >
@@ -929,7 +929,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
             <button
               type="button"
               onClick=${() => setBackgroundColor("")}
-              class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+              class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
               data-tip="Clear color"
               aria-label="Clear color"
             >
@@ -2385,7 +2385,7 @@ export function SettingsDialog({
                                           ${srv.name}
                                           ${srv.type && html`
                                             <span
-                                              class="badge badge-sm bg-purple-500/20 text-purple-400 tooltip tooltip-top"
+                                              class="badge badge-sm bg-purple-500/20 text-purple-400 tooltip tooltip-bottom"
                                               data-tip="Server type for prompt matching"
                                             >
                                               ${srv.type}
@@ -2395,7 +2395,7 @@ export function SettingsDialog({
                                             (tag) => html`
                                               <span
                                                 key=${tag}
-                                                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-top"
+                                                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
                                                 data-tip="Tag"
                                               >
                                                 ${tag}
@@ -2435,7 +2435,7 @@ export function SettingsDialog({
                                             e.stopPropagation();
                                             duplicateServer(srv.name);
                                           }}
-                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-left"
+                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-bottom"
                                           data-tip="Duplicate server"
                                           aria-label="Duplicate server"
                                         >
@@ -2447,7 +2447,7 @@ export function SettingsDialog({
                                             e.stopPropagation();
                                             removeServer(srv.name);
                                           }}
-                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-left"
+                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-bottom"
                                           data-tip="Remove server"
                                           aria-label="Remove server"
                                         >
@@ -2690,7 +2690,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
                                                 data-tip="Remove folder"
                                                 aria-label="Remove folder"
                                               >
@@ -2824,7 +2824,7 @@ export function SettingsDialog({
                                                     [runner.type]: newConfig,
                                                   });
                                                 }}
-                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
                                                 data-tip="Remove folder"
                                                 aria-label="Remove folder"
                                               >

@@ -56,7 +56,7 @@ export function ToastContainer({ toasts, onDismiss }) {
                     e.stopPropagation();
                     onDismiss(toast.id);
                   }}
-                  class="btn btn-ghost btn-xs btn-circle tooltip tooltip-left"
+                  class="btn btn-ghost btn-xs btn-circle tooltip tooltip-bottom"
                   data-tip="Dismiss"
                   aria-label="Dismiss"
                 >

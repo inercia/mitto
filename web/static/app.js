@@ -2265,16 +2265,13 @@ function App() {
               class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
                 ? "text-mitto-text-muted"
                 : connected
-                  ? "cursor-pointer hover:text-mitto-accent-400 transition-colors"
-                  : "text-mitto-text-muted cursor-pointer hover:text-mitto-text-secondary transition-colors"}"
-              onClick=${activeSessionId ? handleToggleSidePanel : undefined}
+                  ? ""
+                  : "text-mitto-text-muted"}"
               data-tip=${activeSessionId
                 ? sessionInfo?.name || "New conversation"
                 : ""}
               aria-label=${activeSessionId
-                ? connected
-                  ? "Click to view properties"
-                  : "Not connected — click to view properties"
+                ? sessionInfo?.name || "New conversation"
                 : ""}
             >
               ${activeSessionId

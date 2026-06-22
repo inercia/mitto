@@ -263,7 +263,7 @@ export function MessageList({
         <div class="scroll-to-bottom-wrapper">
           <button
             onClick=${() => onScrollToBottom(true)}
-            class="btn btn-circle scroll-to-bottom-btn tooltip tooltip-left ${hasNewMessages
+            class="btn btn-circle scroll-to-bottom-btn tooltip tooltip-bottom ${hasNewMessages
               ? "has-new"
               : ""}"
             data-tip="Scroll to bottom"

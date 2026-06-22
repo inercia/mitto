@@ -1173,7 +1173,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
           : html`
             <div
               ref=${descViewRef}
-              class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-top"
+              class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-bottom"
               onClick=${startEditDesc}
               data-tip="Click to edit"
             >
@@ -1216,7 +1216,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
         />`
       : html`
         <div
-          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2 tooltip tooltip-top"
+          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2 tooltip tooltip-bottom"
           onClick=${startEditAssignee}
           data-tip="Click to edit"
         >
@@ -1257,7 +1257,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
       : html`
         <div
           ref=${notesViewRef}
-          class="card border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-top"
+          class="card border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-bottom"
           onClick=${startEditNotes}
           data-tip="Click to edit"
         >
@@ -1291,7 +1291,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                 type="button"
                 onClick=${() => removeCreateDep(d.id)}
                 disabled=${submitting}
-                class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-left"
+                class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-bottom"
                 data-tip="Remove dependency"
                 aria-label="Remove dependency"
               >
@@ -1323,7 +1323,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
             type="button"
             onClick=${addCreateDep}
             aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
-            class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-top ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
+            class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
             data-tip="Add dependency"
             aria-label="Add dependency"
           >
@@ -1356,7 +1356,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                 <button
                   type="button"
                   onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
-                  class="input input-xs w-full min-w-0 text-left hover:underline tooltip tooltip-top"
+                  class="input input-xs w-full min-w-0 text-left hover:underline tooltip tooltip-bottom"
                   data-tip=${"Open " + d.id}
                 >
                   <span class="font-mono text-xs text-mitto-accent-400 shrink-0">${d.id}</span>
@@ -1366,7 +1366,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                   type="button"
                   onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
                   aria-disabled=${depsBusy ? "true" : "false"}
-                  class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-left ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
+                  class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
                   data-tip="Remove dependency"
                   aria-label="Remove dependency"
                 >
@@ -1397,7 +1397,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
               type="button"
               onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
               aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-top ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
+              class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
               data-tip="Add dependency"
               aria-label="Add dependency"
             >
@@ -1548,7 +1548,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                 <button
                   type="button"
                   onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === data.parent) || { id: data.parent })}
-                  class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-top"
+                  class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-bottom"
                   data-tip=${"Open " + data.parent}
                 >${data.parent}</button>
               `)}
@@ -1565,7 +1565,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                       <button
                         type="button"
                         onClick=${() => onSelectIssue && onSelectIssue(c)}
-                        class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-top"
+                        class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-bottom"
                         data-tip="Open ${c.id}"
                       >
                         ${statusBadge(c.status)}
@@ -1626,7 +1626,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                           type="button"
                           onClick=${startAddComment}
                           disabled=${savingComment}
-                          class="btn btn-ghost btn-xs mt-2 inline-flex tooltip tooltip-top"
+                          class="btn btn-ghost btn-xs mt-2 inline-flex tooltip tooltip-bottom"
                           data-tip="Add comment"
                         >
                           ${savingComment
@@ -2772,7 +2772,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       ${showChevron
         ? html`<button
             type="button"
-            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-right"
+            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-bottom"
             data-tip=${epicExpanded ? "Collapse epic" : "Expand epic"}
             aria-label=${epicExpanded ? "Collapse epic" : "Expand epic"}
             aria-expanded=${epicExpanded ? "true" : "false"}
@@ -2799,7 +2799,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       <div class="list-col-grow flex flex-col gap-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           ${isStreamingIssue
-            ? html`<span class="shrink-0 text-mitto-accent tooltip tooltip-right" data-tip="A linked conversation is responding..." aria-label="A linked conversation is responding...">
+            ? html`<span class="shrink-0 text-mitto-accent tooltip tooltip-bottom" data-tip="A linked conversation is responding..." aria-label="A linked conversation is responding...">
                 <span
                   class="loading loading-ring loading-xs"
                 ></span>
@@ -2819,7 +2819,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           ${priorityBadge(issue.priority)}
           ${childCount > 0 ? html`
             <span
-              class="inline-flex items-center gap-1 text-xs text-purple-300 tooltip tooltip-top"
+              class="inline-flex items-center gap-1 text-xs text-purple-300 tooltip tooltip-bottom"
               data-tip="${childCount} child issue${childCount === 1 ? "" : "s"}"
             >
               <${LayersIcon} className="w-3.5 h-3.5" />
@@ -2834,7 +2834,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           ? html`<button
               type="button"
               onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openCreateInEpic(issue.id); }}
-              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-top"
+              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-bottom"
               data-tip="New issue in epic"
               aria-label="New issue in epic"
               data-testid="beads-issue-add-child"
@@ -2845,7 +2845,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <button
           type="button"
           onClick=${(e) => handleRowMenuButton(e, issue)}
-          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-left"
+          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-bottom"
           data-tip="More actions"
           aria-label="More actions"
           data-testid="beads-issue-menu"

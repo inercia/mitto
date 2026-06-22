@@ -24,6 +24,8 @@ import {
   DuplicateIcon,
   ChevronRightIcon,
   ChevronDownIcon,
+  ExpandIcon,
+  CollapseIcon,
   ServerIcon,
   EditIcon,
   PlusIcon,
@@ -92,6 +94,29 @@ const BEADS_UPSTREAM_HELP = {
   },
 };
 
+// When the tree has more folders than this, they start collapsed by default.
+// Users can still expand individual folders; that explicit choice is persisted
+// and always wins over this count-based default.
+const WORKSPACES_EDITOR_COLLAPSE_THRESHOLD = 5;
+
+// Helpers to persist per-folder expansion state for the workspaces editor tree.
+function getEditorFolderExpansion(folderName, defaultExpanded = true) {
+  try {
+    const state = localStorage.getItem(`workspaces-editor-folder-${folderName}`);
+    return state === null ? defaultExpanded : state === "true";
+  } catch (e) {
+    return defaultExpanded;
+  }
+}
+
+function setEditorFolderExpansion(folderName, expanded) {
+  try {
+    localStorage.setItem(`workspaces-editor-folder-${folderName}`, String(expanded));
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+}
+
 export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, initialTab, showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -111,6 +136,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
+
+  // Per-folder expansion state in the tree, keyed by folder display name. Defaults to expanded.
+  const [expandedFolders, setExpandedFolders] = useState({});
 
   const [editName, setEditName] = useState("");
   const [editCode, setEditCode] = useState("");
@@ -265,6 +293,47 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([displayName, wsList]) => ({ displayName, workspaces: wsList }));
   }, [workspaces]);
+
+  // Initialize folder expansion state from localStorage when the dialog opens
+  // or when the set of folders changes.
+  useEffect(() => {
+    if (!isOpen) return;
+    // With many folders the tree gets long, so default to collapsed; a folder
+    // the user has explicitly toggled (stored in localStorage) keeps its state.
+    const defaultExpanded =
+      groupedWorkspaces.length <= WORKSPACES_EDITOR_COLLAPSE_THRESHOLD;
+    const initial = {};
+    groupedWorkspaces.forEach(({ displayName }) => {
+      initial[displayName] = getEditorFolderExpansion(displayName, defaultExpanded);
+    });
+    setExpandedFolders(initial);
+  }, [isOpen, groupedWorkspaces]);
+
+  const toggleFolder = useCallback((displayName) => {
+    setExpandedFolders((prev) => {
+      const next = !(prev[displayName] !== false);
+      setEditorFolderExpansion(displayName, next);
+      return { ...prev, [displayName]: next };
+    });
+  }, []);
+
+  const expandAllFolders = useCallback(() => {
+    const next = {};
+    groupedWorkspaces.forEach(({ displayName }) => {
+      next[displayName] = true;
+      setEditorFolderExpansion(displayName, true);
+    });
+    setExpandedFolders(next);
+  }, [groupedWorkspaces]);
+
+  const collapseAllFolders = useCallback(() => {
+    const next = {};
+    groupedWorkspaces.forEach(({ displayName }) => {
+      next[displayName] = false;
+      setEditorFolderExpansion(displayName, false);
+    });
+    setExpandedFolders(next);
+  }, [groupedWorkspaces]);
 
   const selectedWorkspace = useMemo(
     () => workspaces.find((ws) => getWorkspaceKey(ws) === selectedWorkspaceKey) || null,
@@ -817,10 +886,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       if (updated.length === 0) { setError("At least one workspace is required"); const elapsed = Date.now() - saveStartTime; setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed)); return; }
 
       const config = await fetchConfig(null, true);
+      // The Workspaces dialog must never touch external-access auth/host/port — those
+      // belong to the Settings dialog. Omit the `web` section entirely so the backend
+      // preserves the existing auth config and never validates a password here.
+      const { web: _omitWeb, ...configWithoutWeb } = config;
       const res = await secureFetch(apiUrl("/api/config"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...config, workspaces: updated, prompts: [] }),
+        body: JSON.stringify({ ...configWithoutWeb, workspaces: updated, prompts: [] }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Failed to save configuration");
@@ -1423,6 +1496,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                     </div>`
                   : groupedWorkspaces.map(({ displayName, workspaces: wsGroup }) => {
                       const isFolderSelected = selectedFolder === displayName && !selectedWorkspaceKey;
+                      const isExpanded = expandedFolders[displayName] !== false;
                       return html`
                         <div key=${displayName} class="mb-0.5">
                           <!-- Folder header -->
@@ -1431,12 +1505,22 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             class="group flex items-center gap-2 px-3 py-1 rounded-sm cursor-pointer transition-colors ${isFolderSelected ? "bg-mitto-accent-500/10" : "hover:bg-base-200/40"}"
                             onClick=${() => guardNewFolder(() => { setSelectedFolder(displayName); setSelectedWorkspaceKey(null); })}
                           >
-                            <${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted shrink-0" />
+                            <span
+                              class="shrink-0 flex items-center cursor-pointer"
+                              role="button"
+                              aria-label=${isExpanded ? "Collapse folder" : "Expand folder"}
+                              onClick=${(e) => { e.stopPropagation(); toggleFolder(displayName); }}
+                            >
+                              ${isExpanded
+                                ? html`<${ChevronDownIcon} className="w-3.5 h-3.5 text-mitto-text-muted" />`
+                                : html`<${ChevronRightIcon} className="w-3.5 h-3.5 text-mitto-text-muted" />`}
+                            </span>
                             <${FolderIcon} className="w-4 h-4 text-mitto-text-muted shrink-0" />
                             <span class="text-sm font-medium truncate flex-1" title=${wsGroup[0]?.working_dir || "No folder selected"}>${displayName}</span>
                             <span class="text-xs text-mitto-text-muted">${wsGroup.length}</span>
                           </div>
                           <!-- Workspace children -->
+                          ${isExpanded ? html`
                           <div class="ml-4 pl-3 border-l border-mitto-border mt-0.5">
                             ${wsGroup.map((ws) => {
                               const key = getWorkspaceKey(ws);
@@ -1459,6 +1543,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               `;
                             })}
                           </div>
+                          ` : ""}
                         </div>
                       `;
                     })
@@ -1470,7 +1555,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addWorkspace}
                 aria-disabled=${(acpServers.length === 0 || isNewFolderIncomplete) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(acpServers.length === 0 || isNewFolderIncomplete) ? "opacity-40 pointer-events-none" : ""}"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${(acpServers.length === 0 || isNewFolderIncomplete) ? "opacity-40 pointer-events-none" : ""}"
                 data-tip="Add folder"
                 aria-label="Add folder"
               >
@@ -1479,7 +1564,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
                 aria-disabled=${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "opacity-40 pointer-events-none" : ""}"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${(!selectedWorkspaceKey || selectedFolder || workspaces.length <= 1) ? "opacity-40 pointer-events-none" : ""}"
                 data-tip="Delete selected ACP server"
                 aria-label="Delete selected ACP server"
               >
@@ -1488,7 +1573,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${() => selectedWorkspaceKey && duplicateWorkspace(selectedWorkspaceKey)}
                 aria-disabled=${!selectedWorkspaceKey ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${!selectedWorkspaceKey ? "opacity-40 pointer-events-none" : ""}"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${!selectedWorkspaceKey ? "opacity-40 pointer-events-none" : ""}"
                 data-tip="Duplicate selected workspace"
                 aria-label="Duplicate selected workspace"
               >
@@ -1497,11 +1582,30 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${addServerToFolder}
                 aria-disabled=${(!selectedFolder || !folderCanAddServer) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(!selectedFolder || !folderCanAddServer) ? "opacity-40 pointer-events-none" : ""}"
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${(!selectedFolder || !folderCanAddServer) ? "opacity-40 pointer-events-none" : ""}"
                 data-tip="Add ACP server to folder"
                 aria-label="Add ACP server to folder"
               >
                 <${ServerIcon} className="w-4 h-4" />
+              </button>
+              <div class="h-5 border-l border-mitto-border mx-1" aria-hidden="true"></div>
+              <button
+                onClick=${collapseAllFolders}
+                aria-disabled=${groupedWorkspaces.length === 0 ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${groupedWorkspaces.length === 0 ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Collapse all"
+                aria-label="Collapse all folders"
+              >
+                <${CollapseIcon} className="w-4 h-4" />
+              </button>
+              <button
+                onClick=${expandAllFolders}
+                aria-disabled=${groupedWorkspaces.length === 0 ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${groupedWorkspaces.length === 0 ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Expand all"
+                aria-label="Expand all folders"
+              >
+                <${ExpandIcon} className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -1579,7 +1683,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     ${hasNativeFolderPicker() && html`
                                       <button
                                         onClick=${async () => { const p = await pickFolder(); if (p) updateNewFolderPath(p); }}
-                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-left"
+                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
                                         data-tip="Browse"
                                         aria-label="Browse"
                                       ><${FolderIcon} className="w-4 h-4" /></button>
@@ -1704,7 +1808,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               </p>
                               <button
                                 onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
-                                class="btn btn-ghost btn-xs gap-1 tooltip tooltip-left"
+                                class="btn btn-ghost btn-xs gap-1 tooltip tooltip-bottom"
                                 data-tip="Add Field"
                               >
                                 <${PlusIcon} className="w-3.5 h-3.5" />
@@ -1758,7 +1862,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <div class="shrink-0 pt-4">
                                       <button
                                         onClick=${() => setEditUserDataFields(prev => prev.filter((_, idx) => idx !== i))}
-                                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-left"
+                                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
                                         data-tip="Remove field"
                                         aria-label="Remove field"
                                       >
@@ -1799,7 +1903,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                               value=${beadsUpstream}
                               onInput=${(e) => saveBeadsUpstream(e.target.value)}
                               disabled=${beadsUpstreamSaving}
-                              class="select select-sm w-full disabled:opacity-50"
+                              class="select select-sm w-full max-w-md disabled:opacity-50"
                             >
                               <option value="none">None</option>
                               <option value="jira">Jira</option>
@@ -1822,7 +1926,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                     <button
                                       type="button"
                                       onClick=${() => setNewBeadsKey(row.key)}
-                                      class="font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline whitespace-nowrap tooltip tooltip-top"
+                                      class="font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline whitespace-nowrap tooltip tooltip-bottom"
                                       data-tip="Use this key in the add-key field below"
                                     >${row.key}</button>
                                     <span class="text-mitto-text-muted">— ${row.desc}</span>
@@ -1848,7 +1952,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                       { label: "Push", field: "push_prompt", value: beadsPushPrompt },
                                       { label: "Sync", field: "sync_prompt", value: beadsSyncPrompt },
                                     ].map(({ label, field, value }) => html`
-                                      <div key=${field} class="flex items-center gap-2">
+                                      <div key=${field} class="flex items-center gap-2 max-w-md">
                                         <span class="text-xs text-mitto-text-secondary" style="min-width: 2.5rem">${label}</span>
                                         <select
                                           value=${beadsUpstreamPrompts.some(p => p.name === value) ? value : ""}
@@ -1915,7 +2019,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           <button
                                             onClick=${() => { if (beadsConfigSaving) return; unsetBeadsConfigKey(k); }}
                                             aria-disabled=${beadsConfigSaving ? "true" : "false"}
-                                            class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${beadsConfigSaving ? "opacity-40 pointer-events-none" : ""}"
+                                            class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${beadsConfigSaving ? "opacity-40 pointer-events-none" : ""}"
                                             data-tip="Delete this key"
                                             aria-label="Delete this key"
                                             style="height: 38px; box-sizing: border-box"
@@ -1951,7 +2055,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                           setNewBeadsValue("");
                                         }}
                                         aria-disabled=${(beadsConfigSaving || !newBeadsKey.trim()) ? "true" : "false"}
-                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${(beadsConfigSaving || !newBeadsKey.trim()) ? "opacity-40 pointer-events-none" : ""}"
+                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${(beadsConfigSaving || !newBeadsKey.trim()) ? "opacity-40 pointer-events-none" : ""}"
                                         data-tip="Add key"
                                         aria-label="Add key"
                                         style="height: 38px; box-sizing: border-box"
@@ -1988,7 +2092,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                             </p>
                             <button
                               onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-left ${showAddPrompt ? 'btn-active' : ''}"
+                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${showAddPrompt ? 'btn-active' : ''}"
                               data-tip="Add Prompt"
                               aria-label="Add Prompt"
                             >
@@ -2088,12 +2192,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                                     setEditingPromptIndex(idx);
                                                   }
                                                 }}
-                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-left" data-tip=${isBuiltin ? "View" : "Edit"} aria-label=${isBuiltin ? "View" : "Edit"}>
+                                                class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom" data-tip=${isBuiltin ? "View" : "Edit"} aria-label=${isBuiltin ? "View" : "Edit"}>
                                                 <${EditIcon} className="w-4 h-4 text-mitto-text-muted" />
                                               </button>
                                               ${!isBuiltin && html`
                                                 <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
-                                                  class="btn btn-ghost btn-square btn-xs tooltip tooltip-left" data-tip="Delete" aria-label="Delete">
+                                                  class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom" data-tip="Delete" aria-label="Delete">
                                                   <${TrashIcon} className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger" />
                                                 </button>
                                               `}
@@ -2489,7 +2593,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                                             <button
                                               onClick=${() => { if (mcpRemoveLoading) return; handleMcpRemoveConfirm(srv.name); }}
                                               aria-disabled=${mcpRemoveLoading ? "true" : "false"}
-                                              class="btn btn-ghost btn-square btn-xs tooltip tooltip-left ${mcpRemoveLoading ? "opacity-40 pointer-events-none" : ""}"
+                                              class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom ${mcpRemoveLoading ? "opacity-40 pointer-events-none" : ""}"
                                               data-tip="Remove MCP server"
                                               aria-label="Remove MCP server"
                                             >
@@ -2524,7 +2628,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
               <button
                 onClick=${handleRestartAcp}
                 disabled=${restarting}
-                class="btn btn-warning btn-sm gap-2 tooltip tooltip-top"
+                class="btn btn-warning btn-sm gap-2 tooltip tooltip-bottom"
                 data-tip="Restart ACP to apply MCP changes to active conversations"
               >
                 ${restarting

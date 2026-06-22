@@ -185,3 +185,4 @@ playwright-report/
 .beads/config.yaml
 .augment/settings.local.json
 tests/ui/test-results-auth/
+.tokensave
