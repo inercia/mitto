@@ -19,6 +19,62 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+// maxArgValueLen is the maximum number of runes recorded for a single argument value.
+// Values longer than this are truncated and suffixed with "…".
+const maxArgValueLen = 80
+
+// sensitiveArgNamePatterns contains lowercase substrings that flag an argument name as sensitive.
+var sensitiveArgNamePatterns = []string{
+	"secret", "password", "passwd", "token", "api_key", "apikey",
+	"private_key", "credentials", "access_key", "auth_key",
+}
+
+// isSensitiveArgName returns true when the argument name suggests it holds a secret.
+func isSensitiveArgName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, pat := range sensitiveArgNamePatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactArgValue returns the safe-to-record form of an argument value:
+// sensitive names are replaced with "***"; non-sensitive values are
+// truncated to maxArgValueLen runes (with "…" suffix when truncated).
+func redactArgValue(name, value string) string {
+	if isSensitiveArgName(name) {
+		return "***"
+	}
+	runes := []rune(value)
+	if len(runes) > maxArgValueLen {
+		return string(runes[:maxArgValueLen]) + "…"
+	}
+	return value
+}
+
+// buildArgumentMetadata derives the sorted argument_names list and the ordered
+// arguments bag ([]map[string]any with "name"/"value" keys) from the raw args map.
+// Values are processed through redactArgValue before inclusion.
+// The two slices share the same sort order so index N in names == index N in arguments.
+func buildArgumentMetadata(args map[string]string) (names []string, arguments []map[string]any) {
+	names = make([]string, 0, len(args))
+	for k := range args {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	arguments = make([]map[string]any, len(names))
+	for i, name := range names {
+		arguments[i] = map[string]any{
+			"name":  name,
+			"value": redactArgValue(name, args[name]),
+		}
+	}
+	return names, arguments
+}
+
 // buildPromptWithHistory prepends stored conversation history to the prompt for resumed sessions.
 func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	if bs.store == nil {
@@ -75,10 +131,11 @@ type PromptMeta struct {
 	// from the prompt definition via preferredModelsResolver inside PromptWithMeta.
 	PreferredModels []string
 	// Meta is an optional generic metadata bag attached to the persisted user-prompt
-	// event. Same sensitivity rules as session.RecordOption apply: no secrets,
-	// credentials, full argument values, or full prompt text.
-	// When non-empty, the bag is forwarded to EventMetaObserver.OnEventMeta so it
-	// can flow through to the WebSocket payload without per-field wiring.
+	// event. Same sensitivity rules as session.RecordOption apply: no full prompt text
+	// or raw secrets. Bounded (≤80 chars), name-redacted argument values ARE recorded
+	// (see buildArgumentMetadata). When non-empty, the bag is forwarded to
+	// EventMetaObserver.OnEventMeta so it can flow through to the WebSocket payload
+	// without per-field wiring.
 	Meta map[string]any
 }
 
@@ -130,20 +187,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		message = processors.SubstituteArguments(message, meta.Arguments)
 	}
 
-	// Record the argument names (keys only, sorted) as a generic meta annotation so
-	// the conversation can surface which parameters were filled. Names are safe
-	// identifiers; values are substituted into the prompt text above and must never
-	// enter the meta bag (sensitivity policy).
+	// Record argument names and bounded/redacted values as generic meta annotations so
+	// the conversation can surface which parameters were filled and their values.
+	// Values are name-redacted (sensitive names → "***") and truncated to maxArgValueLen
+	// runes; see buildArgumentMetadata for the full safety rules.
 	if argCount > 0 {
-		names := make([]string, 0, len(meta.Arguments))
-		for k := range meta.Arguments {
-			names = append(names, k)
-		}
-		sort.Strings(names)
+		names, arguments := buildArgumentMetadata(meta.Arguments)
 		if meta.Meta == nil {
 			meta.Meta = make(map[string]any)
 		}
 		meta.Meta["argument_names"] = names
+		meta.Meta["arguments"] = arguments
 	}
 
 	imageIDs := meta.ImageIDs

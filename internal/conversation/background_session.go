@@ -186,6 +186,8 @@ type BackgroundSession struct {
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
+	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
+	queueDisp            queueDispatcher                        // Queue tick / dispatch logic collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.

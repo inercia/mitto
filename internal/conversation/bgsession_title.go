@@ -1,20 +1,18 @@
 package conversation
 
-// Title generation cluster for BackgroundSession.
+// Title generation cluster for BackgroundSession: thin delegators to the
+// titleCoordinator collaborator, plus the titleDeps implementation that supplies
+// it with the session's live dependencies.
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
 
 // NeedsTitle returns true if the session has no title yet and needs auto-title generation.
 // Returns false if the session already has a title (either auto-generated or user-set).
 func (bs *BackgroundSession) NeedsTitle() bool {
-	if bs.store == nil || bs.persistedID == "" {
-		return false
-	}
-	meta, err := bs.store.GetMetadata(bs.persistedID)
-	if err != nil {
-		return false
-	}
-	return meta.Name == ""
+	return bs.titleCoord.needsTitle(bs)
 }
 
 // retryTitleGenerationIfNeeded checks if the session still needs a title and
@@ -24,24 +22,7 @@ func (bs *BackgroundSession) NeedsTitle() bool {
 //
 //	(queue processing, MCP send_prompt, periodic prompts)
 func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
-	if !bs.NeedsTitle() {
-		return
-	}
-
-	if bs.logger != nil {
-		bs.logger.Info("Session still has no title after prompt completion, retrying title generation",
-			"session_id", bs.persistedID)
-	}
-
-	GenerateAndSetTitle(TitleGenerationConfig{
-		Store:            bs.store,
-		SessionID:        bs.persistedID,
-		Message:          message,
-		Logger:           bs.logger,
-		WorkspaceUUID:    bs.workspaceUUID,
-		AuxiliaryManager: bs.auxiliaryManager,
-		OnTitleGenerated: bs.onTitleGenerated,
-	})
+	bs.titleCoord.retryIfNeeded(bs, message)
 }
 
 // TriggerTitleGeneration triggers async title generation if the session has no title yet.
@@ -49,7 +30,7 @@ func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
 // for sessions that received prompts via paths that don't normally trigger title generation
 // (e.g., periodic prompt configuration, queue processing).
 func (bs *BackgroundSession) TriggerTitleGeneration(message string) {
-	bs.retryTitleGenerationIfNeeded(message)
+	bs.titleCoord.trigger(bs, message)
 }
 
 // TriggerTitleGenerationFromPeriodic chooses the best source text for title
@@ -61,23 +42,41 @@ func (bs *BackgroundSession) TriggerTitleGeneration(message string) {
 // or no resolver is configured, the bare prompt name is used as a fallback.
 // No-op when neither source yields any text.
 func (bs *BackgroundSession) TriggerTitleGenerationFromPeriodic(prompt, promptName string) {
-	inline := strings.TrimSpace(prompt)
-	if inline != "" && inline != "(pending)" {
-		bs.retryTitleGenerationIfNeeded(inline)
-		return
-	}
-	name := strings.TrimSpace(promptName)
-	if name == "" {
-		return
-	}
-	if bs.promptResolver != nil {
-		if resolved, err := bs.promptResolver(name, bs.workingDir); err == nil && strings.TrimSpace(resolved) != "" {
-			bs.retryTitleGenerationIfNeeded(strings.TrimSpace(resolved))
-			return
-		} else if err != nil && bs.logger != nil {
-			bs.logger.Warn("Could not resolve periodic prompt name for title generation; falling back to name",
-				"prompt_name", name, "error", err)
-		}
-	}
-	bs.retryTitleGenerationIfNeeded(name)
+	bs.titleCoord.triggerFromPeriodic(bs, prompt, promptName)
 }
+
+// --- titleDeps implementation (supplies live session dependencies to titleCoordinator) ---
+
+// sessionHasNoTitle reports whether the session currently lacks a name.
+func (bs *BackgroundSession) sessionHasNoTitle() bool {
+	return SessionNeedsTitle(bs.store, bs.persistedID)
+}
+
+// startTitleGeneration kicks off async title generation from the message text.
+func (bs *BackgroundSession) startTitleGeneration(message string) {
+	GenerateAndSetTitle(TitleGenerationConfig{
+		Store:            bs.store,
+		SessionID:        bs.persistedID,
+		Message:          message,
+		Logger:           bs.logger,
+		WorkspaceUUID:    bs.workspaceUUID,
+		AuxiliaryManager: bs.auxiliaryManager,
+		OnTitleGenerated: bs.onTitleGenerated,
+	})
+}
+
+// resolvePromptName resolves a named workspace prompt to its full text. configured
+// is false when no resolver is wired.
+func (bs *BackgroundSession) resolvePromptName(name string) (string, bool, error) {
+	if bs.promptResolver == nil {
+		return "", false, nil
+	}
+	resolved, err := bs.promptResolver(name, bs.workingDir)
+	return strings.TrimSpace(resolved), true, err
+}
+
+// titleLogger returns the session-scoped logger.
+func (bs *BackgroundSession) titleLogger() *slog.Logger { return bs.logger }
+
+// titleSessionID returns the persisted session ID.
+func (bs *BackgroundSession) titleSessionID() string { return bs.persistedID }
