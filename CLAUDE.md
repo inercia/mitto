@@ -17,8 +17,12 @@ make test-integration     # Integration tests (needs mock-acp binary)
 Frontend (Preact) ←WebSocket→ BackgroundSession ←JSON-RPC/stdio→ ACP Agent
 ```
 
-Key files:
-- `internal/web/background_session.go` — Observer pattern bridge
+Key files (in progress decomposition `mitto-dhg.2`):
+- `internal/conversation/background_session.go` — Core observer bridge (6,483 LOC → 124 methods being extracted)
+- `internal/conversation/bgsession_*.go` — Delegators to extracted components
+- `internal/conversation/*_coordinator.go` — Workflow orchestrators (follow-up, auxiliary)
+- `internal/conversation/*_manager.go` — State managers (config, queue, title)
+- `internal/conversation/*_analyzer.go` — Data analyzers (session, collaborator)
 - `internal/web/session_ws.go` — WebSocket `connected` message sends capabilities
 - `internal/web/observer.go` — `SessionObserver` interface
 
