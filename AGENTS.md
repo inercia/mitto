@@ -117,4 +117,5 @@ bd close <id>         # Complete work
 - **One-increment-per-run discipline**: When iterating on beads epics with periodic execution, advance one concrete increment per run and do not self-terminate until nothing is ready left to do. This prevents scope creep and keeps each scheduled run focused and verifiable.
 - **Reuse idle child agents across runs**: When delegating work to parallel child agents (e.g., a "Coder" child), check if the child is already idle before spawning a new one, and reuse it across multiple runs with fully-specified prompts rather than creating competing parallel agents.
 - **Extend existing test files, no new test files**: When adding tests for code changes, extend existing test files in the same package rather than creating new test files. This maintains cohesion and reduces test file proliferation.
+- **Conventional commit format with scope**: Use `type(scope): description` format for commit messages (e.g., `feat(config)`, `feat(web)`, `chore: update docs`). Group related changes into logical, semantically-coherent commits rather than creating one large commit.
 <!-- END USER PREFERENCES -->

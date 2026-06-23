@@ -1351,3 +1351,39 @@ func TestParsePromptFile_TemplateValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestBuiltinPromptsParseClean ensures every .prompt.yaml in config/prompts/builtin/
+// passes ParsePromptFile without error. This exercises load-time template validation
+// (added in mitto-m7sb.6) on the migrated builtin prompt set (mitto-m7sb.7/8).
+//
+// jira-sync-tasks.prompt.yaml previously contained literal {{...}} sequences (a JIRA
+// wiki-markup example and a Python regex comment) that are NOT template directives;
+// they are now escaped via {{ "{{" }} (design §10.3) so the whole set validates.
+func TestBuiltinPromptsParseClean(t *testing.T) {
+	// Relative to internal/config/ (the package directory during go test)
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	entries, err := os.ReadDir(builtinDir)
+	if err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	loaded := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", e.Name(), err)
+			continue
+		}
+		if _, err := ParsePromptFile(e.Name(), data, time.Now()); err != nil {
+			t.Errorf("ParsePromptFile(%s): %v", e.Name(), err)
+		}
+		loaded++
+	}
+	if loaded == 0 {
+		t.Error("no builtin prompt files found — something is wrong with the path")
+	}
+	t.Logf("validated %d builtin prompt files", loaded)
+}
