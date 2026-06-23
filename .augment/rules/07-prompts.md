@@ -69,9 +69,12 @@ Prompts may declare typed inputs via a `parameters:` list. Each entry:
 ```yaml
 parameters:
   - name: ISSUE_ID      # variable used as ${ISSUE_ID} in the prompt body
-    type: beadsId       # one of the six predefined types
+    type: beadsId       # one of the predefined types
     description: "..."  # optional
-    required: true      # optional bool (declarative; body ${VAR:-default} still controls fallback)
+    required: true      # optional bool — controls menu gating:
+                        #   absent/true → gates menu visibility (default)
+                        #   false       → optional: auto-fills when menu supplies it,
+                        #                 but never hides the prompt; no blocking form
 ```
 
 ### Predefined types (canonical registry: `internal/config/prompt_param_types.go`)
@@ -90,7 +93,9 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 
 ### Type-based menu gating
 
-Prompt shown in menu **M** only when M supplies **every** declared type. Frontend: `menuSatisfies(prompt, menu)`. Menu types: `beadsIssues` → `{beadsId, beadsTitle}`; others supply none. See `MENU_PARAM_TYPES` in `web/static/utils/prompts.js` and MCP tools `mitto_prompt_get/list` (include `parameters`).
+Prompt shown in menu **M** only when M supplies **every required** declared type. Frontend: `menuSatisfies(prompt, menu)`. Menu types: `beadsIssues` → `{beadsId, beadsTitle}`; others supply none. See `MENU_PARAM_TYPES` in `web/static/utils/prompts.js`.
+
+**Optional parameters** (`required: false`) never gate: the prompt appears in any menu regardless of whether the menu can supply the type. When the menu *can* supply it, the arg auto-fills via `collectPromptArguments`; when it cannot, the param is silently omitted and no dialog is shown (`getMissingPromptParameters` excludes optional params).
 
 ## Key Types
 

@@ -694,8 +694,8 @@ the `${VAR:-default}` body syntax).
 The `parameters` field declares the **typed inputs** a prompt expects. Each entry
 names a template variable (used as `${NAME}` in the prompt body) and assigns it a
 **type** drawn from the canonical type registry. The menu gating check uses these
-types: a prompt is offered in menu **M** only when M can auto-supply **every**
-declared type.
+types: a prompt is offered in menu **M** only when M can auto-supply every
+**required** declared type.
 
 This replaces the retired `requires:` string field. The old string-capability gating
 approach is gone; type-based gating via `menuSatisfies`/`MENU_PARAM_TYPES` is the
@@ -708,11 +708,17 @@ parameters:
   - name: PARAM_NAME        # required — used as ${PARAM_NAME} in the prompt body
     type: beadsId           # required — one of the predefined types below
     description: "..."      # optional — human-readable hint
-    required: true          # optional bool — for documentation/tooling only;
-                            # declarative defaults still use ${VAR:-default} syntax
+    required: true          # optional bool — controls menu gating (see below):
+                            #   absent/true → param gates menu visibility (default)
+                            #   false       → optional: auto-fills when menu supplies
+                            #                 it, but never hides the prompt from menus
+                            #                 that cannot. No blocking form is shown.
 ```
 
-Multiple parameters may be listed; the menu must supply **all** of them.
+Multiple parameters may be listed; the menu must supply all **required** ones (`required`
+absent or `true`). Parameters with `required: false` are **optional**: they auto-fill when
+the menu can supply their type, but they do not gate menu visibility and no form is shown
+if the menu cannot supply them.
 
 ### YAML example
 

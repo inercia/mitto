@@ -51,14 +51,18 @@ Defined on both `PromptFile` and `WebPrompt` in `internal/config/prompts.go` /
 | `beadsIssues`     | per-issue right-click **New ›** submenu in the Beads list     | **creates a new conversation** (with `ISSUE_ID`) |
 | `beadsList`       | list-level prompts button in the Beads list footer           | **creates a new conversation** (no per-issue arg)|
 
-### `requires` capability gating
+### Type-based menu gating
 
-Independently of `menus`, a prompt may declare `requires` (comma-separated
-capabilities). A menu only shows the prompt if it provides **all** required
-capabilities. Menus advertise their capabilities in `MENU_CAPABILITIES`
-(`web/static/utils/prompts.js`); today only `beadsIssues` provides
-`parameters`, so parameterized prompts (those needing `${ISSUE_ID}`) surface
-only there. The client check is `menuSatisfiesRequires(prompt, menu)`.
+Independently of `menus`, a prompt that declares `parameters` is subject to
+type-based gating: a menu only shows the prompt when it can auto-supply every
+**required** parameter type. Menus advertise their provided types in
+`MENU_PARAM_TYPES` (`web/static/utils/prompts.js`); today only `beadsIssues`
+provides `{beadsId, beadsTitle}`. The client check is `menuSatisfies(prompt, menu)`.
+
+A parameter with `required: false` is **optional** — it does not gate menu
+visibility. The prompt appears in any menu regardless of whether that menu can
+supply the type. When the menu *can* supply the type the argument is auto-filled;
+when it cannot, the parameter is silently omitted (no blocking form is shown).
 
 ## 2. One endpoint feeds every menu
 
@@ -89,7 +93,7 @@ The **evaluation context differs by caller** — this is the subtle part:
   gate itself (e.g. hide **Start work** on closed issues).
 
 After fetching, the client filters once more by
-`promptMenus(p).includes(<menu>) && menuSatisfiesRequires(p, <menu>)`.
+`promptMenus(p).includes(<menu>) && menuSatisfies(p, <menu>)`.
 
 ## 3. The two start behaviors
 
@@ -204,7 +208,7 @@ Periodic conversations can only be **top-level** (not children). The `at` field
 | Backend  | `internal/config/prompt_template.go`              | Go template engine (`RenderPromptTemplate`, `PrecompileTemplateConds`) |
 | Backend  | `internal/conversation/prompt_dispatcher.go`      | template render integration in `resolveAndSubstitute`                  |
 | Backend  | `internal/session/queue.go`                       | `QueuedMessage{ PromptName, Arguments }`, `Add`/`Pop`                  |
-| Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `MENU_CAPABILITIES`, `menuSatisfiesRequires`            |
+| Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `MENU_PARAM_TYPES`, `menuSatisfies`, `getMissingPromptParameters` |
 | Frontend | `web/static/hooks/useWorkspacePrompts.js`         | `fetchConversationPromptsForSession`                                   |
 | Frontend | `web/static/hooks/useBeadsIntegration.js`         | `fetchBeads*PromptsForWorkspace`, `handleRunBeads*Prompt`              |
 | Frontend | `web/static/hooks/useConversationSeeding.js`      | `seedConversationWithPrompt`, `startConversationWithPrompt`            |
