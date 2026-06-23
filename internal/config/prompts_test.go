@@ -1276,3 +1276,78 @@ func TestMigrateMarkdownPromptsInDir_LiteralBlock(t *testing.T) {
 		t.Errorf("Content round-trip = %q, want %q", p.Content, body)
 	}
 }
+
+// TestPrecompileTemplateConds_SavePathGuard proves that the validation function
+// used by the MCP handlePromptUpdate and REST POST /api/workspace-prompts save
+// paths rejects invalid prompt bodies (mitto-m7sb.6). No mcpserver harness
+// exists for handlePromptUpdate so we verify the guard directly.
+func TestPrecompileTemplateConds_SavePathGuard(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"non-template body accepted", "plain ${VAR} text", false},
+		{"valid template accepted", "{{ .Session.ID }}", false},
+		{"invalid template syntax rejected", "{{ .Session.ID ", true},
+		{"invalid cond CEL rejected", "{{ if cond \"@@@ bad\" }}x{{ end }}", true},
+		{"struct-field typo rejected", "{{ .Session.Nope }}", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := PrecompileTemplateConds("save-test", tc.body)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error (save-path guard should reject), got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestParsePromptFile_TemplateValidation verifies that ParsePromptFile accepts
+// valid templates and rejects invalid ones (mitto-m7sb.6).
+func TestParsePromptFile_TemplateValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{
+			name: "non-template body — fast path, no error",
+			yaml: "name: \"p\"\nprompt: \"plain ${VAR} @mitto:session_id text\"\n",
+		},
+		{
+			name: "valid template body — accepted",
+			yaml: "name: \"p\"\nprompt: \"Hello {{ .Session.ID }}\"\n",
+		},
+		{
+			name:    "invalid template syntax — unclosed action",
+			yaml:    "name: \"p\"\nprompt: \"Hello {{ .Session.ID \"\n",
+			wantErr: true,
+		},
+		{
+			name:    "invalid cond CEL literal — rejected",
+			yaml:    "name: \"p\"\nprompt: \"{{ if cond \\\"@@@ not valid\\\" }}x{{ end }}\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "struct-field typo — rejected",
+			yaml:    "name: \"p\"\nprompt: \"{{ .Session.Nope }}\"\n",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParsePromptFile("test.prompt.yaml", []byte(tc.yaml), time.Now())
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

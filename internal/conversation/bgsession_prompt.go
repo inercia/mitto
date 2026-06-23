@@ -168,6 +168,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	)
 	message, argCount, meta, err = bs.promptDisp.resolveAndSubstitute(bs, message, meta)
 	if err != nil {
+		bs.notifyObservers(func(o SessionObserver) { o.OnError(err.Error()) })
 		return err
 	}
 

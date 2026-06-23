@@ -309,6 +309,11 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 		return nil, PromptUpdateOutput{Error: "failed to create prompts directory: " + err.Error()}, nil
 	}
 
+	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
+	if err := config.PrecompileTemplateConds(name, promptText); err != nil {
+		return nil, PromptUpdateOutput{Error: "invalid prompt template: " + err.Error()}, nil
+	}
+
 	pf := &config.PromptFile{
 		Name:            name,
 		Description:     description,

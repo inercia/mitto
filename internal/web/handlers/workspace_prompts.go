@@ -107,6 +107,12 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 	}
 	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
 
+	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
+	if err := configPkg.PrecompileTemplateConds(req.Name, req.Prompt); err != nil {
+		http.Error(w, "invalid prompt template: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	pf := &configPkg.PromptFile{
 		Name:            req.Name,
 		Description:     req.Description,

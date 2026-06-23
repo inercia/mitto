@@ -222,6 +222,12 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
+	// Validate Go-template syntax + cond/when CEL literals (mitto-m7sb.6).
+	// Fast-path no-op for bodies without "{{". Fail-fast on invalid templates.
+	if err := PrecompileTemplateConds(prompt.Name, prompt.Content); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
 	return prompt, nil
 }
 

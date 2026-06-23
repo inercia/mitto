@@ -149,6 +149,7 @@ type promptDispatcher struct{}
 // resolveAndSubstitute covers the top of PromptWithMeta (lines 165–201 in the original):
 //  1. If meta.PromptName != "" && message == "": resolve the prompt name to full text
 //     (error if no resolver, or if resolution fails).
+//     1b. Go template rendering (mitto-m7sb.5): fast-path guarded; fail-closed.
 //  2. Record argCount = len(meta.Arguments).
 //  3. If argCount > 0: apply bash-like argument substitution to the message.
 //  4. If argCount > 0: build argument metadata and annotate meta.Meta.
@@ -166,6 +167,25 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 			return "", 0, meta, &promptResolutionError{name: meta.PromptName, cause: err}
 		}
 		message = resolved
+	}
+
+	// Template render (mitto-m7sb.5): runs after name-resolution, before ${VAR}
+	// substitution, so a template may itself emit ${VAR}/@mitto tokens that the
+	// legacy passes then handle. Fast-path guard avoids buildProcessorInput for
+	// non-template bodies (the common case).
+	if config.HasTemplateSyntax(message) {
+		input := p.buildProcessorInput(d, message, false, meta)
+		tctx := processors.BuildCELContext(input)
+		funcs := config.BuildTemplateFuncMap(tctx)
+		name := meta.PromptName
+		if name == "" {
+			name = "prompt"
+		}
+		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
+		if rerr != nil {
+			return "", 0, meta, rerr // fail-closed: abort the send
+		}
+		message = rendered
 	}
 
 	argCount := len(meta.Arguments)

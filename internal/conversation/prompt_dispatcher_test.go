@@ -518,6 +518,77 @@ func TestPromptDispatcher_ResolveAndSubstitute_NoArgs_MetaUntouched(t *testing.T
 	}
 }
 
+// --- resolveAndSubstitute template-render tests (mitto-m7sb.5) ---
+
+// TestResolveAndSubstitute_Template_FastPath verifies that a body without {{ is
+// returned unchanged and that no template work is done (fast path).
+func TestResolveAndSubstitute_Template_FastPath(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	// Body contains ${VAR} and @mitto: tokens but NO {{ — must pass through unchanged.
+	body := "plain ${VAR} @mitto:session_id text"
+	msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != body {
+		t.Fatalf("expected body unchanged, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_Template_SessionID verifies that a template body
+// referencing {{ .Session.ID }} renders to the value from the fake deps.
+func TestResolveAndSubstitute_Template_SessionID(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.sessionID = "my-sess-42"
+
+	msg, _, _, err := p.resolveAndSubstitute(d, "id={{ .Session.ID }}", PromptMeta{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "id=my-sess-42" {
+		t.Fatalf("expected rendered message, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_Template_RenderBeforeArgSubstitution verifies that
+// template rendering runs BEFORE ${VAR} substitution: the template may emit
+// ${SUFFIX} tokens that SubstituteArguments then resolves.
+func TestResolveAndSubstitute_Template_RenderBeforeArgSubstitution(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.sessionID = "sess-X"
+
+	// Template outputs "sess-X-${SUFFIX}"; SubstituteArguments then resolves ${SUFFIX}.
+	body := "{{ .Session.ID }}-${SUFFIX}"
+	args := map[string]string{"SUFFIX": "end"}
+	msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{Arguments: args})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "sess-X-end" {
+		t.Fatalf("expected render-then-subst result, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_Template_FailClosed verifies that an invalid template
+// body returns a non-nil error and an empty message (fail-closed).
+func TestResolveAndSubstitute_Template_FailClosed(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	// Missing {{ end }} — parse error.
+	msg, _, _, err := p.resolveAndSubstitute(d, "{{ if .Broken }}", PromptMeta{})
+	if err == nil {
+		t.Fatal("expected non-nil error for invalid template body")
+	}
+	if msg != "" {
+		t.Fatalf("expected empty message on error, got %q", msg)
+	}
+}
+
 // --- buildAttachmentBlocks tests ---
 
 func TestPromptDispatcher_BuildAttachmentBlocks_NoStore(t *testing.T) {

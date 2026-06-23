@@ -26,7 +26,8 @@ func HasTemplateSyntax(body string) bool {
 //
 //	prompt template %q: cond precompile: <compile error>
 //
-// Does NOT wire into the prompt-loading pipeline — that is mitto-m7sb.5.
+// Wired at load time (ParsePromptFile) and save time (MCP mitto_prompt_update,
+// REST POST /api/workspace-prompts) as of mitto-m7sb.6.
 func PrecompileTemplateConds(name, body string) error {
 	if !HasTemplateSyntax(body) {
 		return nil
