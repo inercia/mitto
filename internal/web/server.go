@@ -14,6 +14,7 @@ import (
 	"time"
 
 	builtinConfig "github.com/inercia/mitto/config"
+	"github.com/inercia/mitto/internal/acpproc"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
@@ -188,7 +189,7 @@ type Server struct {
 	promptsWatcher *configPkg.PromptsWatcher
 
 	// ACP process manager for workspace-scoped shared processes
-	acpProcessManager *ACPProcessManager
+	acpProcessManager *acpproc.ACPProcessManager
 
 	// Auxiliary manager for workspace-scoped auxiliary tasks (title generation, etc.)
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
@@ -318,7 +319,7 @@ func NewServer(config Config) (*Server, error) {
 	// Clean up orphaned ACP processes from any previous Mitto instance that crashed
 	// without running its shutdown sequence (not done in tests to avoid killing
 	// the developer's live ACP servers when running the test suite).
-	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
+	acpProcessMgr := acpproc.NewACPProcessManager(context.Background(), logger)
 	if os.Getenv("MITTO_TEST_MODE") == "" {
 		acpProcessMgr.CleanupOrphanedProcesses()
 	}
@@ -333,7 +334,7 @@ func NewServer(config Config) (*Server, error) {
 	// The GC periodically checks for sessions with no observers, no active prompts,
 	// and no pending work, and stops shared ACP processes that have no active sessions.
 	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
-		gcConfig := GCConfig{}
+		gcConfig := acpproc.GCConfig{}
 		// Apply periodic suspend threshold from settings if configured.
 		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
 			if d, enabled := config.MittoConfig.Session.ParsePeriodicSuspendTimeout(); enabled {
@@ -563,7 +564,7 @@ func NewServer(config Config) (*Server, error) {
 	// Surface a toast when the GC's memory-recycle tier (Tier 4) restarts a
 	// memory-bloated idle agent process. Resolve a friendly workspace name here
 	// (the GC only knows the workspace UUID).
-	acpProcessMgr.onMemoryRecycled = func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
+	acpProcessMgr.SetOnMemoryRecycled(func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
 		workspaceName := ""
 		workingDir := ""
 		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
@@ -571,7 +572,7 @@ func NewServer(config Config) (*Server, error) {
 			workingDir = ws.WorkingDir
 		}
 		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
-	}
+	})
 
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.

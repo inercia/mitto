@@ -179,16 +179,16 @@ func TestNewSessionManagerWithOptions(t *testing.T) {
 	}
 
 	// Check that workspaces are stored
-	if len(sm.workspaces) != 2 {
-		t.Errorf("workspaces count = %d, want 2", len(sm.workspaces))
+	if len(sm.wsRegistry.workspaces) != 2 {
+		t.Errorf("workspaces count = %d, want 2", len(sm.wsRegistry.workspaces))
 	}
 
 	// Check default workspace (command is resolved from global config at runtime, not stored here)
-	if sm.defaultWorkspace == nil {
+	if sm.wsRegistry.defaultWorkspace == nil {
 		t.Fatal("defaultWorkspace should not be nil")
 	}
-	if sm.defaultWorkspace.ACPServer != "server1" {
-		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", sm.defaultWorkspace.ACPServer, "server1")
+	if sm.wsRegistry.defaultWorkspace.ACPServer != "server1" {
+		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", sm.wsRegistry.defaultWorkspace.ACPServer, "server1")
 	}
 }
 
@@ -291,8 +291,8 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
 	// Initially no workspaces
-	if len(sm.workspaces) != 0 {
-		t.Errorf("initial workspaces count = %d, want 0", len(sm.workspaces))
+	if len(sm.wsRegistry.workspaces) != 0 {
+		t.Errorf("initial workspaces count = %d, want 0", len(sm.wsRegistry.workspaces))
 	}
 
 	// Add a workspace
@@ -303,8 +303,8 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 	sm.AddWorkspace(ws)
 
 	// Check it was added
-	if len(sm.workspaces) != 1 {
-		t.Errorf("workspaces count = %d, want 1", len(sm.workspaces))
+	if len(sm.wsRegistry.workspaces) != 1 {
+		t.Errorf("workspaces count = %d, want 1", len(sm.wsRegistry.workspaces))
 	}
 
 	// Check it's retrievable
@@ -338,8 +338,8 @@ func TestSessionManager_RemoveWorkspace(t *testing.T) {
 	sm.RemoveWorkspace("uuid-1")
 
 	// Check it was removed
-	if len(sm.workspaces) != 1 {
-		t.Errorf("workspaces count = %d, want 1", len(sm.workspaces))
+	if len(sm.wsRegistry.workspaces) != 1 {
+		t.Errorf("workspaces count = %d, want 1", len(sm.wsRegistry.workspaces))
 	}
 
 	// Check it's no longer retrievable by UUID
@@ -370,8 +370,8 @@ func TestSessionManager_RemoveWorkspace_NonExistent(t *testing.T) {
 	// Should not panic when removing non-existent workspace by UUID
 	sm.RemoveWorkspace("non-existent-uuid")
 
-	if len(sm.workspaces) != 0 {
-		t.Errorf("workspaces count = %d, want 0", len(sm.workspaces))
+	if len(sm.wsRegistry.workspaces) != 0 {
+		t.Errorf("workspaces count = %d, want 0", len(sm.wsRegistry.workspaces))
 	}
 }
 
@@ -600,7 +600,7 @@ func TestSessionManager_ApplyACPServerRenames_NoMatches(t *testing.T) {
 
 func TestSessionManager_GetWorkspacePrompts_NilCache(t *testing.T) {
 	sm := &SessionManager{
-		workspaceRCCache: nil,
+		wsRegistry: &WorkspaceRegistry{workspaceRCCache: nil},
 	}
 
 	prompts := sm.GetWorkspacePrompts("/test")
@@ -766,13 +766,13 @@ func TestSessionManager_ResolveWorkspaceIdentifier(t *testing.T) {
 
 	// Test with a registered workspace (should prefer workspace over session)
 	wsUUID := "registered-ws-uuid"
-	sm.mu.Lock()
-	sm.workspaces["/registered/workspace"] = &config.WorkspaceSettings{
+	sm.wsRegistry.mu.Lock()
+	sm.wsRegistry.workspaces["/registered/workspace"] = &config.WorkspaceSettings{
 		UUID:       wsUUID,
 		WorkingDir: "/registered/workspace",
 		ACPServer:  "test",
 	}
-	sm.mu.Unlock()
+	sm.wsRegistry.mu.Unlock()
 
 	workingDir, found = sm.ResolveWorkspaceIdentifier(wsUUID)
 	if !found {

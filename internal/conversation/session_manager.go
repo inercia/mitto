@@ -80,29 +80,15 @@ type SessionManager struct {
 
 	logger *slog.Logger
 
-	// Workspaces configuration - maps workspace UUID to workspace config.
-	// Using UUID as key allows multiple workspaces to share the same working directory
-	// (e.g., same project folder with different ACP servers like Claude vs Gemini).
-	workspaces map[string]*config.WorkspaceSettings
-
-	// Default workspace (used when no specific workspace is requested)
-	defaultWorkspace *config.WorkspaceSettings
-
-	// fromCLI indicates whether workspaces came from CLI flags.
-	// When true, workspace changes are NOT persisted to disk.
-	fromCLI bool
-
-	// onWorkspaceSave is called when workspaces are modified (only if fromCLI is false).
-	onWorkspaceSave WorkspaceSaveFunc
+	// wsRegistry owns workspace registration/resolution and per-workspace RC config.
+	// Lock order: sm.mu → wsRegistry.mu (never hold wsRegistry.mu first).
+	wsRegistry *WorkspaceRegistry
 
 	// autoApprove enables automatic approval of permission requests.
 	autoApprove bool
 
 	// store is the session store for persistence.
 	store *session.Store
-
-	// workspaceRCCache provides cached access to workspace-specific .mittorc files.
-	workspaceRCCache *config.WorkspaceRCCache
 
 	// globalConversations contains global conversation processing configuration.
 	globalConversations *config.ConversationsConfig
@@ -190,14 +176,15 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		ACPServer:          acpServer,
 		WorkingDir:         "", // Will be set at session creation time
 	}
+	reg := newWorkspaceRegistry(logger, false, nil)
+	reg.defaultWorkspace = defaultWS
+
 	return &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
-		workspaces:                make(map[string]*config.WorkspaceSettings),
 		logger:                    logger,
-		defaultWorkspace:          defaultWS,
 		autoApprove:               autoApprove,
-		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
+		wsRegistry:                reg,
 		planState:                 make(map[string][]PlanEntry),
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
@@ -227,33 +214,30 @@ type SessionManagerOptions struct {
 // NewSessionManagerWithOptions creates a new session manager with the given options.
 // Workspaces without UUIDs will have UUIDs generated automatically.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
-	sm := &SessionManager{
+	reg := newWorkspaceRegistry(opts.Logger, opts.FromCLI, opts.OnWorkspaceSave)
+
+	for i := range opts.Workspaces {
+		ws := &opts.Workspaces[i]
+		ws.EnsureUUID()
+		reg.workspaces[ws.UUID] = ws
+		if reg.defaultWorkspace == nil {
+			reg.defaultWorkspace = ws
+		}
+	}
+
+	return &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
-		workspaces:                make(map[string]*config.WorkspaceSettings),
 		logger:                    opts.Logger,
 		autoApprove:               opts.AutoApprove,
-		fromCLI:                   opts.FromCLI,
-		onWorkspaceSave:           opts.OnWorkspaceSave,
-		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:                 opts.APIPrefix,
+		wsRegistry:                reg,
 		planState:                 make(map[string][]PlanEntry),
 		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
-
-	for i := range opts.Workspaces {
-		ws := &opts.Workspaces[i]
-		ws.EnsureUUID() // Ensure workspace has a UUID
-		sm.workspaces[ws.UUID] = ws
-		if sm.defaultWorkspace == nil {
-			sm.defaultWorkspace = ws
-		}
-	}
-
-	return sm
 }
 
 // SetGlobalConversations sets the global conversation processing configuration.
@@ -281,54 +265,12 @@ func (sm *SessionManager) SetAPIPrefix(prefix string) {
 // SetWorkspaces sets the available workspaces.
 // Workspaces without UUIDs will have UUIDs generated automatically.
 func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
-	sm.mu.Lock()
-
-	sm.workspaces = make(map[string]*config.WorkspaceSettings)
-	sm.defaultWorkspace = nil
-
-	for i := range workspaces {
-		ws := &workspaces[i]
-		ws.EnsureUUID() // Ensure workspace has a UUID
-		sm.workspaces[ws.UUID] = ws
-		if sm.defaultWorkspace == nil {
-			sm.defaultWorkspace = ws
-		}
-	}
-
-	// Save workspaces if not from CLI and callback is set
-	shouldSave := !sm.fromCLI && sm.onWorkspaceSave != nil
-	var workspacesToSave []config.WorkspaceSettings
-	if shouldSave {
-		workspacesToSave = sm.getWorkspacesLocked()
-	}
-	sm.mu.Unlock()
-
-	if shouldSave {
-		if err := sm.onWorkspaceSave(workspacesToSave); err != nil && sm.logger != nil {
-			sm.logger.Error("Failed to save workspaces", "error", err)
-		}
-	}
+	sm.wsRegistry.SetWorkspaces(workspaces)
 }
 
 // GetWorkspaces returns all configured workspaces.
 func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	if len(sm.workspaces) == 0 {
-		// Return default workspace if it has valid configuration
-		if sm.defaultWorkspace != nil && (sm.defaultWorkspace.ACPServer != "" || sm.defaultWorkspace.ACPCommandOverride != "") {
-			return []config.WorkspaceSettings{*sm.defaultWorkspace}
-		}
-		// No valid workspace configuration - return empty slice
-		return []config.WorkspaceSettings{}
-	}
-
-	result := make([]config.WorkspaceSettings, 0, len(sm.workspaces))
-	for _, ws := range sm.workspaces {
-		result = append(result, *ws)
-	}
-	return result
+	return sm.wsRegistry.GetWorkspaces()
 }
 
 // GetWorkspace returns a workspace matching the given directory.
@@ -336,94 +278,20 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 // the one marked IsDefault is preferred; otherwise the first one found is
 // returned. Use GetWorkspaceByDirAndACP for a specific ACP server match.
 func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	var first *config.WorkspaceSettings
-	for _, ws := range sm.workspaces {
-		if ws.WorkingDir == workingDir {
-			if ws.IsDefault {
-				return ws
-			}
-			if first == nil {
-				first = ws
-			}
-		}
-	}
-	return first
+	return sm.wsRegistry.GetWorkspace(workingDir)
 }
 
 // GetWorkspaceByDirAndACP returns the workspace matching both directory and ACP server.
 // This is used when multiple workspaces share the same folder but use different ACP servers.
 // If acpServer is empty, returns the first workspace matching the directory.
 func (sm *SessionManager) GetWorkspaceByDirAndACP(workingDir, acpServer string) *config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	return sm.getWorkspaceByDirAndACPLocked(workingDir, acpServer)
-}
-
-// getWorkspaceByDirAndACPLocked returns the workspace matching both directory and ACP server.
-// When acpServer is empty and multiple workspaces share the directory, the one marked
-// IsDefault is preferred; otherwise the first match wins.
-// Caller must hold sm.mu.
-func (sm *SessionManager) getWorkspaceByDirAndACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
-	var first *config.WorkspaceSettings
-	for _, ws := range sm.workspaces {
-		if ws.WorkingDir == workingDir {
-			if acpServer == "" || ws.ACPServer == acpServer {
-				if acpServer == "" && ws.IsDefault {
-					return ws
-				}
-				if first == nil {
-					first = ws
-				}
-			}
-		}
-	}
-	return first
-}
-
-// resolveWorkspaceForACPLocked returns the workspace to use for a given directory/server pair.
-//
-// Resolution rules:
-//   - Prefer an exact workspace match for (workingDir, acpServer)
-//   - If acpServer is empty, prefer the first workspace matching workingDir
-//   - Fall back to the default workspace only when it is compatible with the ACP server
-//     and working directory (or when those are unspecified in the default)
-//
-// Caller must hold sm.mu.
-func (sm *SessionManager) resolveWorkspaceForACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
-	if ws := sm.getWorkspaceByDirAndACPLocked(workingDir, acpServer); ws != nil {
-		return ws
-	}
-
-	if sm.defaultWorkspace == nil {
-		return nil
-	}
-	if acpServer != "" && sm.defaultWorkspace.ACPServer != acpServer {
-		return nil
-	}
-	if workingDir != "" && sm.defaultWorkspace.WorkingDir != "" && sm.defaultWorkspace.WorkingDir != workingDir {
-		return nil
-	}
-	return sm.defaultWorkspace
+	return sm.wsRegistry.GetWorkspaceByDirAndACP(workingDir, acpServer)
 }
 
 // GetWorkspaceByUUID returns the workspace with the given UUID.
 // Returns nil if no workspace with that UUID exists.
 func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	if ws, ok := sm.workspaces[uuid]; ok {
-		return ws
-	}
-	// Also check default workspace
-	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
-		return sm.defaultWorkspace
-	}
-	return nil
+	return sm.wsRegistry.GetWorkspaceByUUID(uuid)
 }
 
 // createAutoChildren creates child sessions for a newly created parent session.
@@ -525,80 +393,46 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 // (e.g., same project folder with Claude Code and Auggie).
 // Also includes the default workspace if its folder matches.
 func (sm *SessionManager) GetWorkspacesForFolder(folder string) []config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	var result []config.WorkspaceSettings
-	seen := make(map[string]bool) // track by UUID to avoid duplicates
-
-	for _, ws := range sm.workspaces {
-		if ws.WorkingDir == folder {
-			result = append(result, *ws)
-			seen[ws.UUID] = true
-		}
-	}
-
-	// Include default workspace if it matches and hasn't been included
-	if sm.defaultWorkspace != nil && sm.defaultWorkspace.WorkingDir == folder {
-		if !seen[sm.defaultWorkspace.UUID] {
-			result = append(result, *sm.defaultWorkspace)
-		}
-	}
-
-	return result
+	return sm.wsRegistry.GetWorkspacesForFolder(folder)
 }
 
 // ResolveWorkspaceIdentifier resolves a workspace UUID to its WorkingDir.
 // Returns the working directory and true if found, empty string and false otherwise.
 func (sm *SessionManager) ResolveWorkspaceIdentifier(uuid string) (string, bool) {
+	// Passes 1+2: prefer workspaces with non-empty WorkingDir
+	if dir, ok := sm.wsRegistry.LookupDirByUUID(uuid, true); ok {
+		return dir, true
+	}
+
+	// Pass 3: sessions fallback — handles CLI usage where a session has a working
+	// directory that is not in any registered workspace (the session inherits the
+	// default workspace UUID but has its own working directory).
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	// Find workspace by UUID - prefer workspaces with non-empty WorkingDir
-	for _, ws := range sm.workspaces {
-		if ws.UUID == uuid && ws.WorkingDir != "" {
-			return ws.WorkingDir, true
-		}
-	}
-
-	// Check default workspace if it has a non-empty WorkingDir
-	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid && sm.defaultWorkspace.WorkingDir != "" {
-		return sm.defaultWorkspace.WorkingDir, true
-	}
-
-	// Fall back to active sessions - this handles the case where sessions are created
-	// with a working directory that's not a registered workspace (e.g., CLI usage).
-	// The session inherits the default workspace's UUID but has its own working directory.
 	for _, bs := range sm.sessions {
 		if bs.GetWorkspaceUUID() == uuid && bs.GetWorkingDir() != "" {
-			return bs.GetWorkingDir(), true
+			dir := bs.GetWorkingDir()
+			sm.mu.RUnlock()
+			return dir, true
 		}
 	}
+	sm.mu.RUnlock()
 
-	// If we found the UUID but all working dirs are empty, still return success
-	// to indicate the UUID is valid (even if we can't resolve to a directory)
-	for _, ws := range sm.workspaces {
-		if ws.UUID == uuid {
-			return ws.WorkingDir, true
-		}
-	}
-	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
-		return sm.defaultWorkspace.WorkingDir, true
-	}
-
-	return "", false
+	// Passes 4+5: UUID found but WorkingDir is empty — still return success so
+	// callers know the UUID is valid.
+	return sm.wsRegistry.LookupDirByUUID(uuid, false)
 }
 
 // GetDefaultWorkspace returns the default workspace.
 // Returns nil if no default workspace is configured.
 func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return sm.defaultWorkspace
+	return sm.wsRegistry.GetDefaultWorkspace()
 }
 
 // buildAvailableACPServers returns the list of ACP servers that have workspaces
-// configured for the given folder, using the same logic as the MCP tool
+// configured for the given folder.
+func (sm *SessionManager) buildAvailableACPServers(folder, currentACPServer string) []processors.AvailableACPServer {
+	return sm.wsRegistry.buildAvailableACPServers(folder, currentACPServer)
+}
 
 // buildPruneConfig builds a PruneConfig from the global settings.
 // If no explicit max_messages_per_session is configured, it applies
@@ -632,99 +466,22 @@ func (sm *SessionManager) buildPruneConfig() *session.PruneConfig {
 	}
 }
 
-// (mitto_conversation_get_current). Each entry includes the server name, type,
-// and tags, plus whether it is the currently active server for the session.
-//
-// Returns nil when no config is available or no workspace is found for the folder.
-func (sm *SessionManager) buildAvailableACPServers(folder, currentACPServer string) []processors.AvailableACPServer {
-	if sm.mittoConfig == nil || len(sm.mittoConfig.ACPServers) == 0 {
-		return nil
-	}
-
-	folderWorkspaces := sm.GetWorkspacesForFolder(folder)
-	if len(folderWorkspaces) == 0 {
-		return nil
-	}
-
-	wsServerSet := make(map[string]bool, len(folderWorkspaces))
-	for _, ws := range folderWorkspaces {
-		wsServerSet[ws.ACPServer] = true
-	}
-
-	servers := make([]processors.AvailableACPServer, 0, len(folderWorkspaces))
-	for _, srv := range sm.mittoConfig.ACPServers {
-		if wsServerSet[srv.Name] {
-			servers = append(servers, processors.AvailableACPServer{
-				Name:    srv.Name,
-				Type:    srv.GetType(),
-				Tags:    srv.Tags,
-				Current: srv.Name == currentACPServer,
-			})
-		}
-	}
-	return servers
-}
-
 // GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no prompts section.
 func (sm *SessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return nil
-	}
-
-	rc, err := sm.workspaceRCCache.Get(workingDir)
-	if err != nil {
-		if sm.logger != nil {
-			sm.logger.Warn("Failed to load workspace .mittorc",
-				"working_dir", workingDir,
-				"error", err)
-		}
-		return nil
-	}
-
-	if rc == nil {
-		return nil
-	}
-
-	return rc.Prompts
+	return sm.wsRegistry.GetWorkspacePrompts(workingDir)
 }
 
 // GetWorkspacePromptsDirs returns the prompts_dirs defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no prompts_dirs section.
 func (sm *SessionManager) GetWorkspacePromptsDirs(workingDir string) []string {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return nil
-	}
-
-	rc, err := sm.workspaceRCCache.Get(workingDir)
-	if err != nil {
-		return nil
-	}
-
-	if rc == nil {
-		return nil
-	}
-
-	return rc.PromptsDirs
+	return sm.wsRegistry.GetWorkspacePromptsDirs(workingDir)
 }
 
 // GetWorkspaceProcessorsDirs returns the processors_dirs defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no processors_dirs section.
 func (sm *SessionManager) GetWorkspaceProcessorsDirs(workingDir string) []string {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return nil
-	}
-
-	rc, err := sm.workspaceRCCache.Get(workingDir)
-	if err != nil {
-		return nil
-	}
-
-	if rc == nil {
-		return nil
-	}
-
-	return rc.ProcessorsDirs
+	return sm.wsRegistry.GetWorkspaceProcessorsDirs(workingDir)
 }
 
 // GetProcessorManager returns the global processor manager.
@@ -737,20 +494,7 @@ func (sm *SessionManager) GetProcessorManager() *processors.Manager {
 // GetWorkspaceProcessorOverrides returns the processor enabled/disabled overrides from the
 // workspace's .mittorc file. Returns nil if no .mittorc exists or if it has no overrides.
 func (sm *SessionManager) GetWorkspaceProcessorOverrides(workingDir string) []config.ProcessorOverride {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return nil
-	}
-
-	rc, err := sm.workspaceRCCache.Get(workingDir)
-	if err != nil {
-		return nil
-	}
-
-	if rc == nil {
-		return nil
-	}
-
-	return rc.ProcessorOverrides
+	return sm.wsRegistry.GetWorkspaceProcessorOverrides(workingDir)
 }
 
 // GetWorkspaceProcessorManager returns the merged processor manager for a given workspace dir,
@@ -771,27 +515,7 @@ func (sm *SessionManager) GetWorkspaceProcessorManager(workingDir string) *proce
 // GetWorkspaceAllProcessorDirs returns all processor directories applicable to a workspace:
 // the default .mitto/processors/ dir plus any extras from .mittorc processors_dirs.
 func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []string {
-	if workingDir == "" {
-		return nil
-	}
-
-	var dirs []string
-
-	// 1. Default .mitto/processors/ directory
-	defaultDir := appdir.WorkspaceProcessorsDir(workingDir)
-	dirs = append(dirs, defaultDir)
-
-	// 2. Additional processors_dirs from .mittorc
-	if extraDirs := sm.GetWorkspaceProcessorsDirs(workingDir); len(extraDirs) > 0 {
-		for _, dir := range extraDirs {
-			if !filepath.IsAbs(dir) {
-				dir = filepath.Join(workingDir, dir)
-			}
-			dirs = append(dirs, dir)
-		}
-	}
-
-	return dirs
+	return sm.wsRegistry.GetWorkspaceAllProcessorDirs(workingDir)
 }
 
 // loadWorkspaceProcessors clones the processor manager with workspace-specific
@@ -829,47 +553,20 @@ func (sm *SessionManager) loadWorkspaceProcessors(procMgr *processors.Manager, w
 // GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
 // Returns zero time if the file doesn't exist or the cache is not initialized.
 func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return time.Time{}
-	}
-	return sm.workspaceRCCache.GetLastModified(workingDir)
+	return sm.wsRegistry.GetWorkspaceRCLastModified(workingDir)
 }
 
 // InvalidateWorkspaceRC invalidates the cached workspace RC for the given directory,
 // forcing a reload on the next access.
 func (sm *SessionManager) InvalidateWorkspaceRC(workingDir string) {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return
-	}
-	sm.workspaceRCCache.Invalidate(workingDir)
+	sm.wsRegistry.InvalidateWorkspaceRC(workingDir)
 }
 
 // GetUserDataSchema returns the user data schema defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no user_data schema section.
 // A nil schema means no custom user data attributes are allowed (validation will reject any).
 func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema {
-	if sm.workspaceRCCache == nil || workingDir == "" {
-		return nil
-	}
-
-	rc, err := sm.workspaceRCCache.Get(workingDir)
-	if err != nil {
-		if sm.logger != nil {
-			sm.logger.Warn("Failed to load workspace .mittorc for user data schema",
-				"working_dir", workingDir,
-				"error", err)
-		}
-		return nil
-	}
-
-	if rc == nil {
-		return nil
-	}
-
-	if rc.Metadata == nil {
-		return nil
-	}
-	return rc.Metadata.UserDataSchema
+	return sm.wsRegistry.GetUserDataSchema(workingDir)
 }
 
 // AddWorkspace adds a new workspace to the manager.
@@ -877,121 +574,24 @@ func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataS
 // the workspaces will be persisted to disk.
 // A UUID will be automatically generated if the workspace doesn't have one.
 func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
-	sm.mu.Lock()
-
-	// Initialize workspaces map if needed
-	if sm.workspaces == nil {
-		sm.workspaces = make(map[string]*config.WorkspaceSettings)
-	}
-
-	// Ensure the workspace has a UUID
-	ws.EnsureUUID()
-
-	// Add the workspace (keyed by UUID to allow multiple workspaces with same directory)
-	sm.workspaces[ws.UUID] = &ws
-
-	// Set as default if there's no default or if the current default has no WorkingDir
-	// (which indicates it was created from CLI flags without a specific directory)
-	if sm.defaultWorkspace == nil || sm.defaultWorkspace.WorkingDir == "" {
-		sm.defaultWorkspace = &ws
-	}
-
-	if sm.logger != nil {
-		sm.logger.Info("Added workspace",
-			"uuid", ws.UUID,
-			"working_dir", ws.WorkingDir,
-			"acp_server", ws.ACPServer,
-			"total_workspaces", len(sm.workspaces))
-	}
-
-	// Save workspaces if not from CLI and callback is set
-	shouldSave := !sm.fromCLI && sm.onWorkspaceSave != nil
-	var workspacesToSave []config.WorkspaceSettings
-	if shouldSave {
-		workspacesToSave = sm.getWorkspacesLocked()
-	}
-	sm.mu.Unlock()
-
-	if shouldSave {
-		if err := sm.onWorkspaceSave(workspacesToSave); err != nil && sm.logger != nil {
-			sm.logger.Error("Failed to save workspaces", "error", err)
-		}
-	}
-}
-
-// getWorkspacesLocked returns all workspaces (must be called with lock held).
-func (sm *SessionManager) getWorkspacesLocked() []config.WorkspaceSettings {
-	result := make([]config.WorkspaceSettings, 0, len(sm.workspaces))
-	for _, ws := range sm.workspaces {
-		result = append(result, *ws)
-	}
-	return result
+	sm.wsRegistry.AddWorkspace(ws)
 }
 
 // RemoveWorkspace removes a workspace by UUID from the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.
 func (sm *SessionManager) RemoveWorkspace(uuid string) {
-	sm.mu.Lock()
-
-	if sm.workspaces == nil {
-		sm.mu.Unlock()
-		return
-	}
-
-	// Get the workspace info before deletion (for logging and default update)
-	ws, exists := sm.workspaces[uuid]
-	if !exists {
-		sm.mu.Unlock()
-		return
-	}
-	workingDir := ws.WorkingDir
-
-	delete(sm.workspaces, uuid)
-
-	// If we removed the default workspace, pick a new one
-	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
-		sm.defaultWorkspace = nil
-		for _, ws := range sm.workspaces {
-			sm.defaultWorkspace = ws
-			break
-		}
-	}
-
-	if sm.logger != nil {
-		sm.logger.Info("Removed workspace",
-			"uuid", uuid,
-			"working_dir", workingDir,
-			"total_workspaces", len(sm.workspaces))
-	}
-
-	// Save workspaces if not from CLI and callback is set
-	shouldSave := !sm.fromCLI && sm.onWorkspaceSave != nil
-	var workspacesToSave []config.WorkspaceSettings
-	if shouldSave {
-		workspacesToSave = sm.getWorkspacesLocked()
-	}
-	sm.mu.Unlock()
-
-	if shouldSave {
-		if err := sm.onWorkspaceSave(workspacesToSave); err != nil && sm.logger != nil {
-			sm.logger.Error("Failed to save workspaces", "error", err)
-		}
-	}
+	sm.wsRegistry.RemoveWorkspace(uuid)
 }
 
 // HasWorkspaces returns true if there are any configured workspaces.
 func (sm *SessionManager) HasWorkspaces() bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return len(sm.workspaces) > 0
+	return sm.wsRegistry.HasWorkspaces()
 }
 
 // IsFromCLI returns true if workspaces were loaded from CLI flags.
 func (sm *SessionManager) IsFromCLI() bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return sm.fromCLI
+	return sm.wsRegistry.IsFromCLI()
 }
 
 // SetStore sets the session store for persistence.
@@ -1077,34 +677,6 @@ func (sm *SessionManager) SetOnConversationIdle(cb func(sessionID string)) {
 	sm.onConversationIdle = cb
 }
 
-// resolveWorkspaceACPLocked resolves the effective ACP command, cwd, and env for a workspace.
-// Resolution priority:
-//  1. ACPCommandOverride (per-workspace user override) — for command only
-//  2. Global ACP server config (looked up by workspace.ACPServer name)
-//
-// Returns empty values if the server cannot be resolved.
-// Caller MUST hold sm.mu (at least for read).
-func (sm *SessionManager) resolveWorkspaceACPLocked(ws *config.WorkspaceSettings) (acpCommand, acpCwd string, acpEnv map[string]string) {
-	if ws == nil {
-		return "", "", nil
-	}
-
-	if ws.ACPServer != "" && sm.mittoConfig != nil {
-		if server, err := sm.mittoConfig.GetServer(ws.ACPServer); err == nil {
-			acpCommand = server.Command
-			acpCwd = server.Cwd
-			acpEnv = server.Env
-		}
-	}
-
-	// Apply per-workspace command override (takes priority over server config)
-	if ws.ACPCommandOverride != "" {
-		acpCommand = ws.ACPCommandOverride
-	}
-
-	return
-}
-
 // EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
 // starting it on demand if necessary. This allows auxiliary features (e.g. "improve prompt") to
 // work even when no user session is currently active for that workspace.
@@ -1129,10 +701,8 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 		r = nil
 	}
 
-	// Resolve ACP command/cwd/env from global config (must not hold sm.mu here)
-	sm.mu.RLock()
-	acpCommand, acpCwd, acpEnv := sm.resolveWorkspaceACPLocked(ws)
-	sm.mu.RUnlock()
+	// Resolve ACP command/cwd/env via registry (self-locking).
+	acpCommand, acpCwd, acpEnv := sm.wsRegistry.ResolveWorkspaceACP(ws)
 
 	p := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
 	if p == nil {
@@ -1475,8 +1045,9 @@ func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {
 // This is used to look up agent-specific runner configurations.
 func (sm *SessionManager) SetMittoConfig(cfg *config.Config) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.mittoConfig = cfg
+	sm.mu.Unlock()
+	sm.wsRegistry.setMittoConfig(cfg)
 }
 
 // GetGlobalRunnerInfo returns the global restricted runner configs and the full Mitto config.
@@ -1495,8 +1066,8 @@ func (sm *SessionManager) GetGlobalRunnerInfo() (map[string]*config.WorkspaceRun
 func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *config.WorkspaceSettings) (*runner.Runner, error) {
 	// Get workspace-specific runner configs from .mittorc (by runner type)
 	var workspaceRunnerConfigByType map[string]*config.WorkspaceRunnerConfig
-	if workingDir != "" && sm.workspaceRCCache != nil {
-		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+	if workingDir != "" && sm.wsRegistry.workspaceRCCache != nil {
+		if rc, err := sm.wsRegistry.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
 			workspaceRunnerConfigByType = rc.RestrictedRunners
 		}
 	}
@@ -1578,28 +1149,25 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	var foundWs *config.WorkspaceSettings // Track which workspace is used for later auto-approve check
 
 	if workspace != nil {
-		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(workspace)
+		acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(workspace)
 		acpServer = workspace.ACPServer
 		workspaceUUID = workspace.UUID
 		if workingDir == "" {
 			workingDir = workspace.WorkingDir
 		}
 	} else {
-		// Try to find a workspace by working directory (first match)
-		for _, ws := range sm.workspaces {
-			if ws.WorkingDir == workingDir {
-				foundWs = ws
-				break
-			}
-		}
+		foundWs = sm.wsRegistry.GetWorkspace(workingDir)
 		if foundWs != nil {
-			acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
+			acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(foundWs)
 			acpServer = foundWs.ACPServer
 			workspaceUUID = foundWs.UUID
-		} else if sm.defaultWorkspace != nil {
-			acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(sm.defaultWorkspace)
-			acpServer = sm.defaultWorkspace.ACPServer
-			workspaceUUID = sm.defaultWorkspace.UUID
+		} else {
+			defWs := sm.wsRegistry.GetDefaultWorkspace()
+			if defWs != nil {
+				acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(defWs)
+				acpServer = defWs.ACPServer
+				workspaceUUID = defWs.UUID
+			}
 		}
 	}
 	sm.mu.Unlock()
@@ -1611,13 +1179,13 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 			"workspace_uuid", workspaceUUID,
 			"acp_server", acpServer,
 			"found_workspace", foundWs != nil,
-			"using_default", foundWs == nil && sm.defaultWorkspace != nil)
+			"using_default", foundWs == nil && sm.wsRegistry.GetDefaultWorkspace() != nil)
 	}
 
 	// Load workspace-specific conversation config and merge with global
 	var workspaceConv *config.ConversationsConfig
-	if workingDir != "" && sm.workspaceRCCache != nil {
-		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+	if workingDir != "" && sm.wsRegistry.workspaceRCCache != nil {
+		if rc, err := sm.wsRegistry.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
 			workspaceConv = rc.Conversations
 		}
 	}
@@ -1719,7 +1287,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		effectiveWs = foundWs
 	}
 	if effectiveWs == nil {
-		effectiveWs = sm.defaultWorkspace
+		effectiveWs = sm.wsRegistry.GetDefaultWorkspace()
 	}
 	sharedProcessStart := time.Now()
 	sharedProcess := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
@@ -2046,15 +1614,18 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// identifies a specific ACP server, this provisional choice will be replaced
 	// with the exact workspace for that server.
 	var foundWs *config.WorkspaceSettings
-	foundWs = sm.getWorkspaceByDirAndACPLocked(workingDir, "")
+	foundWs = sm.wsRegistry.GetWorkspaceByDirAndACP(workingDir, "")
 	if foundWs != nil {
-		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
+		acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(foundWs)
 		acpServer = foundWs.ACPServer
 		workspaceUUID = foundWs.UUID
-	} else if sm.defaultWorkspace != nil {
-		acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(sm.defaultWorkspace)
-		acpServer = sm.defaultWorkspace.ACPServer
-		workspaceUUID = sm.defaultWorkspace.UUID
+	} else {
+		defWs := sm.wsRegistry.GetDefaultWorkspace()
+		if defWs != nil {
+			acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(defWs)
+			acpServer = defWs.ACPServer
+			workspaceUUID = defWs.UUID
+		}
 	}
 
 	// Get session metadata for ACP session ID and server name
@@ -2087,13 +1658,13 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				// ACP server. The provisional workspace chosen above may point to the
 				// same directory but a different ACP server, which would incorrectly
 				// reuse the wrong shared ACP process.
-				foundWs = sm.resolveWorkspaceForACPLocked(workingDir, acpServer)
+				foundWs = sm.wsRegistry.resolveWorkspaceForACP(workingDir, acpServer)
 				if foundWs != nil {
 					workspaceUUID = foundWs.UUID
 					// Resolve command/cwd/env from the re-resolved workspace.
-					// resolveWorkspaceACPLocked applies ACPCommandOverride if set,
+					// ResolveWorkspaceACP applies ACPCommandOverride if set,
 					// otherwise looks up from global config.
-					acpCommand, acpCwd, acpEnv = sm.resolveWorkspaceACPLocked(foundWs)
+					acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(foundWs)
 					if sm.logger != nil && foundWs.ACPCommandOverride != "" {
 						sm.logger.Debug("Using workspace command override",
 							"session_id", sessionID,
@@ -2144,11 +1715,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 						// for the same working directory. We fully adopt the rescue
 						// workspace's identity (server name + command), so shared ACP
 						// process lookup stays consistent and does not mix agents.
-						rescueWs := sm.resolveWorkspaceForACPLocked(workingDir, "")
+						rescueWs := sm.wsRegistry.resolveWorkspaceForACP(workingDir, "")
 						var rescueCmd, rescueCwd string
 						var rescueEnv map[string]string
 						if rescueWs != nil {
-							rescueCmd, rescueCwd, rescueEnv = sm.resolveWorkspaceACPLocked(rescueWs)
+							rescueCmd, rescueCwd, rescueEnv = sm.wsRegistry.ResolveWorkspaceACP(rescueWs)
 						}
 						if rescueWs != nil && rescueCmd != "" {
 							foundWs = rescueWs
@@ -2233,8 +1804,8 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Load workspace-specific conversation config and merge with global.
 	// Note: For resumed sessions, isFirstPrompt is false, so "first" processors won't apply.
 	var workspaceConv *config.ConversationsConfig
-	if workingDir != "" && sm.workspaceRCCache != nil {
-		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+	if workingDir != "" && sm.wsRegistry.workspaceRCCache != nil {
+		if rc, err := sm.wsRegistry.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
 			workspaceConv = rc.Conversations
 		}
 	}
@@ -2879,8 +2450,8 @@ func (sm *SessionManager) ProcessPendingQueues() {
 
 		// Get queue config to check delay
 		var queueConfig *config.QueueConfig
-		if meta.WorkingDir != "" && sm.workspaceRCCache != nil {
-			if rc, err := sm.workspaceRCCache.Get(meta.WorkingDir); err == nil && rc != nil && rc.Conversations != nil {
+		if meta.WorkingDir != "" && sm.wsRegistry.workspaceRCCache != nil {
+			if rc, err := sm.wsRegistry.workspaceRCCache.Get(meta.WorkingDir); err == nil && rc != nil && rc.Conversations != nil {
 				queueConfig = rc.Conversations.Queue
 			}
 		}

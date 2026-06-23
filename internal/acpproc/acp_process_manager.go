@@ -1,4 +1,4 @@
-package web
+package acpproc
 
 import (
 	"context"
@@ -229,6 +229,12 @@ func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessM
 // server startup, before creating any new processes. Not called in tests.
 func (m *ACPProcessManager) CleanupOrphanedProcesses() {
 	cleanupOrphanedACPProcesses(m.logger)
+}
+
+// SetOnMemoryRecycled sets the callback invoked by the GC's Tier 4 memory-recycle
+// path when a memory-bloated idle shared ACP process is recycled.
+func (m *ACPProcessManager) SetOnMemoryRecycled(fn func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)) {
+	m.onMemoryRecycled = fn
 }
 
 // Ensure ACPProcessManager implements auxiliary.ProcessProvider

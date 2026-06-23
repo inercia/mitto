@@ -1,6 +1,7 @@
 package web
 
 import (
+	"github.com/inercia/mitto/internal/acpproc"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/runner"
@@ -11,7 +12,7 @@ import (
 // IsGCSuspended, StopGC, Close, ProcessCount) and wraps GetOrCreateProcess to
 // convert the concrete *SharedACPProcess return to conversation.SharedProcess while
 // guarding against the typed-nil-interface Go gotcha.
-type acpProcessManagerAdapter struct{ *ACPProcessManager }
+type acpProcessManagerAdapter struct{ *acpproc.ACPProcessManager }
 
 // GetOrCreateProcess delegates to ACPProcessManager and converts the concrete
 // *SharedACPProcess return value to a conversation.SharedProcess interface.
