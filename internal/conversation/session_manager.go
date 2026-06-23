@@ -124,6 +124,13 @@ type SessionManager struct {
 	// the frontend can show the hourglass icon even after fetchStoredSessions() overwrites storedSessions.
 	waitingForChildren map[string]bool
 
+	// streamingMu protects streaming map.
+	streamingMu sync.RWMutex
+	// streaming tracks which sessions are currently prompting (agent streaming).
+	// This is in-memory only and is used to populate the session list API response so that
+	// the frontend can show the pulsing ring even after fetchStoredSessions() overwrites storedSessions.
+	streaming map[string]bool
+
 	// mcpServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	mcpServer *mcpserver.Server
@@ -187,6 +194,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		wsRegistry:                reg,
 		planState:                 make(map[string][]PlanEntry),
 		waitingForChildren:        make(map[string]bool),
+		streaming:                 make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
@@ -234,6 +242,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		wsRegistry:                reg,
 		planState:                 make(map[string][]PlanEntry),
 		waitingForChildren:        make(map[string]bool),
+		streaming:                 make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
@@ -914,6 +923,13 @@ func (sm *SessionManager) IsWaitingForChildren(sessionID string) bool {
 	return sm.waitingForChildren[sessionID]
 }
 
+// IsStreaming returns whether a session is currently prompting (agent streaming).
+func (sm *SessionManager) IsStreaming(sessionID string) bool {
+	sm.streamingMu.RLock()
+	defer sm.streamingMu.RUnlock()
+	return sm.streaming[sessionID]
+}
+
 // childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
 const childArchiveTimeout = 30 * time.Second
 
@@ -1349,6 +1365,15 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 			}
 		},
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
+			// Track the state so it can be included in the session list API response,
+			// ensuring the pulsing ring survives a full session list refresh on reload.
+			sm.streamingMu.Lock()
+			if isStreaming {
+				sm.streaming[sessionID] = true
+			} else {
+				delete(sm.streaming, sessionID)
+			}
+			sm.streamingMu.Unlock()
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
 					"session_id":   sessionID,
@@ -1957,6 +1982,15 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			}
 		},
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
+			// Track the state so it can be included in the session list API response,
+			// ensuring the pulsing ring survives a full session list refresh on reload.
+			sm.streamingMu.Lock()
+			if isStreaming {
+				sm.streaming[sessionID] = true
+			} else {
+				delete(sm.streaming, sessionID)
+			}
+			sm.streamingMu.Unlock()
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
 					"session_id":   sessionID,

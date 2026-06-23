@@ -28,6 +28,9 @@ type SessionListResponse struct {
 	// IsWaitingForChildren is true when the session is currently blocked on mitto_children_tasks_wait.
 	// This is a runtime state (not persisted) tracked by the SessionManager.
 	IsWaitingForChildren bool `json:"is_waiting_for_children,omitempty"`
+	// IsStreaming is true when the session is currently prompting (agent streaming).
+	// This is a runtime state (not persisted) tracked by the SessionManager.
+	IsStreaming bool `json:"is_streaming,omitempty"`
 	// PeriodicStoppedReason is the reason the periodic loop was auto-stopped (empty when still running).
 	PeriodicStoppedReason string `json:"periodic_stopped_reason,omitempty"`
 	// PeriodicTrigger is "schedule" or "onCompletion" (resolved via EffectiveTrigger so schedule loops
@@ -109,6 +112,7 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 		// Check if session is currently waiting for children (runtime state from SessionManager)
 		if h.deps.SessionManager != nil {
 			response[i].IsWaitingForChildren = h.deps.SessionManager.IsWaitingForChildren(meta.SessionID)
+			response[i].IsStreaming = h.deps.SessionManager.IsStreaming(meta.SessionID)
 		}
 	}
 
