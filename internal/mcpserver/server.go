@@ -1129,6 +1129,14 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"The HTML is strictly sanitized — only form-related elements are allowed (no scripts, styles, " +
 			"images, links, or event handlers). Submit/cancel buttons are added automatically. " +
 			"Returns the submitted form field values as key-value pairs (keyed by the 'name' attribute). " +
+			"For radio/checkbox groups, put the question in its own block element (e.g. a <p>, or a " +
+			"<fieldset> with a <legend>) and wrap EACH option in its own <label> so every option — " +
+			"including the first — renders on its own line. Example: " +
+			"<p>Pick one:</p>" +
+			"<label><input type='radio' name='q' value='a' checked> Option A</label>" +
+			"<label><input type='radio' name='q' value='b'> Option B</label>. " +
+			"Do NOT place the question and the first option in the same line/element, and do NOT " +
+			"separate bare <input> options with <br> (the first option will render glued to the question). " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleUIForm)
