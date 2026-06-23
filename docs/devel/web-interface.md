@@ -301,3 +301,43 @@ flowchart LR
 - **Sequence tracking via `lastKnownSeqRef`** (not localStorage or React state alone)
 - **Three-tier deduplication**: Server-side `lastSentSeq` + client-side seq tracker + content merge
 - **Server authority**: When client and server disagree, the server always wins
+
+---
+
+## webview.log Staleness While App Hidden (macOS — Expected)
+
+When auditing logs for the macOS app (`cmd/mitto-app`, a WKWebView host), `webview.log` frequently shows long stretches with no new output while `mitto.log` and `access.log` continue to advance. This is **expected behavior**, not a logging defect.
+
+### Symptom
+
+`webview.log` (WKWebView JS console output bridged to a native file) stops advancing for minutes or hours, creating apparent gaps in frontend observability. Backend logs keep flowing normally during the same window.
+
+### Root Cause (Confirmed)
+
+When the macOS app is hidden or backgrounded, WKWebView throttles and then fully suspends JS execution — including timers and `console.*` emission. The native console→file bridge receives nothing to write, so `webview.log` stops advancing. The suspension follows a two-phase pattern:
+
+- **Throttle phase** (~2–3 min): output trickles after the `"App hidden, tracking time"` log marker
+- **Suspend phase**: output stops entirely; console output produced while suspended is **dropped, not buffered**
+
+### Recovery
+
+Resumption is marked by the line:
+
+```
+[macOS] App became active, triggering staggered reconnect and sync
+```
+
+Logging restarts on activation. Sync recovers via seq-aligned `load_events`, with no data loss and no zombie sessions. Overnight or multi-hour gaps are simply long hidden/sleep periods.
+
+### Guidance for Log Audits
+
+Treat `webview.log` staleness during hidden periods as expected. To distinguish expected gaps from genuine defects:
+
+- **Expected**: staleness is preceded by `"App hidden, tracking time"` and followed by `"App became active, triggering staggered reconnect and sync"`
+- **Genuine defect**: staleness occurs **without** a preceding `"App hidden"` marker, or while the app is demonstrably active in the foreground
+
+### Cross-References
+
+- `.augment/rules/09-macos-app.md` — native WKWebView bridge and console capture
+- `.augment/rules/23-web-frontend-mobile.md` — visibility change handling, wake resync
+- `websockets/synchronization.md` — seq-aligned `load_events` and reconnection flow

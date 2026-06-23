@@ -1,0 +1,137 @@
+icon: check
+name: Review Changes
+menus: prompts
+description: 'Review recent changes against requirements: completeness, correctness, tight scope'
+group: Code Quality
+backgroundColor: '#C8E6C9'
+enabledWhen: fileExists(".git/config")
+prompt: |
+  Review the **recent changes** in this repository — typically the work done to address a
+  ticket/issue — and judge it against three questions, in this order:
+
+  1. **Are all the requirements fulfilled?**
+  2. **Is the solution correct, and does it avoid introducing new bugs?**
+  3. **Is the scope tight?** It should solve only what was asked — no scope creep,
+     no over-engineering, no unrelated changes.
+
+  This is a focused change review, not a whole-codebase audit. Stay on the diff.
+
+  ## Step 1 — Establish the requirements baseline
+
+  Figure out what the change was *supposed* to deliver:
+
+  - If this conversation is already tied to a specific ticket/issue (e.g. a linked beads
+    issue, a PR, or a task you have been working on), use that — you already know the
+    context, so use it directly. For a beads issue:
+
+    ```bash
+    bd show <issue-id> --long --json    # description, acceptance criteria, design
+    ```
+
+  - Otherwise, ask the user which requirements to review against:
+
+    ```
+    mitto_ui_options(self_id: "@mitto:session_id",
+      question: "What should I review these changes against?",
+      options: [
+        {label: "A beads/ticket issue", description: "I'll look up its acceptance criteria"},
+        {label: "The task as described in this conversation", description: "Use the context we already have"},
+        {label: "Just review correctness & scope", description: "No formal requirements to check"}
+      ],
+      allow_free_text: true)
+    ```
+
+  Distill an explicit, checkable list of requirements / acceptance criteria. If none are
+  written down, infer them from the issue description or the conversation.
+
+  ## Step 2 — Gather the changes under review
+
+  Inspect what actually changed. Read the full diff, not just file names:
+
+  ```bash
+  git status                       # untracked + modified
+  git diff                         # unstaged changes
+  git diff --staged                # staged changes
+  git log --oneline -10            # recent commits (pick the relevant range)
+  git diff <base>...HEAD           # commits made for this work, if on a branch
+  ```
+
+  If the boundary of "recent changes" is ambiguous (uncommitted only vs. a branch's
+  commits), confirm with the user before proceeding. Read the touched files and their
+  tests in parallel; verify claims by reading code, do not assume.
+
+  ## Step 3 — Review across the three axes
+
+  ### A. Requirements fulfilled
+
+  Build a traceability table — every requirement mapped to concrete evidence:
+
+  | Requirement | Status | Evidence (file:line) |
+  |-------------|--------|----------------------|
+  | ... | ✅ Met / ⚠️ Partial / ❌ Missing | `path/file.go:42` |
+
+  A requirement is **Met** only with hard evidence in the diff. Missing tests for a
+  required behaviour means ⚠️ Partial at best.
+
+  ### B. Correctness & no new bugs
+
+  - Edge cases: null/empty/boundary inputs, error paths (not just the happy path).
+  - Regressions: does the change break existing behaviour or callers? Check downstream
+    call sites of any changed signature/API.
+  - Logic bugs: off-by-one, race conditions, incorrect state transitions, swallowed errors.
+  - Tests & build: do relevant tests exist and pass? Does it build/lint? Run the cheap,
+    relevant checks (e.g. `make test-go`, `make test-js`, `make lint`) when feasible.
+
+  ### C. Tight scope (no over-engineering)
+
+  Flag anything that goes **beyond** what the issue asked for:
+
+  - Unrelated refactors, renames, or reformatting mixed into the change.
+  - Speculative generality — abstractions/config/flags/interfaces with no current caller
+    ("you might need it later"). Don't generalize before the third use.
+  - New dependencies, layers, or indirection that the requirement doesn't justify.
+  - Files touched that have nothing to do with the stated goal.
+  - Gold-plating: solving problems the ticket never raised.
+
+  For each, note whether it should be removed, split into a separate change/issue, or kept.
+
+  ## Step 4 — Verdict
+
+  Produce the review using this template:
+
+  ```markdown
+  ## Change Review: <ticket / short description>
+
+  ### 1. Requirements
+  <traceability table>
+  Coverage: N/M met, K partial, J missing.
+
+  ### 2. Correctness
+  - <findings: bugs, edge cases, regressions, test/build status>
+
+  ### 3. Scope
+  - <out-of-scope / over-engineering findings, each with a recommendation>
+
+  ### Verdict
+  - [ ] **Approve** — requirements met, correct, scope tight
+  - [ ] **Request changes** — see findings above
+  ```
+
+  Be honest and specific: call a bug a bug, quantify where you can, and don't rubber-stamp.
+  If the author clearly had context you lack and disagrees, defer gracefully.
+
+  ## Step 5 — Share the review (with Mitto UI)
+
+  Before posting or finalizing, let the user edit it:
+
+  ```
+  mitto_ui_textbox(self_id: "@mitto:session_id",
+    title: "Change review — edit before sharing",
+    text: "<generated-review-markdown>",
+    result: "edited_text")
+  ```
+
+  - `changed == true` → use the edited text. `changed == false` → use the original.
+  - `aborted == true` → ask the user what they'd like to change.
+
+  **Without Mitto UI**: show the review in the conversation and ask what to do with it.
