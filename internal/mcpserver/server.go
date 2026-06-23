@@ -4334,6 +4334,24 @@ const childrenReportSuffix = "\n\n" +
 	"%s " + "\n" +
 	"NOTE: ignore these instructions if you have already sent the report."
 
+// logChildrenWaitTimeout logs the outcome of a children-wait timeout. When there
+// are genuinely outstanding (pending) children at the deadline, it logs at WARN
+// with the pending list. When nothing is still pending (e.g. the parent re-waited
+// after children already reported), the timeout is meaningless noise, so it is
+// downgraded to DEBUG.
+func logChildrenWaitTimeout(logger *slog.Logger, parentSession string, pending, reported []string, totalRunning int, timeout time.Duration) {
+	log := logger.Warn
+	if len(pending) == 0 {
+		log = logger.Debug
+	}
+	log("Timeout waiting for children to report",
+		"parent_session", parentSession,
+		"pending_children", pending,
+		"reported_children", reported,
+		"total_running", totalRunning,
+		"timeout", timeout)
+}
+
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
@@ -4601,12 +4619,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 			case <-timeoutTimer.C:
 				timedOut = true
 				pendingChildren, reportedChildren := collector.getPendingAndReported()
-				s.logger.Warn("Timeout waiting for children to report",
-					"parent_session", realSessionID,
-					"pending_children", pendingChildren,
-					"reported_children", reportedChildren,
-					"total_running", len(runningChildren),
-					"timeout", timeout)
+				logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, len(runningChildren), timeout)
 				break waitLoop
 			case <-ctx.Done():
 				return nil, ChildrenTasksWaitOutput{
@@ -4692,12 +4705,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		case <-time.After(timeout):
 			timedOut = true
 			pendingChildren, reportedChildren := collector.getPendingAndReported()
-			s.logger.Warn("Timeout waiting for children to report",
-				"parent_session", realSessionID,
-				"pending_children", pendingChildren,
-				"reported_children", reportedChildren,
-				"total_running", len(runningChildren),
-				"timeout", timeout)
+			logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, len(runningChildren), timeout)
 		case <-ctx.Done():
 			return nil, ChildrenTasksWaitOutput{
 				Success: false,
