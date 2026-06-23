@@ -339,19 +339,29 @@ export function SessionPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
+      // Periodic + callback endpoints only exist for periodic conversations.
+      // Gating on periodic_configured avoids 404 noise on regular sessions.
+      const periodicConfigured = sessionInfo?.periodic_configured === true;
+
       try {
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
-            authFetch(apiUrl(`/api/sessions/${sessionId}/callback`)),
+            periodicConfigured
+              ? authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
+              : Promise.resolve(null),
+            periodicConfigured
+              ? authFetch(apiUrl(`/api/sessions/${sessionId}/callback`))
+              : Promise.resolve(null),
             authFetch(apiUrl("/api/advanced-flags")),
             authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
           ]);
 
-        if (periodicRes.ok) setPeriodicConfig(await periodicRes.json());
+        if (periodicRes && periodicRes.ok)
+          setPeriodicConfig(await periodicRes.json());
         else setPeriodicConfig(null);
 
-        if (callbackRes.ok) setCallbackConfig(await callbackRes.json());
+        if (callbackRes && callbackRes.ok)
+          setCallbackConfig(await callbackRes.json());
         else setCallbackConfig(null);
 
         if (flagsRes.ok) {
@@ -372,7 +382,7 @@ export function SessionPanel({
     };
 
     fetchData();
-  }, [isOpen, sessionId]);
+  }, [isOpen, sessionId, sessionInfo?.periodic_configured]);
 
   // --- Effects: fetch linked beads issue status when open ---
   // The status badge mirrors the style used in the Beads view. The status

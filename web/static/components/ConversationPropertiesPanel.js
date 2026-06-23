@@ -331,17 +331,25 @@ export function ConversationPropertiesPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
+      // Periodic + callback endpoints only exist for periodic conversations.
+      // Gating on periodic_configured avoids 404 noise on regular sessions.
+      const periodicConfigured = sessionInfo?.periodic_configured === true;
+
       try {
         // Fetch periodic config, callback config, available flags, and session settings in parallel
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
-            authFetch(apiUrl(`/api/sessions/${sessionId}/callback`)),
+            periodicConfigured
+              ? authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
+              : Promise.resolve(null),
+            periodicConfigured
+              ? authFetch(apiUrl(`/api/sessions/${sessionId}/callback`))
+              : Promise.resolve(null),
             authFetch(apiUrl("/api/advanced-flags")),
             authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
           ]);
 
-        if (periodicRes.ok) {
+        if (periodicRes && periodicRes.ok) {
           const periodic = await periodicRes.json();
           setPeriodicConfig(periodic);
         } else {
@@ -349,7 +357,7 @@ export function ConversationPropertiesPanel({
           setPeriodicConfig(null);
         }
 
-        if (callbackRes.ok) {
+        if (callbackRes && callbackRes.ok) {
           setCallbackConfig(await callbackRes.json());
         } else {
           setCallbackConfig(null);
@@ -374,7 +382,7 @@ export function ConversationPropertiesPanel({
     };
 
     fetchData();
-  }, [isOpen, sessionId]);
+  }, [isOpen, sessionId, sessionInfo?.periodic_configured]);
 
   // Focus title input when entering edit mode
   useEffect(() => {
