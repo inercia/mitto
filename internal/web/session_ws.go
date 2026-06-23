@@ -1179,10 +1179,14 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 	// sync requests (afterSeq > 0). Previously, sync requests didn't add the observer,
 	// which caused reconnecting clients to miss all new events after syncing.
 	if !isPrepend {
+		// justRegistered tracks whether AddObserver was called in this invocation.
+		// The H2 sync is only needed when the observer is first registered.
+		justRegistered := false
 		c.initialLoadMu.Lock()
 		if !c.initialLoadDone && c.bgSession != nil {
 			c.bgSession.AddObserver(c)
 			c.initialLoadDone = true
+			justRegistered = true
 			if c.logger != nil {
 				c.logger.Debug("Added client as observer after load_events",
 					"session_id", c.sessionID,
@@ -1212,10 +1216,10 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 		}
 		c.initialLoadMu.Unlock()
 
-		// H2 fix: Check for events that were persisted between the initial load
-		// and observer registration. This handles the race window where events
-		// arrive after we read from storage but before we're registered as an observer.
-		if lastSeq > 0 {
+		// H2 fix: Check for events persisted between the storage read and AddObserver.
+		// Only needed when the observer was just registered in this call; on subsequent
+		// sync load_events the observer is already active and streaming covers new events.
+		if justRegistered && lastSeq > 0 {
 			c.syncMissedEventsDuringRegistration(lastSeq)
 		}
 

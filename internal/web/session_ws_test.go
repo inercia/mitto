@@ -544,6 +544,66 @@ func TestSyncMissedEventsDuringRegistration_NonexistentSession(t *testing.T) {
 	}
 }
 
+// TestPostLoadProcessing_NoH2SyncOnSubsequentSync verifies that
+// syncMissedEventsDuringRegistration is NOT called on a sync load_events when
+// the observer is already registered (initialLoadDone == true). On such calls the
+// observer is already active so streaming covers new events; a second events_loaded
+// from the H2 path would be a spurious duplicate. This is the regression test for
+// the mitto-b6ym fix.
+func TestPostLoadProcessing_NoH2SyncOnSubsequentSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-no-h2-on-sync"
+	if err := store.Create(session.Metadata{SessionID: sessionID}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	// Add events including one "beyond" lastSeq so H2 would fire if the gate is missing.
+	for _, ev := range []session.Event{
+		{Type: "user_prompt", Seq: 1, Data: map[string]interface{}{"message": "Hello"}},
+		{Type: "agent_message", Seq: 2, Data: map[string]interface{}{"html": "Hi"}},
+		{Type: "agent_message", Seq: 3, Data: map[string]interface{}{"html": "Extra"}},
+	} {
+		if err := store.AppendEvent(sessionID, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID:       sessionID,
+		wsConn:          &WSConn{send: mockWS.send},
+		store:           store,
+		initialLoadDone: true, // observer already registered — simulates a subsequent sync
+	}
+
+	// postLoadProcessing with a non-prepend sync result (lastSeq=2, one event beyond).
+	// With the bug: syncMissedEventsDuringRegistration fires and sends events_loaded.
+	// With the fix: justRegistered=false so no H2 sync is triggered.
+	client.postLoadProcessing(loadEventsResult{isPrepend: false, lastSeq: 2})
+
+	// Allow time for any goroutine that might send a message.
+	time.Sleep(80 * time.Millisecond)
+
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(msgBytes, &msg)
+		if msg.Type == WSMsgTypeEventsLoaded {
+			t.Errorf("got spurious events_loaded from H2 path on subsequent sync (duplicate regression)")
+		}
+		// Any other message type (e.g. plan state) is fine.
+	case <-time.After(80 * time.Millisecond):
+		// Expected: no events_loaded from H2 path.
+	}
+}
+
 // TestHandleLoadEvents_SeqMismatchProtection tests that when a client sends afterSeq
 // higher than the server's max seq (event count), we fall back to initial load instead
 // of setting lastSentSeq to the bogus value. This protects against UI freezes when
