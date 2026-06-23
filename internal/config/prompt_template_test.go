@@ -2,9 +2,12 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"text/template"
+	"time"
 )
 
 // TestHasTemplateSyntax verifies the fast-path predicate.
@@ -306,6 +309,87 @@ func TestDeprecatedMittoVarReplacement(t *testing.T) {
 	}
 	if r := DeprecatedMittoVarReplacement("unknown_xyz"); r != "" {
 		t.Errorf("unknown token should return empty, got %q", r)
+	}
+}
+
+// TestIterateUntilComplete_TargetResolution tests the three target-bead resolution
+// branches of beads-issue-iterate-until-complete.prompt.yaml:
+//
+//	(a) .Session.BeadsIssue set  → preferred source, shown in rendered output
+//	(b) .Args.IssueID set only   → fallback argument source
+//	(c) neither set              → inference instruction text appears; no empty
+//	    "bd show " commands rendered
+//
+// The test loads the file from the real builtin directory so it always exercises
+// the current on-disk content. It is in the config package to avoid an import
+// cycle (config ← processors ← config) and to reuse BuildTemplateFuncMap directly.
+func TestIterateUntilComplete_TargetResolution(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-iterate-until-complete.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-iterate-until-complete.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-iterate-until-complete", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) BeadsIssue set — preferred source.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "not explicitly specified") {
+		t.Errorf("branch (a): unexpected 'not explicitly specified' text; session.BeadsIssue should have been used")
+	}
+	if strings.Contains(outA, "bd show  ") || strings.Contains(outA, "bd show \n") {
+		t.Errorf("branch (a): found broken empty 'bd show ' command in output")
+	}
+
+	// (b) Only Args.IssueID set.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{"IssueID": "mitto-xyz"},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "not explicitly specified") {
+		t.Errorf("branch (b): unexpected 'not explicitly specified' text; Args.IssueID should have been used")
+	}
+	if strings.Contains(outB, "bd show  ") || strings.Contains(outB, "bd show \n") {
+		t.Errorf("branch (b): found broken empty 'bd show ' command in output")
+	}
+
+	// (c) Neither BeadsIssue nor Args.IssueID set — inference instruction.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "not explicitly specified") {
+		t.Errorf("branch (c): expected inference text 'not explicitly specified' in output; got:\n%s", outC)
+	}
+	if strings.Contains(outC, "bd show  ") || strings.Contains(outC, "bd show \n") {
+		t.Errorf("branch (c): found broken empty 'bd show ' command in output")
+	}
+	// The <target-bead> placeholder should appear verbatim (it is NOT a Go template).
+	if !strings.Contains(outC, "<target-bead>") {
+		t.Errorf("branch (c): expected '<target-bead>' placeholder in bd commands; got:\n%s", outC)
 	}
 }
 
