@@ -863,3 +863,22 @@ func TestDiffEnvKeys_NeverLeaksValues(t *testing.T) {
 		t.Errorf("changed = %v, want [API_TOKEN]", changed)
 	}
 }
+
+// TestAuxStartupJitter verifies the de-stagger jitter helper (mitto-xicp): values are
+// always in [0, max) for positive max, and 0 for non-positive max.
+func TestAuxStartupJitter(t *testing.T) {
+	if got := auxStartupJitter(0); got != 0 {
+		t.Errorf("auxStartupJitter(0) = %v, want 0", got)
+	}
+	if got := auxStartupJitter(-time.Second); got != 0 {
+		t.Errorf("auxStartupJitter(-1s) = %v, want 0", got)
+	}
+
+	max := auxModelSwitchStartupJitter
+	for i := 0; i < 1000; i++ {
+		got := auxStartupJitter(max)
+		if got < 0 || got >= max {
+			t.Fatalf("auxStartupJitter(%v) = %v, out of range [0, %v)", max, got, max)
+		}
+	}
+}

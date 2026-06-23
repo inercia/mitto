@@ -815,6 +815,26 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 				capturedSessionID := acp.SessionId(sessionHandle.SessionID)
 				capturedLogger := m.logger
 				go func() {
+					// De-stagger concurrent prewarmed aux model-set goroutines (mitto-xicp).
+					// All 4 purposes fire at nearly the same instant during prewarmAuxiliarySessions;
+					// without jitter they all queue on the capacity-1 setModelSem simultaneously and
+					// the last one exhausts its 90 s budget before the semaphore is released.
+					// The jitter waits on m.ctx — NOT inside the budget context — so it does not
+					// consume the setModelAsyncCallerBudget (mitto-f7q: per-attempt deadline unchanged).
+					// Mirrors the child-session de-stagger pattern from mitto-x4e.
+					if jitter := auxStartupJitter(auxModelSwitchStartupJitter); jitter > 0 {
+						if capturedLogger != nil {
+							capturedLogger.Debug("Auxiliary session: staggering startup model switch",
+								"workspace_uuid", capturedWorkspaceUUID,
+								"purpose", capturedPurpose,
+								"jitter_ms", jitter.Milliseconds())
+						}
+						select {
+						case <-time.After(jitter):
+						case <-m.ctx.Done():
+							return
+						}
+					}
 					setCtx, setCancel := context.WithTimeout(m.ctx, setModelAsyncCallerBudget)
 					defer setCancel()
 					if setErr := capturedProcess.SetSessionModel(setCtx, capturedSessionID, capturedMatched); setErr != nil {

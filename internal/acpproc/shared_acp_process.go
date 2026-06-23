@@ -57,12 +57,38 @@ const (
 	// is unhealthy. m.ctx cancels on manager shutdown as a hard backstop.
 	setModelAsyncCallerBudget = 90 * time.Second
 
+	// auxModelSwitchStartupJitter is the maximum random startup delay applied to each
+	// async aux-session set_model goroutine before it enters the budget context window
+	// (mitto-xicp). When prewarmAuxiliarySessions fires all 4 purposes in parallel, each
+	// spawns an async model-set goroutine at nearly the same instant; without this jitter
+	// they all race onto the capacity-1 setModelSem simultaneously. With a 5 s jitter
+	// window the goroutines are de-staggered so later arrivals are still well within the
+	// 90 s setModelAsyncCallerBudget, eliminating the "context deadline exceeded" failures
+	// observed during cold-process wakeup.
+	//
+	// This mirrors the child-session de-stagger pattern (constraintModelSwitchChildStartupJitter
+	// in internal/conversation/bgsession_config.go, introduced for mitto-x4e). The jitter
+	// waits on m.ctx — not the budget context — so it does NOT consume the 90 s budget.
+	// Do NOT change the per-attempt 8 s deadline (mitto-f7q explicitly discourages that).
+	auxModelSwitchStartupJitter = 5 * time.Second
+
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
 	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
 	// conversation.ACPRestartBaseDelay, conversation.ACPRestartMaxDelay) to ensure consistent behavior between
 	// SharedACPProcess and conversation.BackgroundSession.
 )
+
+// auxStartupJitter returns a random duration in [0, max) to de-stagger concurrent
+// async aux-session model-set goroutines that would otherwise all hit the capacity-1
+// setModelSem at the same instant (mitto-xicp). Returns 0 if max ≤ 0.
+// Mirrors childStartupJitter in internal/conversation/bgsession_config.go (mitto-x4e).
+func auxStartupJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(max)))
+}
 
 // SharedACPProcessConfig holds configuration for creating a SharedACPProcess.
 type SharedACPProcessConfig struct {
