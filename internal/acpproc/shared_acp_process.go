@@ -48,6 +48,20 @@ const (
 	// Total per-caller worst-case: 3×8s + 750ms ≈ 25s.
 	setSessionModelRetryJitterRatio = 0.5
 
+	// sessionCreateMaxAttempts is the maximum number of session/new RPC attempts per call.
+	// Mirrors set_model's bounded-retry policy (mitto-4no7, parity with mitto-f7q).
+	sessionCreateMaxAttempts = 3
+	// sessionCreateAttemptTimeout is the per-attempt deadline for session/new RPCs.
+	// Keeps the documented widened create deadline (was sessionCreationRPCTimeout=25s,
+	// mitto-63o8) as a FRESH per-attempt budget so a single slow create is not regressed.
+	sessionCreateAttemptTimeout = 25 * time.Second
+	// sessionCreateRetryBaseDelay is the base backoff between session/new retry attempts.
+	sessionCreateRetryBaseDelay = 300 * time.Millisecond
+	// sessionCreateRetryJitterRatio is the max jitter as a fraction of the base delay added
+	// to each retry backoff, de-correlating concurrent callers (mitto-4no7, mirrors set_model).
+	// With ratio=0.5: attempt-2 delay ∈ [300ms,450ms), attempt-3 ∈ [600ms,750ms).
+	sessionCreateRetryJitterRatio = 0.5
+
 	// setModelAsyncCallerBudget is the context timeout given to the background goroutine
 	// that performs the aux-session model switch asynchronously (mitto-f7q, Option 4).
 	// Budget reasoning: the capacity-1 setModelSem may be held by up to ~3 concurrent callers,
@@ -698,52 +712,86 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		cwd = "."
 	}
 
-	ctxRemainingMs := int64(-1)
-	if dl, ok := ctx.Deadline(); ok {
-		ctxRemainingMs = time.Until(dl).Milliseconds()
-	}
-	ctxAlreadyExpired := ctx.Err() != nil
+	// Bounded retry-with-jitter loop (mitto-4no7): mirrors SetSessionModel's policy so
+	// transient deadline failures on session/new are retried up to sessionCreateMaxAttempts.
+	// Each attempt gets a fresh sessionCreateAttemptTimeout budget, preserving the
+	// documented 25s per-attempt create deadline (mitto-63o8) without regression.
+	var lastErr error
+	for attempt := 1; attempt <= sessionCreateMaxAttempts; attempt++ {
+		// Honour caller cancellation before each attempt.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, ctx.Err())
+		}
 
-	rpcStart := time.Now()
-	sessResp, err := conn.NewSession(ctx, acp.NewSessionRequest{
-		Cwd:        cwd,
-		McpServers: mcpServers,
-	})
-	rpcDuration := time.Since(rpcStart)
+		// Jittered backoff between retries (skip before first attempt). Mirrors set_model
+		// (mitto-4no7): de-correlates concurrent callers that would retry in lock-step.
+		if attempt > 1 {
+			jitter := time.Duration(rand.Int63n(int64(float64(sessionCreateRetryBaseDelay) * sessionCreateRetryJitterRatio)))
+			delay := time.Duration(attempt-1)*sessionCreateRetryBaseDelay + jitter
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("session/new: context cancelled during retry backoff: %w", ctx.Err())
+			}
+		}
 
-	if err != nil {
+		// Fresh per-attempt sub-context so each attempt gets a full create budget.
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, sessionCreateAttemptTimeout)
+
+		ctxRemainingMs := int64(-1)
+		if dl, ok := ctx.Deadline(); ok {
+			ctxRemainingMs = time.Until(dl).Milliseconds()
+		}
+
+		rpcStart := time.Now()
+		sessResp, err := conn.NewSession(attemptCtx, acp.NewSessionRequest{
+			Cwd:        cwd,
+			McpServers: mcpServers,
+		})
+		rpcDuration := time.Since(rpcStart)
+		attemptCancel()
+
+		if err == nil {
+			handle := &conversation.SessionHandle{
+				SessionID: string(sessResp.SessionId),
+				Process:   p,
+				Modes:     sessResp.Modes,
+				Models:    conversation.StableToUnstableModelState(sessResp.Models),
+			}
+			if caps != nil {
+				handle.Capabilities = *caps
+			}
+			// TODO: ConfigOptions support when SDK is updated
+			// if sessResp.ConfigOptions != nil {
+			// 	handle.ConfigOptions = sessResp.ConfigOptions
+			// }
+			if p.logger != nil {
+				p.logger.Info("Created new ACP session on shared process",
+					"acp_session_id", handle.SessionID,
+					"attempt", attempt,
+					"total_ms", time.Since(totalStart).Milliseconds(),
+					"rpc_new_session_ms", rpcDuration.Milliseconds())
+			}
+			return handle, nil
+		}
+
+		lastErr = err
 		if p.logger != nil {
 			p.logger.Warn("SharedACPProcess.NewSession failed",
+				"attempt", attempt,
+				"max_attempts", sessionCreateMaxAttempts,
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
-				"ctx_already_expired", ctxAlreadyExpired,
 				"error", err)
 		}
-		return nil, fmt.Errorf("failed to create session: %w", err)
+
+		// Non-transient errors are not retried.
+		if !isRetryableCreateError(err) {
+			return nil, fmt.Errorf("failed to create session: %w", err)
+		}
 	}
 
-	handle := &conversation.SessionHandle{
-		SessionID: string(sessResp.SessionId),
-		Process:   p,
-		Modes:     sessResp.Modes,
-		Models:    conversation.StableToUnstableModelState(sessResp.Models),
-	}
-	if caps != nil {
-		handle.Capabilities = *caps
-	}
-	// TODO: ConfigOptions support when SDK is updated
-	// if sessResp.ConfigOptions != nil {
-	// 	handle.ConfigOptions = sessResp.ConfigOptions
-	// }
-
-	if p.logger != nil {
-		p.logger.Info("Created new ACP session on shared process",
-			"acp_session_id", handle.SessionID,
-			"total_ms", time.Since(totalStart).Milliseconds(),
-			"rpc_new_session_ms", rpcDuration.Milliseconds())
-	}
-
-	return handle, nil
+	return nil, fmt.Errorf("session/new failed after %d attempts: %w", sessionCreateMaxAttempts, lastErr)
 }
 
 // LoadSession attempts to load/resume an existing ACP session.
@@ -1089,6 +1137,25 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 // isRetryableSetModelError reports whether a set_model error is worth retrying.
 // set_model is idempotent so retrying on timeout is safe.
 func isRetryableSetModelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "timed out")
+}
+
+// isRetryableCreateError reports whether a session/new error is worth retrying.
+// NOTE: unlike set_model, session/new is NOT idempotent — a create that times out
+// MAY have succeeded server-side, so a retry can orphan a session on the shared
+// process. We accept this trade-off (mitto-4no7): on a deadline we never received a
+// session ID, so the only recovery is to create again; the orphan is bounded by the
+// shared process lifetime. Only deadline/timeout failures are retried.
+func isRetryableCreateError(err error) bool {
 	if err == nil {
 		return false
 	}

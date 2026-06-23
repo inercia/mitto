@@ -842,6 +842,49 @@ func TestSetModelRetryJitter(t *testing.T) {
 	}
 }
 
+// TestNewSessionRetryJitter verifies that the jittered backoff delay applied in
+// NewSession's retry loop stays within the expected bounds (mitto-4no7, parity with
+// TestSetModelRetryJitter).
+//
+// The jitter formula is:
+//
+//	delay = (attempt-1) × base + rand([0, base × ratio))
+//
+// So for attempt 2: delay ∈ [base, base×(1+ratio)) = [300ms, 450ms).
+// For attempt 3:    delay ∈ [2×base, 2×base + base×ratio) = [600ms, 750ms).
+func TestNewSessionRetryJitter(t *testing.T) {
+	base := sessionCreateRetryBaseDelay
+	ratio := sessionCreateRetryJitterRatio
+
+	for _, tc := range []struct {
+		attempt  int
+		minDelay time.Duration
+		maxDelay time.Duration
+	}{
+		{
+			attempt:  2,
+			minDelay: base,                                                        // (2-1)×base + 0
+			maxDelay: base + time.Duration(float64(base)*ratio) - time.Nanosecond, // exclusive upper
+		},
+		{
+			attempt:  3,
+			minDelay: 2 * base,                                                      // (3-1)×base + 0
+			maxDelay: 2*base + time.Duration(float64(base)*ratio) - time.Nanosecond, // exclusive upper
+		},
+	} {
+		// Run many iterations to catch jitter that exceeds bounds.
+		for i := 0; i < 500; i++ {
+			jitter := time.Duration(rand.Int63n(int64(float64(base) * ratio)))
+			delay := time.Duration(tc.attempt-1)*base + jitter
+			if delay < tc.minDelay || delay > tc.maxDelay {
+				t.Errorf("attempt %d iter %d: delay %v outside [%v, %v]",
+					tc.attempt, i, delay, tc.minDelay, tc.maxDelay)
+				break
+			}
+		}
+	}
+}
+
 // TestDiffEnvKeys_NeverLeaksValues asserts that the returned slices contain only
 // key names and never the (potentially secret) values.
 func TestDiffEnvKeys_NeverLeaksValues(t *testing.T) {

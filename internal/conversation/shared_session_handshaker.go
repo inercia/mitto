@@ -11,9 +11,6 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-// sessionCreationRPCTimeout is the default timeout for the initial ACP session creation RPC.
-const sessionCreationRPCTimeout = 25 * time.Second
-
 // handshakeDeps is the minimal interface sharedSessionHandshaker needs from BackgroundSession.
 // All methods are prefixed with "hs" to avoid clashes with BackgroundSession's public API.
 type handshakeDeps interface {
@@ -89,16 +86,16 @@ type handshakeDeps interface {
 // process session handshake logic previously in bgsession_shared_session.go.
 type sharedSessionHandshaker struct{}
 
-// creationRPCCtx returns a context suitable for the initial ACP session creation RPC.
+// creationRPCCtx returns a cancellable context for the session/new RPC. The per-attempt
+// deadline and bounded retry-with-jitter now live in SharedACPProcess.NewSession
+// (mitto-4no7), so this no longer imposes its own create timeout — it only forwards the
+// base context (an HTTP creation deadline, if any, still applies).
 func (c sharedSessionHandshaker) creationRPCCtx(d handshakeDeps) (context.Context, context.CancelFunc) {
 	base := d.hsCreationCtx()
 	if base == nil {
 		base = d.hsSessionCtx()
 	}
-	if _, hasDeadline := base.Deadline(); hasDeadline {
-		return context.WithCancel(base)
-	}
-	return context.WithTimeout(base, sessionCreationRPCTimeout)
+	return context.WithCancel(base)
 }
 
 // buildWebClientConfig delegates to the deps seam (builds from BackgroundSession fields).
@@ -146,9 +143,7 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(d.hsSessionCtx(), sessionCreationRPCTimeout)
-	handle, err := d.hsGetSharedProcess().NewSession(ctx, d.hsGetPendingSharedWorkingDir(), d.hsGetPendingSharedMcpServers())
-	cancel()
+	handle, err := d.hsGetSharedProcess().NewSession(d.hsSessionCtx(), d.hsGetPendingSharedWorkingDir(), d.hsGetPendingSharedMcpServers())
 	if err != nil {
 		return fmt.Errorf("failed to create session on shared process: %w", err)
 	}

@@ -245,19 +245,15 @@ func (r *handshakeRecorderObserver) OnNotification(UINotifyRequest)   {}
 
 // --- Tests ---
 
-func TestHandshaker_CreationRPCCtx_NoDeadline_AppliesTimeout(t *testing.T) {
+func TestHandshaker_CreationRPCCtx_NoDeadline_NoPropagatedDeadline(t *testing.T) {
 	c := sharedSessionHandshaker{}
 	d := newFakeHandshakeDeps()
-	// No deadline on sessionCtx → should get a 25s timeout context.
+	// No deadline on sessionCtx → per-attempt timeout now lives in SharedACPProcess.NewSession
+	// (mitto-4no7), so creationRPCCtx should return a plain cancellable context with no deadline.
 	ctx, cancel := c.creationRPCCtx(d)
 	defer cancel()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatal("expected deadline to be set on creation RPC context")
-	}
-	remaining := time.Until(deadline)
-	if remaining > sessionCreationRPCTimeout || remaining <= 0 {
-		t.Fatalf("expected deadline ~%v, got remaining=%v", sessionCreationRPCTimeout, remaining)
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("expected no deadline on creation RPC context (per-attempt timeout lives in NewSession)")
 	}
 }
 
