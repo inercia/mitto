@@ -144,7 +144,7 @@ export function PromptsMenu({
         style="scrollbar-gutter: stable;"
         data-testid=${listTestId}
       >
-        <ul class="menu menu-sm w-full p-0">
+        <ul class="flex flex-col w-full p-0 m-0 list-none">
           ${groups.map(
             (g) => html`
               <${Fragment} key=${keyPrefix + "-group-" + g.name}>

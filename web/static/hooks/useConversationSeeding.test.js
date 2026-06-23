@@ -514,10 +514,18 @@ describe("makePeriodicNow", () => {
   });
 
   test("returns error when run-now fails", async () => {
-    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(500, { error: "busy" }));
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(500, { error: "server_error" }));
     const result = await makePeriodicNow("sess-4", prompt, { fetchImpl });
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
+  });
+
+  test("treats run-now 409 (session busy) as success after PUT succeeds", async () => {
+    // The PUT already persisted the periodic config; a 409 means a run is already
+    // in flight (e.g. enabling a schedule fired its first run). Not a failure.
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(409, { error: "busy" }));
+    const result = await makePeriodicNow("sess-5", prompt, { fetchImpl });
+    expect(result).toEqual({ success: true });
   });
 });
 

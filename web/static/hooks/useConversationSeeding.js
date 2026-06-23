@@ -109,7 +109,13 @@ export async function makePeriodicNow(sessionId, prompt, { arguments: args, fetc
     return { success: false, error: "periodic_setup_failed" };
   }
 
-  // Step 2: fire first run
+  // Step 2: fire first run.
+  // NOTE: by this point the PUT above has already persisted the periodic config
+  // (the conversation IS periodic). The run-now POST is best-effort: a 409
+  // (Conflict / session busy) means a run is already in flight — e.g. enabling a
+  // schedule-based config immediately fired its first run — so periodic is set
+  // and running. Treat 409 as success rather than surfacing a misleading
+  // "failed to configure periodic" error to the user.
   try {
     const runResp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic/run-now`), {
       method: "POST",
@@ -117,6 +123,10 @@ export async function makePeriodicNow(sessionId, prompt, { arguments: args, fetc
       body: JSON.stringify({ reset_timer: true }),
     });
     if (!runResp.ok) {
+      if (runResp.status === 409) {
+        // Already running — config is set, a run is in flight. Not a failure.
+        return { success: true };
+      }
       let errData = {};
       try { errData = await runResp.json(); } catch (_) {}
       return { success: false, error: errData.error || "run_now_failed" };

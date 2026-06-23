@@ -187,8 +187,8 @@ export function PeriodicPromptSelector({
       ${showDropdown &&
       html`
         <div
-          class="absolute bottom-full left-0 mb-1 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
-          style="max-height: 360px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+          class="absolute bottom-full left-0 mb-1 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg z-50 overflow-hidden flex flex-col"
+          style="width: 20rem; min-width: 20rem; max-width: 20rem; max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
           data-testid="${idPrefix}-dropdown"
         >
           <${PromptsMenu}
@@ -199,7 +199,8 @@ export function PeriodicPromptSelector({
             sortMode=${sortMode}
             onSelect=${(prompt) => handleSelect(prompt)}
             selectedName=${selectedPromptName}
-            placeholder="Search prompts..."
+            showSourceBadge=${true}
+            placeholder="Filter prompts..."
             emptyText="No matching prompts"
             keyPrefix="periodic-prompts"
             filterTestId="${idPrefix}-search"
