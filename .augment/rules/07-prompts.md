@@ -108,7 +108,7 @@ Prompt shown in menu **M** only when M supplies **every** declared type. Fronten
 
 ## Menu-Driven Prompt Sends (Named-Prompt Mechanism)
 
-All menus (prompts, beadsIssues, beadsList) send `prompt_name` only — never the full body. Frontend helpers in `useConversationSeeding.js`: `seedConversationWithPrompt()` (existing session), `startConversationWithPrompt()` (new ± periodic), `makePeriodicNow()` (convert to periodic). Backend resolves name at dispatch via `resolvePromptByName()` in target workspace context; `${VAR}` substitution applied there. **Anti-pattern**: never POST resolved text to `/api/sessions/{id}/queue` — send `prompt_name` instead.
+All menus (prompts, beadsIssues, beadsList) send `prompt_name` only — never the full body. Frontend helpers in `useConversationSeeding.js`: `seedConversationWithPrompt()` (existing session), `startConversationWithPrompt()` (new ± periodic), `makePeriodicNow()` (convert to periodic). Backend resolves name at dispatch via `resolvePromptByName()` in target workspace context; the body is then **Go-template rendered** (if it contains `{{`) before `${VAR}` substitution. **Anti-pattern**: never POST resolved text to `/api/sessions/{id}/queue` — send `prompt_name` instead.
 
 ## MCP Prompt Tools
 
@@ -122,7 +122,7 @@ Updates replicate the 5-layer REST API merge. Name slugification via `config.Slu
 
 **Frontend**: Never merge client-side — backend does all merging. Refetch on: file changes, visibility change, 30s interval (session-scoped CEL filters like `session.isChild` trigger refetch on activeSessionId change).
 
-**Builtin content**: Use `@mitto:*` placeholders (`@mitto:periodic`, `@mitto:mcp_children`, `@mitto:available_acp_servers`). Cross-session UI: propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`. See `docs/config/prompts.md` for full template reference.
+**Builtin content**: Prefer **Go template syntax** (`{{ .Session.ID }}`, `{{ if .Session.IsChild }}...{{ end }}`, `{{ if cond "..." }}...{{ end }}`) for new and edited builtin prompt bodies. `@mitto:*` tokens are **deprecated in prompt bodies** (a non-fatal warning is logged at load/save) — EXCEPT for the keep-list tokens (`@mitto:available_acp_servers`, `@mitto:children`, `@mitto:mcp_children`, `@mitto:user_data`, `@mitto:user_data_schema`) which have no template equivalent yet and do not trigger a warning. `@mitto:` stays fully supported in **processors** (not deprecated there). See `docs/devel/prompt-templates.md` for the full engine spec and `docs/config/prompts.md#go-template-syntax-in-prompts` for the user-facing reference and migration table. Cross-session UI: propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`.
 
 ## enabledWhen Filtering & Preferred Models
 

@@ -780,7 +780,87 @@ Prompts that can degrade gracefully because all placeholders have sensible defau
 `mitto_prompt_get` and `mitto_prompt_list` include a `parameters` array per prompt,
 matching the YAML schema above.
 
+## Go Template Syntax in Prompts
+
+Prompt bodies are rendered with Go [`text/template`](https://pkg.go.dev/text/template) at send time. **This is the recommended way to inject session context** — legacy `@mitto:` placeholders and `${VAR}` arguments still work but are deprecated in prompt bodies (see [Variable Substitution in Prompts](#variable-substitution-in-prompts) below).
+
+### Render Order
+
+1. Named-prompt resolution (prompt name → full body)
+2. **Go template render** (`{{ ... }}`) — **fail-closed**: a template error aborts the send and surfaces an error in the UI
+3. `${VAR}` / `${VAR:-default}` argument substitution
+4. Legacy `@mitto:` variable substitution
+
+A template may itself emit `${VAR}` tokens (step 2 outputs text that step 3 then resolves). See [prompt-templates.md §3.2](../devel/prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute) for the authoritative pipeline.
+
+### Context Fields
+
+The following fields are available at send time. They are the **same fields used in `enabledWhen` CEL expressions** (e.g. `{{ .Session.ID }}` == `session.id`). See [devel §4](../devel/prompt-templates.md#4-the-unified-context-configpromptenabledcontext--args) for the full accessor↔CEL↔Go-field mapping.
+
+| Template accessor | Description |
+| --- | --- |
+| `{{ .Session.ID }}` | Current session/conversation ID |
+| `{{ .Session.ParentID }}` | Parent conversation ID (empty if root) |
+| `{{ .Session.Name }}` | Conversation title/name |
+| `{{ .Session.IsChild }}` | `true` in child conversations |
+| `{{ .Session.IsPeriodic }}` | `true` when triggered by the periodic runner |
+| `{{ .Session.IsPeriodicForced }}` | `true` when a periodic run was manually triggered ("run now") |
+| `{{ .Session.BeadsIssue }}` | Linked beads issue ID (empty if none) |
+| `{{ .ACP.Name }}` | ACP server name |
+| `{{ .ACP.Type }}` | ACP server type |
+| `{{ .Workspace.Folder }}` | Session working directory |
+| `{{ .Workspace.UUID }}` | Workspace identifier |
+| `{{ .Parent.Name }}` | Parent conversation name |
+| `{{ .Parent.Exists }}` | `true` if this session has a parent |
+| `{{ .Children.Count }}` | Number of child conversations |
+| `{{ .Children.MCPCount }}` | Number of MCP-spawned children |
+| `{{ .Args.NAME }}` | Argument value for `NAME` (from prompt arguments) |
+
+### Functions
+
+| Function | Signature | Meaning |
+| --- | --- | --- |
+| `arg` | `arg "NAME" "default"` | Argument value, or default if absent/empty (like `${NAME:-default}`) |
+| `default` | `default "fallback" .Value` | `.Value` if non-empty, else fallback |
+| `cond` / `when` | `cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |
+| `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
+| `dirExists` | `dirExists "path"` | Directory exists |
+| `commandExists` | `commandExists "name"` | Command is on PATH |
+
+String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
+
+### Examples
+
+```yaml
+# Session context
+prompt: |
+  Your session ID is `{{ .Session.ID }}`.
+
+# Conditional block
+prompt: |
+  {{ if .Session.IsChild }}You are a child session.{{ else }}You are a root session.{{ end }}
+
+# cond (CEL) + arg
+prompt: |
+  {{ if cond "fileExists(\".git/config\")" }}Repo: {{ arg "REPO" "current" }}{{ end }}
+```
+
+### Escaping & Corner Cases
+
+- Emit a literal `{{` with `{{ "{{" }}` — the delimiter cannot be backslash-escaped.
+- Close blocks with `{{ end }}` (not `fi`).
+- Inside a `cond "..."` CEL string, escape inner double-quotes: `cond "fileExists(\".git/config\")"`.
+- Struct-field typos (e.g. `{{ .Session.IDd }}`) are caught at **load time** (fail-fast validation). Missing `.Args.X` map keys render as empty string (`missingkey=zero`).
+
+See [devel §10](../devel/prompt-templates.md#10-corner-cases) for the full corner-case reference.
+
+---
+
 ## Variable Substitution in Prompts
+
+> **Deprecated in prompt bodies.** Use [Go template syntax](#go-template-syntax-in-prompts) instead — it is more expressive, type-safe, and validated at load time. `@mitto:` substitution **still works** during the deprecation window and the `@mitto:` pass still runs after template rendering. A non-fatal warning is logged at prompt load/save when a migratable `@mitto:` token appears in a body.
+>
+> **`@mitto:` is NOT deprecated in processors** — it remains the supported mechanism there. See [processors.md](processors.md#variable-substitution).
 
 Prompt text supports `@mitto:variable` placeholders that are automatically replaced with
 live session values before the prompt is sent to the AI agent. This is the same variable
@@ -802,6 +882,31 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 | `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+
+### Migration Table
+
+For each deprecated token, the recommended Go template replacement is listed. Tokens without a template equivalent yet are marked **keep** — they continue to work via `@mitto:` and do **not** trigger a deprecation warning.
+
+| `@mitto:` token | Template replacement | Status |
+| --- | --- | --- |
+| `@mitto:session_id` | `{{ .Session.ID }}` | migrate |
+| `@mitto:parent_session_id` | `{{ .Session.ParentID }}` | migrate |
+| `@mitto:parent` | `{{ if .Parent.Exists }}{{ .Session.ParentID }} ({{ .Parent.Name }}){{ end }}` | migrate |
+| `@mitto:session_name` | `{{ .Session.Name }}` | migrate |
+| `@mitto:working_dir` | `{{ .Workspace.Folder }}` | migrate |
+| `@mitto:acp_server` | `{{ .ACP.Name }}` | migrate |
+| `@mitto:workspace_uuid` | `{{ .Workspace.UUID }}` | migrate |
+| `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | migrate |
+| `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | migrate |
+| `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | migrate |
+| `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | migrate |
+| `@mitto:available_acp_servers` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:children` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:mcp_children` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:user_data` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:user_data_schema` | *(no template equivalent yet)* | **keep** — no warning |
+
+Note: `@mitto:periodic` renders as a Go `bool` (`true`/`false`), identical in string form to the old `"true"`/`"false"` output.
 
 ### Behavior
 

@@ -156,6 +156,8 @@ if len(meta.Arguments) > 0 {
 }
 ```
 
+**Before** `${VAR}` substitution, the body is rendered with Go `text/template` (fail-closed: a template error aborts the send) when it contains `{{`. Legacy `@mitto:` substitution runs later in `applyProcessorsAndBuildBlocks`, after the processors pipeline. The full authoritative dispatch order is documented in [prompt-templates.md §3.2](prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute).
+
 This guarantees that workspace-specific overrides, ACP-server filtering, and
 `enabledWhen` are evaluated in the **right** environment — important because the
 request may have originated from a different workspace (e.g. the Beads view is
@@ -199,6 +201,8 @@ Periodic conversations can only be **top-level** (not children). The `at` field
 | Backend  | `internal/web/session_api.go`                     | `handleWorkspacePromptsGET`, `seedQueueWithNamedPrompt`, contexts      |
 | Backend  | `internal/web/queue_api.go`                       | `handleAddToQueue` (stores `prompt_name`/`arguments`)                  |
 | Backend  | `internal/web/background_session.go`              | dispatch-time `promptResolver` + `SubstituteArguments`                 |
+| Backend  | `internal/config/prompt_template.go`              | Go template engine (`RenderPromptTemplate`, `PrecompileTemplateConds`) |
+| Backend  | `internal/conversation/prompt_dispatcher.go`      | template render integration in `resolveAndSubstitute`                  |
 | Backend  | `internal/session/queue.go`                       | `QueuedMessage{ PromptName, Arguments }`, `Add`/`Pop`                  |
 | Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `MENU_CAPABILITIES`, `menuSatisfiesRequires`            |
 | Frontend | `web/static/hooks/useWorkspacePrompts.js`         | `fetchConversationPromptsForSession`                                   |
