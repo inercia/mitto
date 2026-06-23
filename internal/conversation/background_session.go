@@ -192,6 +192,8 @@ type BackgroundSession struct {
 	uiPromptCtr          uiPromptCenter                         // UI prompt + notify collaborator (composition)
 	followUpCoord        followUpCoordinator                    // Follow-up suggestions + action-button collaborator (composition)
 	configMgr            configManager                          // Session-config / model-baseline collaborator (composition)
+	handshaker           sharedSessionHandshaker                // Shared-process session handshake collaborator (composition)
+	promptDisp           promptDispatcher                       // PromptWithMeta helper-split collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
