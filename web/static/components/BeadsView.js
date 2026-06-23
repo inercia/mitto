@@ -5,7 +5,7 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = wi
 
 import { apiUrl, authFetch, secureFetch, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping, getBeadsSort, setBeadsSort } from "../utils/index.js";
 import { getBasename, copyToClipboard } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, CopyIcon, getPromptIconOrDefault, LinkIcon, ListIcon, BoldIcon, ItalicIcon, StrikethroughIcon, InlineCodeIcon, CodeBlockIcon, NumberedListIcon, HeadingIcon, QuoteIcon } from "./Icons.js";
+import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, CopyIcon, getPromptIconOrDefault, PeriodicIcon, LinkIcon, ListIcon, BoldIcon, ItalicIcon, StrikethroughIcon, InlineCodeIcon, CodeBlockIcon, NumberedListIcon, HeadingIcon, QuoteIcon } from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import { ContextMenu, buildPromptGroupMenuItems, PortalTooltip } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -3177,6 +3177,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
                   >
                     <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
                     <span class="truncate flex-1">${p.name}</span>
+                    ${p.periodic &&
+                    html`<span
+                      class="shrink-0 text-success opacity-80"
+                      title="Periodic prompt — sets the conversation to recurring mode"
+                      ><${PeriodicIcon} className="w-3.5 h-3.5" /></span
+                    >`}
                   </button>
                 </li>
               `;

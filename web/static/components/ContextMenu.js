@@ -5,7 +5,7 @@
 const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
-import { ChevronRightIcon, getPromptIconOrDefault } from "./Icons.js";
+import { ChevronRightIcon, getPromptIconOrDefault, PeriodicIcon } from "./Icons.js";
 import { flattenPrompts } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
@@ -22,6 +22,13 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
     submenu: g.prompts.map((p) => ({
       label: p.name,
       icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
+      trailing: p.periodic
+        ? html`<span
+            class="shrink-0 text-success opacity-80"
+            title="Periodic prompt — sets the conversation to recurring mode"
+            ><${PeriodicIcon} className="w-3.5 h-3.5" /></span
+          >`
+        : null,
       onClick: () => onRun(p),
     })),
   }));
@@ -229,7 +236,8 @@ function ContextMenuItem({ item, onClose }) {
                   >
                     ${sub.icon &&
                     html`<span class="w-4 h-4">${sub.icon}</span>`}
-                    ${sub.label}
+                    <span class="flex-1">${sub.label}</span>
+                    ${sub.trailing}
                   </button>
                 </li>
               `,
@@ -257,7 +265,8 @@ function ContextMenuItem({ item, onClose }) {
         class="${item.danger ? "text-error" : ""}"
       >
         ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
-        ${item.label}
+        <span class="flex-1">${item.label}</span>
+        ${item.trailing}
       </button>
     </li>
   `;

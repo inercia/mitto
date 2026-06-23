@@ -3605,6 +3605,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // amber "Not connected" dot even though they are perfectly available.
         isActive: !s.archived,
         isWaitingForChildren: s.is_waiting_for_children || false,
+        isStreaming: s.is_streaming || false,
       }));
       setStoredSessions(mapped);
       return mapped;

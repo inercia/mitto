@@ -2762,8 +2762,8 @@ ${activeUIPrompt.text || ""}</textarea
                     ${showDropup &&
                     html`
                       <div
-                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
-                        style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+                        class="absolute bottom-full right-0 mb-2 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
+                        style="width: 20rem; min-width: 20rem; max-width: 20rem; max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
                         <${PromptsMenu}
                           prompts=${predefinedPrompts}

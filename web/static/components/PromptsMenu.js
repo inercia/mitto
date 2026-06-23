@@ -4,7 +4,7 @@
 
 const { html, Fragment } = window.preact;
 
-import { getPromptIcon } from "./Icons.js";
+import { getPromptIcon, PeriodicIcon } from "./Icons.js";
 import { getContrastColor, flattenPrompts } from "../utils/prompts.js";
 
 // Source badge (W/F/S) shown on the right of each item when enabled.
@@ -101,7 +101,13 @@ export function PromptsMenu({
             : PromptIcon
               ? html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`
               : html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>`}
-          <span class="truncate flex-1">${prompt.name}</span>
+          <span class="truncate flex-1 min-w-0">${prompt.name}</span>
+          ${prompt.periodic &&
+          html`<span
+            class="shrink-0 text-success opacity-80"
+            title="Periodic prompt — sets the conversation to recurring mode"
+            ><${PeriodicIcon} className="w-3.5 h-3.5" /></span
+          >`}
           ${showSourceBadge &&
           html`<span
             class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(prompt.source).bgColor} text-white/90 shrink-0"
