@@ -245,9 +245,6 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			newWebConfig.Hooks = configPkg.WebHooks{}
 		}
 
-		// Update health monitor based on new hooks configuration
-		s.updateHealthMonitor(newWebConfig.Hooks)
-
 		// Update access log settings
 		if req.Web.AccessLog != nil {
 			newWebConfig.AccessLog = req.Web.AccessLog
@@ -416,6 +413,15 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	// Capture any warning so we can propagate it to the HTTP response.
 	warning := s.applyAuthChanges(oldAuthEnabled, newAuthEnabled, runtimeWebConfig.Auth)
 
+	// Reconcile the health monitor AFTER auth/listener changes have settled, so it
+	// only starts when the external listener is actually up. Running it earlier (in
+	// buildNewSettings) restarted the monitor before applyAuthChanges could tear down
+	// the listener on incomplete credentials, causing a futile tunnel-restart storm.
+	// Guarded by req.Web != nil to preserve prior behavior (only reconcile on web saves).
+	if req.Web != nil {
+		s.updateHealthMonitor(settings.Web.Hooks)
+	}
+
 	if s.logger != nil {
 		s.logger.Info("Configuration saved",
 			"workspaces", len(newWorkspaces),
@@ -484,6 +490,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			if s.logger != nil {
 				s.logger.Error("Cannot enable external access: credentials are incomplete")
 			}
+			s.externalDownForCredentials.Store(true)
 			attemptedPort := s.GetExternalPort()
 			if attemptedPort == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
 				attemptedPort = s.config.MittoConfig.Web.ExternalPort
@@ -505,7 +512,14 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			s.authManager.UpdateConfig(newAuthConfig)
 		}
 
-		return s.ensureExternalListenerStarted()
+		warning := s.ensureExternalListenerStarted()
+		if warning == nil && s.externalDownForCredentials.Swap(false) {
+			if s.logger != nil {
+				s.logger.Info("External access restored: credentials corrected, external listener back up",
+					"port", s.GetExternalPort())
+			}
+		}
+		return warning
 	}
 
 	// Case 2: Auth was enabled, now disabled -> stop external listener.
@@ -531,6 +545,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			if s.logger != nil {
 				s.logger.Error("Cannot update external access: credentials are incomplete, stopping listener")
 			}
+			s.externalDownForCredentials.Store(true)
 			// Capture the currently-running port BEFORE stopping the listener.
 			attemptedPort := s.GetExternalPort()
 			if attemptedPort == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
@@ -554,7 +569,14 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			}
 		}
 
-		return s.ensureExternalListenerStarted()
+		warning := s.ensureExternalListenerStarted()
+		if warning == nil && s.externalDownForCredentials.Swap(false) {
+			if s.logger != nil {
+				s.logger.Info("External access restored: credentials corrected, external listener back up",
+					"port", s.GetExternalPort())
+			}
+		}
+		return warning
 	}
 
 	// Case 4: Auth was disabled and still disabled -> nothing to do

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
 
@@ -267,4 +268,22 @@ func (m *mockResponseWriter) Write(b []byte) (int, error) {
 
 func (m *mockResponseWriter) WriteHeader(statusCode int) {
 	m.statusCode = statusCode
+}
+
+func TestUpdateHealthMonitor_NotStartedWhenExternalListenerDown(t *testing.T) {
+	s := &Server{}
+	s.hookPort = 12345
+	hooks := configPkg.WebHooks{
+		ExternalAddress: "https://example.com",
+		Up:              configPkg.WebHook{Command: "echo up"},
+		Down:            configPkg.WebHook{Command: "echo down"},
+	}
+	// External listener is NOT running -> monitor must not start.
+	s.updateHealthMonitor(hooks)
+	s.healthMonitorMu.Lock()
+	hm := s.healthMonitor
+	s.healthMonitorMu.Unlock()
+	if hm != nil {
+		t.Fatal("health monitor must NOT start when external listener is down (would cause tunnel restart storm)")
+	}
 }

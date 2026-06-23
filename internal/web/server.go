@@ -209,6 +209,11 @@ type Server struct {
 	onHookProcessChanged   func(*hooks.Process)       // Callback to update shutdown manager when hooks restart
 	onHealthMonitorChanged func(*hooks.HealthMonitor) // Callback to update shutdown manager when health monitor changes
 
+	// externalDownForCredentials is true while external access has been torn down
+	// specifically because auth credentials were incomplete. Used to emit a single
+	// "restored" log line when the listener comes back after credentials are fixed.
+	externalDownForCredentials atomic.Bool
+
 	// recentStartFails deduplicates BroadcastACPStartFailed calls for the same session.
 	// When multiple goroutines coalesce on a single resume failure they all receive the
 	// error and each tries to broadcast; only the first broadcast per session per window
@@ -1485,8 +1490,10 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 		s.healthMonitor = nil
 	}
 
-	// Start new monitor if external address is configured and up hook exists
-	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 {
+	// Start new monitor only when the external listener is actually running.
+	// If the listener is intentionally down (e.g. incomplete credentials) we must not
+	// start the monitor or it will restart the tunnel hooks in a futile loop.
+	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 && s.IsExternalListenerRunning() {
 		m := hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
 			Address:   hooksConfig.ExternalAddress,
 			APIPrefix: s.apiPrefix,
