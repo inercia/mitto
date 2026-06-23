@@ -313,6 +313,8 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	if err := config.PrecompileTemplateConds(name, promptText); err != nil {
 		return nil, PromptUpdateOutput{Error: "invalid prompt template: " + err.Error()}, nil
 	}
+	// Warn (non-fatal) when body still uses deprecated @mitto: tokens (mitto-m7sb.9).
+	config.WarnDeprecatedMittoVars(name, promptText)
 
 	pf := &config.PromptFile{
 		Name:            name,

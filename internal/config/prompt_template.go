@@ -3,9 +3,107 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"text/template"
 )
+
+// migratableMittoVars maps deprecated @mitto:<token> names (without the prefix)
+// to their Go-template replacement. This is the single authoritative source of truth
+// for which @mitto: tokens have a template equivalent and should be warned about.
+var migratableMittoVars = map[string]string{
+	"session_id":         "{{ .Session.ID }}",
+	"parent_session_id":  "{{ .Session.ParentID }}",
+	"parent":             "{{ if .Parent.Exists }}{{ .Session.ParentID }} ({{ .Parent.Name }}){{ end }}",
+	"session_name":       "{{ .Session.Name }}",
+	"working_dir":        "{{ .Workspace.Folder }}",
+	"acp_server":         "{{ .ACP.Name }}",
+	"workspace_uuid":     "{{ .Workspace.UUID }}",
+	"beads_issue":        "{{ .Session.BeadsIssue }}",
+	"mcp_children_count": "{{ .Children.MCPCount }}",
+	"periodic":           "{{ .Session.IsPeriodic }}",
+	"periodic_forced":    "{{ .Session.IsPeriodicForced }}",
+}
+
+// keepListMittoVars lists @mitto: token names that have no template equivalent yet.
+// These are intentionally kept as legacy @mitto: form during the deprecation window.
+var keepListMittoVars = map[string]struct{}{
+	"available_acp_servers": {},
+	"children":              {},
+	"mcp_children":          {},
+	"user_data":             {},
+	"user_data_schema":      {},
+}
+
+// mittoVarRe matches @mitto:<token> occurrences (preceded by any char so we can
+// detect backslash-escapes). We capture the preceding char + the token name.
+var mittoVarRe = regexp.MustCompile(`@mitto:([a-z_]+)`)
+
+// deprecationWarnLogged provides per-process deduplication so each (prompt, vars)
+// combination only logs once regardless of how many times the prompt is reloaded.
+var deprecationWarnLogged sync.Map
+
+// DeprecatedMittoVars returns a sorted, unique list of MIGRATABLE @mitto: token
+// names (without the "@mitto:" prefix) found in body. Keep-list tokens and
+// backslash-escaped occurrences (\@mitto:...) are excluded. Returns nil when body
+// contains no deprecated token.
+func DeprecatedMittoVars(body string) []string {
+	if !strings.Contains(body, "@mitto:") {
+		return nil // fast path
+	}
+	seen := make(map[string]struct{})
+	matches := mittoVarRe.FindAllStringIndex(body, -1)
+	for _, loc := range matches {
+		start := loc[0]
+		token := body[start+len("@mitto:") : loc[1]]
+		// Skip escaped occurrences: backslash immediately before @mitto:
+		if start > 0 && body[start-1] == '\\' {
+			continue
+		}
+		if _, keep := keepListMittoVars[token]; keep {
+			continue
+		}
+		if _, migratable := migratableMittoVars[token]; migratable {
+			seen[token] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DeprecatedMittoVarReplacement returns the Go-template replacement string for a
+// migratable @mitto: token name (without the "@mitto:" prefix), or "" if unknown.
+func DeprecatedMittoVarReplacement(token string) string {
+	return migratableMittoVars[token]
+}
+
+// WarnDeprecatedMittoVars emits a single slog.Warn when body contains migratable
+// @mitto: tokens. Deduplication prevents repeated warnings for the same
+// (promptName, vars) combination within the same process lifetime.
+func WarnDeprecatedMittoVars(promptName, body string) {
+	vars := DeprecatedMittoVars(body)
+	if len(vars) == 0 {
+		return
+	}
+	key := promptName + "|" + strings.Join(vars, ",")
+	if _, loaded := deprecationWarnLogged.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	slog.Warn("prompt body uses deprecated @mitto: variables; migrate to Go templates",
+		"prompt", promptName,
+		"vars", vars,
+		"hint", "see docs/devel/prompt-templates.md §9")
+}
 
 // templateOpenDelim is the text/template action open delimiter.
 const templateOpenDelim = "{{"

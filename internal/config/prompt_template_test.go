@@ -198,3 +198,141 @@ func TestRenderPromptTemplate(t *testing.T) {
 
 // errBoom is a sentinel error for test case 9.
 var errBoom = fmt.Errorf("boom")
+
+// TestDeprecatedMittoVars covers DeprecatedMittoVars detection logic.
+func TestDeprecatedMittoVars(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string // nil means expect nil/empty
+	}{
+		{
+			name: "fast path no @mitto",
+			body: "plain text",
+			want: nil,
+		},
+		{
+			name: "session_id is migratable",
+			body: "id @mitto:session_id",
+			want: []string{"session_id"},
+		},
+		{
+			name: "keep-list excluded — children",
+			body: "@mitto:children",
+			want: nil,
+		},
+		{
+			name: "keep-list excluded — available_acp_servers",
+			body: "@mitto:available_acp_servers",
+			want: nil,
+		},
+		{
+			name: "keep-list excluded — mcp_children",
+			body: "@mitto:mcp_children",
+			want: nil,
+		},
+		{
+			name: "keep-list excluded — user_data",
+			body: "@mitto:user_data @mitto:user_data_schema",
+			want: nil,
+		},
+		{
+			name: "mixed — migratable and keep-list",
+			body: "@mitto:session_id and @mitto:children",
+			want: []string{"session_id"},
+		},
+		{
+			name: "escaped ignored",
+			body: `\@mitto:session_id`,
+			want: nil,
+		},
+		{
+			name: "longest-token — parent_session_id not parent",
+			body: "@mitto:parent_session_id",
+			want: []string{"parent_session_id"},
+		},
+		{
+			name: "parent token",
+			body: "@mitto:parent is the parent",
+			want: []string{"parent"},
+		},
+		{
+			name: "mcp_children_count migratable vs mcp_children keep",
+			body: "@mitto:mcp_children_count @mitto:mcp_children",
+			want: []string{"mcp_children_count"},
+		},
+		{
+			name: "sorted+unique — working_dir and session_id deduplicated",
+			body: "@mitto:working_dir @mitto:session_id @mitto:session_id",
+			want: []string{"session_id", "working_dir"},
+		},
+		{
+			name: "periodic_forced before periodic",
+			body: "@mitto:periodic_forced and @mitto:periodic",
+			want: []string{"periodic", "periodic_forced"},
+		},
+		{
+			name: "all migratable tokens",
+			body: "@mitto:session_id @mitto:parent_session_id @mitto:parent @mitto:session_name @mitto:working_dir @mitto:acp_server @mitto:workspace_uuid @mitto:beads_issue @mitto:mcp_children_count @mitto:periodic @mitto:periodic_forced",
+			want: []string{"acp_server", "beads_issue", "mcp_children_count", "parent", "parent_session_id", "periodic", "periodic_forced", "session_id", "session_name", "working_dir", "workspace_uuid"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DeprecatedMittoVars(tc.body)
+			if len(got) == 0 && len(tc.want) == 0 {
+				return // both nil/empty — pass
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got[%d]=%q, want %q (full: got %v, want %v)", i, got[i], tc.want[i], got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestDeprecatedMittoVarReplacement verifies the replacement lookup.
+func TestDeprecatedMittoVarReplacement(t *testing.T) {
+	if r := DeprecatedMittoVarReplacement("session_id"); r != "{{ .Session.ID }}" {
+		t.Errorf("session_id replacement = %q", r)
+	}
+	if r := DeprecatedMittoVarReplacement("children"); r != "" {
+		t.Errorf("keep-list token should return empty, got %q", r)
+	}
+	if r := DeprecatedMittoVarReplacement("unknown_xyz"); r != "" {
+		t.Errorf("unknown token should return empty, got %q", r)
+	}
+}
+
+// TestBuiltinPrompts_NoDeprecatedMittoVars asserts that every migrated builtin
+// prompt body contains ZERO deprecated @mitto: tokens (i.e. the .7/.8 migration
+// is complete). This is a guard against accidental re-introduction.
+func TestBuiltinPrompts_NoDeprecatedMittoVars(t *testing.T) {
+	// Relative to internal/config/ (the package directory during go test).
+	builtinDir := "../../config/prompts/builtin"
+	// Load all builtin prompts (files that fail ParsePromptFile are skipped silently).
+	prompts, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Skipf("cannot load builtins from %s: %v", builtinDir, err)
+	}
+	if len(prompts) == 0 {
+		t.Skip("no builtin prompts found")
+	}
+	var failures []string
+	for _, p := range prompts {
+		vars := DeprecatedMittoVars(p.Content)
+		if len(vars) > 0 {
+			failures = append(failures, p.Name+": "+strings.Join(vars, ", "))
+		}
+	}
+	if len(failures) > 0 {
+		t.Errorf("builtin prompts still contain deprecated @mitto: tokens:\n  %s",
+			strings.Join(failures, "\n  "))
+	}
+	t.Logf("checked %d builtin prompts — zero deprecated @mitto: tokens ✓", len(prompts))
+}

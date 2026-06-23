@@ -112,6 +112,8 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 		http.Error(w, "invalid prompt template: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Warn (non-fatal) when body still uses deprecated @mitto: tokens (mitto-m7sb.9).
+	configPkg.WarnDeprecatedMittoVars(req.Name, req.Prompt)
 
 	pf := &configPkg.PromptFile{
 		Name:            req.Name,

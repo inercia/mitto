@@ -228,6 +228,9 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
+	// Warn (non-fatal) when the body still uses deprecated @mitto: tokens (mitto-m7sb.9).
+	WarnDeprecatedMittoVars(prompt.Name, prompt.Content)
+
 	return prompt, nil
 }
 
