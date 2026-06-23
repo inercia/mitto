@@ -22,7 +22,7 @@ prompt: |
 
   ## If this work is tied to a beads issue
 
-  The linked beads issue for this conversation is `@mitto:beads_issue` (empty if none). **Only apply
+  The linked beads issue for this conversation is `{{ .Session.BeadsIssue }}` (empty if none). **Only apply
   this section when that value is non-empty** — i.e. we were working on a specific bead. Skip it
   entirely otherwise.
 
@@ -32,8 +32,8 @@ prompt: |
      actual state of the work and the codebase:
 
      ```bash
-     bd show @mitto:beads_issue --long --json   # description, acceptance criteria, status
-     bd dep tree @mitto:beads_issue             # parent epic and sibling beads
+     bd show {{ .Session.BeadsIssue }} --long --json   # description, acceptance criteria, status
+     bd dep tree {{ .Session.BeadsIssue }}             # parent epic and sibling beads
      ```
 
   2. **If the bead is NOT complete** — work remains against its acceptance criteria — just keep going:
@@ -41,9 +41,9 @@ prompt: |
 
   3. **If the bead IS complete** — all acceptance criteria are met — do **not** close or commit on your
      own. Instead, present the finding and suggest the wrap-up actions, then act only on what the user
-     approves. Use `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)` (fall
+     approves. Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)` (fall
      back to a plain question if the `mitto_*` tools are unavailable) to offer:
-     - **"Close the issue"** — `bd close @mitto:beads_issue --reason "<what was delivered>"`.
+     - **"Close the issue"** — `bd close {{ .Session.BeadsIssue }} --reason "<what was delivered>"`.
      - **"Commit the changes"** — commit the work for this bead with a clear message referencing it.
 
      You may offer both so the user can pick either, both, or neither. Honour their choice exactly.

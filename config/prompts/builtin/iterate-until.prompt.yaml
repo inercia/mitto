@@ -13,7 +13,7 @@ enabledWhen: '!session.isChild && !session.isPeriodicConversation && tools.hasPa
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Iterate Until a Condition Is Met
 
@@ -37,7 +37,7 @@ prompt: |
   do **not** receive this setup prompt again:
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self",
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self",
     user_data: [{"name": "Iterate Until Condition", "value": "${CONDITION}"}])
   ```
 
@@ -51,7 +51,7 @@ prompt: |
   condition embedded literally** so each unattended run knows exactly when to stop:
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self",
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self",
     periodic_trigger: "onCompletion",
     periodic_completion_delay_seconds: 30,
     periodic_max_iterations: 20,
@@ -76,8 +76,8 @@ prompt: |
          (test output, file contents, command exit codes) — never against your
          intentions. If you cannot verify it is true, treat it as not yet met.
       3. If the STOP CONDITION is TRUE: stop the loop and finish — call
-         mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self", periodic_enabled: false),
-         then mitto_ui_notify(self_id: "@mitto:session_id", title: "Iteration complete",
+         mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false),
+         then mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iteration complete",
          message: "<how the condition was satisfied>", style: "success"). Do nothing further.
       4. If it is NOT yet true: do exactly ONE concrete increment of work toward it,
          verify that increment, briefly note progress, then stop responding so the
@@ -90,7 +90,7 @@ prompt: |
   1. Review the current state of the work (read relevant files, run relevant checks).
   2. Evaluate the stop condition against the real, observed state.
      - If it is **already true**, disable the loop immediately —
-       `mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self", periodic_enabled: false)` —
+       `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)` —
        notify the user with `mitto_ui_notify`, and stop. There is nothing to do.
   3. Otherwise, perform exactly **one** concrete increment toward the condition,
      verify it, and report what you advanced and what remains. Then stop responding;

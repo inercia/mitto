@@ -8,13 +8,13 @@ enabledWhen: session.hasBeadsIssue && commandExists("bd") && dirExists(".beads")
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Close This Conversation's Issue If Completed
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  This conversation is linked to the bead `@mitto:beads_issue`. Determine whether that bead is
+  This conversation is linked to the bead `{{ .Session.BeadsIssue }}`. Determine whether that bead is
   already done. If it is fully complete, close it. If it cannot be closed yet, explain why and offer
   to open its details.
 
@@ -23,20 +23,20 @@ prompt: |
   Load the bead's current state first:
 
   ```bash
-  bd show @mitto:beads_issue --json
+  bd show {{ .Session.BeadsIssue }} --json
   ```
 
   If its `status` is already `closed`, there is **nothing else to do**. Notify the user and stop:
 
-  `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "@mitto:beads_issue already closed", message: "This bead is already closed — nothing to do.", style: "info")`
+  `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "{{ .Session.BeadsIssue }} already closed", message: "This bead is already closed — nothing to do.", style: "info")`
 
   ## Step 2 — Load requirements and assess completion
 
   The bead is still open. Fetch everything it promises to deliver:
 
   ```bash
-  bd show @mitto:beads_issue --long --json     # full description, acceptance criteria, design, metadata
-  bd dep tree @mitto:beads_issue               # blockers and what it blocks
+  bd show {{ .Session.BeadsIssue }} --long --json     # full description, acceptance criteria, design, metadata
+  bd dep tree {{ .Session.BeadsIssue }}               # blockers and what it blocks
   ```
 
   Identify the concrete acceptance criteria. If none are listed, infer them from the description.
@@ -48,7 +48,7 @@ prompt: |
   - **Commits / branches** referencing the bead:
 
     ```bash
-    git log --oneline --all | grep -i "@mitto:beads_issue"
+    git log --oneline --all | grep -i "{{ .Session.BeadsIssue }}"
     ```
 
   - **Tests**: locate the tests covering the bead's behaviour. If they exist and are cheap to run,
@@ -70,12 +70,12 @@ prompt: |
   Close with a clear, specific, evidence-backed reason:
 
   ```bash
-  bd close @mitto:beads_issue --reason "<what was delivered; key changes/commits; tests run and their result>"
+  bd close {{ .Session.BeadsIssue }} --reason "<what was delivered; key changes/commits; tests run and their result>"
   ```
 
   If the command fails, report the error and stop. On success, notify the user and stop:
 
-  `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "Closed @mitto:beads_issue", message: "<one-line summary of what was delivered>", style: "success")`
+  `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "Closed {{ .Session.BeadsIssue }}", message: "<one-line summary of what was delivered>", style: "success")`
 
   ## Step 5 — Cannot close: explain and offer details
 
@@ -83,20 +83,20 @@ prompt: |
   closed (which criteria remain, with the evidence you found) and offers to open its details:
 
   ```
-  mitto_ui_options_mitto(self_id: "@mitto:session_id",
-    question: "@mitto:beads_issue can't be closed yet: <one-line reason>. What would you like to do?",
+  mitto_ui_options_mitto(self_id: "{{ .Session.ID }}",
+    question: "{{ .Session.BeadsIssue }} can't be closed yet: <one-line reason>. What would you like to do?",
     options: [
       {label: "Open issue details", description: "Show the full bead and what still remains"},
       {label: "Leave it open", description: "Do nothing further"}
     ])
   ```
 
-  - If the user picks **Open issue details**, run `bd show @mitto:beads_issue --long` and present the
+  - If the user picks **Open issue details**, run `bd show {{ .Session.BeadsIssue }} --long` and present the
     full bead alongside a per-criterion breakdown of what is done and what remains.
   - If the user picks **Leave it open**, record the finding so it is not lost, then stop:
 
     ```bash
-    bd comment @mitto:beads_issue "Reviewed for completion: <what is done> / <what remains>. Keeping open."
+    bd comment {{ .Session.BeadsIssue }} "Reviewed for completion: <what is done> / <what remains>. Keeping open."
     ```
 
   If the interactive tools are unavailable (e.g. an automated run), skip the dialog and instead report

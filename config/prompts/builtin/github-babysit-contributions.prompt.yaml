@@ -17,23 +17,23 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Available ACP servers:
   @mitto:available_acp_servers
 
   ## Interaction Mode
 
-  - **Periodic run**: `@mitto:periodic` = is this a scheduled periodic execution?
-  - **Force-triggered**: `@mitto:periodic_forced` = was this periodic run manually triggered by the user?
+  - **Periodic run**: `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
+  - **Force-triggered**: `{{ .Session.IsPeriodicForced }}` = was this periodic run manually triggered by the user?
 
-  **If this is a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+  **If this is a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND `{{ .Session.IsPeriodicForced }}` = "false"):
   - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
     interactive/blocking UI tool. The user is not watching.
 
-  **If this is a force-triggered run** (`@mitto:periodic_forced` = "true") **or a
-  non-periodic conversation** (`@mitto:periodic` = "false"):
+  **If this is a force-triggered run** (`{{ .Session.IsPeriodicForced }}` = "true") **or a
+  non-periodic conversation** (`{{ .Session.IsPeriodic }}` = "false"):
   - You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
     and other interactive tools in addition to `mitto_ui_notify`.
 
@@ -49,11 +49,11 @@ prompt: |
 
   Once you have the `nameWithOwner` (e.g., `some-org/some-repo`), rename this
   conversation so it's easy to identify — but only if the current name
-  (`@mitto:session_name`) doesn't already start with "Babysit contributions":
+  (`{{ .Session.Name }}`) doesn't already start with "Babysit contributions":
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id",
-    conversation_id: "@mitto:session_id",
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
     name: "Babysit contributions in <nameWithOwner>")
   ```
 
@@ -68,7 +68,7 @@ prompt: |
   If there are pending review requests, **batch into a single notification:**
 
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "👀 <count> PRs awaiting your review",
     message: "You've been requested to review:\n• #<N> <title> by <author> (<days> days ago)\n• #<M> <title> by <author> (<days> days ago)\n...",
     style: "info")
@@ -87,7 +87,7 @@ prompt: |
 
   **In interactive mode**, offer to approve and merge:
   ```
-  mitto_ui_options(self_id: "@mitto:session_id",
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
     question: "🤖 Bot PR #<number> (<title>) has passing CI. Approve and merge?",
     options: [
       { label: "Yes, approve and merge" },
@@ -99,7 +99,7 @@ prompt: |
 
   **In scheduled mode**, just notify:
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "🤖 Bot PR #<number> ready to merge",
     message: "<title> — dependency update from <author> with passing CI. Consider merging.",
     style: "info")
@@ -123,7 +123,7 @@ prompt: |
 
   **In interactive mode**, offer to delete them:
   ```
-  mitto_ui_options(self_id: "@mitto:session_id",
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
     question: "🧹 <count> merged branches still on remote:\n<branch1> (PR #N)\n<branch2> (PR #M)\n\nDelete them?",
     options: [
       { label: "Yes, delete all" },
@@ -137,7 +137,7 @@ prompt: |
 
   **In scheduled mode**, just notify:
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "🧹 <count> merged branches can be cleaned up",
     message: "Branches from merged PRs still on remote:\n<branch1> (PR #N)\n<branch2> (PR #M)\n...",
     style: "info")
@@ -160,7 +160,7 @@ prompt: |
 
   - If `gh` authentication fails, stop immediately and inform the user.
   - **Interaction mode** (see "Interaction Mode" section above):
-    - **Scheduled periodic** (`@mitto:periodic` = "true", `@mitto:periodic_forced` = "false"):
+    - **Scheduled periodic** (`{{ .Session.IsPeriodic }}` = "true", `{{ .Session.IsPeriodicForced }}` = "false"):
       Use only `mitto_ui_notify`. No interactive UI. Skip the summary — only
       send notifications for actionable items.
     - **Force-triggered or non-periodic**: You may use `mitto_ui_options`,

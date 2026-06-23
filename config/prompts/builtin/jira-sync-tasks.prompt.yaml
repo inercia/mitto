@@ -23,7 +23,7 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Project user data (JSON):
   @mitto:user_data
@@ -32,13 +32,13 @@ prompt: |
 
   This prompt runs in two modes. Check these variables to decide which applies:
 
-  - `@mitto:periodic` = is this a scheduled periodic execution?
-  - `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
+  - `{{ .Session.IsPeriodicForced }}` = was a periodic run manually triggered by the user?
 
-  **Interactive mode — a regular conversation** (`@mitto:periodic` = "false") **or a force-triggered periodic run** (`@mitto:periodic_forced` = "true"):
+  **Interactive mode — a regular conversation** (`{{ .Session.IsPeriodic }}` = "false") **or a force-triggered periodic run** (`{{ .Session.IsPeriodicForced }}` = "true"):
   - The user is present. Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
 
-  **Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+  **Silent mode — a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND `{{ .Session.IsPeriodicForced }}` = "false"):
   - Use **only** `mitto_ui_notify` — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. The user is not watching.
 
@@ -55,8 +55,8 @@ prompt: |
     - **Interactive mode**: ask the user for the JQL query with `mitto_ui_form` (a single text field for the query, e.g. `project = ABC AND statusCategory != Done`). Once you have a non-empty value, persist it to the conversation's user data so future runs (including scheduled ones) reuse it:
 
       ```
-      mitto_conversation_update(self_id: "@mitto:session_id",
-        conversation_id: "@mitto:session_id",
+      mitto_conversation_update(self_id: "{{ .Session.ID }}",
+        conversation_id: "{{ .Session.ID }}",
         user_data: [{"name": "Jira Tasks", "value": "<the JQL the user provided>"}])
       ```
 
@@ -65,7 +65,7 @@ prompt: |
       To make the save succeed, add the field to the schema with `mitto_workspace_update` (this edits the workspace `.mittorc`), then retry the conversation update:
 
       ```
-      mitto_workspace_update(self_id: "@mitto:session_id",
+      mitto_workspace_update(self_id: "{{ .Session.ID }}",
         user_data_schema: [{"name": "Jira Tasks",
                             "description": "JQL query selecting the JIRA tickets to mirror into beads",
                             "type": "string"}],
@@ -105,7 +105,7 @@ prompt: |
 
   ### Step 5.0 — JIRA wiki markup → Markdown helper
 
-  JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
+  JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{ "{{" }}monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
 
   ```python
   #!/usr/bin/env python3
@@ -141,7 +141,7 @@ prompt: |
       s = "".join(res)
       if in_code:
           s += "\n" + fence + "\n"
-      # Inline monospace {{...}} -> `...`
+      # Inline monospace {{ "{{" }}...}} -> `...`
       s = re.sub(r"\{\{(.+?)\}\}", lambda m: chr(96) + m.group(1) + chr(96), s)
       # Links [text|url] -> [text](url)
       s = re.sub(r"\[([^|\]]+)\|([^\]]+)\]", r"[\1](\2)", s)

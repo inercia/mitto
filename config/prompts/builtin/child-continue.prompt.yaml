@@ -17,13 +17,13 @@ prompt: |
 
   ## Phase 1: Context
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   The target conversation is `${TARGET_CONVERSATION}`. Load its current state so you can
   build on what it has already done:
 
   ```
-  mitto_conversation_get(self_id: "@mitto:session_id", conversation_id: "${TARGET_CONVERSATION}")
+  mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "${TARGET_CONVERSATION}")
   ```
 
   Note its title, ACP server, and whether it is currently running or idle. If the lookup
@@ -52,7 +52,7 @@ prompt: |
   ```
 
   Confirm and pick the wait behaviour in a single
-  `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 120s):
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s):
 
   ```
   question: "Send these instructions to <target title>?"
@@ -86,7 +86,7 @@ prompt: |
 
   ## Phase 4: Send Instructions
 
-  `mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id: "${TARGET_CONVERSATION}", prompt: <confirmed instructions>)`
+  `mitto_conversation_send_prompt(self_id: "{{ .Session.ID }}", conversation_id: "${TARGET_CONVERSATION}", prompt: <confirmed instructions>)`
 
   ## Phase 5: Wait or Report
 

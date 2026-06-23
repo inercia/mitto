@@ -17,7 +17,7 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   ## Step 1 — Fetch in-progress beads
 
@@ -31,7 +31,7 @@ prompt: |
 
   ## Step 2 — Let the user choose one bead
 
-  Present the in-progress beads using `mitto_ui_options_mitto(self_id: "@mitto:session_id")`, showing each as `bd-id — Title` in the dropdown. Ask: "Which in-progress bead would you like to check status for?"
+  Present the in-progress beads using `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")`, showing each as `bd-id — Title` in the dropdown. Ask: "Which in-progress bead would you like to check status for?"
 
   ## Step 3 — Fetch full bead details
 

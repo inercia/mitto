@@ -11,16 +11,16 @@ prompt: |
 
   ## Phase 1: Context
 
-  1. Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  1. Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
   2. Available ACP servers for this workspace: `@mitto:available_acp_servers`
      Note each server's name, tags (e.g., `[coding, fast]`, `[reasoning, planning]`), and the `(current)` marker.
-  3. Your current workspace UUID is `@mitto:workspace_uuid`.
+  3. Your current workspace UUID is `{{ .Workspace.UUID }}`.
 
   ## Phase 2: Select Workspace
 
   Call `mitto_workspace_list()` to get all workspaces.
 
-  Ask via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 60s):
+  Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 60s):
 
   ```
   question: "Which workspace should the new conversation run in?"
@@ -55,7 +55,7 @@ prompt: |
   **Recommended Model:** <suggestion based on task complexity>
   ```
 
-  Confirm via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 120s):
+  Confirm via `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s):
 
   ```
   question: "Create a new conversation with this handoff?"
@@ -88,9 +88,9 @@ prompt: |
   ## Phase 5: Create Conversation
 
   - Same workspace:
-    `mitto_conversation_new(self_id: "@mitto:session_id", title, initial_prompt, acp_server)`
+    `mitto_conversation_new(self_id: "{{ .Session.ID }}", title, initial_prompt, acp_server)`
   - Another workspace (include `workspace`):
-    `mitto_conversation_new(self_id: "@mitto:session_id", workspace: "<target_uuid>", title, initial_prompt, acp_server)`
+    `mitto_conversation_new(self_id: "{{ .Session.ID }}", workspace: "<target_uuid>", title, initial_prompt, acp_server)`
 
   ## Phase 6: Report
 

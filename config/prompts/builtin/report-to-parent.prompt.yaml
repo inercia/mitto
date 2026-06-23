@@ -15,8 +15,8 @@ prompt: |
 
   ## Phase 1: Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Your parent conversation ID is `@mitto:parent_session_id` — use this as `conversation_id` when sending to the parent.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your parent conversation ID is `{{ .Session.ParentID }}` — use this as `conversation_id` when sending to the parent.
 
   ## Phase 2: Analyze Current Work
 
@@ -67,8 +67,8 @@ prompt: |
   Use `mitto_conversation_send_prompt` to deliver the report to the parent conversation:
 
   ```
-  self_id: "@mitto:session_id"
-  conversation_id: "@mitto:parent_session_id"
+  self_id: "{{ .Session.ID }}"
+  conversation_id: "{{ .Session.ParentID }}"
   prompt: <the full structured report from Phase 3>
   ```
 

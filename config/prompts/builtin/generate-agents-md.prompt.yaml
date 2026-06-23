@@ -87,7 +87,7 @@ prompt: |
   Present the generated content for review before saving:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Review AGENTS.md — edit before saving",
     text: "<generated-agents-md>",
     result: "edited_text")

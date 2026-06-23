@@ -12,7 +12,7 @@ enabledWhen: commandExists("bd") && dirExists(".beads") && item.status != "close
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Should This Issue Be Closed?
 
@@ -113,7 +113,7 @@ prompt: |
 
   The investigation stays **read-only until you confirm**: nothing is modified — and no work is
   started — without explicit approval. Present your verdict and the summary, then confirm the next
-  action via `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g.
+  action via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g.
   "This bead looks `<verdict>`. What should I do?". Tailor the options to the verdict:
 
   - If the bead is **not resolved** (verdict **Still relevant**, or **Partially resolved** with real
@@ -131,7 +131,7 @@ prompt: |
 
   **For an epic**, decide per child as well as for the epic itself. When one or more children are
   **already resolved** (Fully resolved / Obsolete / Duplicate) but not yet closed, **offer to close
-  them** — present those children with `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as one
+  them** — present those children with `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` as one
   checkbox per resolved child (checked by default, each line `<child-id> — <title>`) so the user can
   pick which to close. Then offer the epic-level action as above (close the epic only once all
   children are closed, keep it open, or create follow-ups for the remaining children). Only close the
@@ -216,16 +216,16 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

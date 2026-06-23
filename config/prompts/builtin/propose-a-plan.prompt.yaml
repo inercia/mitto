@@ -25,7 +25,7 @@ prompt: |
   **With Mitto UI**: Present the plan in a textbox so the user can edit it directly:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Review Plan — edit before approving",
     text: "<generated-plan-markdown>",
     result: "edited_text")
@@ -37,7 +37,7 @@ prompt: |
   Then confirm execution:
 
   ```
-  mitto_ui_options(self_id: "@mitto:session_id",
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
     question: "Plan reviewed. Proceed?",
     options: [{label: "Execute the plan"}, {label: "Revise further"}, {label: "Cancel"}])
   ```

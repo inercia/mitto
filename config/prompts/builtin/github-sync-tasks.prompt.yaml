@@ -23,7 +23,7 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Project user data (JSON):
   @mitto:user_data
@@ -32,13 +32,13 @@ prompt: |
 
   This prompt runs in two modes. Check these variables to decide which applies:
 
-  - `@mitto:periodic` = is this a scheduled periodic execution?
-  - `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
+  - `{{ .Session.IsPeriodicForced }}` = was a periodic run manually triggered by the user?
 
-  **Interactive mode — a regular conversation** (`@mitto:periodic` = "false") **or a force-triggered periodic run** (`@mitto:periodic_forced` = "true"):
+  **Interactive mode — a regular conversation** (`{{ .Session.IsPeriodic }}` = "false") **or a force-triggered periodic run** (`{{ .Session.IsPeriodicForced }}` = "true"):
   - The user is present. Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
 
-  **Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+  **Silent mode — a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND `{{ .Session.IsPeriodicForced }}` = "false"):
   - Use **only** `mitto_ui_notify` — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. The user is not watching.
 

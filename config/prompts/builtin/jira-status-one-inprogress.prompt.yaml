@@ -15,7 +15,7 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   ## Step 1 — Identify the current repository
 
@@ -51,7 +51,7 @@ prompt: |
 
   ## Step 4 — Let the user choose one ticket
 
-  Present the filtered tickets using `mitto_ui_options_mitto(self_id: "@mitto:session_id")`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
+  Present the filtered tickets using `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
 
   ## Step 5 — Fetch full ticket details
 

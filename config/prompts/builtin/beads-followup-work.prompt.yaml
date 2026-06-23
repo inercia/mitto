@@ -8,7 +8,7 @@ enabledWhen: commandExists("bd") && dirExists(".beads")
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Identify Follow-up Work
 
@@ -70,7 +70,7 @@ prompt: |
 
   > **[<type> · <priority>] <title>** — <one-line why>
 
-  Then present **every** epic and item in a single `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as checkboxes, **checked by default**, so the user can simply uncheck what to skip. Nest children under their epic visually:
+  Then present **every** epic and item in a single `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` as checkboxes, **checked by default**, so the user can simply uncheck what to skip. Nest children under their epic visually:
 
   ```html
   <p>Select what to file as beads. Unchecked items are skipped. Epics group their children.</p>

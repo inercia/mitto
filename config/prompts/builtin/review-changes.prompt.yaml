@@ -31,7 +31,7 @@ prompt: |
   - Otherwise, ask the user which requirements to review against:
 
     ```
-    mitto_ui_options(self_id: "@mitto:session_id",
+    mitto_ui_options(self_id: "{{ .Session.ID }}",
       question: "What should I review these changes against?",
       options: [
         {label: "A beads/ticket issue", description: "I'll look up its acceptance criteria"},
@@ -125,7 +125,7 @@ prompt: |
   Before posting or finalizing, let the user edit it:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Change review — edit before sharing",
     text: "<generated-review-markdown>",
     result: "edited_text")

@@ -17,7 +17,7 @@ prompt: |
 
   ## Phase 1: Context
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   All child conversations:
   @mitto:children
@@ -34,7 +34,7 @@ prompt: |
 
   ## Phase 2: Inspect Each Child
 
-  For each child, call `mitto_conversation_get(self_id: "@mitto:session_id",
+  For each child, call `mitto_conversation_get(self_id: "{{ .Session.ID }}",
   conversation_id: <child_id>)` (run these in parallel) to learn:
 
   - `child_origin` — `"auto"`, `"mcp"`, or `"human"`. Treat `"auto"` as protected.
@@ -69,7 +69,7 @@ prompt: |
   ## Phase 5: Confirm With User
 
   Present a short summary, then ask for confirmation via
-  `mitto_ui_form(self_id: "@mitto:session_id", ...)` (timeout: 120s) with one checkbox per
+  `mitto_ui_form(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s) with one checkbox per
   candidate, pre-checked for the ones you recommend deleting:
 
   ```html
@@ -87,7 +87,7 @@ prompt: |
   For each confirmed conversation ID:
 
   ```
-  mitto_conversation_delete(self_id: "@mitto:session_id", conversation_id: <child_id>)
+  mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: <child_id>)
   ```
 
   Double-check before each call that the target is **not** an auto-child and was in the

@@ -24,7 +24,7 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Available ACP servers:
   @mitto:available_acp_servers
@@ -38,17 +38,17 @@ prompt: |
 
   ## Interaction Mode — READ THIS FIRST
 
-  - `@mitto:periodic` = is this a scheduled periodic execution?
-  - `@mitto:periodic_forced` = was this periodic run manually triggered by the user?
+  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
+  - `{{ .Session.IsPeriodicForced }}` = was this periodic run manually triggered by the user?
 
-  **Silent mode — scheduled periodic run** (`@mitto:periodic` = "true" AND
-  `@mitto:periodic_forced` = "false"):
+  **Silent mode — scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND
+  `{{ .Session.IsPeriodicForced }}` = "false"):
   - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
     `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching, never block.
   - Act autonomously when safe (clean rebases); otherwise just notify.
 
-  **Interactive mode** (`@mitto:periodic` = "false", e.g. the very first send, or
-  `@mitto:periodic_forced` = "true"): a user may be present, so you *may* use the
+  **Interactive mode** (`{{ .Session.IsPeriodic }}` = "false", e.g. the very first send, or
+  `{{ .Session.IsPeriodicForced }}` = "true"): a user may be present, so you *may* use the
   interactive `mitto_ui_*` tools (ask before risky actions like merges/rebases).
 
   ## Step 1 — Identify the repository and verify auth
@@ -62,10 +62,10 @@ prompt: |
   If `gh auth status` fails, stop immediately and inform the user.
 
   Rename this conversation so it's easy to identify — but only if the current name
-  (`@mitto:session_name`) doesn't already start with "Babysit new PRs":
+  (`{{ .Session.Name }}`) doesn't already start with "Babysit new PRs":
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "@mitto:session_id",
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}",
     name: "Babysit new PRs in <nameWithOwner>")
   ```
 
@@ -93,7 +93,7 @@ prompt: |
   3. **Nothing identified** (no babysat PRs and no recent PRs):
      - **Interactive mode**: ask the user what to do —
        ```
-       mitto_ui_options(self_id: "@mitto:session_id",
+       mitto_ui_options(self_id: "{{ .Session.ID }}",
          question: "No recently-created PRs to babysit were found. What would you like to do?",
          allow_free_text: true, free_text_placeholder: "e.g. 123, 456",
          options: [
@@ -149,7 +149,7 @@ prompt: |
   to the spawn rules above) — automatically in silent mode, or after asking in
   interactive mode:
   ```
-  mitto_conversation_new(self_id: "@mitto:session_id",
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
     title: "Fix CI for PR #<number>: <title>",
     initial_prompt: "PR #<number> (<title>) has failing CI on branch <headRefName>.
       Failing checks: <check names>
@@ -169,7 +169,7 @@ prompt: |
   address them (subject to the spawn rules) — automatically in silent mode, or
   after asking in interactive mode:
   ```
-  mitto_conversation_new(self_id: "@mitto:session_id",
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
     title: "Address review comments on PR #<number>: <title>",
     initial_prompt: "PR #<number> (<title>) has <count> unresolved review threads.
       Check out <headRefName>, read them with `gh pr view <number> --json reviewThreads`,
@@ -184,7 +184,7 @@ prompt: |
   a draft, it is ready to merge.
   - **Interactive mode**: offer to merge —
     ```
-    mitto_ui_options(self_id: "@mitto:session_id",
+    mitto_ui_options(self_id: "{{ .Session.ID }}",
       question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
       options: [ { label: "Yes, merge now" }, { label: "No, just notify" } ])
     ```
@@ -223,13 +223,13 @@ prompt: |
   becomes a regular conversation:
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
   ```
 
   Then notify the user (works in both modes):
 
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "Babysit new PRs — done",
     message: "<which PRs were merged or closed; all monitored PRs are now resolved, so iteration stopped>",
     style: "success")
@@ -244,8 +244,8 @@ prompt: |
   - **Never modify the local checkout** — the user may have uncommitted work there.
     Always rebase in a temporary worktree and force-push with `--force-with-lease`
     (never `--force`).
-  - **Interaction mode**: in **scheduled** runs (`@mitto:periodic` = "true",
-    `@mitto:periodic_forced` = "false") use **only** `mitto_ui_notify` — never block
+  - **Interaction mode**: in **scheduled** runs (`{{ .Session.IsPeriodic }}` = "true",
+    `{{ .Session.IsPeriodicForced }}` = "false") use **only** `mitto_ui_notify` — never block
     on interactive UI, and do **not** auto-merge. In **force-triggered or
     non-periodic** runs you may use `mitto_ui_options`/`mitto_ui_form` and offer to
     merge with confirmation.

@@ -8,7 +8,7 @@ enabledWhen: '!session.isChild && tools.hasAllPatterns(["jira_*", "mitto_convers
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
   Available ACP servers: `@mitto:available_acp_servers`
   Existing children: `@mitto:children`
 
@@ -19,7 +19,7 @@ prompt: |
   Before doing anything else, review the current conversation history to check whether a specific JIRA ticket has already been discussed (e.g., a ticket key like `PROJ-1234` was mentioned, ticket details were fetched, or a ticket was previously selected).
 
   - If a ticket **has** been discussed in this conversation:
-    Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask the user whether to:
+    Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask the user whether to:
     - **Option 1**: `"Start working on [TICKET-KEY]: [summary]"` — if the user chooses this, skip directly to Step 3 (fetch full ticket details) using that ticket key.
     - **Option 2**: `"Work on a different ticket"` — if the user chooses this, continue to Step 1 (the normal ticket selection flow).
 
@@ -37,8 +37,8 @@ prompt: |
 
   ## Step 2 — Let the user choose a ticket
 
-  - If **multiple tickets** are found: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to present the ticket list and ask the user which one to work on. Include the ticket key and summary in each option label.
-  - If **exactly one ticket** is found: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to confirm with the user before proceeding.
+  - If **multiple tickets** are found: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to present the ticket list and ask the user which one to work on. Include the ticket key and summary in each option label.
+  - If **exactly one ticket** is found: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to confirm with the user before proceeding.
   - If **no tickets** are found: inform the user and stop.
 
   ## Step 3 — Fetch full ticket details
@@ -76,7 +76,7 @@ prompt: |
 
   ## Step 5 — Present the plan and iterate
 
-  Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to show the plan summary to the user and ask: "Does this plan look correct? Shall I proceed with spawning work conversations?"
+  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to show the plan summary to the user and ask: "Does this plan look correct? Shall I proceed with spawning work conversations?"
 
   - If the user says **No** or provides feedback: revise the plan accordingly and present it again. Repeat until the user explicitly approves.
   - If the user says **Yes**: proceed to Step 6.
@@ -85,7 +85,7 @@ prompt: |
 
   For each work item in the approved plan:
 
-  1. Call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
+  1. Call `mitto_conversation_new_mitto` with `self_id: "{{ .Session.ID }}"` and:
      - `title`: the work item title prefixed with the JIRA ticket key (e.g., `"CGW-1234 · Add database migration"`)
      - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
      - `initial_prompt`: a **self-contained** prompt that includes:
@@ -98,4 +98,4 @@ prompt: |
 
   2. Do **not** wait for each conversation to complete before spawning the next — spawn all conversations in parallel.
 
-  3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "<ticket-key>", timeout_seconds: 600)` to wait for all of them to report back, then summarise results to the user.
+  3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "<ticket-key>", timeout_seconds: 600)` to wait for all of them to report back, then summarise results to the user.

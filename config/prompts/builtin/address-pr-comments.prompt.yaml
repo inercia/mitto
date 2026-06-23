@@ -55,7 +55,7 @@ prompt: |
   |---------|------|----------|----------|--------|
   | ...     | ...  | ...      | ...      | ...    |
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Does this analysis look correct?"
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Does this analysis look correct?"
   **Without**: Ask in conversation for confirmation.
 
   ### 6. Implement Changes
@@ -72,13 +72,13 @@ prompt: |
 
   **How to delegate (requires Mitto MCP tools):**
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
   Available ACP servers: `@mitto:available_acp_servers`
   Existing children: `@mitto:children`
 
   1. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (marked `(current)` in the list above).
   2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
-  3. `mitto_conversation_new(self_id: "@mitto:session_id")`:
+  3. `mitto_conversation_new(self_id: "{{ .Session.ID }}")`:
      ```
      title: "PR fix: <description>"
      initial_prompt: |
@@ -92,7 +92,7 @@ prompt: |
        (Get your own self_id by calling mitto_conversation_get_current(self_id: "init").)
      acp_server: <selected server>
      ```
-  4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", children_list: [...], task_id: "<short task description>", timeout_seconds: 600)`
+  4. `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "<short task description>", timeout_seconds: 600)`
   5. Review results, verify changes, run tests
   6. `mitto_conversation_delete` for completed children
   7. Commit combined changes
@@ -118,7 +118,7 @@ prompt: |
 
   ### 9. Push and Request Re-review
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Ready to push and request re-review?"
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Ready to push and request re-review?"
   **Without**: Ask in conversation.
 
   ```bash

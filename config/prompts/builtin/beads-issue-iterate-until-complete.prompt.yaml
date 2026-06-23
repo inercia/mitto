@@ -17,7 +17,7 @@ periodic:
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
   Available ACP servers: `@mitto:available_acp_servers`
   Existing children: `@mitto:mcp_children`
 
@@ -34,19 +34,19 @@ prompt: |
 
   This prompt almost always runs **unattended on a schedule**. Check these variables:
 
-  - `@mitto:periodic` = is this a scheduled periodic execution?
-  - `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
+  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
+  - `{{ .Session.IsPeriodicForced }}` = was a periodic run manually triggered by the user?
 
-  **Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND
-  `@mitto:periodic_forced` = "false"):
+  **Silent mode — a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND
+  `{{ .Session.IsPeriodicForced }}` = "false"):
   - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
     Nobody is watching. Never block waiting for input.
   - When a decision is ambiguous, do **not** guess and do **not** ask — record the
     question on the bead and defer it (see Step 4).
 
-  **Interactive mode** (`@mitto:periodic` = "false", e.g. the very first send, or
-  `@mitto:periodic_forced` = "true"): a user may be present, so you *may* use the
+  **Interactive mode** (`{{ .Session.IsPeriodic }}` = "false", e.g. the very first send, or
+  `{{ .Session.IsPeriodicForced }}` = "true"): a user may be present, so you *may* use the
   interactive `mitto_ui_*` tools — but the goal is identical: advance the work one
   increment, or stop cleanly when nothing is ready.
 
@@ -132,14 +132,14 @@ prompt: |
        and reserve a more capable (slower/expensive) agent only for genuinely complex
        increments.
      - Reuse a suitable **idle** child from `@mitto:mcp_children` when possible via
-       `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
-     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", title: "${ISSUE_ID} · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
+       `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
+     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "${ISSUE_ID} · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
      - Cap spawning at **one** new child per run to avoid runaway fan-out.
   4. **Wait for the child to finish, then judge the outcome.** Block until the
      child reports back so this run can act on the result:
 
      ```
-     mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: ["<child-id>"])
+     mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: ["<child-id>"])
      ```
 
      Read the report to decide whether the increment **succeeded**, only
@@ -180,13 +180,13 @@ prompt: |
   becomes a regular (non-periodic) conversation, and post a final summary.
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
   ```
 
   Then notify the user (works in both modes):
 
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id", title: "Iterate until issue complete — done", message: "<what was completed across runs, what was deferred/blocked, and why iteration stopped>", style: "success")
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate until issue complete — done", message: "<what was completed across runs, what was deferred/blocked, and why iteration stopped>", style: "success")
   ```
 
   After stopping, do nothing further this run.

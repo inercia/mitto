@@ -8,7 +8,7 @@ enabledWhen: commandExists("bd") && dirExists(".beads")
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
   Available ACP servers: `@mitto:available_acp_servers`
   Existing children: `@mitto:children`
 
@@ -84,7 +84,7 @@ prompt: |
      existing child from `@mitto:children` if one already covers the same bead rather than
      spawning a duplicate.
 
-  2. For each selected bead, call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
+  2. For each selected bead, call `mitto_conversation_new_mitto` with `self_id: "{{ .Session.ID }}"` and:
      - `title`: the bead ID and a short label (e.g., `"bd-1234 · deep reevaluation"`)
      - `beads_issue`: the bead ID (links the child to this bead)
      - `acp_server`: choose from `@mitto:available_acp_servers` — prefer a faster/cheaper model
@@ -99,7 +99,7 @@ prompt: |
   3. Spawn all the deep-evaluation children in parallel — do **not** wait between spawns.
 
   4. Wait for their findings with
-     `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "reevaluate", timeout_seconds: 600)`,
+     `mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "reevaluate", timeout_seconds: 600)`,
      then fold each child's recommendation into your reevaluation.
 
   If the spawning tools are unavailable, perform this deeper evaluation inline yourself using
@@ -135,7 +135,7 @@ prompt: |
 
   This reevaluation is **read-only until you confirm** — including closing any already-completed
   beads. Present your single best proposal and confirm via
-  `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`,
+  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`,
   e.g. "Apply these N proposed changes (including closures) to the beads tracker?" with options:
 
   - **"Apply all proposed changes"**
@@ -189,16 +189,16 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

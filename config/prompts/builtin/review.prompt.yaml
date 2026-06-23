@@ -140,7 +140,7 @@ prompt: |
   Before posting the review (e.g., as a PR comment or sharing with the user), present it in a textbox for editing:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Review — edit before posting",
     text: "<generated-review-markdown>",
     result: "edited_text")
@@ -153,7 +153,7 @@ prompt: |
   Then confirm what to do with the review:
 
   ```
-  mitto_ui_options(self_id: "@mitto:session_id",
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
     question: "How should this review be shared?",
     options: [
       {label: "Post as PR comment", description: "Add as a review comment on the pull request"},
