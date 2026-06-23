@@ -16,6 +16,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Prompt Menus & Dispatch](prompts.md)** — How prompts are surfaced across menus (`menus` routing, `enabledWhen` contexts, `requires`), and how they start in existing vs new conversations via named-prompt dispatch
 
+- **[Go Template Rendering in Prompt Bodies](prompt-templates.md)** — Design spec for `text/template` engine, render order, unified context, `cond`/`when` CEL bridge, FuncMap, error policy, `@mitto:` migration table, and corner cases
+
 - **[Web Interface](web-interface.md)** — Browser-based UI architecture, REST API, streaming response handling, responsive design
 
 - **[WebSocket Documentation](websockets/)** — Protocol specification, message types, sequence numbers, synchronization, reconnection handling, and multi-client support (authoritative reference for all real-time communication)

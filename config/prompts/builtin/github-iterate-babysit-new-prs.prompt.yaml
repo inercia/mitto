@@ -10,7 +10,7 @@ tags:
 enabledWhen: '!session.isChild && fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh")) && tools.hasPattern("mitto_conversation_*")'
 periodic:
   trigger: onCompletion
-  delay: 60
+  delay: 3600
   maxIterations: 30
   maxDuration: "6h"
 prompt: |
@@ -203,22 +203,24 @@ prompt: |
   - **Silent mode**: stay quiet unless something actionable happened this run.
 
   A PR is **done** when it is merged or closed. A PR is **steady** when it is fully
-  up to date, has no failing CI, no unresolved threads, and (silent mode) is only
-  waiting on a human to merge or review — i.e. nothing **this loop** can advance.
+  up to date, has no failing CI, no unresolved threads, and is only waiting on a
+  human to merge or review — i.e. nothing **this loop** can advance right now.
 
-  **Keep iterating** (end this run normally; the next one fires after `delay`) if
-  **any** target PR still has actionable work this loop could advance, or a spawned
-  child is actively fixing something. Do nothing further this run.
+  **Keep iterating** (end this run normally; the next one fires after `delay`) as
+  long as **any** target PR is **not yet done** — i.e. still open, whether it has
+  actionable work this loop can advance or is merely **steady** (waiting on a human
+  to review/merge). A steady PR is **not** a reason to stop: keep monitoring it on
+  every run until it is merged or closed. Do nothing further this run.
 
-  **Otherwise** — every target PR is **done** or **steady** with nothing left for
-  this loop to advance — go to **Step 5**.
+  **Otherwise** — **every** target PR is **done** (merged or closed), leaving none
+  still open — go to **Step 5**.
 
   ## Step 5 — Stop: self-terminate
 
-  When there is nothing actionable left (reached from Step 2 when no PRs were
-  identified / the user quit, or from Step 4 when all PRs are done or steady),
-  remove this conversation's own periodic flag so it becomes a regular
-  conversation:
+  When every monitored PR has been **merged or closed** (reached from Step 2 when
+  no PRs were identified / the user quit, or from Step 4 when all target PRs are
+  done — none left open), remove this conversation's own periodic flag so it
+  becomes a regular conversation:
 
   ```
   mitto_conversation_update(self_id: "@mitto:session_id", conversation_id: "self", periodic_enabled: false)
@@ -229,7 +231,7 @@ prompt: |
   ```
   mitto_ui_notify(self_id: "@mitto:session_id",
     title: "Babysit new PRs — done",
-    message: "<which PRs were merged/advanced, what remains waiting on humans, and why iteration stopped>",
+    message: "<which PRs were merged or closed; all monitored PRs are now resolved, so iteration stopped>",
     style: "success")
   ```
 
@@ -253,7 +255,9 @@ prompt: |
     one-off and **must never be periodic**.
   - **Notify only when it matters** on scheduled runs (rebased, CI broke, ready to
     merge, merged, or final stop). Stay quiet on routine no-op runs.
-  - **Self-terminate** via `periodic_enabled: false` as soon as nothing actionable
-    remains — don't burn iterations idling. The user can re-run this prompt later to
-    babysit a fresh batch of PRs.
+  - **Self-terminate** via `periodic_enabled: false` **only once all** monitored
+    PRs are merged or closed. Keep iterating while any PR is still open — even if it
+    is steady (only waiting on a human to review/merge) — so it stays monitored
+    until it lands. The user can re-run this prompt later to babysit a fresh batch
+    of PRs.
   - If `gh` authentication fails, stop immediately and inform the user.
