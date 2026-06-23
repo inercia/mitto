@@ -2,7 +2,7 @@ icon: check
 name: Check if resolved
 menus: beadsIssues
 parameters:
-  - name: ISSUE_ID
+  - name: IssueID
     type: beadsId
     description: The beads issue ID to act on
 description: Check if this bead is done, obsolete, or a duplicate, then close it, keep it open, or spin off follow-ups
@@ -18,7 +18,7 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${ISSUE_ID}`. Your job is to investigate, against the **actual state of
+  The **target bead** is `${IssueID}`. Your job is to investigate, against the **actual state of
   the codebase**, whether this bead is still worth keeping open — i.e. whether its requirements are
   **already implemented or fixed**, the work has become **obsolete**, or it **duplicates** another
   bead — then recommend whether to close it, keep it open, or spin off follow-up beads for any
@@ -29,9 +29,9 @@ prompt: |
   Fetch everything the bead promises to deliver:
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # full description, acceptance criteria, design, metadata
-  bd show ${ISSUE_ID} --children --json # child issues, if this is an epic
-  bd dep tree ${ISSUE_ID}               # blockers and what it blocks
+  bd show ${IssueID} --long --json     # full description, acceptance criteria, design, metadata
+  bd show ${IssueID} --children --json # child issues, if this is an epic
+  bd dep tree ${IssueID}               # blockers and what it blocks
   ```
 
   Identify the concrete acceptance criteria (or infer them from the description if none are listed).
@@ -44,8 +44,8 @@ prompt: |
   An epic is a container: it is **resolved only when all of its child beads are resolved**. Do not
   judge the epic from its own description alone — its real status lives in its children.
 
-  1. List the epic's children (from `bd show ${ISSUE_ID} --children --json`; use
-     `bd dep tree ${ISSUE_ID}` to see the full hierarchy). If the epic has **no** children, fall back
+  1. List the epic's children (from `bd show ${IssueID} --children --json`; use
+     `bd dep tree ${IssueID}` to see the full hierarchy). If the epic has **no** children, fall back
      to treating it as a single bead.
   2. **For each child bead**, run the same investigation as a normal bead — load its detail
      (`bd show <child-id> --long --json`), then apply **Step 2** (gather codebase evidence) and
@@ -76,8 +76,8 @@ prompt: |
   - **Commits & branches** referencing the bead:
 
     ```bash
-    git log --oneline --all | grep -i "${ISSUE_ID}"   # commits citing this bead
-    git branch -a | grep -i "${ISSUE_ID}"             # branches for this bead
+    git log --oneline --all | grep -i "${IssueID}"   # commits citing this bead
+    git branch -a | grep -i "${IssueID}"             # branches for this bead
     git log --oneline --all -200                       # recent work that may have resolved it
     ```
 
@@ -90,7 +90,7 @@ prompt: |
 
   Produce a concise **Resolution Report**:
 
-  ### Bead: `${ISSUE_ID}` — `<Title>`
+  ### Bead: `${IssueID}` — `<Title>`
 
   - **Verdict**: Still relevant / Fully resolved / Partially resolved / Obsolete / Duplicate
   - **Acceptance criteria status** — per criterion: ✅ Done / ⚠️ Partial / ❌ Not done / ❓ Unknown,
@@ -147,7 +147,7 @@ prompt: |
   1. Claim the bead so others know it is being worked on:
 
      ```bash
-     bd update ${ISSUE_ID} --claim
+     bd update ${IssueID} --claim
      ```
 
   2. Draft a short plan for the remaining work (drawn from **What remains** in your Resolution
@@ -169,13 +169,13 @@ prompt: |
   closing the duplicate:
 
   ```bash
-  bd dep relate ${ISSUE_ID} <keep-id>
+  bd dep relate ${IssueID} <keep-id>
   ```
 
   Then close with a clear, specific reason:
 
   ```bash
-  bd close ${ISSUE_ID} --reason "<why, e.g. 'Implemented in abc1234; tests pass' / 'Feature removed, obsolete' / 'Duplicate of bd-5'>"
+  bd close ${IssueID} --reason "<why, e.g. 'Implemented in abc1234; tests pass' / 'Feature removed, obsolete' / 'Duplicate of bd-5'>"
   ```
 
   **For an epic**: close it **only once all its children are closed**. First close each
@@ -187,17 +187,17 @@ prompt: |
   stays open, so the finding is not lost:
 
   ```bash
-  bd update ${ISSUE_ID} --append-notes "<what changed and why — e.g. 'Investigated: core is done but <X> remains; keeping the bead open to track it.'>"
+  bd update ${IssueID} --append-notes "<what changed and why — e.g. 'Investigated: core is done but <X> remains; keeping the bead open to track it.'>"
   ```
 
   **Create follow-up tickets** (only the ones approved). For each:
 
   ```bash
   bd create "<follow-up title>" -d "<scope and definition of done>" -p <0-4>
-  bd dep relate ${ISSUE_ID} <new-id>      # link the follow-up to the original bead
+  bd dep relate ${IssueID} <new-id>      # link the follow-up to the original bead
   ```
 
-  If the core work is done and only the follow-ups remain, ask whether to also close `${ISSUE_ID}`
+  If the core work is done and only the follow-ups remain, ask whether to also close `${IssueID}`
   (now that the leftover work is tracked separately) and act on the answer.
 
   Report any command that failed and why.

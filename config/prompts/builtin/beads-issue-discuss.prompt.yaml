@@ -2,7 +2,7 @@ icon: chat-bubble
 name: Discuss & Refine
 menus: beadsIssues
 parameters:
-  - name: ISSUE_ID
+  - name: IssueID
     type: beadsId
     description: The beads issue ID to act on
 description: 'Discuss and refine a bead: resolve pending decisions, assess its quality, and sharpen it until it is ready to work on — capturing the rationale back into the tracker'
@@ -18,7 +18,7 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${ISSUE_ID}`. Your job is to help the user **think through and refine** this
+  The **target bead** is `${IssueID}`. Your job is to help the user **think through and refine** this
   bead — resolving pending decisions, assessing its quality, and clarifying gaps — until it is
   **ready to work on**, then **capture the outcome back into the tracker**.
 
@@ -29,10 +29,10 @@ prompt: |
   ## Step 1 — Load the bead and its context
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # description, acceptance, design, notes, labels, status
-  bd dep tree ${ISSUE_ID}               # blockers and what it blocks
-  bd show ${ISSUE_ID} --children --json # existing child beads (if any)
-  bd comments ${ISSUE_ID}               # prior discussion, if any
+  bd show ${IssueID} --long --json     # description, acceptance, design, notes, labels, status
+  bd dep tree ${IssueID}               # blockers and what it blocks
+  bd show ${IssueID} --children --json # existing child beads (if any)
+  bd comments ${IssueID}               # prior discussion, if any
   ```
 
   Read everything carefully. Where the bead references code or features, investigate the **codebase**
@@ -91,18 +91,18 @@ prompt: |
 
   Everything above is **read-only until the user confirms**. Present exactly what you intend to change
   and get approval via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`,
-  e.g. "Apply these updates to `${ISSUE_ID}`?" with options like **"Apply all"**, **"Apply some"**
+  e.g. "Apply these updates to `${IssueID}`?" with options like **"Apply all"**, **"Apply some"**
   (free text), and **"Make no changes"**. Never write anything the user did not approve.
 
   Once approved, update the bead to reflect the decisions made:
 
   ```bash
-  bd update ${ISSUE_ID} --body-file /tmp/bead-desc.md       # revise the description
-  bd update ${ISSUE_ID} --acceptance "<now-clear criteria>" # if a decision sharpened "done"
-  bd update ${ISSUE_ID} --append-notes "<decisions + rationale>"
-  bd update ${ISSUE_ID} --remove-label needs-decision       # drop flags the decision removed
-  bd update ${ISSUE_ID} -s open                             # un-block now that it can proceed
-  bd update ${ISSUE_ID} -p <0-4>                            # if the decision changed its priority
+  bd update ${IssueID} --body-file /tmp/bead-desc.md       # revise the description
+  bd update ${IssueID} --acceptance "<now-clear criteria>" # if a decision sharpened "done"
+  bd update ${IssueID} --append-notes "<decisions + rationale>"
+  bd update ${IssueID} --remove-label needs-decision       # drop flags the decision removed
+  bd update ${IssueID} -s open                             # un-block now that it can proceed
+  bd update ${IssueID} -p <0-4>                            # if the decision changed its priority
   ```
 
   **Whenever you change the description** (or other substantive fields), **add a comment documenting
@@ -110,14 +110,14 @@ prompt: |
   understand why the bead evolved as it did:
 
   ```bash
-  bd comment ${ISSUE_ID} "Refined <what changed> — rationale: <why>"
+  bd comment ${IssueID} "Refined <what changed> — rationale: <why>"
   ```
 
   If the discussion revealed separable work, you may propose sub-issues (title, one-line scope,
   type/priority); for a full breakdown defer to the **"Decompose issue"** prompt. After confirmation:
 
   ```bash
-  bd create "<child title>" --parent ${ISSUE_ID} --type <type> --priority <0-4> --body-file /tmp/child.md
+  bd create "<child title>" --parent ${IssueID} --type <type> --priority <0-4> --body-file /tmp/child.md
   ```
 
   ## Step 8 — Final summary

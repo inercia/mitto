@@ -2,7 +2,7 @@ icon: list
 name: Show status
 menus: beadsIssues
 parameters:
-  - name: ISSUE_ID
+  - name: IssueID
     type: beadsId
     description: The beads issue ID to act on
 description: Fact-check this bead's implementation status against the codebase
@@ -23,32 +23,32 @@ prompt: |
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
-  The **target bead** is `${ISSUE_ID}`.
+  The **target bead** is `${IssueID}`.
 
   ## Step 1 — Fetch full bead details
 
   Load everything about the target bead:
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # description, acceptance, design, assignee, metadata
-  bd dep tree ${ISSUE_ID}               # blockers and dependents
+  bd show ${IssueID} --long --json     # description, acceptance, design, assignee, metadata
+  bd dep tree ${IssueID}               # blockers and dependents
   ```
 
   Also run locally to gather implementation evidence:
 
   ```bash
   # Find commits that reference this bead ID
-  git log --oneline --all | grep -i "${ISSUE_ID}"
+  git log --oneline --all | grep -i "${IssueID}"
 
   # Check branches containing the bead ID
-  git branch -a | grep -i "${ISSUE_ID}"
+  git branch -a | grep -i "${IssueID}"
   ```
 
   ## Step 2 — Fact-check implementation status
 
   Analyse all gathered evidence and produce a **Status Report** for the bead:
 
-  ### Bead: `${ISSUE_ID}` — `<Title>`
+  ### Bead: `${IssueID}` — `<Title>`
 
   **Goal** (one sentence restating what this bead is supposed to deliver)
 

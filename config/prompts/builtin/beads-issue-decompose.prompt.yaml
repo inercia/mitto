@@ -2,7 +2,7 @@ icon: layers
 name: Decompose issue
 menus: beadsIssues
 parameters:
-  - name: ISSUE_ID
+  - name: IssueID
     type: beadsId
     description: The beads issue ID to act on
 description: Break this bead into child beads with dependencies and create them automatically
@@ -18,16 +18,16 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`. Beads supports first-class parent/child hierarchy and blocking dependencies.
 
-  The **target bead** is `${ISSUE_ID}`.
+  The **target bead** is `${IssueID}`.
 
   ## Step 1 — Fetch full bead details
 
   Load everything about the target bead:
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # full fields, design, acceptance, metadata
-  bd show ${ISSUE_ID} --children --json # existing children (if any)
-  bd dep tree ${ISSUE_ID}               # existing dependencies
+  bd show ${IssueID} --long --json     # full fields, design, acceptance, metadata
+  bd show ${IssueID} --children --json # existing children (if any)
+  bd dep tree ${IssueID}               # existing dependencies
   ```
 
   Analyse all gathered context thoroughly: understand the full scope, acceptance criteria, constraints, and any prior discussion.
@@ -55,7 +55,7 @@ prompt: |
   Create a breakdown with:
 
   ### Parent Bead Summary
-  Brief restatement of what the parent bead (`${ISSUE_ID}`) is about.
+  Brief restatement of what the parent bead (`${IssueID}`) is about.
 
   ### Decomposition Rationale
   Why splitting this bead makes sense: what the independent concerns are and how parallelism or reviewability is improved.
@@ -84,7 +84,7 @@ prompt: |
 
   ```bash
   bd create "<child title>" \
-    --parent ${ISSUE_ID} \
+    --parent ${IssueID} \
     --type <type> \
     --priority <priority> \
     --body-file /tmp/child-bead.md
@@ -112,11 +112,11 @@ prompt: |
   Record the decomposition in the parent bead's history for future reference. Write the breakdown summary — the **decomposition rationale**, each child bead (**ID + title**), and the **dependency edges** created — to a temp file and post it as a comment, then add a terse audit note:
 
   ```bash
-  bd comment ${ISSUE_ID} --file /tmp/decomposition-summary.md   # analysis + design + resulting structure
-  bd update ${ISSUE_ID} --append-notes "Decomposed into <N> sub-issues (<child-ids>): <one-line rationale for the breakdown>."
+  bd comment ${IssueID} --file /tmp/decomposition-summary.md   # analysis + design + resulting structure
+  bd update ${IssueID} --append-notes "Decomposed into <N> sub-issues (<child-ids>): <one-line rationale for the breakdown>."
   ```
 
-  Run `bd dep tree ${ISSUE_ID}` to display the final structure.
+  Run `bd dep tree ${IssueID}` to display the final structure.
 
   ## Final step — Offer to delete this conversation
 

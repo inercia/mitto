@@ -4,7 +4,7 @@ description: Continue work by sending instructions to an existing child conversa
 group: Work flow
 menus: prompts, conversation
 parameters:
-  - name: TARGET_CONVERSATION
+  - name: TargetConversation
     type: childSessionId
     description: The child conversation to continue (one you spawned from this conversation)
     required: true
@@ -12,18 +12,18 @@ backgroundColor: '#FFF9C4'
 enabledWhen: children.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
 prompt: |
   Continue working on this by sending instructions to the existing conversation you
-  selected (`${TARGET_CONVERSATION}` — typically a child you spawned). Build on what it
+  selected (`${TargetConversation}` — typically a child you spawned). Build on what it
   has already accomplished; don't repeat work.
 
   ## Phase 1: Context
 
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
-  The target conversation is `${TARGET_CONVERSATION}`. Load its current state so you can
+  The target conversation is `${TargetConversation}`. Load its current state so you can
   build on what it has already done:
 
   ```
-  mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "${TARGET_CONVERSATION}")
+  mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "${TargetConversation}")
   ```
 
   Note its title, ACP server, and whether it is currently running or idle. If the lookup
@@ -42,7 +42,7 @@ prompt: |
   ```markdown
   ## Continue Conversation
 
-  **Target:** <title> (`${TARGET_CONVERSATION}`)
+  **Target:** <title> (`${TargetConversation}`)
   **Status:** <running/idle>
 
   **Proposed Instructions:**
@@ -86,14 +86,14 @@ prompt: |
 
   ## Phase 4: Send Instructions
 
-  `mitto_conversation_send_prompt(self_id: "{{ .Session.ID }}", conversation_id: "${TARGET_CONVERSATION}", prompt: <confirmed instructions>)`
+  `mitto_conversation_send_prompt(self_id: "{{ .Session.ID }}", conversation_id: "${TargetConversation}", prompt: <confirmed instructions>)`
 
   ## Phase 5: Wait or Report
 
   **If the user chose to wait:**
 
   ```
-  mitto_children_tasks_wait(self_id, children_list: ["${TARGET_CONVERSATION}"], task_id: "<task_id>", timeout_seconds: 600)
+  mitto_children_tasks_wait(self_id, children_list: ["${TargetConversation}"], task_id: "<task_id>", timeout_seconds: 600)
   ```
 
   Inform user: "Waiting for the conversation to report... Monitor in the Conversations panel."
@@ -102,7 +102,7 @@ prompt: |
   (omit the prompt to avoid duplicates). Reports already received are preserved. After
   two timeouts, treat as failure.
 
-  > Note: `mitto_children_tasks_wait` only receives a report when `${TARGET_CONVERSATION}`
+  > Note: `mitto_children_tasks_wait` only receives a report when `${TargetConversation}`
   > is a **child of this conversation**. If the target is not a child of this session, it
   > cannot report back here — send without waiting instead.
 
@@ -111,7 +111,7 @@ prompt: |
   ```markdown
   ✅ Instructions Sent
 
-  **Sent To:** <title> (`${TARGET_CONVERSATION}`)
+  **Sent To:** <title> (`${TargetConversation}`)
   **Instructions:** <brief summary>
 
   The conversation will continue working. You can:

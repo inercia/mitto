@@ -2,7 +2,7 @@ icon: periodic
 name: Iterate until issue complete
 menus: beadsIssues
 parameters:
-  - name: ISSUE_ID
+  - name: IssueID
     type: beadsId
     description: The beads issue ID to act on
 description: Auto-periodic — keep advancing this bead toward completion, then self-terminate when nothing ready remains
@@ -25,7 +25,7 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${ISSUE_ID}`. This is the **automated, non-interactive**
+  The **target bead** is `${IssueID}`. This is the **automated, non-interactive**
   sibling of "Start work": on every scheduled run you advance the target **one
   concrete increment** toward completion, and when there is **nothing ready left
   to do in scope**, you remove your own periodic flag and stop.
@@ -55,14 +55,14 @@ prompt: |
   Load the target and its tree:
 
   ```bash
-  bd show ${ISSUE_ID} --long --json        # full fields, status, acceptance, design
-  bd dep tree ${ISSUE_ID}                   # blockers and what it blocks
-  bd show ${ISSUE_ID} --children --json     # child beads (is this an epic/parent?)
+  bd show ${IssueID} --long --json        # full fields, status, acceptance, design
+  bd dep tree ${IssueID}                   # blockers and what it blocks
+  bd show ${IssueID} --children --json     # child beads (is this an epic/parent?)
   ```
 
   Decide what to actually work on **this run**:
 
-  - **Normal issue (no children)** → the target *is* `${ISSUE_ID}`.
+  - **Normal issue (no children)** → the target *is* `${IssueID}`.
   - **Epic / parent (has children)** → an epic is a container, not directly
     implementable; you must advance it by working on **the next issue inside the
     epic**, one child per run:
@@ -99,7 +99,7 @@ prompt: |
 
   If `<target>` is **not ready** (blocked, already closed, deferred, or
   `in_progress` by someone else with active work), **skip it** and look for the
-  next ready issue **within `${ISSUE_ID}`'s scope** (the target issue itself, or —
+  next ready issue **within `${IssueID}`'s scope** (the target issue itself, or —
   for an epic — its subtree of children). If nothing in scope is ready, go to
   **Step 5 (stop)**.
 
@@ -133,7 +133,7 @@ prompt: |
        increments.
      - Reuse a suitable **idle** child from `@mitto:mcp_children` when possible via
        `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
-     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "${ISSUE_ID} · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
+     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "${IssueID} · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
      - Cap spawning at **one** new child per run to avoid runaway fan-out.
   4. **Wait for the child to finish, then judge the outcome.** Block until the
      child reports back so this run can act on the result:
@@ -174,7 +174,7 @@ prompt: |
 
   ## Step 5 — Stop condition: nothing ready left in scope
 
-  When there is **nothing ready** left within `${ISSUE_ID}`'s scope (the issue
+  When there is **nothing ready** left within `${IssueID}`'s scope (the issue
   itself is done/deferred/blocked, and — for an epic — no child is ready), the
   loop is finished. **Self-terminate**: remove your own periodic flag so this
   becomes a regular (non-periodic) conversation, and post a final summary.
@@ -198,7 +198,7 @@ prompt: |
     faster/cheaper model and handing it a fully-defined problem.
   - **One increment per run.** Advance the work a meaningful step, then return —
     the next scheduled run continues. Do not try to finish everything in one run.
-  - **Stay in scope.** Only ever act on `${ISSUE_ID}` or, for an epic, its subtree.
+  - **Stay in scope.** Only ever act on `${IssueID}` or, for an epic, its subtree.
     Never wander into unrelated backlog issues.
   - **Bounded loop.** This conversation is capped by `maxIterations`; the Step 5
     stop condition is the primary exit. Both must hold the loop in check.

@@ -2,7 +2,7 @@ icon: periodic
 name: Iterate until ...
 menus: conversation
 parameters:
-  - name: CONDITION
+  - name: Condition
     type: text
     required: true
     description: The stop condition — keep iterating until this is true (e.g. "all tests pass and the linter is clean")
@@ -23,7 +23,7 @@ prompt: |
 
   **The stop condition is:**
 
-  > ${CONDITION}
+  > ${Condition}
 
   This is the **setup run**: you record the condition, arm the loop, do the first
   increment, then hand off to the periodic engine. Every following run fires
@@ -38,7 +38,7 @@ prompt: |
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self",
-    user_data: [{"name": "Iterate Until Condition", "value": "${CONDITION}"}])
+    user_data: [{"name": "Iterate Until Condition", "value": "${Condition}"}])
   ```
 
   (If the workspace rejects this user_data key, skip it — the condition is also
