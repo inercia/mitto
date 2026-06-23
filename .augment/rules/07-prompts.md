@@ -68,7 +68,7 @@ Prompts may declare typed inputs via a `parameters:` list. Each entry:
 
 ```yaml
 parameters:
-  - name: ISSUE_ID      # variable used as ${ISSUE_ID} in the prompt body
+  - name: IssueID       # variable used as ${IssueID} in the prompt body
     type: beadsId       # one of the predefined types
     description: "..."  # optional
     required: true      # optional bool — controls menu gating:

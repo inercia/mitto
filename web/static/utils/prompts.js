@@ -128,7 +128,7 @@ export function getMissingPromptParameters(prompt, menu) {
  *
  * Example:
  *   collectPromptArguments(prompt, { beadsId: "mitto-42", beadsTitle: "Fix bug" })
- *   // → { ISSUE_ID: "mitto-42" }  (for a prompt with param { name:"ISSUE_ID", type:"beadsId" })
+ *   // → { IssueID: "mitto-42" }  (for a prompt with param { name:"IssueID", type:"beadsId" })
  */
 export function collectPromptArguments(prompt, typeValues) {
   const result = {};

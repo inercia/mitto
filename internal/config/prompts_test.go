@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1386,4 +1387,27 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 		t.Error("no builtin prompt files found — something is wrong with the path")
 	}
 	t.Logf("validated %d builtin prompt files", loaded)
+
+	// Verify no builtin prompt declares a SCREAMING_SNAKE_CASE argument name.
+	// All parameter names must use PascalCase (no underscores, not all-uppercase).
+	screamingSnake := regexp.MustCompile(`^[A-Z][A-Z0-9_]*_[A-Z0-9_]*$|^[A-Z0-9_]+$`)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		if err != nil {
+			continue // parse errors already reported above
+		}
+		for _, p := range prompt.Parameters {
+			if strings.Contains(p.Name, "_") || screamingSnake.MatchString(p.Name) {
+				t.Errorf("%s: parameter name %q is SCREAMING_SNAKE_CASE — use PascalCase instead", e.Name(), p.Name)
+			}
+		}
+	}
 }
