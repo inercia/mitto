@@ -2719,6 +2719,17 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         ]
       : []),
     {
+      label: "Copy ID",
+      icon: html`<${CopyIcon} />`,
+      onClick: async () => {
+        if (!ctxIssue) return;
+        const ok = await copyToClipboard(ctxIssue.id);
+        showToast && showToast(ok
+          ? { style: "success", title: `Copied ${ctxIssue.id}` }
+          : { style: "error", title: "Failed to copy issue ID" });
+      },
+    },
+    {
       label: ctxIsClosed ? "Reopen" : "Close",
       icon: ctxIsClosed ? html`<${RefreshIcon} />` : html`<${CheckIcon} />`,
       onClick: () => ctxIssue && handleToggleStatus(ctxIssue),
@@ -2772,7 +2783,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       ${showChevron
         ? html`<button
             type="button"
-            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-bottom"
+            class="shrink-0 self-center btn btn-ghost btn-circle btn-xs text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-right"
             data-tip=${epicExpanded ? "Collapse epic" : "Expand epic"}
             aria-label=${epicExpanded ? "Collapse epic" : "Expand epic"}
             aria-expanded=${epicExpanded ? "true" : "false"}

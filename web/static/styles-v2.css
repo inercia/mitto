@@ -949,6 +949,35 @@ a:hover {
 .ui-form-content label:first-child {
   margin-top: 0;
 }
+/* Section-heading safety net. Agents frequently introduce a radio/checkbox
+   group with the question rendered as a <p>, heading, or inline <strong>/<b>,
+   then list the options as bare <input> elements separated by <br> instead of
+   wrapping each option in a <label>. Without this rule the question shares its
+   line with the first option (the remaining options break correctly via <br>).
+   Forcing standalone headings to display:block puts the question on its own
+   line so every option lines up beneath it. <strong>/<b> are scoped to
+   standalone heading usage (direct child of the form, a wrapper <div>, or a
+   <fieldset>) so inline emphasis inside a sentence is left untouched. */
+.ui-form-content p,
+.ui-form-content h3,
+.ui-form-content h4,
+.ui-form-content h5,
+.ui-form-content h6,
+.ui-form-content > strong,
+.ui-form-content > b,
+.ui-form-content > div > strong,
+.ui-form-content > div > b,
+.ui-form-content fieldset > strong,
+.ui-form-content fieldset > b {
+  display: block;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+.ui-form-content > p:first-child,
+.ui-form-content > strong:first-child,
+.ui-form-content > b:first-child {
+  margin-top: 0;
+}
 .ui-form-content input[type="text"],
 .ui-form-content input[type="number"],
 .ui-form-content input[type="email"],

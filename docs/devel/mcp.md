@@ -345,6 +345,24 @@ Supported input types: `text`, `number`, `email`, `url`, `tel`, `password`, `dat
 `checkbox`, `radio`, `hidden`, `color`, `range`. Checkbox values are returned as `"true"`/`"false"`.
 Radio groups return the value of the selected option.
 
+**Radio/checkbox group layout.** Put the question in its own block element (a `<p>`, or a
+`<fieldset>` with a `<legend>`) and wrap **each** option in its own `<label>`. The form CSS makes
+`<label>` block-level, so every option — including the first — renders on its own line beneath the
+question:
+
+```html
+<p>Scope of the drop:</p>
+<label><input type="radio" name="scope" value="mcp" checked> Drop only MCP requests</label>
+<label><input type="radio" name="scope" value="path"> Drop by literal path match</label>
+<label><input type="radio" name="scope" value="all"> Blanket: drop all spans</label>
+```
+
+Do **not** render the question as inline text/`<strong>` immediately followed by the first option,
+and do **not** list bare `<input>` options separated by `<br>` — in that markup the first option
+renders glued to the question line while the rest break correctly, which looks broken. (As a safety
+net, the form CSS also forces standalone `<p>`/heading/`<strong>` headings inside a form to
+block-level, but wrapping each option in a `<label>` is the reliable pattern.)
+
 #### `mitto_conversation_new`
 
 Create a new conversation. By default creates it in the same workspace as the calling session. Requires `can_start_conversation` flag.
