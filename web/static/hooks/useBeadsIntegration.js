@@ -209,30 +209,50 @@ export function useBeadsIntegration({
       // also suppresses auto-title generation (it only runs when the name is empty).
       const convName = issue.title ? `${issue.id} · ${issue.title}` : issue.id;
 
-      // Periodic prompts create a recurring conversation instead of a one-time seed.
-      if (prompt.periodic && onOpenPeriodicDialog) {
-        onOpenPeriodicDialog(prompt, async (schedule) => {
-          const result = await startConversationWithPrompt({
-            workingDir: beadsWorkingDir,
-            acpServer: ws?.acp_server,
-            name: convName,
-            beadsIssue: issue.id,
-            prompt,
-            periodic: schedule,
-          });
-          if (!result?.sessionId) {
-            showToast({ style: "error", title: result?.error || "Failed to create periodic conversation", duration: 4000 });
-            return;
-          }
-          setMainView("conversation");
-          showToast({ style: "success", title: `Started periodic "${prompt.name}" for ${issue.id}`, duration: 3000 });
-        });
-        return;
-      }
-
-      // Build the auto-filled args map from what the beadsIssues menu provides.
+      // Build the auto-filled args map and the list of parameters the menu
+      // cannot supply UP-FRONT, so BOTH the periodic and one-time paths receive
+      // the issue context (e.g. ${ISSUE_ID}). Previously the periodic branch
+      // returned before these were computed, so periodic conversations were
+      // created with no arguments and ${ISSUE_ID} was never substituted.
       const autoArgs = collectPromptArguments(prompt, { beadsId: issue.id, beadsTitle: issue.title });
       const missing = getMissingPromptParameters(prompt, "beadsIssues");
+
+      // Periodic prompts create a recurring conversation instead of a one-time seed.
+      if (prompt.periodic && onOpenPeriodicDialog) {
+        // Open the periodic dialog and start the conversation with the resolved
+        // arguments merged in (so ${VAR} substitution sees the issue context).
+        const launchPeriodic = (args) => {
+          onOpenPeriodicDialog(prompt, async (schedule) => {
+            const result = await startConversationWithPrompt({
+              workingDir: beadsWorkingDir,
+              acpServer: ws?.acp_server,
+              name: convName,
+              beadsIssue: issue.id,
+              prompt,
+              arguments: args,
+              periodic: schedule,
+            });
+            if (!result?.sessionId) {
+              showToast({ style: "error", title: result?.error || "Failed to create periodic conversation", duration: 4000 });
+              return;
+            }
+            setMainView("conversation");
+            showToast({ style: "success", title: `Started periodic "${prompt.name}" for ${issue.id}`, duration: 3000 });
+          });
+        };
+
+        // When the menu can't auto-fill every parameter, collect the rest first,
+        // then open the periodic dialog with the merged arguments.
+        if (missing.length > 0 && onOpenPromptParamDialog) {
+          onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+            launchPeriodic({ ...autoArgs, ...userArgs });
+          });
+          return;
+        }
+
+        launchPeriodic(autoArgs);
+        return;
+      }
 
       // When there are parameters the menu cannot auto-fill, open the dialog so
       // the user can supply them. The dispatch happens inside the onSubmit callback.

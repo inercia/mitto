@@ -872,14 +872,15 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       const epicGroup = page.locator("details.beads-epic-group").first();
       await expect(epicGroup).toHaveJSProperty("open", true);
       await expect(
-        epicGroup.locator(".pl-8").getByText("Child one", { exact: true }),
+        epicGroup.locator(":scope > .pl-8").getByText("Child one", { exact: true }),
       ).toBeVisible();
 
-      // Collapse the epic via its summary; the indented children disappear.
-      await epicGroup.locator("summary").click();
+      // Collapse the epic via its OWN summary (a nested sub-epic has its own
+      // summary now, so scope to the direct child); the children disappear.
+      await epicGroup.locator(":scope > summary").click();
       await expect(epicGroup).toHaveJSProperty("open", false);
       await expect(
-        epicGroup.locator(".pl-8").getByText("Child one", { exact: true }),
+        epicGroup.locator(":scope > .pl-8").getByText("Child one", { exact: true }),
       ).toBeHidden();
 
       // Reload: the grouping toggle (enabled) and the collapsed epic are both
@@ -896,7 +897,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       const epicGroup2 = page.locator("details.beads-epic-group").first();
       await expect(epicGroup2).toHaveJSProperty("open", false);
       await expect(
-        epicGroup2.locator(".pl-8").getByText("Child one", { exact: true }),
+        epicGroup2.locator(":scope > .pl-8").getByText("Child one", { exact: true }),
       ).toBeHidden();
     },
   );
@@ -915,15 +916,16 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       const epicGroup = page.locator("details.beads-epic-group").first();
       await expect(epicGroup).toHaveJSProperty("open", true);
 
-      // Expanded by default → the summary chevron is the "down" glyph.
+      // Expanded by default → the summary chevron is the "down" glyph. Scope to
+      // the top-level epic's OWN summary (nested sub-epics have their own).
       const chevronPath = epicGroup.locator(
-        'summary [data-testid="beads-epic-chevron"] path',
+        ':scope > summary [data-testid="beads-epic-chevron"] path',
       );
       await expect(chevronPath).toBeVisible();
       await expect(chevronPath).toHaveAttribute("d", "M19 9l-7 7-7-7");
 
       // Collapsing the epic flips the chevron to the "right" glyph.
-      await epicGroup.locator("summary").click();
+      await epicGroup.locator(":scope > summary").click();
       await expect(epicGroup).toHaveJSProperty("open", false);
       await expect(chevronPath).toHaveAttribute("d", "M9 5l7 7-7 7");
     },
@@ -944,7 +946,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       await expect(epicGroup).toHaveJSProperty("open", true);
       const panel = page.locator(DETAIL_PANEL);
       const chevron = epicGroup.locator(
-        'summary [data-testid="beads-epic-chevron"]',
+        ':scope > summary [data-testid="beads-epic-chevron"]',
       );
 
       // Clicking the chevron collapses the epic and leaves the panel closed.
@@ -959,7 +961,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
 
       // The rest of the epic header still selects the epic (opens the panel).
       await epicGroup
-        .locator("summary")
+        .locator(":scope > summary")
         .getByText(EPIC_TITLE)
         .first()
         .click();
@@ -980,7 +982,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       // as the new issue's parent.
       const epicGroup = page.locator("details.beads-epic-group").first();
       await epicGroup
-        .locator('summary [data-testid="beads-issue-add-child"]')
+        .locator(':scope > summary [data-testid="beads-issue-add-child"]')
         .click();
 
       const panel = page.locator(NEW_ISSUE_PANEL);

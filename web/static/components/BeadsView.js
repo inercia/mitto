@@ -2329,8 +2329,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // Produces a sorted top-level array of { type: "epic"|"orphan", ... } items.
   // Epics that survived the filter are shown with their filtered children;
   // epics that were filtered out but have surviving children are kept as ghost
-  // header rows (context row). Two indent levels only: all grandchild+ issues
-  // are attributed to their nearest TOP-LEVEL epic ancestor.
+  // header rows (context row). Nesting is RECURSIVE: sub-epics render as their
+  // own collapsible groups rather than being flattened into the top-level epic.
+  //
+  // Group shape: { epic: issue|null, items: Array<{type:"issue",issue}|{type:"subEpic",group}> }
+  // items are sorted by the active sort preference and may interleave normal
+  // issues with nested sub-epic groups at each level.
   const groupedItems = useMemo(() => {
     if (!grouping) return null;
 
@@ -2342,55 +2346,82 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       if (i.issue_type === "epic" || (childCountById[i.id] || 0) > 0) epicSet.add(i.id);
     }
 
-    // Walk up the parent chain and return the ID of the topmost epic ancestor,
-    // or null if the issue itself is a top-level epic or has no epic ancestor.
-    // Guards against cycles with a seen set (mirrors deleteTargetDescendants).
-    function topLevelEpicOf(issue) {
+    // Walk up the parent chain and return the ID of the NEAREST (direct) epic
+    // ancestor, or null if there is no epic ancestor. Guards against cycles.
+    function directEpicParentOf(issue) {
       const seen = new Set([issue.id]);
       let cur = issue;
-      let result = null;
       while (cur.parent) {
         if (seen.has(cur.parent)) break;
         seen.add(cur.parent);
         const parent = issueById.get(cur.parent);
         if (!parent) break;
         cur = parent;
-        if (epicSet.has(cur.id)) result = cur.id;
+        if (epicSet.has(cur.id)) return cur.id;
       }
-      return result;
+      return null;
     }
 
-    // Assign each filtered issue to a top-level epic group or orphan.
-    // epicGroups: epicId -> { epic: issue|null, children: issue[] }
+    // epicGroups: epicId -> { epic: issue|null, items: [] }
+    // items: [{type:"issue", issue}] or [{type:"subEpic", group}]
     const epicGroups = new Map();
-    const epicOrderIds = [];
+    const epicOrderIds = []; // insertion-order top-level epic ids
     const orphans = [];
+    // Cycle guard for ensureGroup recursion (epic parent-chain cycles).
+    const inProgress = new Set();
+
+    // Create or retrieve the group for epicId; recursively ensures the group is
+    // linked into the hierarchy up to the top-level (ghost-header safe).
+    function ensureGroup(epicId) {
+      if (epicGroups.has(epicId)) return epicGroups.get(epicId);
+      if (inProgress.has(epicId)) return null; // cycle in epic hierarchy
+      inProgress.add(epicId);
+
+      const epicIssue = issueById.get(epicId) || null;
+      const group = { epic: epicIssue, items: [] };
+      epicGroups.set(epicId, group);
+
+      const parentEpicId = epicIssue ? directEpicParentOf(epicIssue) : null;
+      if (parentEpicId) {
+        // Sub-epic: link into parent's item list.
+        const parentGroup = ensureGroup(parentEpicId);
+        if (parentGroup) parentGroup.items.push({ type: "subEpic", group });
+      } else {
+        // Top-level epic (including ghost epics with no epic ancestor).
+        epicOrderIds.push(epicId);
+      }
+
+      inProgress.delete(epicId);
+      return group;
+    }
 
     for (const issue of filtered) {
-      const ancestorId = topLevelEpicOf(issue);
-      if (epicSet.has(issue.id) && ancestorId === null) {
-        // Top-level epic
-        if (!epicGroups.has(issue.id)) {
-          epicGroups.set(issue.id, { epic: issue, children: [] });
-          epicOrderIds.push(issue.id);
-        } else {
-          epicGroups.get(issue.id).epic = issue;
-        }
-      } else if (ancestorId !== null) {
-        // Belongs to a top-level epic (direct child, sub-epic, grandchild, …)
-        if (!epicGroups.has(ancestorId)) {
-          // Ghost header: epic filtered out but a child survived
-          epicGroups.set(ancestorId, { epic: issueById.get(ancestorId) || null, children: [] });
-          epicOrderIds.push(ancestorId);
-        }
-        epicGroups.get(ancestorId).children.push(issue);
+      if (epicSet.has(issue.id)) {
+        // This filtered issue is itself an epic — ensure its group exists and
+        // update the epic reference (it may have been created as a ghost).
+        const g = ensureGroup(issue.id);
+        if (g) g.epic = issue;
       } else {
-        orphans.push(issue);
+        // Non-epic issue: attach to its direct epic parent, or orphan.
+        const parentEpicId = directEpicParentOf(issue);
+        if (parentEpicId !== null) {
+          const parentGroup = ensureGroup(parentEpicId);
+          if (parentGroup) parentGroup.items.push({ type: "issue", issue });
+        } else {
+          orphans.push(issue);
+        }
       }
     }
 
-    // Children inside each epic follow the active sort preference.
-    for (const [, group] of epicGroups) group.children.sort((a, b) => cmpBySort(a, b, sort));
+    // Sort items inside each group: normal issues and sub-epic groups are
+    // interleaved and sorted together using each item's representative issue.
+    for (const [, group] of epicGroups) {
+      group.items.sort((a, b) => {
+        const ia = a.type === "issue" ? a.issue : (a.group.epic || { priority: 3, id: "" });
+        const ib = b.type === "issue" ? b.issue : (b.group.epic || { priority: 3, id: "" });
+        return cmpBySort(ia, ib, sort);
+      });
+    }
 
     // Top-level: epics and orphans sorted together. Each row sorts by its own
     // representative issue — an epic by the epic's own attributes, an orphan by
@@ -2845,7 +2876,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           ? html`<button
               type="button"
               onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openCreateInEpic(issue.id); }}
-              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-bottom"
+              onMouseEnter=${(e) => showToolbarTip(e, "New issue in epic")}
+              onMouseLeave=${hideToolbarTip}
+              onMouseDown=${hideToolbarTip}
+              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex"
               data-tip="New issue in epic"
               aria-label="New issue in epic"
               data-testid="beads-issue-add-child"
@@ -2856,7 +2890,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         <button
           type="button"
           onClick=${(e) => handleRowMenuButton(e, issue)}
-          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex tooltip tooltip-bottom"
+          onMouseEnter=${(e) => showToolbarTip(e, "More actions")}
+          onMouseLeave=${hideToolbarTip}
+          onMouseDown=${hideToolbarTip}
+          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong inline-flex"
           data-tip="More actions"
           aria-label="More actions"
           data-testid="beads-issue-menu"
@@ -2876,6 +2913,58 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         onClose=${() => handleToggleStatus(issue)}
         onDelete=${() => setDeleteTarget(issue)}
       >${rowContent}</${BeadsIssueRow}>
+    `;
+  }
+
+  // Recursive renderer for a grouped epic node.
+  // group: { epic: issue|null, items: Array<{type:"issue",issue}|{type:"subEpic",group}> }
+  // depth: nesting depth (1 = top-level epic children, 2 = sub-epic children, …)
+  // Indentation uses inline style so Tailwind JIT precompilation is not required.
+  // depth=1 → padding-left:2rem (matching the original pl-8 / 2rem).
+  function renderEpicGroup(group, depth) {
+    const epicIssue = group.epic;
+    const epicId = epicIssue ? epicIssue.id : null;
+    const isOpen = epicId ? !collapsedEpics.has(epicId) : true;
+    // Stable key: use epicId, or fall back to the first item's issue id for ghosts.
+    const firstItem = group.items[0];
+    const ghostKey = firstItem
+      ? "ghost-" + (firstItem.type === "issue" ? firstItem.issue.id : (firstItem.group.epic ? firstItem.group.epic.id : ""))
+      : "ghost";
+    return html`
+      <details
+        key=${epicId || ghostKey}
+        class="beads-epic-group"
+        open=${isOpen}
+        onToggle=${(e) => {
+          if (!epicId) return;
+          const open = e.currentTarget.open;
+          setCollapsedEpics(prev => {
+            const next = new Set(prev);
+            if (open) next.delete(epicId);
+            else next.add(epicId);
+            return next;
+          });
+        }}
+      >
+        <summary class="beads-epic-summary">
+          ${epicIssue
+            ? renderIssueRow(epicIssue, isOpen)
+            : html`<div class="list-row opacity-60 border border-dashed border-mitto-border">
+                <span class="shrink-0 self-center text-mitto-text-muted" aria-hidden="true" data-testid="beads-epic-chevron">
+                  ${isOpen
+                    ? html`<${ChevronDownIcon} className="w-4 h-4" />`
+                    : html`<${ChevronRightIcon} className="w-4 h-4" />`}
+                </span>
+                <div class="list-col-grow text-xs text-mitto-text-muted italic">Epic (not in current filter)</div>
+              </div>`}
+        </summary>
+        <div class="pl-8" style=${depth > 1 ? "padding-left: " + (depth * 2) + "rem" : ""}>
+          ${group.items.map(item => {
+            if (item.type === "issue") return renderIssueRow(item.issue);
+            return renderEpicGroup(item.group, depth + 1);
+          })}
+        </div>
+      </details>
     `;
   }
 
@@ -3038,45 +3127,9 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
             ${grouping && groupedItems
               ? groupedItems.map(item => {
                   if (item.type === "orphan") return renderIssueRow(item.issue);
-                  // Epic group: render a <details> with the epic as the
-                  // clickable <summary> header and its children indented below.
-                  const { group } = item;
-                  const epicIssue = group.epic;
-                  const epicId = epicIssue ? epicIssue.id : null;
-                  const isOpen = epicId ? !collapsedEpics.has(epicId) : true;
-                  return html`
-                    <details
-                      key=${epicId || ("ghost-" + (group.children[0] && group.children[0].id))}
-                      class="beads-epic-group"
-                      open=${isOpen}
-                      onToggle=${(e) => {
-                        if (!epicId) return;
-                        const open = e.currentTarget.open;
-                        setCollapsedEpics(prev => {
-                          const next = new Set(prev);
-                          if (open) next.delete(epicId);
-                          else next.add(epicId);
-                          return next;
-                        });
-                      }}
-                    >
-                      <summary class="beads-epic-summary">
-                        ${epicIssue
-                          ? renderIssueRow(epicIssue, isOpen)
-                          : html`<div class="list-row opacity-60 border border-dashed border-mitto-border">
-                              <span class="shrink-0 self-center text-mitto-text-muted" aria-hidden="true" data-testid="beads-epic-chevron">
-                                ${isOpen
-                                  ? html`<${ChevronDownIcon} className="w-4 h-4" />`
-                                  : html`<${ChevronRightIcon} className="w-4 h-4" />`}
-                              </span>
-                              <div class="list-col-grow text-xs text-mitto-text-muted italic">Epic (not in current filter)</div>
-                            </div>`}
-                      </summary>
-                      <div class="pl-8">
-                        ${group.children.map(child => renderIssueRow(child))}
-                      </div>
-                    </details>
-                  `;
+                  // Epic group: render recursively via renderEpicGroup.
+                  // depth=1 → 2rem padding-left (matches the original pl-8 / 2rem).
+                  return renderEpicGroup(item.group, 1);
                 })
               : filtered.map(issue => renderIssueRow(issue))
             }
