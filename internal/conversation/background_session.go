@@ -1075,9 +1075,8 @@ func (bs *BackgroundSession) GetNextSeq() int64 {
 	return bs.getNextSeq()
 }
 
-// refreshNextSeq updates nextSeq from the current max sequence number.
-// This should be called after events are persisted outside the normal buffer flow
-// (e.g., after user prompts are persisted directly).
+// refreshNextSeq updates nextSeq from the current persisted max sequence number.
+// It is monotonic: nextSeq is never lowered below its current value.
 //
 // IMPORTANT: Uses MaxSeq (highest seq persisted) not EventCount (number of events)
 // because seq numbers can be sparse due to coalescing (multiple chunks share the same seq).
@@ -1093,16 +1092,21 @@ func (bs *BackgroundSession) refreshNextSeq() {
 	maxSeq := bs.recorder.MaxSeq()
 	eventCount := int64(bs.recorder.EventCount())
 
-	// Use the higher of MaxSeq or EventCount to determine next seq.
-	// MaxSeq tracks the highest seq persisted, while EventCount tracks the number of events.
+	// Derive store-based candidate: use whichever is higher.
 	// Due to coalescing, MaxSeq can be much higher than EventCount.
+	var candidate int64
 	if maxSeq > eventCount {
-		bs.nextSeq = maxSeq + 1
+		candidate = maxSeq + 1
 	} else {
-		bs.nextSeq = eventCount + 1
+		candidate = eventCount + 1
 	}
 
-	// L1: Log seq refresh
+	// Monotonic: never lower nextSeq below what has already been handed out.
+	if candidate > bs.nextSeq {
+		bs.nextSeq = candidate
+	}
+
+	// L1: Log seq refresh only when it changes
 	if bs.logger != nil && oldSeq != bs.nextSeq {
 		bs.logger.Debug("seq_refreshed",
 			"old_next_seq", oldSeq,

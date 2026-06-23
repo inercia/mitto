@@ -2521,9 +2521,9 @@ func TestRefreshNextSeq_Concurrent(t *testing.T) {
 	// If we get here without a race condition, the test passes
 }
 
-// TestRefreshNextSeq_PreservesHigherValue tests that refreshNextSeq doesn't
-// decrease nextSeq if it's already higher than what the store reports.
-// This is important for the case where events have been assigned but not yet persisted.
+// TestRefreshNextSeq_PreservesHigherValue tests that refreshNextSeq is monotonic:
+// it must never lower nextSeq below its current value, even when the store reports
+// a lower MaxSeq. This is critical when events have been assigned but not yet persisted.
 func TestRefreshNextSeq_PreservesHigherValue(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -2544,7 +2544,7 @@ func TestRefreshNextSeq_PreservesHigherValue(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Store has lower values
+	// Store has lower values (MaxSeq=50) than the in-memory counter (200).
 	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
 		m.EventCount = 10
 		m.MaxSeq = 50
@@ -2554,19 +2554,16 @@ func TestRefreshNextSeq_PreservesHigherValue(t *testing.T) {
 
 	recorder := session.NewRecorderWithID(store, sessionID)
 	bs := &BackgroundSession{
-		nextSeq:     200, // Already higher than store's MaxSeq
+		nextSeq:     200, // Already higher than store's MaxSeq — must be preserved
 		recorder:    recorder,
 		persistedID: sessionID,
 	}
 
 	bs.refreshNextSeq()
 
-	// Note: Current implementation DOES reset to store values.
-	// This test documents the current behavior.
-	// If we want to preserve higher values, we'd need to change the implementation.
-	// For now, the fix ensures we use MaxSeq instead of EventCount.
-	if bs.nextSeq != 51 {
-		t.Errorf("nextSeq = %d, want 51 (MaxSeq + 1 from store)", bs.nextSeq)
+	// refreshNextSeq is now monotonic: nextSeq must stay at 200, not reset to 51.
+	if bs.nextSeq != 200 {
+		t.Errorf("nextSeq = %d, want 200 (preserved, not lowered to store's MaxSeq+1)", bs.nextSeq)
 	}
 }
 
@@ -2673,6 +2670,76 @@ func TestRefreshNextSeq_IntegrationWithGetNextSeq(t *testing.T) {
 	maxSeq := bs.GetMaxAssignedSeq()
 	if maxSeq != 202 {
 		t.Errorf("GetMaxAssignedSeq() = %d, want 202", maxSeq)
+	}
+}
+
+// TestSeqUniqueness_ConcurrentStreamingAndUserPrompt is a regression test for
+// the duplicate/out-of-order seq bug (mitto-49q). It simulates the race between
+// rapid getNextSeq() calls from a streaming goroutine and a user-prompt persistence
+// that also calls getNextSeq() via RecordUserPromptCompleteWithSeq. All persisted
+// seqs in the resulting events.jsonl must be strictly unique.
+func TestSeqUniqueness_ConcurrentStreamingAndUserPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	bs := &BackgroundSession{
+		nextSeq:     1,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	const streamEvents = 200
+	var wg sync.WaitGroup
+
+	// Goroutine 1: rapidly assign seqs and persist agent-message events (streaming path).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < streamEvents; i++ {
+			seq := bs.getNextSeq()
+			if err := recorder.RecordEventWithSeq(session.Event{
+				Seq:  seq,
+				Type: session.EventTypeAgentMessage,
+				Data: session.AgentMessageData{Text: "chunk"},
+			}); err != nil {
+				// Session-end races are expected at teardown; ignore.
+				_ = err
+			}
+		}
+	}()
+
+	// Goroutine 2: persist a user prompt via the new unified path (WI-2).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		userSeq := bs.getNextSeq()
+		_ = recorder.RecordUserPromptCompleteWithSeq(userSeq, "hello", nil, nil, "", "", 0)
+	}()
+
+	wg.Wait()
+
+	// Read back all events and verify seq uniqueness.
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	seen := make(map[int64]int) // seq -> first index
+	for i, e := range events {
+		if prev, dup := seen[e.Seq]; dup {
+			t.Errorf("duplicate seq %d at index %d (first seen at index %d)", e.Seq, i, prev)
+		}
+		seen[e.Seq] = i
 	}
 }
 

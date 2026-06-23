@@ -312,23 +312,21 @@ retryAfterRestart:
 		bs.onPlanStateChanged(bs.persistedID, nil)
 	}
 
-	// Persist user prompt with image/file references and prompt ID
-	// User prompts are persisted immediately (not buffered), so we need to
-	// refresh nextSeq after persistence to get the correct seq for the prompt
-	// The prompt ID is included so clients can clear pending prompts on reconnect
+	// Persist user prompt with image/file references and prompt ID.
+	// Seq is pre-assigned from the shared getNextSeq() counter so that the user-prompt
+	// event is ordered atomically with respect to any concurrent streaming events.
+	// This avoids the duplicate/out-of-order seq bug caused by AppendEvent assigning
+	// seq independently from the in-memory counter.
 	var userPromptSeq int64
 	if bs.recorder != nil {
+		userPromptSeq = bs.getNextSeq()
 		var recordOpts []session.RecordOption
 		if len(meta.Meta) > 0 {
 			recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
 		}
-		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, recordOpts...); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, recordOpts...); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
-		// Get the seq that was assigned to the user prompt (it's the current event count)
-		userPromptSeq = int64(bs.recorder.EventCount())
-		// Update nextSeq for subsequent agent events
-		bs.refreshNextSeq()
 	}
 
 	// Notify all observers about the user prompt (for multi-client sync)
