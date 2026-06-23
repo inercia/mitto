@@ -835,6 +835,77 @@ func TestStore_AdvancedSettings_BackwardCompatibility(t *testing.T) {
 }
 
 // TestStore_ReadEvents_SkipsCorruptLine verifies that a single corrupt JSONL
+// TestStore_ReadEventsFrom_DeduplicatesSeq verifies that ReadEventsFrom drops
+// duplicate seq lines (keeping the first occurrence) rather than surfacing them
+// to clients. This guards against files corrupted by the pre-fix concurrent
+// AppendEvent / RecordEvent race.
+func TestStore_ReadEventsFrom_DeduplicatesSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-session-dedup"
+	if err := store.Create(Metadata{SessionID: sessionID, ACPServer: "test-server", WorkingDir: "/test/dir"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Write three events via AppendEvent so they get seq 1, 2, 3.
+	msgs := []string{"first", "second", "third"}
+	for _, m := range msgs {
+		if err := store.AppendEvent(sessionID, Event{
+			Type:      EventTypeUserPrompt,
+			Timestamp: time.Now(),
+			Data:      UserPromptData{Message: m},
+		}); err != nil {
+			t.Fatalf("AppendEvent failed: %v", err)
+		}
+	}
+
+	// Manually inject a duplicate of seq=2 into the events file.
+	eventsPath := filepath.Join(store.SessionDir(sessionID), eventsFileName)
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 event lines, got %d", len(lines))
+	}
+	// Insert duplicate of line[1] (seq=2) between line[1] and line[2].
+	rewritten := lines[0] + "\n" + lines[1] + "\n" + lines[1] + "\n" + lines[2] + "\n"
+	if err := os.WriteFile(eventsPath, []byte(rewritten), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// ReadEventsFrom must drop the duplicate and return exactly 3 events.
+	got, err := store.ReadEventsFrom(sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsFrom failed: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ReadEventsFrom returned %d events, want 3 (duplicate seq must be dropped)", len(got))
+	}
+	// Verify seq numbers are unique and in order.
+	for i, e := range got {
+		want := int64(i + 1)
+		if e.Seq != want {
+			t.Errorf("got[%d].Seq = %d, want %d", i, e.Seq, want)
+		}
+	}
+
+	// ReadEvents (full) must also deduplicate.
+	all, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("ReadEvents returned %d events, want 3", len(all))
+	}
+}
+
 // line (e.g. a torn write) does not abort the whole conversation load: the
 // reader skips the bad line and still returns the surrounding valid events.
 func TestStore_ReadEvents_SkipsCorruptLine(t *testing.T) {

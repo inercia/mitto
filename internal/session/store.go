@@ -388,7 +388,9 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]E
 	// Default is 64KB, increase to 10MB to handle very long lines
 	const maxScannerBuffer = 10 * 1024 * 1024
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+	seenSeqs := make(map[int64]struct{})
 	lineNum := 0
+	dupCount := 0
 	for scanner.Scan() {
 		lineNum++
 		var event Event
@@ -398,6 +400,14 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]E
 			log.Warn("skipping corrupt event line", "session_id", sessionID, "line", lineNum, "bytes", len(scanner.Bytes()), "error", err)
 			continue
 		}
+		// Defensive dedup: keep only the first occurrence of each seq.
+		// Duplicate seqs can appear in corrupted files written during concurrent
+		// AppendEvent / RecordEvent races before the fix.
+		if _, seen := seenSeqs[event.Seq]; seen {
+			dupCount++
+			continue
+		}
+		seenSeqs[event.Seq] = struct{}{}
 		// Only include events after the specified sequence number
 		if event.Seq > afterSeq {
 			events = append(events, event)
@@ -406,6 +416,12 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]E
 				break
 			}
 		}
+	}
+
+	if dupCount > 0 {
+		log.Debug("deduped duplicate seq events on read",
+			"session_id", sessionID,
+			"dropped", dupCount)
 	}
 
 	if err := scanner.Err(); err != nil {

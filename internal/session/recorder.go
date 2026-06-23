@@ -239,6 +239,18 @@ func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, f
 	}, opts))
 }
 
+// RecordUserPromptCompleteWithSeq records a user prompt event with a pre-assigned sequence number.
+// The seq must have been obtained from getNextSeq() so that user-prompt persistence shares the
+// same monotonic counter as the streaming path and avoids duplicate / out-of-order seq numbers.
+func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
+		Type:      EventTypeUserPrompt,
+		Timestamp: time.Now(),
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
+	}, opts))
+}
+
 // RecordAgentMessage records an agent message event.
 func (r *Recorder) RecordAgentMessage(text string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
