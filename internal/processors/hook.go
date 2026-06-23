@@ -179,8 +179,13 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.IsChild = input.ParentSessionID != ""
 	ctx.Session.ParentID = input.ParentSessionID
 	ctx.Session.IsPeriodic = input.IsPeriodic
+	ctx.Session.IsPeriodicForced = input.IsPeriodicForced
 	ctx.Session.BeadsIssue = input.BeadsIssue
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
+
+	// Args (send-time arguments) for Go-template field interpolation in prompt bodies.
+	// nil at menu time (no prompt dispatched yet); a nil map is safe to index.
+	ctx.Args = input.Arguments
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer

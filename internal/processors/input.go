@@ -70,6 +70,11 @@ type ProcessorInput struct {
 	// UserDataJSON is the JSON representation of the current session's user data.
 	// Used for @mitto:user_data variable substitution.
 	UserDataJSON string `json:"-"`
+	// Arguments holds the raw arguments supplied to the prompt (meta.Arguments).
+	// Used to populate PromptEnabledContext.Args for Go-template field interpolation
+	// ({{ .Args.NAME }}) in prompt bodies. Excluded from JSON (json:"-") so raw,
+	// possibly-sensitive argument values are never sent to external command processors.
+	Arguments map[string]string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

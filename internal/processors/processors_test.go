@@ -14,6 +14,30 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
+func TestBuildCELContext_ArgsAndPeriodicForced(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID:        "sess-1",
+		IsPeriodicForced: true,
+		Arguments:        map[string]string{"BRANCH": "main"},
+	}
+	ctx := BuildCELContext(input)
+	if !ctx.Session.IsPeriodicForced {
+		t.Error("expected ctx.Session.IsPeriodicForced=true")
+	}
+	if ctx.Args == nil || ctx.Args["BRANCH"] != "main" {
+		t.Fatalf("expected ctx.Args populated from input.Arguments, got %#v", ctx.Args)
+	}
+
+	// nil Arguments (menu-time shape) must yield a nil-safe Args map.
+	empty := BuildCELContext(&ProcessorInput{SessionID: "sess-2"})
+	if empty.Args != nil {
+		t.Errorf("expected nil Args when input.Arguments is nil, got %#v", empty.Args)
+	}
+	if empty.Session.IsPeriodicForced {
+		t.Error("expected IsPeriodicForced=false by default")
+	}
+}
+
 func TestProcessorIsEnabled(t *testing.T) {
 	tests := []struct {
 		name     string

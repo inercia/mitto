@@ -377,6 +377,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		MCPToolNames:           mcpToolNames,
 		IsPeriodic:             meta.SenderID == "periodic-runner",
 		IsPeriodicForced:       meta.IsPeriodicForced,
+		Arguments:              meta.Arguments,
 		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,
 		HasMittoRC:             hasMittoRC,

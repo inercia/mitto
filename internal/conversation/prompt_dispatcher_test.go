@@ -729,6 +729,22 @@ func TestPromptDispatcher_BuildProcessorInput_IsPeriodicForced(t *testing.T) {
 	}
 }
 
+func TestPromptDispatcher_BuildProcessorInput_Arguments(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasStore = false
+
+	args := map[string]string{"BRANCH": "main", "ISSUE": "mitto-1"}
+	meta := PromptMeta{Arguments: args}
+	input := p.buildProcessorInput(d, "msg", false, meta)
+	if input.Arguments == nil {
+		t.Fatal("expected Arguments populated from meta.Arguments")
+	}
+	if input.Arguments["BRANCH"] != "main" || input.Arguments["ISSUE"] != "mitto-1" {
+		t.Fatalf("unexpected Arguments: %#v", input.Arguments)
+	}
+}
+
 func TestPromptDispatcher_BuildProcessorInput_UserDataJSON(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
