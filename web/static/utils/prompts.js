@@ -70,27 +70,43 @@ export const MENU_PARAM_TYPES = {
 };
 
 /**
- * Returns true if `menu` can supply every parameter type that the prompt
- * declares. A prompt with no parameters is satisfied by any menu (including
- * unknown ones). For an unknown menu, its provided types are treated as []
- * (so a prompt WITH params is NOT satisfied — matching old behaviour).
+ * Returns true if `menu` can supply every *required* parameter type that the
+ * prompt declares. A prompt with no parameters is satisfied by any menu
+ * (including unknown ones). For an unknown menu, its provided types are treated
+ * as [] (so a prompt WITH required params is NOT satisfied — matching old
+ * behaviour).
+ *
+ * Optional parameters (`required === false`) are never gating: a prompt that
+ * declares an optional `beadsId` param appears in BOTH `beadsIssues` AND
+ * `conversation` menus even though `conversation` cannot auto-supply it. When
+ * the menu can supply the type, the value is auto-filled; when it cannot, the
+ * param is silently omitted (no blocking form shown — see getMissingPromptParameters).
+ *
+ * Unset (`required` absent/null) or `required: true` keeps the current gating
+ * behaviour, preserving all existing prompts unchanged.
  */
 export function menuSatisfies(prompt, menu) {
   const params = promptParameters(prompt);
   if (params.length === 0) return true;
   const provided = MENU_PARAM_TYPES[menu] || [];
-  return params.every((p) => provided.includes(p.type));
+  return params.every((p) => p.required === false || provided.includes(p.type));
 }
 
 /**
  * Returns the ordered list of declared parameters whose `type` is NOT
- * auto-supplied by the given menu. Each entry is the original parameter object
- * ({ name, type, description?, required? }) so callers can inspect all fields.
+ * auto-supplied by the given menu AND that are required (i.e. must be
+ * collected via the parameter dialog before the prompt can run).
+ *
+ * A parameter with `required === false` is considered optional: it is never
+ * included in the missing list, so no blocking form is shown for it even when
+ * the menu cannot auto-supply it. Its value will simply be absent from the
+ * arguments map.
  *
  * Rules:
- *   - An unknown or missing `menu` is treated as providing [] (all params missing).
+ *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
  *   - A prompt with no parameters always returns [].
  *   - A parameter whose type IS in the menu's provided-types list is excluded.
+ *   - A parameter with `required === false` is excluded (optional, no form shown).
  *   - Declared order is preserved.
  *
  * @param {Object} prompt - Prompt object with optional `parameters` array
@@ -101,7 +117,7 @@ export function getMissingPromptParameters(prompt, menu) {
   const params = promptParameters(prompt);
   if (params.length === 0) return [];
   const provided = MENU_PARAM_TYPES[menu] || [];
-  return params.filter((p) => !provided.includes(p.type));
+  return params.filter((p) => p.required !== false && !provided.includes(p.type));
 }
 
 /**

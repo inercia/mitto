@@ -207,6 +207,59 @@ describe("menuSatisfies", () => {
     };
     expect(menuSatisfies(prompt, "prompts")).toBe(false);
   });
+
+  // --- Optional parameter (required: false) gating tests ---
+
+  test("optional beadsId param (required: false) is satisfied by beadsIssues menu", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("optional beadsId param (required: false) is ALSO satisfied by conversation menu", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+  });
+
+  test("optional beadsId param (required: false) is ALSO satisfied by prompts menu", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(true);
+  });
+
+  test("required beadsId param (required: true) still gates — NOT satisfied by conversation", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: true }],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("unset required (no required field) beadsId still gates — NOT satisfied by conversation", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId" }],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("mixed: required param gates, optional param does not — only the required type determines satisfaction", () => {
+    // required beadsId gates; optional text does not affect gating
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: true },
+        { name: "EXTRA", type: "text", required: false },
+      ],
+    };
+    // beadsIssues supplies beadsId → satisfies the required gate, optional text ignored
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    // conversation cannot supply beadsId → fails on the required param
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
 });
 
 // =============================================================================
@@ -274,6 +327,22 @@ describe("collectPromptArguments", () => {
 
   test("returns empty object when typeValues is empty", () => {
     const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, {})).toEqual({});
+  });
+
+  test("optional beadsId param (required: false) still auto-fills when value is provided", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(collectPromptArguments(prompt, { beadsId: "mitto-42" })).toEqual({
+      ISSUE_ID: "mitto-42",
+    });
+  });
+
+  test("optional beadsId param produces empty result when value is not provided", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
     expect(collectPromptArguments(prompt, {})).toEqual({});
   });
 });
@@ -423,5 +492,43 @@ describe("getMissingPromptParameters", () => {
     const p3 = { name: "GAMMA", type: "workspaceId" };
     const prompt = { parameters: [p1, p2, p3] };
     expect(getMissingPromptParameters(prompt, "prompts")).toEqual([p1, p2, p3]);
+  });
+
+  // --- Optional parameter (required: false) missing-param tests ---
+
+  test("optional beadsId param in conversation menu is NOT missing (no form shown)", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    // conversation cannot supply beadsId, but it's optional → not missing
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([]);
+  });
+
+  test("optional beadsId param in beadsIssues menu is NOT missing (auto-filled)", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    // beadsIssues supplies beadsId and it's optional → also not in missing list
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+  });
+
+  test("required beadsId param in conversation menu IS missing (form shown)", () => {
+    const param = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("unset required beadsId param in conversation menu IS missing (form shown)", () => {
+    const param = { name: "ISSUE_ID", type: "beadsId" };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("mixed: only required unsupplied params appear in missing list", () => {
+    const requiredParam = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const optionalParam = { name: "EXTRA", type: "text", required: false };
+    const prompt = { parameters: [requiredParam, optionalParam] };
+    // prompts menu supplies nothing; required beadsId is missing, optional text is not
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([requiredParam]);
   });
 });

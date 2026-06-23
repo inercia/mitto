@@ -126,7 +126,7 @@ export function QueueDropdown({
   // Compute classes for animation - positioned as floating overlay above the input
   // Shadow only on top (negative Y offset) to cast over conversation area, not over input
   // When open: use resizable height, when closed: collapse to 0
-  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-mitto-surface-3/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 ${
+  const dropdownClasses = `queue-dropdown flex flex-col absolute bottom-full left-0 right-0 w-full bg-mitto-surface-3/95 backdrop-blur-sm border-t border-l border-r border-mitto-border-2 rounded-t-lg overflow-hidden z-20 ${
     isDragging ? "" : "transition-all duration-300 ease-out"
   } ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none border-0"}`;
 
@@ -229,10 +229,6 @@ export function QueueDropdown({
     [onMove, isMoving],
   );
 
-  // Calculate remaining height for list (total height - header height - resize handle height)
-  // Header is ~40px, resize handle is ~16px
-  const listMaxHeight = Math.max(50, height - 56);
-
   // Render the content wrapper - always rendered for animation, visibility controlled by height
   return html`
     <div
@@ -265,8 +261,7 @@ export function QueueDropdown({
       ${messages.length > 0
         ? html`
             <ul
-              class="queue-dropdown-list menu menu-sm w-full p-0 gap-0 flex-nowrap overflow-y-auto"
-              style="max-height: ${listMaxHeight}px;"
+              class="queue-dropdown-list menu menu-sm w-full p-0 gap-0 flex-nowrap flex-1 min-h-0 overflow-y-auto"
             >
               ${messages.map(
                 (msg, index) => html`
@@ -301,7 +296,7 @@ export function QueueDropdown({
                           `
                         : null}
                       <div
-                        class="queue-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        class="queue-item-actions flex items-center gap-0.5 transition-opacity shrink-0"
                       >
                         <button
                           type="button"

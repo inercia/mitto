@@ -1511,6 +1511,14 @@ a.mailto-link:hover {
   background: #64748b;
 }
 
+/* Queue item action buttons: always visible at reduced opacity, full on hover/focus, always full on touch */
+.queue-item-actions { opacity: 0.45; }
+.group:hover .queue-item-actions,
+.group:focus-within .queue-item-actions { opacity: 1; }
+@media (hover: none) {
+  .queue-item-actions { opacity: 1; }
+}
+
 /* Light theme adjustments */
 .light .queue-dropdown {
   background: rgba(226, 232, 240, 0.97);
