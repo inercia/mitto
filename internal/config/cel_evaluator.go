@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -67,6 +66,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("session.isAutoChild", cel.BoolType),
 		cel.Variable("session.parentId", cel.StringType),
 		cel.Variable("session.isPeriodic", cel.BoolType),
+		cel.Variable("session.isPeriodicForced", cel.BoolType),
 		cel.Variable("session.isPeriodicConversation", cel.BoolType),
 		cel.Variable("session.hasBeadsIssue", cel.BoolType),
 		cel.Variable("session.beadsIssue", cel.StringType),
@@ -103,6 +103,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// supplied per-row by callers via the activation. ReferencesItem reports
 		// whether a compiled expression touches this namespace.
 		cel.Variable("item", cel.MapType(cel.StringType, cel.DynType)),
+
+		// args — prompt arguments supplied at send time (nil/empty at menu time).
+		// Declared as map<string,dyn> (same pattern as item) so CEL's native adapter
+		// handles map[string]any values correctly. Nil ctx.Args is normalized to an
+		// empty map in buildActivation. Use `"KEY" in args && args["KEY"] == "val"`
+		// to safely branch — bare `args["KEY"]` throws when the key is absent.
+		cel.Variable("args", cel.MapType(cel.StringType, cel.DynType)),
 
 		// commandExists(name) bool — context-free; bound once here.
 		// Returns true if the given command name is found in the system PATH.
@@ -276,6 +283,13 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 
 // buildActivation converts a PromptEnabledContext into a CEL activation map.
 func buildActivation(ctx *PromptEnabledContext) map[string]any {
+	// Convert Args to map[string]any (matching the args variable's DynType declaration)
+	// so CEL's native adapter can handle subscript access correctly. Nil args is
+	// normalized to an empty map so `"KEY" in args` never panics.
+	argsAny := make(map[string]any, len(ctx.Args))
+	for k, v := range ctx.Args {
+		argsAny[k] = v
+	}
 	return map[string]any{
 		"acp.name":        ctx.ACP.Name,
 		"acp.type":        ctx.ACP.Type,
@@ -295,6 +309,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"session.isAutoChild":            ctx.Session.IsAutoChild,
 		"session.parentId":               ctx.Session.ParentID,
 		"session.isPeriodic":             ctx.Session.IsPeriodic,
+		"session.isPeriodicForced":       ctx.Session.IsPeriodicForced,
 		"session.isPeriodicConversation": ctx.Session.IsPeriodicConversation,
 		"session.hasBeadsIssue":          ctx.Session.HasBeadsIssue,
 		"session.beadsIssue":             ctx.Session.BeadsIssue,
@@ -333,6 +348,9 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 			"priority": ctx.Item.Priority,
 			"kind":     ctx.Item.Kind,
 		},
+
+		// args — prompt arguments. Empty at menu time; populated at send time.
+		"args": argsAny,
 	}
 }
 
@@ -410,107 +428,79 @@ func valToString(v ref.Val) string {
 
 // mittoHasPattern reports whether any name (args[1], a list) matches the glob
 // pattern (args[2]). args[0] is tools.available. Context-free so the compiled
-// program can be cached.
-// Fail-open: returns true when the tool list is not available (args[0] == false),
-// i.e. it has not been fetched yet. This avoids hiding tool-gated prompts during
-// the MCP-tools cache warm-up window.
+// program can be cached. Delegates to hasPattern (templatefuncs.go) for the
+// pure-Go logic (single source of truth shared with the template FuncMap).
 func mittoHasPattern(args ...ref.Val) ref.Val {
 	if len(args) != 3 {
 		return types.Bool(false)
 	}
-	if available, ok := args[0].(types.Bool); !ok || !bool(available) {
-		return types.Bool(true)
+	available, ok := args[0].(types.Bool)
+	if !ok {
+		return types.Bool(true) // type error → treat as unavailable → fail-open
 	}
 	pattern, ok := args[2].(types.String)
 	if !ok {
 		return types.Bool(false)
 	}
-	for _, name := range extractStringArgs([]ref.Val{args[1]}) {
-		if matched, err := filepath.Match(string(pattern), name); err == nil && matched {
-			return types.Bool(true)
-		}
-	}
-	return types.Bool(false)
+	names := extractStringArgs([]ref.Val{args[1]})
+	return types.Bool(hasPattern(bool(available), names, string(pattern)))
 }
 
 // mittoHasAllPatterns reports whether ALL patterns (args[2], string or list)
 // are satisfied by at least one name each (args[1], a list). args[0] is
-// tools.available. Fail-open: returns true when the tool list is not available.
+// tools.available. Delegates to hasAllPatterns (templatefuncs.go).
 func mittoHasAllPatterns(args ...ref.Val) ref.Val {
 	if len(args) != 3 {
 		return types.Bool(false)
 	}
-	if available, ok := args[0].(types.Bool); !ok || !bool(available) {
-		return types.Bool(true)
+	available, ok := args[0].(types.Bool)
+	if !ok {
+		return types.Bool(true) // type error → fail-open
 	}
 	names := extractStringArgs([]ref.Val{args[1]})
-	for _, pattern := range extractStringArgs([]ref.Val{args[2]}) {
-		found := false
-		for _, name := range names {
-			if matched, err := filepath.Match(pattern, name); err == nil && matched {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return types.Bool(false)
-		}
-	}
-	return types.Bool(true)
+	patterns := extractStringArgs([]ref.Val{args[2]})
+	return types.Bool(hasAllPatterns(bool(available), names, patterns))
 }
 
 // mittoHasAnyPattern reports whether ANY pattern (args[2], string or list)
 // is satisfied by at least one name (args[1], a list). args[0] is
-// tools.available. Fail-open: returns true when the tool list is not available.
+// tools.available. Delegates to hasAnyPattern (templatefuncs.go).
 func mittoHasAnyPattern(args ...ref.Val) ref.Val {
 	if len(args) != 3 {
 		return types.Bool(false)
 	}
-	if available, ok := args[0].(types.Bool); !ok || !bool(available) {
-		return types.Bool(true)
+	available, ok := args[0].(types.Bool)
+	if !ok {
+		return types.Bool(true) // type error → fail-open
 	}
 	names := extractStringArgs([]ref.Val{args[1]})
-	for _, pattern := range extractStringArgs([]ref.Val{args[2]}) {
-		for _, name := range names {
-			if matched, err := filepath.Match(pattern, name); err == nil && matched {
-				return types.Bool(true)
-			}
-		}
-	}
-	return types.Bool(false)
+	patterns := extractStringArgs([]ref.Val{args[2]})
+	return types.Bool(hasAnyPattern(bool(available), names, patterns))
 }
 
 // mittoMatchesServerType reports whether the ACP server type matches any of the
 // given types (case-insensitive). args[0]=acp.name, args[1]=acp.type, args[2:]=types.
 // Only compares the server type (e.g., "augment"), not the display name.
-// Fail-open: returns true when no ACP server is active (acp.name == "").
+// Delegates to matchesServerType (templatefuncs.go).
 func mittoMatchesServerType(args ...ref.Val) ref.Val {
 	if len(args) < 2 {
 		return types.Bool(false)
 	}
 	acpName := valToString(args[0])
 	acpType := valToString(args[1])
-	if acpName == "" {
-		return types.Bool(true)
-	}
-	for _, server := range extractStringArgs(args[2:]) {
-		if strings.EqualFold(server, acpType) {
-			return types.Bool(true)
-		}
-	}
-	return types.Bool(false)
+	serverTypes := extractStringArgs(args[2:])
+	return types.Bool(matchesServerType(acpName, acpType, serverTypes))
 }
 
 // commandExistsImpl returns a CEL UnaryOp that checks whether a command
-// is available in the system PATH using exec.LookPath.
+// is available in the system PATH. Delegates to commandExists (templatefuncs.go).
 func commandExistsImpl() func(ref.Val) ref.Val {
 	return func(nameVal ref.Val) ref.Val {
 		name, ok := nameVal.(types.String)
 		if !ok {
 			return types.Bool(false)
 		}
-		_, err := exec.LookPath(string(name))
-		return types.Bool(err == nil)
+		return types.Bool(commandExists(string(name)))
 	}
 }
 
@@ -532,22 +522,16 @@ func statResolved(workspaceFolder, path string) (os.FileInfo, bool) {
 
 // mittoFileExists reports whether path exists and is a regular file (not a dir).
 // Relative paths are resolved against the workspace folder (first argument).
+// Delegates to fileExists (templatefuncs.go).
 func mittoFileExists(folderVal, pathVal ref.Val) ref.Val {
-	info, ok := statResolved(valToString(folderVal), valToString(pathVal))
-	if !ok {
-		return types.Bool(false)
-	}
-	return types.Bool(!info.IsDir())
+	return types.Bool(fileExists(valToString(folderVal), valToString(pathVal)))
 }
 
 // mittoDirExists reports whether path exists and is a directory.
 // Relative paths are resolved against the workspace folder (first argument).
+// Delegates to dirExists (templatefuncs.go).
 func mittoDirExists(folderVal, pathVal ref.Val) ref.Val {
-	info, ok := statResolved(valToString(folderVal), valToString(pathVal))
-	if !ok {
-		return types.Bool(false)
-	}
-	return types.Bool(info.IsDir())
+	return types.Bool(dirExists(valToString(folderVal), valToString(pathVal)))
 }
 
 // extractStringArgs extracts string values from CEL function arguments.

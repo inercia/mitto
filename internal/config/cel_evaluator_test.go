@@ -488,6 +488,26 @@ func TestCELEvaluator_SessionIsPeriodicConversation(t *testing.T) {
 	}
 }
 
+// TestCELEvaluator_SessionIsPeriodicForced validates the session.isPeriodicForced variable.
+func TestCELEvaluator_SessionIsPeriodicForced(t *testing.T) {
+	e := newTestEvaluator(t)
+	ce := compile(t, e, "session.isPeriodicForced")
+
+	trueCtx := &PromptEnabledContext{
+		Session: SessionContext{IsPeriodicForced: true},
+	}
+	if got := evaluate(t, e, ce, trueCtx); !got {
+		t.Error("expected true when IsPeriodicForced=true")
+	}
+
+	falseCtx := &PromptEnabledContext{
+		Session: SessionContext{IsPeriodicForced: false},
+	}
+	if got := evaluate(t, e, ce, falseCtx); got {
+		t.Error("expected false when IsPeriodicForced=false")
+	}
+}
+
 // TestCELEvaluator_ReferencesItem validates static detection of the item.* namespace.
 // List endpoints use this to keep single-pass behavior for prompts that don't depend
 // on per-row item data.

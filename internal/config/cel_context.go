@@ -22,6 +22,12 @@ type PromptEnabledContext struct {
 	// Item contains the per-row item context for list menus (e.g. a beads issue row).
 	// All fields are empty strings when no item context is provided.
 	Item ItemContext
+	// Args holds the arguments supplied to the prompt (meta.Arguments) at send time.
+	// It feeds template field interpolation ({{ .Args.NAME }}) in prompt bodies and,
+	// once the CEL env declares the args variable (mitto-m7sb.5), the cond/when
+	// template function. It is nil at menu time (enabledWhen evaluation), since no
+	// prompt has been dispatched yet; nil is safe (a nil map indexes to "").
+	Args map[string]string
 }
 
 // ACPContext holds ACP server context for CEL evaluation.
@@ -66,6 +72,10 @@ type SessionContext struct {
 	ParentID string
 	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
 	IsPeriodic bool
+	// IsPeriodicForced indicates whether a periodic prompt was triggered manually via
+	// "run now" (as opposed to the normal scheduled delivery). Mirrors
+	// ProcessorInput.IsPeriodicForced and the @mitto:periodic_forced placeholder.
+	IsPeriodicForced bool
 	// IsPeriodicConversation indicates whether the conversation is configured as a
 	// periodic conversation (it has a periodic prompt configuration). Unlike
 	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
