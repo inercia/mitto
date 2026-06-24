@@ -34,6 +34,18 @@ const acpStartRetryMaxDelay = 4 * time.Second
 // acpStartRetryJitterRatio is the jitter ratio (±) applied to retry delays.
 const acpStartRetryJitterRatio = 0.3
 
+// acpInitializeAttemptTimeout is the per-attempt deadline for the ACP Initialize
+// handshake in doStartACPProcess. Bounding this prevents dead sessions from hanging
+// the full SDK-internal 60 s control timeout (DEFAULT_CONTROL_REQUEST_TIMEOUT) on
+// each retry. The existing conn.Done()/acpProcessDone watcher cancels initCtx on
+// detected crashes; this timeout is the backstop for cases where neither signal
+// arrives (e.g. a live-but-unresponsive process with open pipes).
+//
+// 25 s: generous for healthy cold starts (agent typically initialises in < 10 s)
+// while cutting dead-session total retry tail from ~180 s (3×60 s) to ~90 s
+// (3×25 s + backoffs). Do NOT increase toward 60 s. (mitto-13ck.2)
+const acpInitializeAttemptTimeout = 25 * time.Second
+
 // Note: Runtime restart constants (maxACPRestarts, acpRestartWindow,
 // acpRestartBaseDelay, acpRestartMaxDelay) are now defined in
 // acp_error_classification.go as shared constants (MaxACPRestarts, ACPRestartWindow,
@@ -897,11 +909,15 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		bs.acpConn.SetLogger(logging.DowngradeACPSDKErrors(bs.logger))
 	}
 
-	// Create an init context that gets cancelled when the ACP process dies.
-	// This ensures we fail fast instead of waiting for the ACP server's internal
-	// 60-second control request timeout when the CLI subprocess has crashed.
-	// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
-	initCtx, initCancel := context.WithCancel(bs.ctx)
+	// Create an init context with a per-attempt timeout (mitto-13ck.2).
+	// This bounds each Initialize attempt so a dead-session doesn't hang the full
+	// SDK-internal 60 s control timeout (DEFAULT_CONTROL_REQUEST_TIMEOUT) on every
+	// retry, cutting the total retry tail from ~180 s to ~90 s (3×25 s + backoffs).
+	// The conn.Done()/acpProcessDone watcher below cancels initCtx immediately on
+	// detected crashes; the timeout is the backstop for cases where neither signal
+	// arrives (live-but-hung process with open pipes). 25 s is generous for healthy
+	// cold starts.
+	initCtx, initCancel := context.WithTimeout(bs.ctx, acpInitializeAttemptTimeout)
 	defer initCancel()
 
 	// Monitor ACP process health: if the connection's Done() channel closes

@@ -4784,3 +4784,29 @@ func (p *alwaysFailSharedProcess) Capabilities() *acp.AgentCapabilities { return
 func (p *alwaysFailSharedProcess) Restart() error {
 	return fmt.Errorf("alwaysFailSharedProcess: cannot restart — no real process")
 }
+
+// TestACPInitializeAttemptTimeoutBound is a math test for mitto-13ck.2.
+//
+// It verifies that acpInitializeAttemptTimeout × maxACPStartRetries plus the maximum
+// cumulative retry backoff is significantly less than the pre-fix worst case of
+// maxACPStartRetries × 60 s ≈ 180 s (the SDK's DEFAULT_CONTROL_REQUEST_TIMEOUT hit
+// on every attempt when no timeout was applied to initCtx).
+func TestACPInitializeAttemptTimeoutBound(t *testing.T) {
+	// Worst-case cumulative backoff across all retries (capped per-attempt).
+	maxBackoffTotal := time.Duration(maxACPStartRetries-1) * acpStartRetryMaxDelay
+
+	// Worst-case total wall time: every attempt times out + maximum backoffs.
+	totalMax := time.Duration(maxACPStartRetries)*acpInitializeAttemptTimeout + maxBackoffTotal
+
+	// Pre-fix worst case: each attempt hangs for the full SDK 60 s control timeout.
+	const sdkControlTimeout = 60 * time.Second
+	preFix := time.Duration(maxACPStartRetries) * sdkControlTimeout
+
+	if totalMax >= preFix {
+		t.Errorf("bounded retry tail (%v) must be less than pre-fix tail (%v); "+
+			"acpInitializeAttemptTimeout (%v) is too large or maxACPStartRetries (%d) too high",
+			totalMax, preFix, acpInitializeAttemptTimeout, maxACPStartRetries)
+	}
+	t.Logf("acpInitializeAttemptTimeout=%v, maxRetries=%d, maxBackoff=%v → total max=%v (pre-fix was %v)",
+		acpInitializeAttemptTimeout, maxACPStartRetries, maxBackoffTotal, totalMax, preFix)
+}

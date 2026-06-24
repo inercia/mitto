@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -905,6 +907,84 @@ func TestDiffEnvKeys_NeverLeaksValues(t *testing.T) {
 	if !reflect.DeepEqual(changed, []string{"API_TOKEN"}) {
 		t.Errorf("changed = %v, want [API_TOKEN]", changed)
 	}
+}
+
+// TestSetSessionModel_DeadProcessFailsFast is a regression test for mitto-13ck.1.
+//
+// Previously, SetSessionModel had no liveness check at the start of each retry
+// attempt. When the shared ACP process was dead (processDone closed), each attempt
+// would hang for the full 8 s per-attempt budget waiting for the RPC to time out,
+// even though the outcome was predetermined. With 3 attempts that burns 24 s before
+// returning an error.
+//
+// The fix: a non-blocking select on processDone at the top of each attempt loop,
+// returning immediately with a non-retryable error so the loop exits in O(µs).
+//
+// This test verifies the fail-fast path without a real ACP process.
+func TestSetSessionModel_DeadProcessFailsFast(t *testing.T) {
+	// Build a minimal SharedACPProcess with a closed processDone channel and a
+	// non-nil conn pointer (so the nil-conn guard doesn't fire first).
+	// We use a real channel but don't need a real ACP connection — the liveness
+	// check fires before any RPC is attempted.
+	done := make(chan struct{})
+	close(done)
+
+	p := &SharedACPProcess{
+		// conn must be non-nil to pass the initial nil check.
+		// new() allocates a zero-value struct; the processDone check fires before
+		// any method is called on it, so no ACP connection is actually needed.
+		conn:        new(acp.ClientSideConnection),
+		processDone: done,
+		setModelSem: make(chan struct{}, 1),
+	}
+
+	ctx := context.Background()
+	start := time.Now()
+	err := p.SetSessionModel(ctx, "session-id", "some-model")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("SetSessionModel must return an error when the process is dead")
+	}
+	// Must fail in well under 1 s, not after the 8 s per-attempt deadline.
+	const maxElapsed = 500 * time.Millisecond
+	if elapsed > maxElapsed {
+		t.Errorf("SetSessionModel took %v on dead process; want < %v (fail-fast not working)", elapsed, maxElapsed)
+	}
+	// The error must NOT be a timeout/deadline error — so isRetryableSetModelError
+	// would return false and no retry is attempted.
+	if isRetryableSetModelError(err) {
+		t.Errorf("dead-process error must not be retryable, got: %v", err)
+	}
+}
+
+// TestProcessInitializeAttemptTimeoutBound is a math test for mitto-13ck.2.
+//
+// It verifies that the per-attempt Initialize timeout (processInitializeAttemptTimeout)
+// multiplied by the max start retries, plus maximum cumulative retry backoff, is
+// significantly less than the pre-fix worst case of maxProcessStartRetries × 60 s
+// (≈ 180 s — the SDK's DEFAULT_CONTROL_REQUEST_TIMEOUT hit on each attempt).
+//
+// The target: bounded retry tail well under the pre-fix ~180 s.
+func TestProcessInitializeAttemptTimeoutBound(t *testing.T) {
+	// Max cumulative backoff across all retries.
+	// BackoffDelay uses exponential backoff capped at processStartRetryMaxDelay.
+	maxBackoffTotal := time.Duration(maxProcessStartRetries-1) * processStartRetryMaxDelay
+
+	// Worst-case total wall time for all retry attempts.
+	totalMax := time.Duration(maxProcessStartRetries)*processInitializeAttemptTimeout + maxBackoffTotal
+
+	// Pre-fix worst case: each attempt hangs the full SDK 60 s control timeout.
+	const sdkControlTimeout = 60 * time.Second
+	preFix := time.Duration(maxProcessStartRetries) * sdkControlTimeout
+
+	if totalMax >= preFix {
+		t.Errorf("bounded retry tail (%v) must be less than pre-fix tail (%v); "+
+			"increase processInitializeAttemptTimeout or maxProcessStartRetries is too large",
+			totalMax, preFix)
+	}
+	t.Logf("processInitializeAttemptTimeout=%v, maxRetries=%d, maxBackoff=%v → total max=%v (pre-fix was %v)",
+		processInitializeAttemptTimeout, maxProcessStartRetries, maxBackoffTotal, totalMax, preFix)
 }
 
 // TestAuxStartupJitter verifies the de-stagger jitter helper (mitto-xicp): values are

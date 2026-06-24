@@ -75,16 +75,33 @@ const (
 	// async aux-session set_model goroutine before it enters the budget context window
 	// (mitto-xicp). When prewarmAuxiliarySessions fires all 4 purposes in parallel, each
 	// spawns an async model-set goroutine at nearly the same instant; without this jitter
-	// they all race onto the capacity-1 setModelSem simultaneously. With a 5 s jitter
+	// they all race onto the capacity-1 setModelSem simultaneously. With a 10 s jitter
 	// window the goroutines are de-staggered so later arrivals are still well within the
 	// 90 s setModelAsyncCallerBudget, eliminating the "context deadline exceeded" failures
 	// observed during cold-process wakeup.
+	//
+	// Widened from 5 s → 10 s (mitto-13ck.1): evidence showed first-attempt 8 s hangs even
+	// with 5 s de-stagger, because a cold process may need more warm-up time before it can
+	// serve model-switch RPCs reliably. Wider spread reduces simultaneous pressure on the
+	// semaphore during the critical post-Initialize warm-up window.
 	//
 	// This mirrors the child-session de-stagger pattern (constraintModelSwitchChildStartupJitter
 	// in internal/conversation/bgsession_config.go, introduced for mitto-x4e). The jitter
 	// waits on m.ctx — not the budget context — so it does NOT consume the 90 s budget.
 	// Do NOT change the per-attempt 8 s deadline (mitto-f7q explicitly discourages that).
-	auxModelSwitchStartupJitter = 5 * time.Second
+	auxModelSwitchStartupJitter = 10 * time.Second
+
+	// processInitializeAttemptTimeout is the per-attempt deadline for the ACP Initialize
+	// handshake in doStartProcess. Bounding this prevents dead sessions from hanging the
+	// full SDK-internal 60 s control timeout (DEFAULT_CONTROL_REQUEST_TIMEOUT) on each
+	// attempt. The existing conn.Done()/processDone watcher cancels initCtx on detected
+	// crashes; this timeout is the backstop for cases where neither signal arrives (e.g.
+	// a live-but-unresponsive process with open pipes).
+	//
+	// 25 s: generous for healthy cold starts (agent typically initialises in < 10 s) while
+	// cutting dead-session total retry tail from ~180 s (3×60 s) to ~90 s (3×25 s + backoffs).
+	// Do NOT increase toward 60 s — that defeats the purpose. (mitto-13ck.2)
+	processInitializeAttemptTimeout = 25 * time.Second
 
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
@@ -559,11 +576,14 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		p.conn.SetLogger(logging.DowngradeACPSDKErrors(p.logger))
 	}
 
-	// Create an init context that gets cancelled when the ACP process dies.
-	// This ensures we fail fast instead of waiting for the ACP server's internal
-	// 60-second control request timeout when the CLI subprocess has crashed.
-	// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
-	initCtx, initCancel := context.WithCancel(p.ctx)
+	// Create an init context with a per-attempt timeout (mitto-13ck.2).
+	// This bounds each Initialize attempt so a dead-session doesn't hang the full
+	// SDK-internal 60 s control timeout (DEFAULT_CONTROL_REQUEST_TIMEOUT) on every
+	// retry, cutting the total retry tail from ~180 s to ~90 s (3 × 25 s + backoffs).
+	// The conn.Done()/processDone watcher below cancels initCtx immediately on detected
+	// crashes; the timeout is the backstop when neither signal arrives (live-but-hung
+	// process with open pipes). 25 s is generous for healthy cold starts.
+	initCtx, initCancel := context.WithTimeout(p.ctx, processInitializeAttemptTimeout)
 	defer initCancel()
 
 	// Monitor ACP process health: if the connection's Done() channel closes
@@ -1041,9 +1061,10 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 // process) and retries on transient timeouts so burst startups don't race the
 // serially-served agent subprocess (mitto-3q9).
 func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error {
-	// Read conn under RLock; keep existing nil-check semantics.
+	// Read conn and processDone under RLock; keep existing nil-check semantics.
 	p.mu.RLock()
 	conn := p.conn
+	processDone := p.processDone
 	p.mu.RUnlock()
 
 	if conn == nil {
@@ -1069,6 +1090,18 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		// Honour caller cancellation before each attempt.
 		if ctx.Err() != nil {
 			return fmt.Errorf("set_model: context cancelled before attempt %d: %w", attempt, ctx.Err())
+		}
+
+		// Fail fast if the OS process is already confirmed dead (mitto-13ck.1).
+		// Without this check a dead process would cause each attempt to hang for
+		// the full 8 s per-attempt deadline instead of failing in microseconds.
+		// Returns a non-timeout error so isRetryableSetModelError breaks the loop.
+		if processDone != nil {
+			select {
+			case <-processDone:
+				return fmt.Errorf("set_model: ACP process has exited")
+			default:
+			}
 		}
 
 		// Backoff between retries (skip before first attempt).
