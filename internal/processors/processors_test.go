@@ -38,6 +38,89 @@ func TestBuildCELContext_ArgsAndPeriodicForced(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_NewFields asserts that BuildCELContext populates the new
+// fields added in mitto-jkpn: ACP.Available, Children.All, Children.MCP,
+// Session.UserDataJSON, and Workspace.UserDataSchemaJSON.
+func TestBuildCELContext_NewFields(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		ACPServer: "auggie",
+		AvailableACPServers: []AvailableACPServer{
+			{Name: "auggie", Type: "augment", Tags: []string{"coding"}, Current: true},
+			{Name: "claude", Type: "claude-code", Tags: []string{"fast"}, Current: false},
+		},
+		ChildSessions: []ChildSession{
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true},
+			{ID: "c2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto", IsPrompting: false},
+		},
+		UserDataJSON:       `[{"name":"env","value":"prod"}]`,
+		UserDataSchemaJSON: `[{"name":"env","type":"string"}]`,
+	}
+
+	ctx := BuildCELContext(input)
+
+	// ACP.Available
+	if len(ctx.ACP.Available) != 2 {
+		t.Fatalf("ACP.Available: expected 2 entries, got %d", len(ctx.ACP.Available))
+	}
+	if ctx.ACP.Available[0].Name != "auggie" || !ctx.ACP.Available[0].Current {
+		t.Errorf("ACP.Available[0]: got %+v", ctx.ACP.Available[0])
+	}
+	if ctx.ACP.Available[1].Name != "claude" || ctx.ACP.Available[1].Current {
+		t.Errorf("ACP.Available[1]: got %+v", ctx.ACP.Available[1])
+	}
+
+	// Children.All — both children
+	if len(ctx.Children.All) != 2 {
+		t.Fatalf("Children.All: expected 2, got %d", len(ctx.Children.All))
+	}
+	if ctx.Children.All[0].ID != "c1" || !ctx.Children.All[0].IsPrompting {
+		t.Errorf("Children.All[0]: got %+v", ctx.Children.All[0])
+	}
+	if ctx.Children.All[1].ID != "c2" || ctx.Children.All[1].IsPrompting {
+		t.Errorf("Children.All[1]: got %+v", ctx.Children.All[1])
+	}
+
+	// Children.MCP — only the mcp child
+	if len(ctx.Children.MCP) != 1 {
+		t.Fatalf("Children.MCP: expected 1, got %d", len(ctx.Children.MCP))
+	}
+	if ctx.Children.MCP[0].ID != "c1" || ctx.Children.MCP[0].Origin != "mcp" {
+		t.Errorf("Children.MCP[0]: got %+v", ctx.Children.MCP[0])
+	}
+
+	// Session.UserDataJSON
+	if ctx.Session.UserDataJSON != input.UserDataJSON {
+		t.Errorf("Session.UserDataJSON = %q, want %q", ctx.Session.UserDataJSON, input.UserDataJSON)
+	}
+
+	// Workspace.UserDataSchemaJSON
+	if ctx.Workspace.UserDataSchemaJSON != input.UserDataSchemaJSON {
+		t.Errorf("Workspace.UserDataSchemaJSON = %q, want %q", ctx.Workspace.UserDataSchemaJSON, input.UserDataSchemaJSON)
+	}
+}
+
+// TestBuildCELContext_EmptyInput verifies no panics and zero values for new fields
+// when input has no ACP servers, no children, and no user-data JSON.
+func TestBuildCELContext_EmptyInput(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if len(ctx.ACP.Available) != 0 {
+		t.Errorf("expected empty ACP.Available, got %d", len(ctx.ACP.Available))
+	}
+	if len(ctx.Children.All) != 0 {
+		t.Errorf("expected empty Children.All, got %d", len(ctx.Children.All))
+	}
+	if len(ctx.Children.MCP) != 0 {
+		t.Errorf("expected empty Children.MCP, got %d", len(ctx.Children.MCP))
+	}
+	if ctx.Session.UserDataJSON != "" {
+		t.Errorf("expected empty Session.UserDataJSON, got %q", ctx.Session.UserDataJSON)
+	}
+	if ctx.Workspace.UserDataSchemaJSON != "" {
+		t.Errorf("expected empty Workspace.UserDataSchemaJSON, got %q", ctx.Workspace.UserDataSchemaJSON)
+	}
+}
+
 func TestProcessorIsEnabled(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/inercia/mitto/internal/config"
 )
 
 // SubstituteVariables replaces @mitto:variable placeholders in the message
@@ -123,7 +125,8 @@ func formatParentSession(parentID, parentName string) string {
 }
 
 // formatChildSessions renders the child session list as a human-readable
-// comma-separated string.
+// comma-separated string. Delegates to config.FormatChildren for single-source-of-truth
+// formatting identical to the {{ children }} template function.
 //
 // Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
 // If a child has no name, the parenthetical group is omitted.
@@ -132,18 +135,17 @@ func formatChildSessions(children []ChildSession) string {
 	if len(children) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(children))
+	infos := make([]config.ChildInfo, 0, len(children))
 	for _, child := range children {
-		s := child.ID
-		if child.Name != "" {
-			s += " (" + child.Name + ")"
-		}
-		if child.ACPServer != "" {
-			s += " [" + child.ACPServer + "]"
-		}
-		parts = append(parts, s)
+		infos = append(infos, config.ChildInfo{
+			ID:          child.ID,
+			Name:        child.Name,
+			ACPServer:   child.ACPServer,
+			Origin:      child.ChildOrigin,
+			IsPrompting: child.IsPrompting,
+		})
 	}
-	return strings.Join(parts, ", ")
+	return config.FormatChildren(infos)
 }
 
 // formatMCPChildrenCount returns the count of MCP-origin children as a string.
@@ -158,30 +160,32 @@ func formatMCPChildrenCount(children []ChildSession) string {
 }
 
 // formatMCPChildren renders only MCP-origin children as a human-readable string.
+// Delegates to config.FormatChildren for single-source-of-truth formatting identical
+// to the {{ mcpChildren }} template function.
 //
 // Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
 // If a child has no name, the parenthetical group is omitted.
 // If a child has no ACP server, the bracket group is omitted.
 func formatMCPChildren(children []ChildSession) string {
-	var parts []string
+	var infos []config.ChildInfo
 	for _, child := range children {
 		if child.ChildOrigin != "mcp" {
 			continue
 		}
-		s := child.ID
-		if child.Name != "" {
-			s += " (" + child.Name + ")"
-		}
-		if child.ACPServer != "" {
-			s += " [" + child.ACPServer + "]"
-		}
-		parts = append(parts, s)
+		infos = append(infos, config.ChildInfo{
+			ID:          child.ID,
+			Name:        child.Name,
+			ACPServer:   child.ACPServer,
+			Origin:      child.ChildOrigin,
+			IsPrompting: child.IsPrompting,
+		})
 	}
-	return strings.Join(parts, ", ")
+	return config.FormatChildren(infos)
 }
 
 // formatAvailableACPServers renders the available ACP server list as a human-readable
-// comma-separated string, matching the structure reported by the MCP tool.
+// comma-separated string. Delegates to config.FormatACPServers for single-source-of-truth
+// formatting identical to the {{ acpServers }} template function.
 //
 // Format: "name [tag1, tag2] (current), name2 [tag3]"
 // If a server has no tags the bracket group is omitted.
@@ -190,16 +194,14 @@ func formatAvailableACPServers(servers []AvailableACPServer) string {
 	if len(servers) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(servers))
+	infos := make([]config.ACPServerInfo, 0, len(servers))
 	for _, srv := range servers {
-		s := srv.Name
-		if len(srv.Tags) > 0 {
-			s += " [" + strings.Join(srv.Tags, ", ") + "]"
-		}
-		if srv.Current {
-			s += " (current)"
-		}
-		parts = append(parts, s)
+		infos = append(infos, config.ACPServerInfo{
+			Name:    srv.Name,
+			Type:    srv.Type,
+			Tags:    srv.Tags,
+			Current: srv.Current,
+		})
 	}
-	return strings.Join(parts, ", ")
+	return config.FormatACPServers(infos)
 }

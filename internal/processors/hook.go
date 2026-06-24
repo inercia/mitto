@@ -193,8 +193,13 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		if srv.Current {
 			ctx.ACP.Type = srv.Type
 			ctx.ACP.Tags = srv.Tags
-			break
 		}
+		ctx.ACP.Available = append(ctx.ACP.Available, config.ACPServerInfo{
+			Name:    srv.Name,
+			Type:    srv.Type,
+			Tags:    srv.Tags,
+			Current: srv.Current,
+		})
 	}
 	if ctx.ACP.Type == "" {
 		ctx.ACP.Type = input.ACPServer
@@ -206,6 +211,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.HasUserDataSchema = input.HasUserDataSchema
 	ctx.Workspace.HasMittoRC = input.HasMittoRC
 	ctx.Workspace.HasMetadataDescription = input.HasMetadataDescription
+	ctx.Workspace.UserDataSchemaJSON = input.UserDataSchemaJSON
 
 	// Parent context
 	if input.ParentSessionID != "" {
@@ -226,8 +232,22 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		if child.IsPrompting {
 			ctx.Children.PromptingCount++
 		}
+		childInfo := config.ChildInfo{
+			ID:          child.ID,
+			Name:        child.Name,
+			ACPServer:   child.ACPServer,
+			Origin:      child.ChildOrigin,
+			IsPrompting: child.IsPrompting,
+		}
+		ctx.Children.All = append(ctx.Children.All, childInfo)
+		if child.ChildOrigin == "mcp" {
+			ctx.Children.MCP = append(ctx.Children.MCP, childInfo)
+		}
 	}
 	ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
+
+	// Session user data JSON for template rendering
+	ctx.Session.UserDataJSON = input.UserDataJSON
 
 	// Tools context. Processors evaluate at message-processing time, where the
 	// tool list is treated as known (the cache is warmed on connect). Mark it
