@@ -100,6 +100,62 @@ func dirExists(folder, path string) bool {
 }
 
 // =============================================================================
+// Exported formatting helpers (single source of truth for legacy @mitto: output)
+// =============================================================================
+
+// FormatACPServers renders the available ACP server list as a human-readable
+// comma-separated string, producing output byte-identical to the legacy
+// @mitto:available_acp_servers substitution.
+//
+// Format: "name [tag1, tag2] (current), name2 [tag3]"
+// Tags bracket is omitted when Tags is empty.
+// " (current)" is appended only on entries where Current == true.
+// Returns "" when servers is nil or empty.
+func FormatACPServers(servers []ACPServerInfo) string {
+	if len(servers) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		s := srv.Name
+		if len(srv.Tags) > 0 {
+			s += " [" + strings.Join(srv.Tags, ", ") + "]"
+		}
+		if srv.Current {
+			s += " (current)"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// FormatChildren renders a child-session list as a human-readable
+// comma-separated string, producing output byte-identical to the legacy
+// @mitto:children (and @mitto:mcp_children) substitution.
+//
+// Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
+// "(name)" is omitted when Name == "".
+// "[acp-server]" is omitted when ACPServer == "".
+// Returns "" when children is nil or empty.
+func FormatChildren(children []ChildInfo) string {
+	if len(children) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(children))
+	for _, child := range children {
+		s := child.ID
+		if child.Name != "" {
+			s += " (" + child.Name + ")"
+		}
+		if child.ACPServer != "" {
+			s += " [" + child.ACPServer + "]"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// =============================================================================
 // Template FuncMap builder
 // =============================================================================
 
@@ -114,6 +170,9 @@ func dirExists(folder, path string) bool {
 //   - dirExists(path)  — true iff path is a directory.
 //   - commandExists(name) — true iff name is in PATH.
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
+//   - acpServers() — FormatACPServers(ctx.ACP.Available); equivalent to @mitto:available_acp_servers.
+//   - children() — FormatChildren(ctx.Children.All); equivalent to @mitto:children.
+//   - mcpChildren() — FormatChildren(ctx.Children.MCP); equivalent to @mitto:mcp_children.
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
 //     against the SAME ctx used for enabledWhen. Fail-closed: returns (false, error) on
 //     compile or eval failure, which aborts template execution (and thus the send).
@@ -126,12 +185,18 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		toolsAvailable bool
 		toolNames      []string
 		args           map[string]string
+		acpSrvs        []ACPServerInfo
+		allChildren    []ChildInfo
+		mcpChildren    []ChildInfo
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
 		toolsAvailable = ctx.Tools.Available
 		toolNames = ctx.Tools.Names
 		args = ctx.Args
+		acpSrvs = ctx.ACP.Available
+		allChildren = ctx.Children.All
+		mcpChildren = ctx.Children.MCP
 	}
 
 	// cond/when: compile+evaluate a CEL expression against ctx using the singleton.
@@ -168,6 +233,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"dirExists":     func(path string) bool { return dirExists(folder, path) },
 		"commandExists": func(name string) bool { return commandExists(name) },
 		"hasPattern":    func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
+		"acpServers":    func() string { return FormatACPServers(acpSrvs) },
+		"children":      func() string { return FormatChildren(allChildren) },
+		"mcpChildren":   func() string { return FormatChildren(mcpChildren) },
 		"cond":          condFn,
 		"when":          condFn, // alias for cond
 		"trim":          strings.TrimSpace,

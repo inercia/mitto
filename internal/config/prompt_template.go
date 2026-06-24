@@ -15,28 +15,28 @@ import (
 // to their Go-template replacement. This is the single authoritative source of truth
 // for which @mitto: tokens have a template equivalent and should be warned about.
 var migratableMittoVars = map[string]string{
-	"session_id":         "{{ .Session.ID }}",
-	"parent_session_id":  "{{ .Session.ParentID }}",
-	"parent":             "{{ if .Parent.Exists }}{{ .Session.ParentID }} ({{ .Parent.Name }}){{ end }}",
-	"session_name":       "{{ .Session.Name }}",
-	"working_dir":        "{{ .Workspace.Folder }}",
-	"acp_server":         "{{ .ACP.Name }}",
-	"workspace_uuid":     "{{ .Workspace.UUID }}",
-	"beads_issue":        "{{ .Session.BeadsIssue }}",
-	"mcp_children_count": "{{ .Children.MCPCount }}",
-	"periodic":           "{{ .Session.IsPeriodic }}",
-	"periodic_forced":    "{{ .Session.IsPeriodicForced }}",
+	"session_id":            "{{ .Session.ID }}",
+	"parent_session_id":     "{{ .Session.ParentID }}",
+	"parent":                "{{ if .Parent.Exists }}{{ .Session.ParentID }} ({{ .Parent.Name }}){{ end }}",
+	"session_name":          "{{ .Session.Name }}",
+	"working_dir":           "{{ .Workspace.Folder }}",
+	"acp_server":            "{{ .ACP.Name }}",
+	"workspace_uuid":        "{{ .Workspace.UUID }}",
+	"beads_issue":           "{{ .Session.BeadsIssue }}",
+	"mcp_children_count":    "{{ .Children.MCPCount }}",
+	"periodic":              "{{ .Session.IsPeriodic }}",
+	"periodic_forced":       "{{ .Session.IsPeriodicForced }}",
+	"available_acp_servers": "{{ acpServers }}",
+	"children":              "{{ children }}",
+	"mcp_children":          "{{ mcpChildren }}",
+	"user_data":             "{{ .Session.UserDataJSON }}",
+	"user_data_schema":      "{{ .Workspace.UserDataSchemaJSON }}",
 }
 
-// keepListMittoVars lists @mitto: token names that have no template equivalent yet.
-// These are intentionally kept as legacy @mitto: form during the deprecation window.
-var keepListMittoVars = map[string]struct{}{
-	"available_acp_servers": {},
-	"children":              {},
-	"mcp_children":          {},
-	"user_data":             {},
-	"user_data_schema":      {},
-}
+// keepListMittoVars lists @mitto: token names that have no template equivalent.
+// All five original keep-list tokens have been graduated to migratableMittoVars.
+// This variable is kept (empty) because DeprecatedMittoVars still references it.
+var keepListMittoVars = map[string]struct{}{}
 
 // mittoVarRe matches @mitto:<token> occurrences (preceded by any char so we can
 // detect backslash-escapes). We capture the preceding char + the token name.

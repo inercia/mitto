@@ -112,14 +112,19 @@ CEL expression always read the same field from the same struct.
 | `{{ .Session.IsChild }}` | `session.isChild` | `Session.IsChild` |
 | `{{ .Session.IsPeriodic }}` | `session.isPeriodic` | `Session.IsPeriodic` |
 | `{{ .Session.BeadsIssue }}` | `session.beadsIssue` | `Session.BeadsIssue` |
+| `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
 | `{{ .ACP.Name }}` | `acp.name` | `ACP.Name` |
 | `{{ .ACP.Type }}` | `acp.type` | `ACP.Type` |
 | `{{ .Workspace.Folder }}` | `workspace.folder` | `Workspace.Folder` |
 | `{{ .Workspace.UUID }}` | `workspace.uuid` | `Workspace.UUID` |
+| `{{ .Workspace.UserDataSchemaJSON }}` | — | `Workspace.UserDataSchemaJSON` — JSON of workspace user-data schema fields |
 | `{{ .Parent.Name }}` | `parent.name` | `Parent.Name` |
 | `{{ .Parent.Exists }}` | `parent.exists` | `Parent.Exists` |
 | `{{ .Children.Count }}` | `children.count` | `Children.Count` |
 | `{{ .Children.MCPCount }}` | `children.mcpCount` | `Children.MCPCount` |
+| `{{ .Children.All }}` | — | `Children.All` — `[]config.ChildInfo` for all children |
+| `{{ .Children.MCP }}` | — | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only |
+| `{{ .ACP.Available }}` | — | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers |
 | `{{ .Args.NAME }}` | `args["NAME"]` (new) | `Args["NAME"]` (new) |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
@@ -220,15 +225,16 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 | `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | |
 | `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | int, not string |
 | `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | bool, not `"true"`/`"false"` string |
-| `@mitto:available_acp_servers` | *(no direct equivalent)* | Complex formatted string from `ProcessorInput.AvailableACPServers` — not in `PromptEnabledContext`; keep `@mitto:` or add ctx extension |
-| `@mitto:children` | *(no direct equivalent)* | Complex formatted string — keep `@mitto:` or add ctx extension |
-| `@mitto:mcp_children` | *(no direct equivalent)* | Complex formatted string — keep `@mitto:` or add ctx extension |
 | `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`session.isPeriodicForced`). |
-| `@mitto:user_data_schema` | *(no direct equivalent)* | JSON string from `ProcessorInput` — not in ctx; keep `@mitto:` |
-| `@mitto:user_data` | *(no direct equivalent)* | JSON string from `ProcessorInput` — not in ctx; keep `@mitto:` |
+| `@mitto:available_acp_servers` | `{{ acpServers }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
+| `@mitto:children` | `{{ children }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp], id2"` |
+| `@mitto:mcp_children` | `{{ mcpChildren }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only |
+| `@mitto:user_data` | `{{ .Session.UserDataJSON }}` | JSON of session user-data attributes; `""` when none |
+| `@mitto:user_data_schema` | `{{ .Workspace.UserDataSchemaJSON }}` | JSON of workspace user-data schema fields; `""` when none |
 
-Gaps marked "no direct equivalent" remain as `@mitto:` legacy form in prompt bodies during the
-deprecation window. They may be added to `PromptEnabledContext` in a follow-up increment.
+All `@mitto:` tokens now have template equivalents. The `@mitto:` forms remain supported for
+backward compatibility in processors and prompt bodies, but usage in prompt bodies logs a
+deprecation warning (see `WarnDeprecatedMittoVars`). Prefer the template forms in new prompts.
 
 ---
 

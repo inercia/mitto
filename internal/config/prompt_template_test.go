@@ -220,29 +220,29 @@ func TestDeprecatedMittoVars(t *testing.T) {
 			want: []string{"session_id"},
 		},
 		{
-			name: "keep-list excluded — children",
+			name: "graduated — children now migratable",
 			body: "@mitto:children",
-			want: nil,
+			want: []string{"children"},
 		},
 		{
-			name: "keep-list excluded — available_acp_servers",
+			name: "graduated — available_acp_servers now migratable",
 			body: "@mitto:available_acp_servers",
-			want: nil,
+			want: []string{"available_acp_servers"},
 		},
 		{
-			name: "keep-list excluded — mcp_children",
+			name: "graduated — mcp_children now migratable",
 			body: "@mitto:mcp_children",
-			want: nil,
+			want: []string{"mcp_children"},
 		},
 		{
-			name: "keep-list excluded — user_data",
+			name: "graduated — user_data and user_data_schema now migratable",
 			body: "@mitto:user_data @mitto:user_data_schema",
-			want: nil,
+			want: []string{"user_data", "user_data_schema"},
 		},
 		{
-			name: "mixed — migratable and keep-list",
+			name: "mixed — both session_id and children are now migratable",
 			body: "@mitto:session_id and @mitto:children",
-			want: []string{"session_id"},
+			want: []string{"children", "session_id"},
 		},
 		{
 			name: "escaped ignored",
@@ -260,9 +260,9 @@ func TestDeprecatedMittoVars(t *testing.T) {
 			want: []string{"parent"},
 		},
 		{
-			name: "mcp_children_count migratable vs mcp_children keep",
+			name: "mcp_children_count and mcp_children both migratable",
 			body: "@mitto:mcp_children_count @mitto:mcp_children",
-			want: []string{"mcp_children_count"},
+			want: []string{"mcp_children", "mcp_children_count"},
 		},
 		{
 			name: "sorted+unique — working_dir and session_id deduplicated",
@@ -276,8 +276,8 @@ func TestDeprecatedMittoVars(t *testing.T) {
 		},
 		{
 			name: "all migratable tokens",
-			body: "@mitto:session_id @mitto:parent_session_id @mitto:parent @mitto:session_name @mitto:working_dir @mitto:acp_server @mitto:workspace_uuid @mitto:beads_issue @mitto:mcp_children_count @mitto:periodic @mitto:periodic_forced",
-			want: []string{"acp_server", "beads_issue", "mcp_children_count", "parent", "parent_session_id", "periodic", "periodic_forced", "session_id", "session_name", "working_dir", "workspace_uuid"},
+			body: "@mitto:session_id @mitto:parent_session_id @mitto:parent @mitto:session_name @mitto:working_dir @mitto:acp_server @mitto:workspace_uuid @mitto:beads_issue @mitto:mcp_children_count @mitto:periodic @mitto:periodic_forced @mitto:available_acp_servers @mitto:children @mitto:mcp_children @mitto:user_data @mitto:user_data_schema",
+			want: []string{"acp_server", "available_acp_servers", "beads_issue", "children", "mcp_children", "mcp_children_count", "parent", "parent_session_id", "periodic", "periodic_forced", "session_id", "session_name", "user_data", "user_data_schema", "working_dir", "workspace_uuid"},
 		},
 	}
 
@@ -304,11 +304,54 @@ func TestDeprecatedMittoVarReplacement(t *testing.T) {
 	if r := DeprecatedMittoVarReplacement("session_id"); r != "{{ .Session.ID }}" {
 		t.Errorf("session_id replacement = %q", r)
 	}
-	if r := DeprecatedMittoVarReplacement("children"); r != "" {
-		t.Errorf("keep-list token should return empty, got %q", r)
+	// The 5 formerly-keep-list tokens now have template equivalents.
+	if r := DeprecatedMittoVarReplacement("children"); r != "{{ children }}" {
+		t.Errorf("children replacement = %q, want %q", r, "{{ children }}")
+	}
+	if r := DeprecatedMittoVarReplacement("mcp_children"); r != "{{ mcpChildren }}" {
+		t.Errorf("mcp_children replacement = %q, want %q", r, "{{ mcpChildren }}")
+	}
+	if r := DeprecatedMittoVarReplacement("available_acp_servers"); r != "{{ acpServers }}" {
+		t.Errorf("available_acp_servers replacement = %q, want %q", r, "{{ acpServers }}")
+	}
+	if r := DeprecatedMittoVarReplacement("user_data"); r != "{{ .Session.UserDataJSON }}" {
+		t.Errorf("user_data replacement = %q, want %q", r, "{{ .Session.UserDataJSON }}")
+	}
+	if r := DeprecatedMittoVarReplacement("user_data_schema"); r != "{{ .Workspace.UserDataSchemaJSON }}" {
+		t.Errorf("user_data_schema replacement = %q, want %q", r, "{{ .Workspace.UserDataSchemaJSON }}")
 	}
 	if r := DeprecatedMittoVarReplacement("unknown_xyz"); r != "" {
 		t.Errorf("unknown token should return empty, got %q", r)
+	}
+}
+
+// TestKeepListIsEmpty asserts that keepListMittoVars has been emptied after all
+// formerly-kept tokens were graduated to migratableMittoVars.
+func TestKeepListIsEmpty(t *testing.T) {
+	if n := len(keepListMittoVars); n != 0 {
+		t.Errorf("keepListMittoVars should be empty, got %d entries: %v", n, keepListMittoVars)
+	}
+}
+
+// TestMigratableMittoVars_ContainsGraduatedTokens asserts that migratableMittoVars
+// contains the 5 tokens graduated from the keep-list, with the expected replacements.
+func TestMigratableMittoVars_ContainsGraduatedTokens(t *testing.T) {
+	expected := map[string]string{
+		"available_acp_servers": "{{ acpServers }}",
+		"children":              "{{ children }}",
+		"mcp_children":          "{{ mcpChildren }}",
+		"user_data":             "{{ .Session.UserDataJSON }}",
+		"user_data_schema":      "{{ .Workspace.UserDataSchemaJSON }}",
+	}
+	for token, want := range expected {
+		got, ok := migratableMittoVars[token]
+		if !ok {
+			t.Errorf("migratableMittoVars missing key %q", token)
+			continue
+		}
+		if got != want {
+			t.Errorf("migratableMittoVars[%q] = %q, want %q", token, got, want)
+		}
 	}
 }
 
@@ -712,4 +755,301 @@ func TestBuiltinPrompts_NoDeprecatedMittoVars(t *testing.T) {
 			strings.Join(failures, "\n  "))
 	}
 	t.Logf("checked %d builtin prompts — zero deprecated @mitto: tokens ✓", len(prompts))
+}
+
+// TestStatus_ThreeModeTargetResolution tests the three target-bead
+// resolution branches of beads-issue-status.prompt.yaml:
+//
+//	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(b) .Args.IssueID set only   → "arg" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(c) neither set              → "current problem" mode: "no linked bead"
+//	    prose appears AND no bd commands or id-greps leak
+//
+// Also asserts the YAML header migration: menus includes both "beadsIssues"
+// and "conversation", and the IssueID parameter is non-required.
+func TestStatus_ThreeModeTargetResolution(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-status.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-status.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	// Header assertions.
+	if !strings.Contains(prompt.Menus, "beadsIssues") {
+		t.Errorf("expected Menus to contain 'beadsIssues'; got %q", prompt.Menus)
+	}
+	if !strings.Contains(prompt.Menus, "conversation") {
+		t.Errorf("expected Menus to contain 'conversation'; got %q", prompt.Menus)
+	}
+	var issueParam *PromptParameter
+	for i := range prompt.Parameters {
+		if prompt.Parameters[i].Name == "IssueID" {
+			issueParam = &prompt.Parameters[i]
+			break
+		}
+	}
+	if issueParam == nil {
+		t.Fatalf("IssueID parameter not found in prompt.Parameters")
+	}
+	if issueParam.Required == nil {
+		t.Errorf("IssueID parameter: expected Required to be explicitly set (*bool non-nil); got nil")
+	} else if *issueParam.Required {
+		t.Errorf("IssueID parameter: expected Required == false; got true")
+	}
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-status", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Linked-issue mode: Session.BeadsIssue set.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "no linked bead") {
+		t.Errorf("branch (a): unexpected 'no linked bead' text; session.BeadsIssue should have been used")
+	}
+
+	// (b) Arg mode: only Args.IssueID set.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{"IssueID": "mitto-xyz"},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "no linked bead") {
+		t.Errorf("branch (b): unexpected 'no linked bead' text; Args.IssueID should have been used")
+	}
+
+	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "no linked bead") {
+		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
+	}
+	// No bd commands or id-greps must appear in current-problem mode.
+	forbidden := []string{"bd show", "bd dep", `grep -i "`, "bd update", "bd comment"}
+	for _, cmd := range forbidden {
+		if strings.Contains(outC, cmd) {
+			t.Errorf("branch (c): forbidden pattern %q leaked into current-problem-mode output:\n%s", cmd, outC)
+		}
+	}
+}
+
+// TestResolved_ThreeModeTargetResolution tests the three target-bead
+// resolution branches of beads-issue-resolved.prompt.yaml:
+//
+//	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(b) .Args.IssueID set only   → "arg" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(c) neither set              → "current problem" mode: "no linked bead"
+//	    prose appears AND no bd commands or id-greps leak
+//
+// Also asserts the YAML header migration: menus includes both "beadsIssues"
+// and "conversation", and the IssueID parameter is non-required.
+func TestResolved_ThreeModeTargetResolution(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-resolved.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-resolved.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	// Header assertions.
+	if !strings.Contains(prompt.Menus, "beadsIssues") {
+		t.Errorf("expected Menus to contain 'beadsIssues'; got %q", prompt.Menus)
+	}
+	if !strings.Contains(prompt.Menus, "conversation") {
+		t.Errorf("expected Menus to contain 'conversation'; got %q", prompt.Menus)
+	}
+	var issueParam *PromptParameter
+	for i := range prompt.Parameters {
+		if prompt.Parameters[i].Name == "IssueID" {
+			issueParam = &prompt.Parameters[i]
+			break
+		}
+	}
+	if issueParam == nil {
+		t.Fatalf("IssueID parameter not found in prompt.Parameters")
+	}
+	if issueParam.Required == nil {
+		t.Errorf("IssueID parameter: expected Required to be explicitly set (*bool non-nil); got nil")
+	} else if *issueParam.Required {
+		t.Errorf("IssueID parameter: expected Required == false; got true")
+	}
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-resolved", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Linked-issue mode: Session.BeadsIssue set.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "no linked bead") {
+		t.Errorf("branch (a): unexpected 'no linked bead' text; session.BeadsIssue should have been used")
+	}
+
+	// (b) Arg mode: only Args.IssueID set.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{"IssueID": "mitto-xyz"},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "no linked bead") {
+		t.Errorf("branch (b): unexpected 'no linked bead' text; Args.IssueID should have been used")
+	}
+
+	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "no linked bead") {
+		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
+	}
+	// No bd commands or id-greps must appear in current-problem mode.
+	forbidden := []string{"bd show", "bd dep", "bd close", "bd create", "bd update", `grep -i "`}
+	for _, cmd := range forbidden {
+		if strings.Contains(outC, cmd) {
+			t.Errorf("branch (c): forbidden pattern %q leaked into current-problem-mode output:\n%s", cmd, outC)
+		}
+	}
+}
+
+// TestWork_ThreeModeTargetResolution tests the three target-bead
+// resolution branches of beads-issue-work.prompt.yaml:
+//
+//	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(b) .Args.IssueID set only   → "arg" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(c) neither set              → "current problem" mode: "no linked bead"
+//	    prose appears AND no bd commands leak
+//
+// Also asserts the YAML header migration: menus includes both "beadsIssues"
+// and "conversation", and the IssueID parameter is non-required.
+func TestWork_ThreeModeTargetResolution(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-work.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-work.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	// Header assertions.
+	if !strings.Contains(prompt.Menus, "beadsIssues") {
+		t.Errorf("expected Menus to contain 'beadsIssues'; got %q", prompt.Menus)
+	}
+	if !strings.Contains(prompt.Menus, "conversation") {
+		t.Errorf("expected Menus to contain 'conversation'; got %q", prompt.Menus)
+	}
+	var issueParam *PromptParameter
+	for i := range prompt.Parameters {
+		if prompt.Parameters[i].Name == "IssueID" {
+			issueParam = &prompt.Parameters[i]
+			break
+		}
+	}
+	if issueParam == nil {
+		t.Fatalf("IssueID parameter not found in prompt.Parameters")
+	}
+	if issueParam.Required == nil {
+		t.Errorf("IssueID parameter: expected Required to be explicitly set (*bool non-nil); got nil")
+	} else if *issueParam.Required {
+		t.Errorf("IssueID parameter: expected Required == false; got true")
+	}
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-work", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Linked-issue mode: Session.BeadsIssue set.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "no linked bead") {
+		t.Errorf("branch (a): unexpected 'no linked bead' text; session.BeadsIssue should have been used")
+	}
+
+	// (b) Arg mode: only Args.IssueID set.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{"IssueID": "mitto-xyz"},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "no linked bead") {
+		t.Errorf("branch (b): unexpected 'no linked bead' text; Args.IssueID should have been used")
+	}
+
+	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "no linked bead") {
+		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
+	}
+	// No bd commands must appear in current-problem mode.
+	forbidden := []string{"bd show", "bd dep", "bd update", "bd close", "bd comment"}
+	for _, cmd := range forbidden {
+		if strings.Contains(outC, cmd) {
+			t.Errorf("branch (c): forbidden bd command %q leaked into current-problem-mode output:\n%s", cmd, outC)
+		}
+	}
 }

@@ -30,6 +30,20 @@ type PromptEnabledContext struct {
 	Args map[string]string
 }
 
+// ACPServerInfo describes a single ACP server available in the workspace.
+// Mirrors processors.AvailableACPServer but lives in the config package so
+// that templatefuncs.go can format it without creating an import cycle.
+type ACPServerInfo struct {
+	// Name is the server identifier (e.g., "claude-code").
+	Name string
+	// Type is the server type for prompt matching. Defaults to Name if not set.
+	Type string
+	// Tags contains optional categorization labels (e.g., ["coding", "fast-model"]).
+	Tags []string
+	// Current is true if this is the active ACP server for the session.
+	Current bool
+}
+
 // ACPContext holds ACP server context for CEL evaluation.
 type ACPContext struct {
 	// Name is the ACP server name (e.g., "auggie", "claude-code")
@@ -40,6 +54,9 @@ type ACPContext struct {
 	Tags []string
 	// AutoApprove indicates if permission requests are auto-approved
 	AutoApprove bool
+	// Available is the list of ACP servers that have workspaces configured for
+	// the session's working directory. Used by the {{ acpServers }} template func.
+	Available []ACPServerInfo
 }
 
 // WorkspaceContext holds workspace context for CEL evaluation.
@@ -56,6 +73,9 @@ type WorkspaceContext struct {
 	HasMittoRC bool
 	// HasMetadataDescription indicates whether the workspace has a metadata description in .mittorc
 	HasMetadataDescription bool
+	// UserDataSchemaJSON is the JSON representation of the workspace user data schema fields.
+	// Empty when no schema is defined. Used by the {{ .Workspace.UserDataSchemaJSON }} template accessor.
+	UserDataSchemaJSON string
 }
 
 // SessionContext holds current session context for CEL evaluation.
@@ -86,6 +106,9 @@ type SessionContext struct {
 	HasBeadsIssue bool
 	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
 	BeadsIssue string
+	// UserDataJSON is the JSON representation of the current session's user data attributes.
+	// Empty when no user data exists. Used by the {{ .Session.UserDataJSON }} template accessor.
+	UserDataJSON string
 }
 
 // ParentContext holds parent session context for CEL evaluation.
@@ -97,6 +120,21 @@ type ParentContext struct {
 	Name string
 	// ACPServer is the ACP server name of the parent session
 	ACPServer string
+}
+
+// ChildInfo describes a single child session for template rendering.
+// Lives in config so templatefuncs.go can format it without an import cycle.
+type ChildInfo struct {
+	// ID is the child session identifier.
+	ID string
+	// Name is the child session title/name (may be empty if not yet set).
+	Name string
+	// ACPServer is the ACP server name used by the child session.
+	ACPServer string
+	// Origin is the child origin string: "auto", "mcp", or "human".
+	Origin string
+	// IsPrompting indicates the child agent is currently responding.
+	IsPrompting bool
 }
 
 // ChildrenContext holds children sessions context for CEL evaluation.
@@ -115,6 +153,12 @@ type ChildrenContext struct {
 	PromptingCount int
 	// IdleCount is the number of child sessions NOT currently prompting (Count - PromptingCount)
 	IdleCount int
+	// All contains structured info for all child sessions.
+	// Used by the {{ children }} template func (FormatChildren).
+	All []ChildInfo
+	// MCP contains structured info for MCP-origin child sessions only.
+	// Used by the {{ mcpChildren }} template func (FormatChildren on the MCP slice).
+	MCP []ChildInfo
 }
 
 // ToolsContext holds MCP tools context for CEL evaluation.

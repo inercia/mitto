@@ -394,6 +394,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	expected := []string{
 		"arg", "default",
 		"fileExists", "dirExists", "commandExists", "hasPattern",
+		"acpServers", "children", "mcpChildren",
 		"trim", "lower", "upper", "contains", "hasPrefix", "hasSuffix", "join",
 	}
 	for _, key := range expected {
@@ -444,6 +445,218 @@ func TestBuildTemplateFuncMap_FileExistsParity(t *testing.T) {
 
 // Compile-time check: template.FuncMap is the declared return type.
 var _ template.FuncMap = BuildTemplateFuncMap(nil)
+
+// =============================================================================
+// FormatACPServers tests
+// =============================================================================
+
+func TestFormatACPServers(t *testing.T) {
+	cases := []struct {
+		name    string
+		servers []ACPServerInfo
+		want    string
+	}{
+		{"nil", nil, ""},
+		{"empty", []ACPServerInfo{}, ""},
+		{
+			"single no-tags not-current",
+			[]ACPServerInfo{{Name: "claude-code"}},
+			"claude-code",
+		},
+		{
+			"single with tags current",
+			[]ACPServerInfo{{Name: "auggie", Tags: []string{"coding", "ai-assistant"}, Current: true}},
+			"auggie [coding, ai-assistant] (current)",
+		},
+		{
+			"multi: one current, one not",
+			[]ACPServerInfo{
+				{Name: "auggie", Tags: []string{"coding"}, Current: false},
+				{Name: "claude-code", Tags: []string{"coding", "fast"}, Current: true},
+			},
+			"auggie [coding], claude-code [coding, fast] (current)",
+		},
+		{
+			"server with type — type not in output, name is",
+			[]ACPServerInfo{{Name: "claude-fast", Type: "claude-code", Tags: []string{"fast"}, Current: true}},
+			"claude-fast [fast] (current)",
+		},
+		{
+			"no tags no current",
+			[]ACPServerInfo{{Name: "bare"}},
+			"bare",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatACPServers(tc.servers); got != tc.want {
+				t.Errorf("FormatACPServers() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// FormatChildren tests
+// =============================================================================
+
+func TestFormatChildren(t *testing.T) {
+	cases := []struct {
+		name     string
+		children []ChildInfo
+		want     string
+	}{
+		{"nil", nil, ""},
+		{"empty", []ChildInfo{}, ""},
+		{
+			"single with name and acp",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code"}},
+			"sess-1 (Research) [claude-code]",
+		},
+		{
+			"single no-name",
+			[]ChildInfo{{ID: "sess-1", ACPServer: "auggie"}},
+			"sess-1 [auggie]",
+		},
+		{
+			"single no-acp",
+			[]ChildInfo{{ID: "sess-1", Name: "Test"}},
+			"sess-1 (Test)",
+		},
+		{
+			"bare id only",
+			[]ChildInfo{{ID: "sess-1"}},
+			"sess-1",
+		},
+		{
+			"multi",
+			[]ChildInfo{
+				{ID: "sess-1", Name: "Research", ACPServer: "claude-code"},
+				{ID: "sess-2", Name: "Tests", ACPServer: "auggie"},
+			},
+			"sess-1 (Research) [claude-code], sess-2 (Tests) [auggie]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatChildren(tc.children); got != tc.want {
+				t.Errorf("FormatChildren() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// acpServers / children / mcpChildren template func tests
+// =============================================================================
+
+// TestTemplateFuncs_ACPServersChildrenMCPChildren verifies that the three new
+// zero-arg template functions render correctly from a populated PromptEnabledContext.
+func TestTemplateFuncs_ACPServersChildrenMCPChildren(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		ACP: ACPContext{
+			Available: []ACPServerInfo{
+				{Name: "auggie", Tags: []string{"coding"}, Current: true},
+				{Name: "claude-code", Tags: []string{"fast"}},
+			},
+		},
+		Children: ChildrenContext{
+			All: []ChildInfo{
+				{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp"},
+				{ID: "s2", Name: "Helper", ACPServer: "claude-code", Origin: "auto"},
+			},
+			MCP: []ChildInfo{
+				{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp"},
+			},
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// acpServers renders all available ACP servers.
+	got, err := RenderPromptTemplate("t", `{{ acpServers }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("acpServers render error: %v", err)
+	}
+	if want := "auggie [coding] (current), claude-code [fast]"; got != want {
+		t.Errorf("acpServers: got %q, want %q", got, want)
+	}
+
+	// children renders all children (All slice).
+	got, err = RenderPromptTemplate("t", `{{ children }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("children render error: %v", err)
+	}
+	if want := "s1 (Worker) [auggie], s2 (Helper) [claude-code]"; got != want {
+		t.Errorf("children: got %q, want %q", got, want)
+	}
+
+	// mcpChildren renders only MCP-origin children (MCP slice).
+	got, err = RenderPromptTemplate("t", `{{ mcpChildren }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("mcpChildren render error: %v", err)
+	}
+	if want := "s1 (Worker) [auggie]"; got != want {
+		t.Errorf("mcpChildren: got %q, want %q", got, want)
+	}
+}
+
+// TestTemplateFuncs_NilCtxACPServersChildren verifies that acpServers, children,
+// and mcpChildren return "" when the context is nil (no panics).
+func TestTemplateFuncs_NilCtxACPServersChildren(t *testing.T) {
+	fm := BuildTemplateFuncMap(nil)
+	for _, body := range []string{"{{ acpServers }}", "{{ children }}", "{{ mcpChildren }}"} {
+		got, err := RenderPromptTemplate("t", body, nil, fm)
+		if err != nil {
+			t.Errorf("nil ctx %q: unexpected error: %v", body, err)
+		}
+		if got != "" {
+			t.Errorf("nil ctx %q: expected empty string, got %q", body, got)
+		}
+	}
+}
+
+// TestTemplateFuncs_EmptySlicesACPServersChildren verifies that acpServers, children,
+// and mcpChildren return "" when the slices are empty (non-nil ctx, no data).
+func TestTemplateFuncs_EmptySlicesACPServersChildren(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+	for _, body := range []string{"{{ acpServers }}", "{{ children }}", "{{ mcpChildren }}"} {
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Errorf("empty ctx %q: unexpected error: %v", body, err)
+		}
+		if got != "" {
+			t.Errorf("empty ctx %q: expected empty string, got %q", body, got)
+		}
+	}
+}
+
+// TestTemplateFuncs_MCPChildrenFiltersCorrectly verifies that mcpChildren only
+// renders the MCP slice even when All contains additional non-MCP entries.
+func TestTemplateFuncs_MCPChildrenFiltersCorrectly(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		Children: ChildrenContext{
+			All: []ChildInfo{
+				{ID: "m1", Name: "MCP child", ACPServer: "auggie", Origin: "mcp"},
+				{ID: "a1", Name: "Auto child", ACPServer: "auggie", Origin: "auto"},
+			},
+			MCP: []ChildInfo{
+				{ID: "m1", Name: "MCP child", ACPServer: "auggie", Origin: "mcp"},
+			},
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+
+	allGot, _ := RenderPromptTemplate("t", `{{ children }}`, ctx, fm)
+	mcpGot, _ := RenderPromptTemplate("t", `{{ mcpChildren }}`, ctx, fm)
+
+	if want := "m1 (MCP child) [auggie], a1 (Auto child) [auggie]"; allGot != want {
+		t.Errorf("children: got %q, want %q", allGot, want)
+	}
+	if want := "m1 (MCP child) [auggie]"; mcpGot != want {
+		t.Errorf("mcpChildren: got %q, want %q", mcpGot, want)
+	}
+}
 
 // =============================================================================
 // cond/when tests (mitto-m7sb.12)

@@ -493,6 +493,65 @@ prompt: |
   (prompt body here)
 ```
 
+### Context-adaptive prompts (three modes)
+
+A single prompt can serve **both** the per-issue Beads menu and the generic
+conversation menu by combining `menus: beadsIssues, conversation`, an **optional**
+typed parameter, and a Go-template _target ladder_ that resolves the issue from
+whichever context is available. The same body then adapts to one of three modes:
+
+1. **Linked issue** — the conversation is already linked to a bead, so
+   `{{ .Session.BeadsIssue }}` is set (e.g. an "Iterate until complete" run).
+2. **Selected issue** — launched from the Beads per-issue menu, which auto-fills
+   the optional `IssueID` parameter (`{{ .Args.IssueID }}`).
+3. **No issue (current problem)** — launched from the conversation menu with no
+   bead in context. The prompt drops all `bd` commands and acts as a general
+   advisor on the _current problem_ under discussion.
+
+**Header recipe** — list both menus and mark the parameter optional so the prompt
+is not hidden when no issue is available (see
+[parameters (Typed Inputs & Type-Based Gating)](#parameters-typed-inputs--type-based-gating)):
+
+```yaml
+name: "Check status"
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+```
+
+**Target ladder** — resolve a single `$target` at the top of the body, preferring
+the linked bead, then the optional argument, then falling back to mode 3:
+
+```text
+{{ $target := "" -}}
+{{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+
+{{ if $target -}}
+The target bead is `{{ $target }}`.
+{{- else -}}
+There is **no linked bead**. Work on the **current problem** under discussion;
+do **not** run any `bd` commands.
+{{- end }}
+```
+
+**Command gating** — wrap every bead-specific command (and any `git grep <id>`
+that depends on an issue ID) in `{{ if $target }} … {{ end }}` so mode 3 emits
+**zero** `bd` commands:
+
+```text
+{{ if $target -}}
+    bd show {{ $target }} --long --json
+{{- end }}
+```
+
+The built-in `beads-issue-investigate`, `beads-issue-discuss`,
+`beads-issue-status`, `beads-issue-resolved`, and `beads-issue-work` prompts all
+follow this three-mode pattern.
+
 ## Periodic Prompts
 
 A prompt can declare a `periodic:` mapping to opt into **periodic mode**. How a
