@@ -530,6 +530,36 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	c.checkAndSignalWait()
 }
 
+// markChildFailed marks a child as failed due to a queued-send error, so the
+// parent's wait loop sees status=failed instead of treating it as frozen/idle.
+func (c *childReportCollector) markChildFailed(childID string, msg string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Don't overwrite a real report
+	r := c.reports[childID]
+	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
+		return
+	}
+
+	reportJSON, _ := json.Marshal(map[string]string{
+		"status":  "failed",
+		"summary": "Queued send failed: " + msg,
+	})
+
+	if r == nil {
+		r = &childReport{}
+		c.reports[childID] = r
+	}
+	r.Report = reportJSON
+	r.Completed = true
+	r.Timestamp = time.Now()
+	r.Failed = true
+	r.FailMessage = msg
+
+	c.checkAndSignalWait()
+}
+
 // reportSatisfiesCurrentTask returns true if the given report counts as a completed
 // result for the current wait's task. Must be called with c.mu held.
 //
@@ -538,12 +568,13 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 //   - either: no task scoping is in effect (currentTaskID == ""),
 //     OR: the report carries the matching task_id,
 //     OR: the entry was auto-completed (agent_idle / session_stopped, which carry
-//     no real task_id and must always count toward completion).
+//     no real task_id and must always count toward completion),
+//     OR: the entry was failed (queued-send error, which also carries no real task_id).
 func (c *childReportCollector) reportSatisfiesCurrentTask(r *childReport) bool {
 	if r == nil || !r.Completed {
 		return false
 	}
-	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted
+	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted || r.Failed
 }
 
 // checkAndSignalWait checks if all waited-on children have reported and signals if so.
@@ -707,6 +738,8 @@ type childReport struct {
 	TaskID        string          `json:"task_id,omitempty"`
 	AutoCompleted bool            `json:"auto_completed,omitempty"` // true if auto-completed (agent went idle without reporting)
 	AutoReason    string          `json:"auto_reason,omitempty"`    // reason for auto-completion
+	Failed        bool            `json:"failed,omitempty"`         // true if the queued send failed before the agent could process it
+	FailMessage   string          `json:"fail_message,omitempty"`   // error message from the failed send
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.

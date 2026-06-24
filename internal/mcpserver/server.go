@@ -216,6 +216,9 @@ type BackgroundSession interface {
 	// completes. Used by the mitto_conversation_delete tool when an agent requests
 	// deletion of its own conversation.
 	RequestSelfDestruct()
+	// LastQueuedSendError returns the most recent queued-send failure message and its
+	// timestamp. Used by the parent wait loop to surface dispatch failures as status=failed.
+	LastQueuedSendError() (string, time.Time)
 }
 
 // Config holds the configuration for the MCP server.
@@ -4617,6 +4620,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 		// Track when each child was first seen idle (not prompting)
 		childIdleSince := make(map[string]time.Time)
+		waitStartTime := time.Now()
 
 	waitLoop:
 		for {
@@ -4687,6 +4691,18 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 						continue
 					}
 
+					// If a queued-send error occurred after this wait started, surface it
+					// as a failure rather than letting the child appear frozen/idle.
+					if errMsg, errAt := bs.LastQueuedSendError(); errMsg != "" && errAt.After(waitStartTime) {
+						s.logger.Info("Child queued send failed — marking failed",
+							"parent_session", realSessionID,
+							"child_session", childID,
+							"error", errMsg)
+						collector.markChildFailed(childID, errMsg)
+						delete(childIdleSince, childID)
+						continue
+					}
+
 					// Child is running but idle (not prompting)
 					if idleSince, exists := childIdleSince[childID]; exists {
 						if time.Since(idleSince) > childIdleGracePeriod {
@@ -4731,7 +4747,15 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		report := collector.reports[childID]
 		info := ChildReportInfo{Completed: false, Status: "pending"}
 		if report != nil && report.Completed {
-			if report.AutoCompleted {
+			if report.Failed {
+				// Queued-send failed before agent could process the message
+				info.Completed = false
+				info.Status = "failed"
+				info.Reason = report.FailMessage
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+				}
+			} else if report.AutoCompleted {
 				// Auto-completed: agent went idle without reporting
 				info.Completed = false
 				info.Status = "agent_not_responding"
