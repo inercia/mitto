@@ -500,6 +500,111 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 	}
 }
 
+// TestDiscuss_ThreeModeTargetResolution tests the three target-bead
+// resolution branches of beads-issue-discuss.prompt.yaml:
+//
+//	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(b) .Args.IssueID set only   → "arg" mode: bead ID appears, no
+//	    "no linked bead" prose
+//	(c) neither set              → "current problem" mode: "no linked bead"
+//	    prose appears AND no bd commands leak (bd show/update/comment/create/dep)
+//
+// Also asserts the YAML header migration: menus includes both "beadsIssues"
+// and "conversation", and the IssueID parameter is non-required.
+func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-discuss.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-discuss.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	// Header assertions.
+	if !strings.Contains(prompt.Menus, "beadsIssues") {
+		t.Errorf("expected Menus to contain 'beadsIssues'; got %q", prompt.Menus)
+	}
+	if !strings.Contains(prompt.Menus, "conversation") {
+		t.Errorf("expected Menus to contain 'conversation'; got %q", prompt.Menus)
+	}
+	var issueParam *PromptParameter
+	for i := range prompt.Parameters {
+		if prompt.Parameters[i].Name == "IssueID" {
+			issueParam = &prompt.Parameters[i]
+			break
+		}
+	}
+	if issueParam == nil {
+		t.Fatalf("IssueID parameter not found in prompt.Parameters")
+	}
+	if issueParam.Required == nil {
+		t.Errorf("IssueID parameter: expected Required to be explicitly set (*bool non-nil); got nil")
+	} else if *issueParam.Required {
+		t.Errorf("IssueID parameter: expected Required == false; got true")
+	}
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-discuss", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Linked-issue mode: Session.BeadsIssue set.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "no linked bead") {
+		t.Errorf("branch (a): unexpected 'no linked bead' text; session.BeadsIssue should have been used")
+	}
+	if strings.Contains(outA, "bd show  ") || strings.Contains(outA, "bd show \n") {
+		t.Errorf("branch (a): found broken empty 'bd show ' command in output")
+	}
+
+	// (b) Arg mode: only Args.IssueID set.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{"IssueID": "mitto-xyz"},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "no linked bead") {
+		t.Errorf("branch (b): unexpected 'no linked bead' text; Args.IssueID should have been used")
+	}
+	if strings.Contains(outB, "bd show  ") || strings.Contains(outB, "bd show \n") {
+		t.Errorf("branch (b): found broken empty 'bd show ' command in output")
+	}
+
+	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "no linked bead") {
+		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
+	}
+	// No bd commands must appear in current-problem mode.
+	forbidden := []string{"bd show", "bd update", "bd comment", "bd create", "bd dep"}
+	for _, cmd := range forbidden {
+		if strings.Contains(outC, cmd) {
+			t.Errorf("branch (c): forbidden bd command %q leaked into current-problem-mode output:\n%s", cmd, outC)
+		}
+	}
+}
+
 // TestIteratePrompts_CommitOption verifies the opt-in "Commit" boolean parameter
 // on the iterating builtin prompts: the commit-instruction section is rendered
 // only when the Commit argument is the string "true", and is omitted when it is

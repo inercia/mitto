@@ -1,9 +1,10 @@
 icon: chat-bubble
 name: Discuss & Refine
-menus: beadsIssues
+menus: beadsIssues, conversation
 parameters:
   - name: IssueID
     type: beadsId
+    required: false
     description: The beads issue ID to act on
 description: 'Discuss and refine a bead: resolve pending decisions, assess its quality, and sharpen it until it is ready to work on — capturing the rationale back into the tracker'
 backgroundColor: '#F8BBD0'
@@ -18,35 +19,45 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${IssueID}`. Your job is to help the user **think through and refine** this
-  bead — resolving pending decisions, assessing its quality, and clarifying gaps — until it is
-  **ready to work on**, then **capture the outcome back into the tracker**.
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bead** is `{{ $target }}`. Your job is to help the user **think through and refine** this bead — resolving pending decisions, assessing its quality, and clarifying gaps — until it is **ready to work on**, then **capture the outcome back into the tracker**.
+  {{- else -}}
+  There is **no linked bead** for this conversation. Help the user **think through and refine the current problem** under discussion here — the topic, design question, or decision raised in this conversation: resolve pending decisions, surface trade-offs, and sharpen it into an actionable conclusion. Do **not** run any `bd` commands — there is no bead to load or update.
+  {{- end }}
 
   > **Scope:** this is a *discussion and refinement* prompt. Do **not** implement the work, write
-  > code, or change anything outside the beads tracker. You may only investigate, discuss, and — with
-  > the user's confirmation — update this bead or create new beads.
+  > code, or change anything outside the beads tracker.
+  > {{ if $target -}}
+  > You may only investigate, discuss, and — with the user's confirmation — update this bead or create new beads.
+  > {{- else -}}
+  > You may only investigate and discuss; there is no bead to modify (you may, with confirmation, create a new bead to capture the outcome).
+  > {{- end }}
 
+  {{ if $target -}}
   ## Step 1 — Load the bead and its context
 
   ```bash
-  bd show ${IssueID} --long --json     # description, acceptance, design, notes, labels, status
-  bd dep tree ${IssueID}               # blockers and what it blocks
-  bd show ${IssueID} --children --json # existing child beads (if any)
-  bd comments ${IssueID}               # prior discussion, if any
+  bd show {{ $target }} --long --json     # description, acceptance, design, notes, labels, status
+  bd dep tree {{ $target }}               # blockers and what it blocks
+  bd show {{ $target }} --children --json # existing child beads (if any)
+  bd comments {{ $target }}               # prior discussion, if any
   ```
 
   Read everything carefully. Where the bead references code or features, investigate the **codebase**
   just enough to discuss it knowledgeably — but remember you are not here to implement it.
+  {{- end }}
 
-  ## Step 2 — Analyse the bead: pending decisions & blockers
+  ## Step 2 — Analyse the bead or current problem: pending decisions & blockers
 
-  Scan the bead for **decisions that are blocking progress or awaiting input**, and for anything
-  stopping it from being worked on, e.g.:
+  Scan the bead or current problem for **decisions that are blocking progress or awaiting input**, and
+  for anything stopping it from being worked on, e.g.:
 
   - Open questions in the description, notes, or comments ("should we…?", "TBD", "decide whether…")
   - Unresolved trade-offs between approaches, or an undefined acceptance criterion
   - A `blocked` / `deferred` status, or labels such as `needs-decision` / `question` / `discuss`
-  - Unmet dependencies or prerequisites (from `bd dep tree`)
+  - Unmet dependencies or prerequisites (from the dependency tree)
   - Ambiguity that would force an implementer to guess
 
   **If nothing stands out** — no pending decisions, blockers, or obvious gaps — ask the user what they
@@ -61,9 +72,9 @@ prompt: |
   `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, listing the proposed
   steps as options plus free text so they can choose, reprioritise, or describe their own.
 
-  ## Step 4 — Assess the bead's quality
+  ## Step 4 — Assess the quality of the bead or current problem
 
-  Evaluate whether the bead is **ready to work on**, checking:
+  Evaluate whether the bead or current problem is **ready to work on**, checking:
 
   - **Description** — is it complete and unambiguous?
   - **Acceptance criteria** — are they defined, and do they make "done" clear?
@@ -75,8 +86,9 @@ prompt: |
   ## Step 5 — Identify what still needs clarification
 
   From the quality assessment, list the **specific gaps or ambiguities** that must be resolved before
-  the bead is ready — the open questions, undefined criteria, or unclear dependencies that would
-  otherwise force an implementer to guess. If the bead is already in good shape, say so.
+  the bead or current problem is ready — the open questions, undefined criteria, or unclear
+  dependencies that would otherwise force an implementer to guess. If it is already in good shape,
+  say so.
 
   ## Step 6 — Discuss the gaps with the user
 
@@ -87,22 +99,23 @@ prompt: |
   best-guess answer plus free text, and iterate until each gap is resolved into an **actionable
   conclusion**.
 
+  {{ if $target -}}
   ## Step 7 — Update the bead (after confirming)
 
   Everything above is **read-only until the user confirms**. Present exactly what you intend to change
   and get approval via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`,
-  e.g. "Apply these updates to `${IssueID}`?" with options like **"Apply all"**, **"Apply some"**
+  e.g. "Apply these updates to `{{ $target }}`?" with options like **"Apply all"**, **"Apply some"**
   (free text), and **"Make no changes"**. Never write anything the user did not approve.
 
   Once approved, update the bead to reflect the decisions made:
 
   ```bash
-  bd update ${IssueID} --body-file /tmp/bead-desc.md       # revise the description
-  bd update ${IssueID} --acceptance "<now-clear criteria>" # if a decision sharpened "done"
-  bd update ${IssueID} --append-notes "<decisions + rationale>"
-  bd update ${IssueID} --remove-label needs-decision       # drop flags the decision removed
-  bd update ${IssueID} -s open                             # un-block now that it can proceed
-  bd update ${IssueID} -p <0-4>                            # if the decision changed its priority
+  bd update {{ $target }} --body-file /tmp/bead-desc.md       # revise the description
+  bd update {{ $target }} --acceptance "<now-clear criteria>" # if a decision sharpened "done"
+  bd update {{ $target }} --append-notes "<decisions + rationale>"
+  bd update {{ $target }} --remove-label needs-decision       # drop flags the decision removed
+  bd update {{ $target }} -s open                             # un-block now that it can proceed
+  bd update {{ $target }} -p <0-4>                            # if the decision changed its priority
   ```
 
   **Whenever you change the description** (or other substantive fields), **add a comment documenting
@@ -110,22 +123,31 @@ prompt: |
   understand why the bead evolved as it did:
 
   ```bash
-  bd comment ${IssueID} "Refined <what changed> — rationale: <why>"
+  bd comment {{ $target }} "Refined <what changed> — rationale: <why>"
   ```
 
   If the discussion revealed separable work, you may propose sub-issues (title, one-line scope,
   type/priority); for a full breakdown defer to the **"Decompose issue"** prompt. After confirmation:
 
   ```bash
-  bd create "<child title>" --parent ${IssueID} --type <type> --priority <0-4> --body-file /tmp/child.md
+  bd create "<child title>" --parent {{ $target }} --type <type> --priority <0-4> --body-file /tmp/child.md
   ```
+  {{- else }}
+  ## Step 7 — Capture the outcome (no bead to update)
+
+  There is no bead to update. If the discussion produced work worth tracking, offer (with
+  confirmation) to create a new bead via the **"Decompose issue"** or **"Start work"** prompt. No
+  `bd` commands.
+  {{- end }}
 
   ## Step 8 — Final summary
 
-  Summarise the work: the decisions resolved (with rationale), the readiness assessment, which bead
-  fields / labels / status changed, the comments added, and any sub-issues created (IDs + titles).
+  Summarise the work: the decisions resolved (with rationale) and the readiness assessment.
+  {{ if $target -}}
+  Include which bead fields / labels / status changed, the comments added, and any sub-issues created (IDs + titles).
+  {{- end }}
   Reiterate that **no implementation was done** — point the user to the **"Start work"** prompt when
-  the bead is ready.
+  the bead or current problem is ready.
 
   ## Final step — Offer to delete this conversation
 
