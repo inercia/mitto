@@ -63,7 +63,7 @@ const MOCK_ISSUES = [
 // The mobile sidebar is a daisyUI `drawer` (side="start", zClass="z-40"); its
 // full-viewport container is `.drawer-side` (position:fixed/inset via daisyUI),
 // which becomes visible when the permanently-checked drawer-toggle resolves the
-// open state and holds the panel with the "Conversations" heading.
+// open state and holds the SessionList panel, whose header is the "Mitto" heading.
 const MOBILE_OVERLAY = ".drawer-side.z-40";
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
@@ -144,8 +144,10 @@ testWithCleanup.describe("Beads view - mobile", () => {
 
       const overlay = page.locator(MOBILE_OVERLAY);
       await expect(overlay).toBeVisible({ timeout: timeouts.shortAction });
+      // The overlay holds the SessionList panel, whose header is the "Mitto"
+      // heading (renamed from "Conversations" in the daisyUI 5 upgrade).
       await expect(
-        overlay.locator('h2:has-text("Conversations")'),
+        overlay.locator('h2:has-text("Mitto")'),
       ).toBeVisible();
     },
   );
