@@ -872,6 +872,10 @@ func TestIsKnownPromptParameterType(t *testing.T) {
 	if IsKnownPromptParameterType("") {
 		t.Error("IsKnownPromptParameterType(\"\") = true, want false")
 	}
+	// boolean is a recognised type (rendered as a checkbox in the UI).
+	if !IsKnownPromptParameterType("boolean") {
+		t.Error("IsKnownPromptParameterType(\"boolean\") = false, want true")
+	}
 }
 
 func TestParsePromptFile_WithParameters(t *testing.T) {
@@ -1077,6 +1081,15 @@ func TestValidatePromptParameters(t *testing.T) {
 		err := ValidatePromptParameters("beadsList", []PromptParameter{{Name: "x", Type: "text"}})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("boolean param is OK in any menu", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Commit", Type: "boolean"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
 		}
 	})
 }

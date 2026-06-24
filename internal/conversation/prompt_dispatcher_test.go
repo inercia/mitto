@@ -574,18 +574,38 @@ func TestResolveAndSubstitute_Template_RenderBeforeArgSubstitution(t *testing.T)
 }
 
 // TestResolveAndSubstitute_Template_FailClosed verifies that an invalid template
-// body returns a non-nil error and an empty message (fail-closed).
+// body returned by a named prompt resolver returns a non-nil error (fail-closed).
 func TestResolveAndSubstitute_Template_FailClosed(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
+	// Resolver returns an invalid template body (missing {{ end }}).
+	d.resolver = func(name, _ string) (string, error) {
+		return "{{ if .Broken }}", nil
+	}
 
-	// Missing {{ end }} — parse error.
-	msg, _, _, err := p.resolveAndSubstitute(d, "{{ if .Broken }}", PromptMeta{})
+	msg, _, _, err := p.resolveAndSubstitute(d, "", PromptMeta{PromptName: "x"})
 	if err == nil {
-		t.Fatal("expected non-nil error for invalid template body")
+		t.Fatal("expected non-nil error for invalid named-prompt template body")
 	}
 	if msg != "" {
 		t.Fatalf("expected empty message on error, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen verifies that a
+// free-text body containing unbalanced template syntax is delivered raw (fail-open).
+func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	// Unbalanced {{ if }} with no matching {{ end }} — reproduces mitto-gnxe.
+	body := "{{ if .Broken }}"
+	msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{})
+	if err != nil {
+		t.Fatalf("expected nil error for free-text with invalid template syntax, got: %v", err)
+	}
+	if msg != body {
+		t.Fatalf("expected raw body byte-for-byte, got %q", msg)
 	}
 }
 

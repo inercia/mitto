@@ -183,9 +183,18 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
 		if rerr != nil {
-			return "", 0, meta, rerr // fail-closed: abort the send
+			if meta.PromptName != "" {
+				return "", 0, meta, rerr // named prompt: fail-closed
+			}
+			// free-text: fail-open — warn and deliver raw message
+			if l := d.pdLogger(); l != nil {
+				l.Warn("free-text template render failed, delivering raw message",
+					"session_id", d.pdSessionID(),
+					"error", rerr)
+			}
+		} else {
+			message = rendered
 		}
-		message = rendered
 	}
 
 	argCount := len(meta.Arguments)

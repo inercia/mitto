@@ -22,6 +22,10 @@ import (
 //   - workspaceFolder — an absolute path to the workspace root directory
 //   - acpServer      — an ACP server (agent) name
 //   - text           — generic free-form text (the catch-all type)
+//   - boolean        — a yes/no flag, rendered as a checkbox; supplied as the
+//     string "true" or "false". Boolean parameters never gate
+//     menu visibility and are always collected via the dialog
+//     (a checkbox always has a definite answer; default false).
 var KnownPromptParameterTypes = []string{
 	"beadsId",
 	"beadsTitle",
@@ -31,6 +35,7 @@ var KnownPromptParameterTypes = []string{
 	"workspaceFolder",
 	"acpServer",
 	"text",
+	"boolean",
 }
 
 // IsKnownPromptParameterType reports whether t is a recognised parameter type.

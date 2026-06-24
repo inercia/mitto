@@ -393,6 +393,87 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 }
 
+// TestIteratePrompts_CommitOption verifies the opt-in "Commit" boolean parameter
+// on the iterating builtin prompts: the commit-instruction section is rendered
+// only when the Commit argument is the string "true", and is omitted when it is
+// "false" or absent. github-iterate-babysit-new-prs is intentionally excluded (it
+// works via worktrees and never touches the local checkout), so it has no Commit
+// option and is not covered here.
+//
+// Each prompt is loaded from the real builtin directory and rendered with
+// BuildTemplateFuncMap so the test always exercises the current on-disk content.
+func TestIteratePrompts_CommitOption(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	// marker is a substring that appears ONLY inside the commit section of the
+	// given prompt. "git commit -a" is additionally asserted as a shared guard:
+	// every commit section warns against it, and the base prompts never mention it.
+	cases := []struct {
+		file   string
+		name   string
+		marker string
+	}{
+		{"iterate-fixing.prompt.yaml", "iterate-fixing", "Commit your work"},
+		{"iterate-implementing.prompt.yaml", "iterate-implementing", "Commit your work"},
+		{"iterate-until.prompt.yaml", "iterate-until", "skip the commit"},
+		{"beads-issue-iterate-until-complete.prompt.yaml", "beads-issue-iterate-until-complete", "Tell the worker to commit its work"},
+	}
+
+	const sharedGuard = "git commit -a"
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(builtinDir, tc.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(tc.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
+			}
+			body := prompt.Content
+
+			render := func(args map[string]string) string {
+				ctx := &PromptEnabledContext{Args: args}
+				funcs := BuildTemplateFuncMap(ctx)
+				out, rerr := RenderPromptTemplate(tc.name, body, ctx, funcs)
+				if rerr != nil {
+					t.Fatalf("RenderPromptTemplate(%s): %v", tc.name, rerr)
+				}
+				return out
+			}
+
+			// Commit="true" → commit section present.
+			outTrue := render(map[string]string{"Commit": "true"})
+			if !strings.Contains(outTrue, tc.marker) {
+				t.Errorf("Commit=true: expected marker %q in output; got:\n%s", tc.marker, outTrue)
+			}
+			if !strings.Contains(outTrue, sharedGuard) {
+				t.Errorf("Commit=true: expected shared guard %q in output; got:\n%s", sharedGuard, outTrue)
+			}
+
+			// Commit="false" → commit section absent.
+			outFalse := render(map[string]string{"Commit": "false"})
+			if strings.Contains(outFalse, tc.marker) {
+				t.Errorf("Commit=false: marker %q should be absent; got:\n%s", tc.marker, outFalse)
+			}
+			if strings.Contains(outFalse, sharedGuard) {
+				t.Errorf("Commit=false: shared guard %q should be absent; got:\n%s", sharedGuard, outFalse)
+			}
+
+			// Commit absent (nil args) → commit section absent.
+			outAbsent := render(nil)
+			if strings.Contains(outAbsent, tc.marker) {
+				t.Errorf("Commit absent: marker %q should be absent; got:\n%s", tc.marker, outAbsent)
+			}
+			if strings.Contains(outAbsent, sharedGuard) {
+				t.Errorf("Commit absent: shared guard %q should be absent; got:\n%s", sharedGuard, outAbsent)
+			}
+		})
+	}
+}
+
 // TestBuiltinPrompts_NoDeprecatedMittoVars asserts that every migrated builtin
 // prompt body contains ZERO deprecated @mitto: tokens (i.e. the .7/.8 migration
 // is complete). This is a guard against accidental re-introduction.
