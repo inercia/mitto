@@ -6,6 +6,9 @@ parameters:
     type: text
     required: true
     description: The stop condition — keep iterating until this is true (e.g. "all tests pass and the linter is clean")
+  - name: Commit
+    type: boolean
+    description: Commit the changes made at the end of each iteration
 description: Make this conversation periodic (on completion) and keep iterating until your condition is met, then self-terminate
 backgroundColor: '#D1C4E9'
 group: Work flow
@@ -82,6 +85,14 @@ prompt: |
       4. If it is NOT yet true: do exactly ONE concrete increment of work toward it,
          verify that increment, briefly note progress, then stop responding so the
          next run continues. Do not try to finish everything in one run.
+  {{- if eq .Args.Commit "true" }}
+      5. If you made changes this run and the increment is verified, commit ONLY the
+         files you changed for this work — stage them explicitly by path
+         (git add <file> ...); never use git add -A, git add ., or git commit -a,
+         because unrelated uncommitted changes may exist in the repo and must be
+         left untouched. Use a concise, conventional commit message. If nothing
+         changed this run, skip the commit.
+  {{- end }}
 
   ## Step 3 — Do the first increment now
 
@@ -93,8 +104,16 @@ prompt: |
        `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)` —
        notify the user with `mitto_ui_notify`, and stop. There is nothing to do.
   3. Otherwise, perform exactly **one** concrete increment toward the condition,
-     verify it, and report what you advanced and what remains. Then stop responding;
-     the periodic engine arms the next run automatically.
+     verify it, and report what you advanced and what remains.
+  {{- if eq .Args.Commit "true" }}
+  4. If you changed files in this increment, commit **only** the files you changed,
+     staged explicitly by path (`git add <file> ...`) — never `git add -A`,
+     `git add .`, or `git commit -a`, since unrelated uncommitted changes may exist
+     and must be left untouched. Use a concise, conventional commit message; skip the
+     commit if nothing changed.
+  {{- end }}
+
+  Then stop responding; the periodic engine arms the next run automatically.
 
   ## Guidelines
 

@@ -1,6 +1,10 @@
 icon: refresh
 name: Iterate fixing
 menus: promptsPeriodic
+parameters:
+  - name: Commit
+    type: boolean
+    description: Commit the changes made at the end of each iteration
 description: Continue iterating to fix the problem we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
@@ -40,5 +44,13 @@ prompt: |
   4. Prioritize and implement fix
   5. Verify the fix
   6. Update state file
+  {{- if eq .Args.Commit "true" }}
+  7. Commit your work — but only if you actually changed files this iteration.
+     Stage **only** the files you changed for this fix, explicitly by path
+     (`git add <file> ...`). Do **NOT** use `git add -A`, `git add .`, or
+     `git commit -a`: other unrelated, uncommitted changes may exist in the repo
+     and must be left untouched. Write a concise, conventional commit message
+     describing this increment. If nothing changed this iteration, skip the commit.
+  {{- end }}
 
   Once fully fixed, verify against original problem description.

@@ -1,6 +1,10 @@
 icon: refresh
 name: Iterate implementing
 menus: promptsPeriodic
+parameters:
+  - name: Commit
+    type: boolean
+    description: Commit the changes made at the end of each iteration
 description: Continue iterating to implement the feature we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
@@ -35,5 +39,13 @@ prompt: |
   4. Prioritize and implement next work item
   5. Verify implementation
   6. Update state file
+  {{- if eq .Args.Commit "true" }}
+  7. Commit your work — but only if you actually changed files this iteration.
+     Stage **only** the files you changed for this work, explicitly by path
+     (`git add <file> ...`). Do **NOT** use `git add -A`, `git add .`, or
+     `git commit -a`: other unrelated, uncommitted changes may exist in the repo
+     and must be left untouched. Write a concise, conventional commit message
+     describing this increment. If nothing changed this iteration, skip the commit.
+  {{- end }}
 
   Once complete, verify against original problem description.
