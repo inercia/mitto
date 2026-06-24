@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -281,8 +282,23 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 			ctx.Children.Names = append(ctx.Children.Names, child.Name)
 			ctx.Children.ACPServers = append(ctx.Children.ACPServers, child.ACPServer)
 			// Check if child is currently prompting
+			isPrompting := false
 			if childBS := s.sessionManager.GetSession(child.SessionID); childBS != nil && childBS.IsPrompting() {
 				ctx.Children.PromptingCount++
+				isPrompting = true
+			}
+			// Populate structured child info for template funcs ({{ children }}, {{ mcpChildren }})
+			childInfo := config.ChildInfo{
+				ID:          child.SessionID,
+				Name:        child.Name,
+				ACPServer:   child.ACPServer,
+				Origin:      string(child.ChildOrigin),
+				IsPrompting: isPrompting,
+			}
+			ctx.Children.All = append(ctx.Children.All, childInfo)
+			if child.ChildOrigin == session.ChildOriginMCP {
+				ctx.Children.MCP = append(ctx.Children.MCP, childInfo)
+				ctx.Children.MCPCount++
 			}
 		}
 		ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
@@ -297,6 +313,25 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 			ctx.ACP.AutoApprove = srv.AutoApprove
 		}
 	}
+	// ACP.Available: list of ACP servers with workspaces for this folder.
+	// Replicates buildAvailableACPServers from internal/conversation/workspace_registry.go.
+	if s.config.MittoConfig != nil && meta.WorkingDir != "" {
+		folderWSs := s.sessionManager.GetWorkspacesForFolder(meta.WorkingDir)
+		wsServerSet := make(map[string]bool, len(folderWSs))
+		for _, ws := range folderWSs {
+			wsServerSet[ws.ACPServer] = true
+		}
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if wsServerSet[srv.Name] {
+				ctx.ACP.Available = append(ctx.ACP.Available, config.ACPServerInfo{
+					Name:    srv.Name,
+					Type:    srv.GetType(),
+					Tags:    srv.Tags,
+					Current: srv.Name == meta.ACPServer,
+				})
+			}
+		}
+	}
 
 	// Workspace context
 	ctx.Workspace.Folder = meta.WorkingDir
@@ -304,9 +339,19 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		ctx.Workspace.UUID = ws.UUID
 		ctx.Workspace.Name = ws.Name
 	}
-	// Check if workspace has user data schema
+	// Check if workspace has user data schema; also marshal it for template rendering.
 	if schema := s.sessionManager.GetUserDataSchema(meta.WorkingDir); schema != nil && len(schema.Fields) > 0 {
 		ctx.Workspace.HasUserDataSchema = true
+		if schemaBytes, merr := json.Marshal(schema.Fields); merr == nil {
+			ctx.Workspace.UserDataSchemaJSON = string(schemaBytes)
+		}
+	}
+
+	// Session user data JSON for template rendering ({{ .Session.UserDataJSON }}).
+	if ud, uerr := store.GetUserData(sessionID); uerr == nil && ud != nil && len(ud.Attributes) > 0 {
+		if udBytes, merr := json.Marshal(ud.Attributes); merr == nil {
+			ctx.Session.UserDataJSON = string(udBytes)
+		}
 	}
 
 	// Tools context - get from auxiliary manager if available
