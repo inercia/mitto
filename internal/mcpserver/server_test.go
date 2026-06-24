@@ -3745,6 +3745,9 @@ func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool {
 func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string)                     {}
 func (m *mockBackgroundSessionForWait) TriggerTitleGenerationFromPeriodic(string, string) {}
 func (m *mockBackgroundSessionForWait) RequestSelfDestruct()                              { m.selfDestructCalled.Store(true) }
+func (m *mockBackgroundSessionForWait) LastQueuedSendError() (string, time.Time) {
+	return "", time.Time{}
+}
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -4548,6 +4551,53 @@ func TestChildReportCollector_AutoCompleted_CountsTowardWait(t *testing.T) {
 		// correct: closed
 	default:
 		t.Error("Wait channel was NOT closed after auto-completed entry — expected completion")
+	}
+
+	pending, reported := collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_Failed_CountsTowardWait(t *testing.T) {
+	// A failed entry (queued-send error) must satisfy the wait and close the wait channel.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	collector.markChildFailed("child-a", "boom")
+
+	select {
+	case <-waitCh:
+		// correct: closed
+	default:
+		t.Error("Wait channel was NOT closed after failed entry — expected completion")
+	}
+
+	r := collector.reports["child-a"]
+	if r == nil {
+		t.Fatal("Expected report for child-a")
+	}
+	if !r.Completed {
+		t.Error("Expected report.Completed = true")
+	}
+	if !r.Failed {
+		t.Error("Expected report.Failed = true")
+	}
+	if r.FailMessage != "boom" {
+		t.Errorf("FailMessage = %q, want %q", r.FailMessage, "boom")
+	}
+	if !collector.reportSatisfiesCurrentTask(r) {
+		t.Error("reportSatisfiesCurrentTask should return true for a failed report")
 	}
 
 	pending, reported := collector.getPendingAndReported()
@@ -5415,6 +5465,9 @@ func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Durati
 func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)                     {}
 func (m *mockBackgroundSessionForAutoResume) TriggerTitleGenerationFromPeriodic(string, string) {}
 func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                              {}
+func (m *mockBackgroundSessionForAutoResume) LastQueuedSendError() (string, time.Time) {
+	return "", time.Time{}
+}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false
