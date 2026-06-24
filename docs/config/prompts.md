@@ -749,6 +749,7 @@ in sync.
 | `workspaceFolder` | An absolute path to a workspace root directory. |
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
 | `text` | Generic free-form text (catch-all type). |
+| `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
 
 ### Visibility rule (type-based gating)
 
@@ -780,6 +781,12 @@ which maps each `{ name, type }` to the value supplied for its type by the menu.
 
 Prompts that can degrade gracefully because all placeholders have sensible defaults
 (`${VAR:-default}`) can omit `parameters` entirely and appear in any menu they target.
+
+A `boolean` parameter never gates visibility (regardless of `required`): a checkbox
+always has a definite answer, so the prompt appears in any menu it targets. The
+parameter is always collected via the parameter dialog (rendered as a checkbox) and
+supplied to the template as the string `"true"`/`"false"`. In a Go template you can
+branch on it, e.g. `{{ if eq .Args.Commit "true" }}…{{ end }}`.
 
 ### MCP surfacing
 

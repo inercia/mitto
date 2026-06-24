@@ -90,12 +90,15 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 | `workspaceId` | Mitto workspace UUID. |
 | `workspaceFolder` | Absolute path to a workspace root directory. |
 | `text` | Generic free-form text (catch-all). |
+| `boolean` | Yes/no flag, rendered as a checkbox. Supplied as the string `"true"`/`"false"` (default unchecked → `"false"`). Never gates menu visibility; always collected via the dialog. |
 
 ### Type-based menu gating
 
 Prompt shown in menu **M** only when M supplies **every required** declared type. Frontend: `menuSatisfies(prompt, menu)`. Menu types: `beadsIssues` → `{beadsId, beadsTitle}`; others supply none. See `MENU_PARAM_TYPES` in `web/static/utils/prompts.js`.
 
 **Optional parameters** (`required: false`) never gate: the prompt appears in any menu regardless of whether the menu can supply the type. When the menu *can* supply it, the arg auto-fills via `collectPromptArguments`; when it cannot, the param is silently omitted and no dialog is shown (`getMissingPromptParameters` excludes optional params).
+
+**Boolean parameters** (`type: boolean`) never gate either, regardless of `required`: a checkbox always has a definite answer. They are always collected via the dialog (`getMissingPromptParameters` always includes them) and never block **Save**; the value is emitted as the string `"true"`/`"false"` (default unchecked → `"false"`).
 
 ## Key Types
 
