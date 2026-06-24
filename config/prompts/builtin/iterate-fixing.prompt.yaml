@@ -19,6 +19,12 @@ prompt: |
   Fix root causes, not symptoms. Ensure fixes work for all valid inputs. Report
   deeper design issues rather than applying narrow workarounds.
 
+  **Decide autonomously; do not ask the user.** Take every decision needed to make
+  progress yourself. The sole exception is when part of the problem is **not properly
+  defined or understood** (a genuinely ambiguous requirement or unknown you cannot
+  resolve from the available context): then do **not** guess — record it in the state
+  file under "Issues remaining", report it, and stop rather than asking.
+
 
 
   # Preparation

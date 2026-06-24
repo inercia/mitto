@@ -119,6 +119,13 @@ prompt: |
 
   - **One increment per run.** Advance a meaningful step, then return — the next run
     continues from the new state. Do not try to finish everything at once.
+  - **Decide autonomously; never ask the user.** Take every decision needed to make
+    progress yourself — do not stop to ask which approach to take or how to proceed.
+    The sole exception is when part of the work is **not properly defined or
+    understood** (the stop condition is unclear, or a requirement is genuinely
+    ambiguous): then do **not** guess — disable the loop
+    (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`),
+    report what is undefined via `mitto_ui_notify`, and stop.
   - **Evaluate honestly.** Judge the condition against verifiable reality, never
     against intentions or plans.
   - **The loop is bounded** by `maxIterations` and `maxDuration` as safety nets, but

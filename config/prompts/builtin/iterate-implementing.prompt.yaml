@@ -16,6 +16,12 @@ prompt: |
 
   Only implement what's in the spec. No extra features or abstractions.
 
+  **Decide autonomously; do not ask the user.** Take every decision needed to make
+  progress yourself. The sole exception is when part of the spec is **not properly
+  defined or understood** (a genuinely ambiguous requirement or unknown you cannot
+  resolve from the available context): then do **not** guess — record it in the state
+  file under "Issues remaining", report it, and stop rather than asking.
+
   # Preparation
 
   State file: `implement-<problem>-<date>.md` (date as `YYYY-MM-DD`).
