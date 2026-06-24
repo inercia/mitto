@@ -123,6 +123,10 @@ describe("KNOWN_PARAM_TYPES", () => {
   test("includes text", () => {
     expect(KNOWN_PARAM_TYPES).toContain("text");
   });
+
+  test("includes boolean", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("boolean");
+  });
 });
 
 // =============================================================================
@@ -258,6 +262,28 @@ describe("menuSatisfies", () => {
     // beadsIssues supplies beadsId → satisfies the required gate, optional text ignored
     expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
     // conversation cannot supply beadsId → fails on the required param
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+
+  test("boolean param never gates — satisfied by any menu even when required", () => {
+    const prompt = {
+      parameters: [{ name: "Commit", type: "boolean", required: true }],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(true);
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    expect(menuSatisfies(prompt, "unknownMenu")).toBe(true);
+  });
+
+  test("boolean alongside a required gating param does not relax that gate", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: true },
+        { name: "Commit", type: "boolean" },
+      ],
+    };
+    // boolean is satisfied everywhere, but beadsId still gates conversation
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
     expect(menuSatisfies(prompt, "conversation")).toBe(false);
   });
 });
@@ -530,5 +556,28 @@ describe("getMissingPromptParameters", () => {
     const prompt = { parameters: [requiredParam, optionalParam] };
     // prompts menu supplies nothing; required beadsId is missing, optional text is not
     expect(getMissingPromptParameters(prompt, "prompts")).toEqual([requiredParam]);
+  });
+
+  test("boolean param is ALWAYS missing (collected via checkbox) in every menu", () => {
+    const param = { name: "Commit", type: "boolean" };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  });
+
+  test("boolean param is collected even when marked required:false", () => {
+    const param = { name: "Commit", type: "boolean", required: false };
+    const prompt = { parameters: [param] };
+    // required:false would normally suppress it, but boolean overrides that
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("mixed boolean + auto-supplied param: boolean still collected, supplied one excluded", () => {
+    const boolParam = { name: "Commit", type: "boolean" };
+    const issueParam = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const prompt = { parameters: [issueParam, boolParam] };
+    // beadsIssues supplies beadsId → only the boolean remains to be collected
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([boolParam]);
   });
 });

@@ -31,6 +31,8 @@ export function promptMenus(prompt) {
  *   workspaceFolder — an absolute path to the workspace root directory
  *   acpServer      — an ACP server (agent) name
  *   text           — generic free-form text (catch-all)
+ *   boolean        — a yes/no flag, rendered as a checkbox; supplied as the
+ *                    string "true"/"false" (see PromptParameterDialog)
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
@@ -41,7 +43,20 @@ export const KNOWN_PARAM_TYPES = [
   "workspaceFolder",
   "acpServer",
   "text",
+  "boolean",
 ];
+
+/**
+ * Returns true if the parameter is a boolean (checkbox) type.
+ *
+ * Boolean parameters are special: a checkbox always has a definite answer
+ * (checked/unchecked), so they never gate menu visibility (menuSatisfies) and
+ * they are always collected via the dialog (getMissingPromptParameters),
+ * regardless of the menu's auto-supplied types or the `required` flag.
+ */
+export function isBooleanParam(p) {
+  return p?.type === "boolean";
+}
 
 /**
  * Returns the structured parameters array for a prompt, or [] if absent/empty.
@@ -84,12 +99,18 @@ export const MENU_PARAM_TYPES = {
  *
  * Unset (`required` absent/null) or `required: true` keeps the current gating
  * behaviour, preserving all existing prompts unchanged.
+ *
+ * Boolean parameters never gate: a checkbox always has a definite answer, so a
+ * boolean param behaves like an optional one for visibility purposes (it is
+ * collected via the dialog rather than auto-supplied by a menu).
  */
 export function menuSatisfies(prompt, menu) {
   const params = promptParameters(prompt);
   if (params.length === 0) return true;
   const provided = MENU_PARAM_TYPES[menu] || [];
-  return params.every((p) => p.required === false || provided.includes(p.type));
+  return params.every(
+    (p) => isBooleanParam(p) || p.required === false || provided.includes(p.type),
+  );
 }
 
 /**
@@ -105,6 +126,8 @@ export function menuSatisfies(prompt, menu) {
  * Rules:
  *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
  *   - A prompt with no parameters always returns [].
+ *   - A boolean parameter is ALWAYS included (it is rendered as a checkbox and
+ *     collected via the dialog; no menu can auto-supply it).
  *   - A parameter whose type IS in the menu's provided-types list is excluded.
  *   - A parameter with `required === false` is excluded (optional, no form shown).
  *   - Declared order is preserved.
@@ -117,7 +140,11 @@ export function getMissingPromptParameters(prompt, menu) {
   const params = promptParameters(prompt);
   if (params.length === 0) return [];
   const provided = MENU_PARAM_TYPES[menu] || [];
-  return params.filter((p) => p.required !== false && !provided.includes(p.type));
+  return params.filter(
+    (p) =>
+      isBooleanParam(p) ||
+      (p.required !== false && !provided.includes(p.type)),
+  );
 }
 
 /**

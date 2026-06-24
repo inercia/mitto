@@ -233,6 +233,17 @@ function ParamField({
         </select>
       `;
     }
+  } else if (type === "boolean") {
+    // Checkbox: a definite yes/no. value is a JS boolean (true) or "" (unchecked).
+    // The collected value is emitted as the string "true"/"false" in handleSubmit.
+    control = html`
+      <input
+        type="checkbox"
+        class="checkbox checkbox-sm"
+        checked=${value === true || value === "true"}
+        onChange=${(e) => onChange(name, e.target.checked)}
+      />
+    `;
   } else if (type === "text") {
     control = html`
       <textarea
@@ -258,7 +269,9 @@ function ParamField({
     <fieldset class="fieldset">
       <legend class="fieldset-legend text-mitto-text-secondary">
         ${name}
-        ${required && html`<span class="text-mitto-danger ml-0.5">*</span>`}
+        ${required &&
+        type !== "boolean" &&
+        html`<span class="text-mitto-danger ml-0.5">*</span>`}
       </legend>
       ${control}
       ${description &&
@@ -394,6 +407,12 @@ export function PromptParameterDialog({
     // Build args map; omit empty optional fields
     const args = {};
     for (const p of parameters) {
+      if (p.type === "boolean") {
+        // Always emit a definite "true"/"false" string (default unchecked = false).
+        const checked = values[p.name] === true || values[p.name] === "true";
+        args[p.name] = checked ? "true" : "false";
+        continue;
+      }
       const v = (values[p.name] || "").trim();
       if (v !== "" || p.required) {
         args[p.name] = v;
@@ -403,9 +422,10 @@ export function PromptParameterDialog({
     onClose?.();
   }, [parameters, values, onSubmit, onClose]);
 
-  // Save enabled only when all required params have non-empty trimmed values
+  // Save enabled only when all required params have non-empty trimmed values.
+  // Boolean params are excluded: a checkbox always has a definite answer.
   const canSave = parameters
-    .filter((p) => p.required)
+    .filter((p) => p.required && p.type !== "boolean")
     .every((p) => (values[p.name] || "").trim() !== "");
 
   if (!isOpen) return null;

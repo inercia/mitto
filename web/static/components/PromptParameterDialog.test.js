@@ -643,3 +643,82 @@ describe("parseWorkspacesResponse", () => {
     expect(parseWorkspacesResponse({ workspaces: "oops" })).toEqual([]);
   });
 });
+
+// =============================================================================
+// boolean render-branch + submit/save logic
+// Duplicated from ParamField / handleSubmit / canSave in
+// PromptParameterDialog.js — keep in sync.
+// =============================================================================
+
+/**
+ * Mirrors the boolean branch of ParamField: the checkbox `checked` state.
+ * value is a JS boolean (true), the string "true", or anything falsy/unset.
+ */
+function booleanCheckboxChecked(value) {
+  return value === true || value === "true";
+}
+
+/**
+ * Mirrors the boolean handling in handleSubmit: always emit a definite
+ * "true"/"false" string (default unchecked = "false").
+ */
+function serializeBooleanArg(value) {
+  return value === true || value === "true" ? "true" : "false";
+}
+
+/**
+ * Mirrors the canSave filter: required params count toward Save-enablement
+ * EXCEPT booleans (a checkbox always has a definite answer).
+ */
+function canSave(parameters, values) {
+  return parameters
+    .filter((p) => p.required && p.type !== "boolean")
+    .every((p) => (values[p.name] || "").trim() !== "");
+}
+
+describe("boolean checkbox state", () => {
+  test("checked when value is JS boolean true", () => {
+    expect(booleanCheckboxChecked(true)).toBe(true);
+  });
+
+  test("checked when value is the string 'true'", () => {
+    expect(booleanCheckboxChecked("true")).toBe(true);
+  });
+
+  test("unchecked when value is unset / empty / false", () => {
+    expect(booleanCheckboxChecked(undefined)).toBe(false);
+    expect(booleanCheckboxChecked("")).toBe(false);
+    expect(booleanCheckboxChecked(false)).toBe(false);
+    expect(booleanCheckboxChecked("false")).toBe(false);
+  });
+});
+
+describe("serializeBooleanArg (handleSubmit boolean handling)", () => {
+  test("checked boolean → 'true'", () => {
+    expect(serializeBooleanArg(true)).toBe("true");
+    expect(serializeBooleanArg("true")).toBe("true");
+  });
+
+  test("unchecked / unset → 'false'", () => {
+    expect(serializeBooleanArg(false)).toBe("false");
+    expect(serializeBooleanArg("")).toBe("false");
+    expect(serializeBooleanArg(undefined)).toBe("false");
+  });
+});
+
+describe("canSave with boolean params", () => {
+  test("a required boolean does NOT block Save (always answered)", () => {
+    const parameters = [{ name: "Commit", type: "boolean", required: true }];
+    // No value set at all → still saveable, default is unchecked/false
+    expect(canSave(parameters, {})).toBe(true);
+  });
+
+  test("a required text param still blocks Save until filled", () => {
+    const parameters = [
+      { name: "Commit", type: "boolean", required: true },
+      { name: "Note", type: "text", required: true },
+    ];
+    expect(canSave(parameters, {})).toBe(false);
+    expect(canSave(parameters, { Note: "hello" })).toBe(true);
+  });
+});
