@@ -26,7 +26,7 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Project user data (JSON):
-  @mitto:user_data
+  {{ .Session.UserDataJSON }}
 
   ## Interaction Mode
 

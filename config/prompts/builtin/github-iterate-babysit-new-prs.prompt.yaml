@@ -27,10 +27,10 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Available ACP servers:
-  @mitto:available_acp_servers
+  {{ acpServers }}
 
   Existing child conversations (spawned by previous runs):
-  @mitto:mcp_children
+  {{ mcpChildren }}
 
   When spawning conversations to fix issues, prefer `"coding"` or `"fast"` tagged
   servers. **Never** configure spawned conversations as periodic — they are
@@ -75,7 +75,7 @@ prompt: |
 
   1. **PRs already under babysitting** (preferred). Recover them from prior runs of
      **this** conversation:
-     - Scan `@mitto:mcp_children` for child titles referencing a PR (e.g. containing
+     - Scan `{{ mcpChildren }}` for child titles referencing a PR (e.g. containing
        "PR #<number>") — those numbers are PRs you already started babysitting.
      - Also reuse any PR numbers established earlier in this conversation's history.
   2. **Recently created PRs** (when the set above is empty — typically the first
@@ -114,7 +114,7 @@ prompt: |
   **Never modify the local checkout** — the user may have uncommitted work there.
   Use a temporary worktree for rebases and `--force-with-lease` for force-pushes.
 
-  **Spawn rules:** before spawning, check `@mitto:mcp_children` and **skip** if a
+  **Spawn rules:** before spawning, check `{{ mcpChildren }}` and **skip** if a
   child already exists for the same PR + task. Cap spawning at **3 per run**;
   spawned conversations are one-off and **must never be periodic**.
 
@@ -249,7 +249,7 @@ prompt: |
     on interactive UI, and do **not** auto-merge. In **force-triggered or
     non-periodic** runs you may use `mitto_ui_options`/`mitto_ui_form` and offer to
     merge with confirmation.
-  - **Spawn rules**: check `@mitto:mcp_children` before spawning and skip if a child
+  - **Spawn rules**: check `{{ mcpChildren }}` before spawning and skip if a child
     already exists for the same PR + task; cap at **3 spawns per run**, prioritizing
     rebase conflicts > CI failures > unresolved comments. Spawned conversations are
     one-off and **must never be periodic**.

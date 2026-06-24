@@ -1,9 +1,10 @@
 icon: check
 name: Check if resolved
-menus: beadsIssues
+menus: beadsIssues, conversation
 parameters:
   - name: IssueID
     type: beadsId
+    required: false
     description: The beads issue ID to act on
 description: Check if this bead is done, obsolete, or a duplicate, then close it, keep it open, or spin off follow-ups
 backgroundColor: '#C5E1A5'
@@ -18,20 +19,30 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${IssueID}`. Your job is to investigate, against the **actual state of
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bead** is `{{ $target }}`. Your job is to investigate, against the **actual state of
   the codebase**, whether this bead is still worth keeping open — i.e. whether its requirements are
   **already implemented or fixed**, the work has become **obsolete**, or it **duplicates** another
   bead — then recommend whether to close it, keep it open, or spin off follow-up beads for any
   remaining work.
+  {{- else -}}
+  There is **no linked bead** for this conversation. Investigate — against the **actual state of the
+  codebase** — whether the **current problem / topic under discussion here** is **already
+  implemented, fixed, or obsolete**, and report what (if anything) still remains. Do **not** run any
+  `bd` commands — there is no bead to load, close, or modify.
+  {{- end }}
 
+  {{ if $target -}}
   ## Step 1 — Load the bead's full detail
 
   Fetch everything the bead promises to deliver:
 
   ```bash
-  bd show ${IssueID} --long --json     # full description, acceptance criteria, design, metadata
-  bd show ${IssueID} --children --json # child issues, if this is an epic
-  bd dep tree ${IssueID}               # blockers and what it blocks
+  bd show {{ $target }} --long --json     # full description, acceptance criteria, design, metadata
+  bd show {{ $target }} --children --json # child issues, if this is an epic
+  bd dep tree {{ $target }}               # blockers and what it blocks
   ```
 
   Identify the concrete acceptance criteria (or infer them from the description if none are listed).
@@ -44,9 +55,9 @@ prompt: |
   An epic is a container: it is **resolved only when all of its child beads are resolved**. Do not
   judge the epic from its own description alone — its real status lives in its children.
 
-  1. List the epic's children (from `bd show ${IssueID} --children --json`; use
-     `bd dep tree ${IssueID}` to see the full hierarchy). If the epic has **no** children, fall back
-     to treating it as a single bead.
+  1. List the epic's children (from `bd show {{ $target }} --children --json`; use
+     `bd dep tree {{ $target }}` to see the full hierarchy). If the epic has **no** children, fall
+     back to treating it as a single bead.
   2. **For each child bead**, run the same investigation as a normal bead — load its detail
      (`bd show <child-id> --long --json`), then apply **Step 2** (gather codebase evidence) and
      **Step 3** (per-bead verdict) to it. Recurse into any child that is itself an epic.
@@ -62,27 +73,36 @@ prompt: |
 
   In the rest of this prompt, when investigating an epic, apply each step to **every child** and roll
   the results up to the epic.
+  {{- end }}
 
-  ## Step 2 — Research the bead's status
+  ## Step 2 — Research the current status
 
-  Do **not** judge from the bead text alone. Gather hard evidence from the repository:
+  Do **not** judge from the bead or current problem description alone. Gather hard evidence from the
+  repository:
 
-  - **Code changes**: search the codebase for the files, symbols, APIs, UI, or config the bead
-    describes. Does the implementation/fix now exist? For a bug, is the defective path gone or
-    guarded?
+  - **Code changes**: search the codebase for the files, symbols, APIs, UI, or config the bead or
+    current problem describes. Does the implementation/fix now exist? For a bug, is the defective
+    path gone or guarded?
   - **Obsolescence**: has the surrounding design changed so the work no longer applies (feature
     removed, approach abandoned, requirement superseded)?
-  - **Duplication**: is this bead substantially covered by another open bead?
+  - **Duplication**: is this bead or current problem substantially covered by other existing work?
+  {{ if $target -}}
   - **Commits & branches** referencing the bead:
 
     ```bash
-    git log --oneline --all | grep -i "${IssueID}"   # commits citing this bead
-    git branch -a | grep -i "${IssueID}"             # branches for this bead
-    git log --oneline --all -200                       # recent work that may have resolved it
+    git log --oneline --all | grep -i "{{ $target }}"   # commits citing this bead
+    git branch -a | grep -i "{{ $target }}"             # branches for this bead
+    ```
+  {{ end -}}
+  - **Recent history**: review the recent git log for work that may have resolved the bead or
+    current problem:
+
+    ```bash
+    git log --oneline --all -200                         # recent work that may have resolved it
     ```
 
-  - **Tests**: locate tests covering the bead's behaviour. If they exist and are cheap to run, run
-    the relevant ones and record the result. Note any missing coverage.
+  - **Tests**: locate tests covering the bead's or current problem's behaviour. If they exist and
+    are cheap to run, run the relevant ones and record the result. Note any missing coverage.
 
   Cross-reference each acceptance criterion against this evidence.
 
@@ -90,30 +110,40 @@ prompt: |
 
   Produce a concise **Resolution Report**:
 
-  ### Bead: `${IssueID}` — `<Title>`
+  {{ if $target -}}
+  ### Bead: `{{ $target }}` — `<Title>`
+  {{- else -}}
+  ### Current problem — `<topic>`
+  {{- end }}
 
   - **Verdict**: Still relevant / Fully resolved / Partially resolved / Obsolete / Duplicate
-  - **Acceptance criteria status** — per criterion: ✅ Done / ⚠️ Partial / ❌ Not done / ❓ Unknown,
-    each with its evidence (commit, branch, file/symbol, or test result).
+  - **Acceptance criteria status** — for each acceptance criterion listed in the bead, or inferred
+    from the current discussion: ✅ Done / ⚠️ Partial / ❌ Not done / ❓ Unknown, each with its
+    evidence (commit, branch, file/symbol, or test result).
   - **What was implemented**: concrete, evidence-backed list of completed work.
   - **What remains**: anything unaddressed, plus any **partially completed work or edge cases** the
-    implementation does not yet cover. For a duplicate, name the bead it overlaps.
+    implementation does not yet cover. For a duplicate, name the overlapping work.
   - **Relevant code locations & test results**: the key files/symbols and the outcome of any tests
     you ran (or "no tests found").
 
+  {{ if $target -}}
   For an **epic**, structure the report as a **per-child breakdown** — one line per child bead
   (`<child-id> — <title>`: verdict + key evidence) — followed by the **epic-level roll-up verdict**
   described in Step 1b.
+  {{- end }}
 
-  Be conservative: when evidence is **ambiguous or unknown**, treat the bead as **still relevant**
-  and keep it open. Do not close an `in_progress` bead with active work unless it is a clear
-  duplicate.
+  Be conservative: when evidence is **ambiguous or unknown**, treat the bead or current problem as
+  **still relevant** and do not close anything. Do not close an `in_progress` bead with active work
+  unless it is a clear duplicate.
 
   ## Step 4 — Decide with the user
 
   The investigation stays **read-only until you confirm**: nothing is modified — and no work is
-  started — without explicit approval. Present your verdict and the summary, then confirm the next
-  action via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g.
+  started — without explicit approval.
+
+  {{ if $target -}}
+  Present your verdict and the summary, then confirm the next action via
+  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g.
   "This bead looks `<verdict>`. What should I do?". Tailor the options to the verdict:
 
   - If the bead is **not resolved** (verdict **Still relevant**, or **Partially resolved** with real
@@ -126,14 +156,14 @@ prompt: |
     - **"Keep it open"** — work still remains on this bead.
     - **"Create follow-up tickets"** — the core is done but additional/edge-case work was discovered.
 
-  When the core is done but edge cases remain, you may include both **"Create follow-up tickets"** and
-  **"Start working on it"** so the user can choose to track or tackle the leftover work.
+  When the core is done but edge cases remain, you may include both **"Create follow-up tickets"**
+  and **"Start working on it"** so the user can choose to track or tackle the leftover work.
 
   **For an epic**, decide per child as well as for the epic itself. When one or more children are
   **already resolved** (Fully resolved / Obsolete / Duplicate) but not yet closed, **offer to close
   them** — present those children with `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` as one
-  checkbox per resolved child (checked by default, each line `<child-id> — <title>`) so the user can
-  pick which to close. Then offer the epic-level action as above (close the epic only once all
+  checkbox per resolved child (checked by default, each line `<child-id> — <title>`) so the user
+  can pick which to close. Then offer the epic-level action as above (close the epic only once all
   children are closed, keep it open, or create follow-ups for the remaining children). Only close the
   children the user approved.
 
@@ -147,7 +177,7 @@ prompt: |
   1. Claim the bead so others know it is being worked on:
 
      ```bash
-     bd update ${IssueID} --claim
+     bd update {{ $target }} --claim
      ```
 
   2. Draft a short plan for the remaining work (drawn from **What remains** in your Resolution
@@ -160,53 +190,61 @@ prompt: |
   ### If "Create follow-up tickets"
 
   Before confirming, propose **specific next steps** as concrete follow-up beads — for each, give a
-  clear **title**, a one-line scope, and a suggested priority. List them in the options prompt (or via
-  free text) so the user can approve, edit, or drop individual items.
+  clear **title**, a one-line scope, and a suggested priority. List them in the options prompt (or
+  via free text) so the user can approve, edit, or drop individual items.
+  {{- else }}
+  Present your verdict and a summary of findings. State clearly whether the current problem is
+  **already resolved**, **still relevant**, or **obsolete** — and explain why based on the evidence.
+  If work remains, point the user (in prose) to the **"Start work"** or **"Decompose issue"** prompt
+  to continue. This is a **read-only report** — there is no bead to close or modify.
+  {{- end }}
 
+  {{ if $target -}}
   ## Step 5 — Apply the approved action
 
   **Close it** (only if approved). For a **duplicate**, link the two beads as related **before**
   closing the duplicate:
 
   ```bash
-  bd dep relate ${IssueID} <keep-id>
+  bd dep relate {{ $target }} <keep-id>
   ```
 
   Then close with a clear, specific reason:
 
   ```bash
-  bd close ${IssueID} --reason "<why, e.g. 'Implemented in abc1234; tests pass' / 'Feature removed, obsolete' / 'Duplicate of bd-5'>"
+  bd close {{ $target }} --reason "<why, e.g. 'Implemented in abc1234; tests pass' / 'Feature removed, obsolete' / 'Duplicate of bd-5'>"
   ```
 
   **For an epic**: close it **only once all its children are closed**. First close each
-  already-resolved child the user approved in Step 4 (`bd close <child-id> --reason "..."`), spin off
-  follow-ups for any remaining child work (see below), and only then close the epic itself. If any
-  child is still genuinely open, keep the epic open and record what remains.
+  already-resolved child the user approved in Step 4 (`bd close <child-id> --reason "..."`), spin
+  off follow-ups for any remaining child work (see below), and only then close the epic itself. If
+  any child is still genuinely open, keep the epic open and record what remains.
 
   **Keep it open**: append an audit note recording what the investigation found and why the bead
   stays open, so the finding is not lost:
 
   ```bash
-  bd update ${IssueID} --append-notes "<what changed and why — e.g. 'Investigated: core is done but <X> remains; keeping the bead open to track it.'>"
+  bd update {{ $target }} --append-notes "<what changed and why — e.g. 'Investigated: core is done but <X> remains; keeping the bead open to track it.'>"
   ```
 
   **Create follow-up tickets** (only the ones approved). For each:
 
   ```bash
   bd create "<follow-up title>" -d "<scope and definition of done>" -p <0-4>
-  bd dep relate ${IssueID} <new-id>      # link the follow-up to the original bead
+  bd dep relate {{ $target }} <new-id>      # link the follow-up to the original bead
   ```
 
-  If the core work is done and only the follow-ups remain, ask whether to also close `${IssueID}`
+  If the core work is done and only the follow-ups remain, ask whether to also close `{{ $target }}`
   (now that the leftover work is tracked separately) and act on the answer.
 
   Report any command that failed and why.
+  {{- end }}
 
   ## Step 6 — Final summary
 
-  Finish with a short summary stating the final verdict, what action was taken (bead **closed** with
-  its reason, **kept open**, and/or **follow-up beads created** with their IDs and titles), and any
-  remaining work worth flagging.
+  Finish with a short summary stating the final verdict{{ if $target }}, what action was taken (bead
+  **closed** with its reason, **kept open**, and/or **follow-up beads created** with their IDs and
+  titles){{ end }}, and any remaining work worth flagging.
 
   ## Final step — Offer to delete this conversation
 

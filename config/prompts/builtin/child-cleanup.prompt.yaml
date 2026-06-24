@@ -20,10 +20,10 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   All child conversations:
-  @mitto:children
+  {{ children }}
 
   MCP-created children (these are safe to delete and are never auto-children):
-  @mitto:mcp_children
+  {{ mcpChildren }}
 
   Use these variables as the authoritative child list — do **not** call
   `mitto_conversation_list` to re-enumerate them.
