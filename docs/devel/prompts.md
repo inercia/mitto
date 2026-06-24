@@ -177,6 +177,45 @@ component when `argument_count > 0`.
 See [Message Queue → Named prompts](message-queue.md) for the queue field
 semantics (`prompt_name`, `arguments`, skipped title generation).
 
+## Context-adaptive prompts (one prompt, three modes)
+
+Building on the dispatch-time resolution described in §4, a single prompt body
+can serve **both** the per-issue `beadsIssues` menu and the generic
+`conversation` menu by combining three techniques:
+
+1. **`menus: beadsIssues, conversation`** — lists both routing keys so the
+   prompt appears in both surfaces (§1). Because the `beadsId` parameter is
+   marked `required: false`, the optional-param rule (§1 → type-based menu
+   gating) keeps it visible in `conversation` even when no issue is selected.
+
+2. **The `$target` ladder** — at dispatch time (§4) the body resolves which
+   issue to act on:
+   ```text
+   {{ $target := "" -}}
+   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+   {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+   ```
+   Priority: `.Session.BeadsIssue` first (durable across periodic re-runs),
+   then `.Args.IssueID` (auto-filled by the Beads per-issue menu), then empty
+   (mode 3 — no linked issue).
+
+3. **Command gating** — every `bd` command and every id-specific `git grep`
+   is wrapped in `{{ if $target }} … {{ end }}`, so mode 3 emits **zero** `bd`
+   calls and acts as a general codebase advisor on the current conversation.
+
+> **Important**: `.Item.*` (status, type, priority, …) is populated at
+> *menu-evaluation* time and is **empty by the time the body runs** at dispatch.
+> The body MUST resolve the target from `$target` (or `.Session.BeadsIssue` /
+> `.Args.IssueID` directly), never from `.Item.*`.
+
+For the full YAML header recipe, ladder, and gating examples see
+[Context-adaptive prompts (three modes)](../config/prompts.md#context-adaptive-prompts-three-modes)
+in the user-facing config reference. The five builtin exemplars are
+`beads-issue-investigate`, `beads-issue-discuss`, `beads-issue-status`,
+`beads-issue-resolved`, and `beads-issue-work`; their render correctness is
+guarded by the `*ThreeModeTargetResolution` tests in
+`internal/config/prompt_template_test.go`.
+
 ## 5. The periodic overlay
 
 Any prompt in any of these menus may additionally declare `periodic:`. When
@@ -214,6 +253,8 @@ Periodic conversations can only be **top-level** (not children). The `at` field
 | Frontend | `web/static/hooks/useConversationSeeding.js`      | `seedConversationWithPrompt`, `startConversationWithPrompt`            |
 | Frontend | `web/static/hooks/useConversationMenu.js`         | per-conversation context menu assembly                                |
 | Frontend | `web/static/app.js`                               | `handleSendPromptToConversation` (periodic branching)                 |
+| Builtin  | `config/prompts/builtin/beads-issue-*.prompt.yaml` | Five context-adaptive exemplar prompts (three-mode pattern)          |
+| Test     | `internal/config/prompt_template_test.go`          | `*ThreeModeTargetResolution` render tests + `TestBuiltinPrompts_NoDeprecatedMittoVars` guard |
 
 ## See Also
 

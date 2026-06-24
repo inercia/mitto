@@ -100,6 +100,28 @@ Prompt shown in menu **M** only when M supplies **every required** declared type
 
 **Boolean parameters** (`type: boolean`) never gate either, regardless of `required`: a checkbox always has a definite answer. They are always collected via the dialog (`getMissingPromptParameters` always includes them) and never block **Save**; the value is emitted as the string `"true"`/`"false"` (default unchecked → `"false"`).
 
+## Context-Adaptive Prompts (Three Modes)
+
+**When to use**: a prompt that should work both from a specific bead *and* from
+a plain conversation with no pre-selected issue.
+
+**Four-point recipe**:
+
+1. `menus: beadsIssues, conversation` — appears in both surfaces.
+2. Typed param with `required: false` — never hides the prompt from any menu.
+3. `$target` ladder at the top of the body (`.Session.BeadsIssue` →
+   `.Args.IssueID` → mode 3: current problem, zero `bd` calls).
+4. Gate **every** `bd` command and id-specific `git grep` behind
+   `{{ if $target }} … {{ end }}` — mode 3 must emit **zero** `bd` calls.
+
+**Exemplars**: `beads-issue-investigate`, `beads-issue-discuss`,
+`beads-issue-status`, `beads-issue-resolved`, `beads-issue-work`.
+
+**Guard tests**: `*ThreeModeTargetResolution` tests + `TestBuiltinPrompts_NoDeprecatedMittoVars`
+in `internal/config/prompt_template_test.go`.
+
+Full recipe: [docs/config/prompts.md § Context-adaptive prompts (three modes)](../docs/config/prompts.md#context-adaptive-prompts-three-modes).
+
 ## Key Types
 
 `WebPrompt`: Name, Prompt, Description, Group, BackgroundColor, Icon, Source ("builtin"|"file"|"settings"|"workspace"), Enabled (*bool: nil=enabled, false=disabled), EnabledWhen (CEL, server-side only), Periodic (non-nil = periodic conversation).
@@ -152,3 +174,4 @@ Backend calls `selectPreferredModel()` to pick the best matching active model fr
 
 - `EnabledWhen` has `json:"-"` → settings override of a builtin loses `enabledWhen`. Merge logic must carry forward from lower-priority source.
 - Never round-trip merged prompts via `POST /api/config` — set `prompts: []` explicitly. Backend must filter `req.Prompts` to `Source == PromptSourceSettings` only.
+- Context-adaptive prompts: avoid `commandExists("bd") && dirExists(".beads")` in `enabledWhen` — it hides the prompt exactly when mode 3 (conversation menu, no linked bead) applies.
