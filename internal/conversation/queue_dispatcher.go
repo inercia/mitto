@@ -38,6 +38,11 @@ type queueDeps interface {
 	queueLogger() *slog.Logger
 	// queueSessionID returns the persisted session ID.
 	queueSessionID() string
+	// queueRecordErrorEvent persists an error event so a failed queued send is
+	// visible in the conversation history instead of leaving it frozen. No-op when no recorder.
+	queueRecordErrorEvent(msg string)
+	// setLastQueueSendError records the most recent queued-send failure for the parent's wait loop.
+	setLastQueueSendError(msg string)
 }
 
 // queueDispatcher is stateless; all dependencies are passed per call.
@@ -161,6 +166,8 @@ func (queueDispatcher) send(d queueDeps, queue *session.Queue, msg session.Queue
 		if lg := d.queueLogger(); lg != nil {
 			lg.Error("Failed to send queued message", "error", err, "message_id", msg.ID)
 		}
+		d.queueRecordErrorEvent("Failed to send queued message: " + err.Error())
+		d.setLastQueueSendError(err.Error())
 		d.notifyObservers(func(o SessionObserver) {
 			o.OnError("Failed to send queued message: " + err.Error())
 		})

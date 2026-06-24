@@ -279,6 +279,11 @@ type BackgroundSession struct {
 	modelMu        sync.Mutex // Protects baselineModel and overrideActive
 	baselineModel  string     // User's intended model; never mutated by per-prompt overrides
 	overrideActive bool       // True when active session model differs from baselineModel
+
+	// Last queued-send failure — set by queueRecordErrorEvent, read by parent wait loop.
+	queueErrMu         sync.Mutex
+	lastQueueSendError string
+	lastQueueSendErrAt time.Time
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.

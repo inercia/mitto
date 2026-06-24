@@ -27,6 +27,8 @@ type fakeQueueDeps struct {
 	restoreBaselineCalls int
 	promptWithMetaCalls  []PromptMeta
 	promptWithMetaMsgs   []string
+	recordedErrors       []string
+	lastSendErr          string
 }
 
 func (f *fakeQueueDeps) queueProcessingEnabled() bool        { return f.enabled }
@@ -37,6 +39,10 @@ func (f *fakeQueueDeps) queueIsClosed() bool                 { return f.closed }
 func (f *fakeQueueDeps) lastResponseCompleteTime() time.Time { return f.lastResponse }
 func (f *fakeQueueDeps) queueLogger() *slog.Logger           { return nil }
 func (f *fakeQueueDeps) queueSessionID() string              { return "test-session" }
+func (f *fakeQueueDeps) queueRecordErrorEvent(msg string) {
+	f.recordedErrors = append(f.recordedErrors, msg)
+}
+func (f *fakeQueueDeps) setLastQueueSendError(msg string) { f.lastSendErr = msg }
 
 func (f *fakeQueueDeps) setQueuedDeliveryInProgress(v bool) {
 	f.deliveryInProgress = append(f.deliveryInProgress, v)
@@ -403,5 +409,46 @@ func TestQueueDispatcher_NotifyReordered(t *testing.T) {
 	qd.notifyReordered(d, []session.QueuedMessage{{ID: "m1"}})
 	if len(d.notifiedObservers) != 1 || d.notifiedObservers[0] != "reordered" {
 		t.Fatalf("expected reordered, got %v", d.notifiedObservers)
+	}
+}
+
+// --- send failure persistence ---
+
+func TestQueueDispatcher_Send_FailurePersistsErrorEvent(t *testing.T) {
+	q := newTestQueue(t)
+	msg, err := q.Add("hello", nil, nil, "", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	sendErr := errors.New("template parse error: unknown prompt")
+	d := &fakeQueueDeps{
+		enabled: true,
+		queue:   q,
+		promptWithMetaFn: func(_ string, _ PromptMeta) error {
+			return sendErr
+		},
+	}
+
+	queueDispatcher{}.send(d, q, msg)
+
+	if len(d.recordedErrors) != 1 {
+		t.Fatalf("expected 1 recordedError, got %d: %v", len(d.recordedErrors), d.recordedErrors)
+	}
+	if want := "Failed to send queued message: " + sendErr.Error(); d.recordedErrors[0] != want {
+		t.Errorf("recordedErrors[0] = %q, want %q", d.recordedErrors[0], want)
+	}
+	if d.lastSendErr != sendErr.Error() {
+		t.Errorf("lastSendErr = %q, want %q", d.lastSendErr, sendErr.Error())
+	}
+	// OnError must still be called
+	var gotOnError bool
+	for _, ev := range d.notifiedObservers {
+		if len(ev) > 6 && ev[:6] == "error:" {
+			gotOnError = true
+		}
+	}
+	if !gotOnError {
+		t.Errorf("expected OnError notification, got %v", d.notifiedObservers)
 	}
 }

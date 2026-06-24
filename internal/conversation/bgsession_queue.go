@@ -99,3 +99,38 @@ func (bs *BackgroundSession) queueLogger() *slog.Logger { return bs.logger }
 
 // queueSessionID returns the persisted session ID.
 func (bs *BackgroundSession) queueSessionID() string { return bs.persistedID }
+
+// queueRecordErrorEvent persists an error event for a failed queued send.
+func (bs *BackgroundSession) queueRecordErrorEvent(msg string) {
+	if bs.recorder == nil {
+		return
+	}
+	seq := bs.getNextSeq()
+	if err := bs.recorder.RecordEventWithSeq(session.Event{
+		Seq:       seq,
+		Type:      session.EventTypeError,
+		Timestamp: time.Now(),
+		Data:      session.ErrorData{Message: msg},
+	}); err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("Failed to persist queued send error event", "error", err, "session_id", bs.persistedID)
+		}
+		return
+	}
+	bs.refreshNextSeq()
+}
+
+// setLastQueueSendError records the most recent queued-send failure.
+func (bs *BackgroundSession) setLastQueueSendError(msg string) {
+	bs.queueErrMu.Lock()
+	defer bs.queueErrMu.Unlock()
+	bs.lastQueueSendError = msg
+	bs.lastQueueSendErrAt = time.Now()
+}
+
+// LastQueuedSendError returns the most recent queued-send failure message and its timestamp.
+func (bs *BackgroundSession) LastQueuedSendError() (string, time.Time) {
+	bs.queueErrMu.Lock()
+	defer bs.queueErrMu.Unlock()
+	return bs.lastQueueSendError, bs.lastQueueSendErrAt
+}
