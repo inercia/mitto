@@ -394,7 +394,6 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	expected := []string{
 		"arg", "default",
 		"fileExists", "dirExists", "commandExists", "hasPattern",
-		"acpServers", "children", "mcpChildren",
 		"trim", "lower", "upper", "contains", "hasPrefix", "hasSuffix", "join",
 	}
 	for _, key := range expected {
@@ -547,11 +546,11 @@ func TestFormatChildren(t *testing.T) {
 }
 
 // =============================================================================
-// acpServers / children / mcpChildren template func tests
+// ACP.AvailableText / Children.AllText / Children.MCPText template accessor tests
 // =============================================================================
 
-// TestTemplateFuncs_ACPServersChildrenMCPChildren verifies that the three new
-// zero-arg template functions render correctly from a populated PromptEnabledContext.
+// TestTemplateFuncs_ACPServersChildrenMCPChildren verifies that the three struct-method
+// template accessors render correctly from a populated PromptEnabledContext.
 func TestTemplateFuncs_ACPServersChildrenMCPChildren(t *testing.T) {
 	ctx := &PromptEnabledContext{
 		ACP: ACPContext{
@@ -572,55 +571,56 @@ func TestTemplateFuncs_ACPServersChildrenMCPChildren(t *testing.T) {
 	}
 	fm := BuildTemplateFuncMap(ctx)
 
-	// acpServers renders all available ACP servers.
-	got, err := RenderPromptTemplate("t", `{{ acpServers }}`, ctx, fm)
+	// ACP.AvailableText renders all available ACP servers.
+	got, err := RenderPromptTemplate("t", `{{ .ACP.AvailableText }}`, ctx, fm)
 	if err != nil {
-		t.Fatalf("acpServers render error: %v", err)
+		t.Fatalf("ACP.AvailableText render error: %v", err)
 	}
 	if want := "auggie [coding] (current), claude-code [fast]"; got != want {
-		t.Errorf("acpServers: got %q, want %q", got, want)
+		t.Errorf("ACP.AvailableText: got %q, want %q", got, want)
 	}
 
-	// children renders all children (All slice).
-	got, err = RenderPromptTemplate("t", `{{ children }}`, ctx, fm)
+	// Children.AllText renders all children (All slice).
+	got, err = RenderPromptTemplate("t", `{{ .Children.AllText }}`, ctx, fm)
 	if err != nil {
-		t.Fatalf("children render error: %v", err)
+		t.Fatalf("Children.AllText render error: %v", err)
 	}
 	if want := "s1 (Worker) [auggie], s2 (Helper) [claude-code]"; got != want {
-		t.Errorf("children: got %q, want %q", got, want)
+		t.Errorf("Children.AllText: got %q, want %q", got, want)
 	}
 
-	// mcpChildren renders only MCP-origin children (MCP slice).
-	got, err = RenderPromptTemplate("t", `{{ mcpChildren }}`, ctx, fm)
+	// Children.MCPText renders only MCP-origin children (MCP slice).
+	got, err = RenderPromptTemplate("t", `{{ .Children.MCPText }}`, ctx, fm)
 	if err != nil {
-		t.Fatalf("mcpChildren render error: %v", err)
+		t.Fatalf("Children.MCPText render error: %v", err)
 	}
 	if want := "s1 (Worker) [auggie]"; got != want {
-		t.Errorf("mcpChildren: got %q, want %q", got, want)
+		t.Errorf("Children.MCPText: got %q, want %q", got, want)
 	}
 }
 
-// TestTemplateFuncs_NilCtxACPServersChildren verifies that acpServers, children,
-// and mcpChildren return "" when the context is nil (no panics).
-func TestTemplateFuncs_NilCtxACPServersChildren(t *testing.T) {
-	fm := BuildTemplateFuncMap(nil)
-	for _, body := range []string{"{{ acpServers }}", "{{ children }}", "{{ mcpChildren }}"} {
-		got, err := RenderPromptTemplate("t", body, nil, fm)
+// TestTemplateFuncs_ZeroValueCtxACPServersChildren verifies that ACP.AvailableText,
+// Children.AllText, and Children.MCPText return "" when the context is zero-valued (no data).
+func TestTemplateFuncs_ZeroValueCtxACPServersChildren(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+	for _, body := range []string{"{{ .ACP.AvailableText }}", "{{ .Children.AllText }}", "{{ .Children.MCPText }}"} {
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
 		if err != nil {
-			t.Errorf("nil ctx %q: unexpected error: %v", body, err)
+			t.Errorf("zero-value ctx %q: unexpected error: %v", body, err)
 		}
 		if got != "" {
-			t.Errorf("nil ctx %q: expected empty string, got %q", body, got)
+			t.Errorf("zero-value ctx %q: expected empty string, got %q", body, got)
 		}
 	}
 }
 
-// TestTemplateFuncs_EmptySlicesACPServersChildren verifies that acpServers, children,
-// and mcpChildren return "" when the slices are empty (non-nil ctx, no data).
+// TestTemplateFuncs_EmptySlicesACPServersChildren verifies that ACP.AvailableText,
+// Children.AllText, and Children.MCPText return "" when the slices are empty (non-nil ctx, no data).
 func TestTemplateFuncs_EmptySlicesACPServersChildren(t *testing.T) {
 	ctx := &PromptEnabledContext{}
 	fm := BuildTemplateFuncMap(ctx)
-	for _, body := range []string{"{{ acpServers }}", "{{ children }}", "{{ mcpChildren }}"} {
+	for _, body := range []string{"{{ .ACP.AvailableText }}", "{{ .Children.AllText }}", "{{ .Children.MCPText }}"} {
 		got, err := RenderPromptTemplate("t", body, ctx, fm)
 		if err != nil {
 			t.Errorf("empty ctx %q: unexpected error: %v", body, err)
@@ -631,7 +631,7 @@ func TestTemplateFuncs_EmptySlicesACPServersChildren(t *testing.T) {
 	}
 }
 
-// TestTemplateFuncs_MCPChildrenFiltersCorrectly verifies that mcpChildren only
+// TestTemplateFuncs_MCPChildrenFiltersCorrectly verifies that Children.MCPText only
 // renders the MCP slice even when All contains additional non-MCP entries.
 func TestTemplateFuncs_MCPChildrenFiltersCorrectly(t *testing.T) {
 	ctx := &PromptEnabledContext{
@@ -647,14 +647,14 @@ func TestTemplateFuncs_MCPChildrenFiltersCorrectly(t *testing.T) {
 	}
 	fm := BuildTemplateFuncMap(ctx)
 
-	allGot, _ := RenderPromptTemplate("t", `{{ children }}`, ctx, fm)
-	mcpGot, _ := RenderPromptTemplate("t", `{{ mcpChildren }}`, ctx, fm)
+	allGot, _ := RenderPromptTemplate("t", `{{ .Children.AllText }}`, ctx, fm)
+	mcpGot, _ := RenderPromptTemplate("t", `{{ .Children.MCPText }}`, ctx, fm)
 
 	if want := "m1 (MCP child) [auggie], a1 (Auto child) [auggie]"; allGot != want {
-		t.Errorf("children: got %q, want %q", allGot, want)
+		t.Errorf("Children.AllText: got %q, want %q", allGot, want)
 	}
 	if want := "m1 (MCP child) [auggie]"; mcpGot != want {
-		t.Errorf("mcpChildren: got %q, want %q", mcpGot, want)
+		t.Errorf("Children.MCPText: got %q, want %q", mcpGot, want)
 	}
 }
 

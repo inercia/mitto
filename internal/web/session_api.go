@@ -287,7 +287,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 				ctx.Children.PromptingCount++
 				isPrompting = true
 			}
-			// Populate structured child info for template funcs ({{ children }}, {{ mcpChildren }})
+			// Populate structured child info for template accessors ({{ .Children.AllText }}, {{ .Children.MCPText }})
 			childInfo := config.ChildInfo{
 				ID:          child.SessionID,
 				Name:        child.Name,

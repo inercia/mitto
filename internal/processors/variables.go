@@ -126,7 +126,7 @@ func formatParentSession(parentID, parentName string) string {
 
 // formatChildSessions renders the child session list as a human-readable
 // comma-separated string. Delegates to config.FormatChildren for single-source-of-truth
-// formatting identical to the {{ children }} template function.
+// formatting identical to the {{ .Children.AllText }} template accessor.
 //
 // Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
 // If a child has no name, the parenthetical group is omitted.
@@ -161,7 +161,7 @@ func formatMCPChildrenCount(children []ChildSession) string {
 
 // formatMCPChildren renders only MCP-origin children as a human-readable string.
 // Delegates to config.FormatChildren for single-source-of-truth formatting identical
-// to the {{ mcpChildren }} template function.
+// to the {{ .Children.MCPText }} template accessor.
 //
 // Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
 // If a child has no name, the parenthetical group is omitted.
@@ -185,7 +185,7 @@ func formatMCPChildren(children []ChildSession) string {
 
 // formatAvailableACPServers renders the available ACP server list as a human-readable
 // comma-separated string. Delegates to config.FormatACPServers for single-source-of-truth
-// formatting identical to the {{ acpServers }} template function.
+// formatting identical to the {{ .ACP.AvailableText }} template accessor.
 //
 // Format: "name [tag1, tag2] (current), name2 [tag3]"
 // If a server has no tags the bracket group is omitted.

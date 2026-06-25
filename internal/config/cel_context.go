@@ -55,9 +55,13 @@ type ACPContext struct {
 	// AutoApprove indicates if permission requests are auto-approved
 	AutoApprove bool
 	// Available is the list of ACP servers that have workspaces configured for
-	// the session's working directory. Used by the {{ acpServers }} template func.
+	// the session's working directory. Used by the {{ .ACP.AvailableText }} template accessor.
 	Available []ACPServerInfo
 }
+
+// AvailableText renders the available ACP servers as a human-readable
+// comma-separated string (see FormatACPServers). Empty when none.
+func (a ACPContext) AvailableText() string { return FormatACPServers(a.Available) }
 
 // WorkspaceContext holds workspace context for CEL evaluation.
 type WorkspaceContext struct {
@@ -154,12 +158,19 @@ type ChildrenContext struct {
 	// IdleCount is the number of child sessions NOT currently prompting (Count - PromptingCount)
 	IdleCount int
 	// All contains structured info for all child sessions.
-	// Used by the {{ children }} template func (FormatChildren).
+	// Used by the {{ .Children.AllText }} template accessor (FormatChildren).
 	All []ChildInfo
 	// MCP contains structured info for MCP-origin child sessions only.
-	// Used by the {{ mcpChildren }} template func (FormatChildren on the MCP slice).
+	// Used by the {{ .Children.MCPText }} template accessor (FormatChildren on the MCP slice).
 	MCP []ChildInfo
 }
+
+// AllText renders all child sessions as a human-readable comma-separated
+// string (see FormatChildren). Empty when none.
+func (c ChildrenContext) AllText() string { return FormatChildren(c.All) }
+
+// MCPText renders MCP-origin child sessions only, comma-separated. Empty when none.
+func (c ChildrenContext) MCPText() string { return FormatChildren(c.MCP) }
 
 // ToolsContext holds MCP tools context for CEL evaluation.
 type ToolsContext struct {

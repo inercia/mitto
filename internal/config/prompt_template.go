@@ -26,9 +26,9 @@ var migratableMittoVars = map[string]string{
 	"mcp_children_count":    "{{ .Children.MCPCount }}",
 	"periodic":              "{{ .Session.IsPeriodic }}",
 	"periodic_forced":       "{{ .Session.IsPeriodicForced }}",
-	"available_acp_servers": "{{ acpServers }}",
-	"children":              "{{ children }}",
-	"mcp_children":          "{{ mcpChildren }}",
+	"available_acp_servers": "{{ .ACP.AvailableText }}",
+	"children":              "{{ .Children.AllText }}",
+	"mcp_children":          "{{ .Children.MCPText }}",
 	"user_data":             "{{ .Session.UserDataJSON }}",
 	"user_data_schema":      "{{ .Workspace.UserDataSchemaJSON }}",
 }

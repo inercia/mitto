@@ -305,14 +305,14 @@ func TestDeprecatedMittoVarReplacement(t *testing.T) {
 		t.Errorf("session_id replacement = %q", r)
 	}
 	// The 5 formerly-keep-list tokens now have template equivalents.
-	if r := DeprecatedMittoVarReplacement("children"); r != "{{ children }}" {
-		t.Errorf("children replacement = %q, want %q", r, "{{ children }}")
+	if r := DeprecatedMittoVarReplacement("children"); r != "{{ .Children.AllText }}" {
+		t.Errorf("children replacement = %q, want %q", r, "{{ .Children.AllText }}")
 	}
-	if r := DeprecatedMittoVarReplacement("mcp_children"); r != "{{ mcpChildren }}" {
-		t.Errorf("mcp_children replacement = %q, want %q", r, "{{ mcpChildren }}")
+	if r := DeprecatedMittoVarReplacement("mcp_children"); r != "{{ .Children.MCPText }}" {
+		t.Errorf("mcp_children replacement = %q, want %q", r, "{{ .Children.MCPText }}")
 	}
-	if r := DeprecatedMittoVarReplacement("available_acp_servers"); r != "{{ acpServers }}" {
-		t.Errorf("available_acp_servers replacement = %q, want %q", r, "{{ acpServers }}")
+	if r := DeprecatedMittoVarReplacement("available_acp_servers"); r != "{{ .ACP.AvailableText }}" {
+		t.Errorf("available_acp_servers replacement = %q, want %q", r, "{{ .ACP.AvailableText }}")
 	}
 	if r := DeprecatedMittoVarReplacement("user_data"); r != "{{ .Session.UserDataJSON }}" {
 		t.Errorf("user_data replacement = %q, want %q", r, "{{ .Session.UserDataJSON }}")
@@ -337,9 +337,9 @@ func TestKeepListIsEmpty(t *testing.T) {
 // contains the 5 tokens graduated from the keep-list, with the expected replacements.
 func TestMigratableMittoVars_ContainsGraduatedTokens(t *testing.T) {
 	expected := map[string]string{
-		"available_acp_servers": "{{ acpServers }}",
-		"children":              "{{ children }}",
-		"mcp_children":          "{{ mcpChildren }}",
+		"available_acp_servers": "{{ .ACP.AvailableText }}",
+		"children":              "{{ .Children.AllText }}",
+		"mcp_children":          "{{ .Children.MCPText }}",
 		"user_data":             "{{ .Session.UserDataJSON }}",
 		"user_data_schema":      "{{ .Workspace.UserDataSchemaJSON }}",
 	}
