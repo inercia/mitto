@@ -629,6 +629,39 @@ func TestCELEvaluator_ItemContext(t *testing.T) {
 	}
 }
 
+// TestCELEvaluator_AnalyzeLogsEnabledWhen is a regression test for mitto-vjos.1.
+// It pins the exact literal expression used by the "Analyze Logs" prompt
+// (CommandExists("bd") && DirExists(".beads")) so that a future CEL migration
+// cannot silently re-break this prompt's gate.
+func TestCELEvaluator_AnalyzeLogsEnabledWhen(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	// Create a temp workspace that contains a .beads subdirectory.
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".beads"), 0755); err != nil {
+		t.Fatalf("failed to create .beads dir: %v", err)
+	}
+
+	ctx := &PromptEnabledContext{
+		Session:   SessionContext{ID: "test"},
+		Workspace: WorkspaceContext{Folder: tmpDir},
+	}
+
+	// Core regression assertion: the exact prompt expression must compile without error.
+	const analyzeLogsExpr = `CommandExists("bd") && DirExists(".beads")`
+	ce := compile(t, e, analyzeLogsExpr)
+
+	// Evaluation must not return an error regardless of whether "bd" is on PATH.
+	evaluate(t, e, ce, ctx)
+
+	// Deterministic variant: "ls" is always available; .beads dir exists → must be true.
+	const deterministicExpr = `CommandExists("ls") && DirExists(".beads")`
+	ce2 := compile(t, e, deterministicExpr)
+	if got := evaluate(t, e, ce2, ctx); !got {
+		t.Errorf("Evaluate(%q) = false, want true (.beads dir exists and ls is always on PATH)", deterministicExpr)
+	}
+}
+
 // benchEvalCtx is a representative context exercising tools/ACP/workspace functions.
 var benchEvalCtx = &PromptEnabledContext{
 	ACP:      ACPContext{Name: "Auggie (Opus)", Type: "augment", Tags: []string{"coding", "fast"}},
