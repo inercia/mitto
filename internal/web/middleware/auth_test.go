@@ -183,6 +183,44 @@ func TestAuthManager_HandleLogin(t *testing.T) {
 	}
 }
 
+// TestAuthManager_HandleLogin_SetsAuthIdentity verifies that the attempted username
+// is written into the *AuthIdentity context holder on both success and failure paths,
+// so access-log entries carry user= for auditing.
+func TestAuthManager_HandleLogin_SetsAuthIdentity(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "admin",
+			Password: "secret",
+		},
+	})
+	defer am.Close()
+
+	tests := []struct {
+		name     string
+		body     string
+		wantUser string
+	}{
+		{"failed login records username", `{"username":"attacker","password":"wrong"}`, "attacker"},
+		{"successful login records username", `{"username":"admin","password":"secret"}`, "admin"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			holder := &AuthIdentity{}
+			req := httptest.NewRequest("POST", "/api/login", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			req = req.WithContext(context.WithValue(req.Context(), ContextKeyAuthIdentity, holder))
+			w := httptest.NewRecorder()
+
+			am.HandleLogin(w, req)
+
+			if holder.User != tt.wantUser {
+				t.Errorf("AuthIdentity.User = %q, want %q", holder.User, tt.wantUser)
+			}
+		})
+	}
+}
+
 func TestAuthManager_HandleLogin_RateLimiting(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{

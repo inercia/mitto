@@ -1093,6 +1093,10 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Record the attempted username so the access-log middleware can include
+	// user= in login_failed / rate_limited audit entries.
+	SetAuthIdentity(r, req.Username)
+
 	logger.Debug("Validating credentials",
 		"username", req.Username,
 		"config_username", a.config.Simple.Username,
