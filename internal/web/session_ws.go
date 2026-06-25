@@ -2466,6 +2466,37 @@ func (c *SessionWSClient) OnEventMeta(seq int64, meta map[string]any) {
 	c.pendingMetaMu.Unlock()
 }
 
+// OnSessionChange implements conversation.SessionChangeObserver. It pushes a
+// generic session_change timeline event to the client. Kind-agnostic: the full
+// SessionChangeData is echoed so new kinds need no new WS message type.
+func (c *SessionWSClient) OnSessionChange(seq int64, data session.SessionChangeData) {
+	c.seqMu.Lock()
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
+	payload := map[string]interface{}{
+		"seq":        seq,
+		"max_seq":    c.getServerMaxSeq(),
+		"session_id": c.sessionID,
+		"kind":       data.Kind,
+	}
+	if data.Label != "" {
+		payload["label"] = data.Label
+	}
+	if data.Value != "" {
+		payload["value"] = data.Value
+	}
+	if data.PreviousValue != "" {
+		payload["previous_value"] = data.PreviousValue
+	}
+	if len(data.Items) > 0 {
+		payload["items"] = data.Items
+	}
+	c.sendMessage(conversation.WSMsgTypeSessionChange, payload)
+}
+
 // OnError is called when an error occurs.
 func (c *SessionWSClient) OnError(message string) {
 	c.sendError(message)

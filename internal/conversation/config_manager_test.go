@@ -211,6 +211,7 @@ func (f *fakeConfigDeps) cmNotifyConfigChanged(configID, value string) {
 	defer f.mu.Unlock()
 	f.notifiedConfig = append(f.notifiedConfig, [3]string{f.sessionID, configID, value})
 }
+func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) {}
 
 // --- Tests ---
 

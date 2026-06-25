@@ -94,6 +94,10 @@ type configDeps interface {
 
 	// Config changed notification (no-op when hook not set)
 	cmNotifyConfigChanged(configID, value string)
+
+	// Record a user-initiated session change to the timeline and push it live to
+	// observers (no-op when no recorder). Generic: kind discriminates the change.
+	cmRecordSessionChange(kind, value, previousValue string)
 }
 
 // configManager is a stateless collaborator owning session-config + model-baseline logic.
@@ -182,6 +186,7 @@ func (c configManager) applyConfigOption(d configDeps, ctx context.Context, conf
 			return fmt.Errorf("failed to set %s: %w", configID, err)
 		}
 	} else if category == ConfigOptionCategoryModel {
+		previousModel := d.cmGetCurrentModelID()
 		if err := d.cmSetSessionModel(ctx, value); err != nil {
 			if l := d.cmLogger(); l != nil {
 				l.Error("Failed to set session model", "config_id", configID, "value", value, "error", err)
@@ -191,6 +196,7 @@ func (c configManager) applyConfigOption(d configDeps, ctx context.Context, conf
 		d.cmSetCurrentModelID(value)
 		d.cmSetBaselineAndClearOverride(value)
 		c.persistBaselineModel(d, value)
+		d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
 	} else {
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
 	}

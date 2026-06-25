@@ -61,6 +61,16 @@ type EventMetaObserver interface {
 	OnEventMeta(seq int64, meta map[string]any)
 }
 
+// SessionChangeObserver is an optional sibling of SessionObserver. Observers that
+// implement it receive generic, first-class session-change timeline events
+// (model changes today; other kinds later) for live push. Generic by design: the
+// payload discriminates on Kind, so new kinds need no new observer method.
+type SessionChangeObserver interface {
+	// OnSessionChange is called with the seq of a persisted session_change event
+	// and its generic payload.
+	OnSessionChange(seq int64, data session.SessionChangeData)
+}
+
 // SessionObserver defines the interface for receiving session events.
 // This allows multiple clients (WebSocket connections) to observe a single session.
 //

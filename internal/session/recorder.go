@@ -521,6 +521,18 @@ func (r *Recorder) RecordSessionChange(data SessionChangeData, opts ...RecordOpt
 	}, opts))
 }
 
+// RecordSessionChangeWithSeq records a session change event with a pre-assigned
+// sequence number obtained from getNextSeq(), so the event is ordered atomically
+// with respect to concurrent streaming events (same pattern as RecordUserPromptCompleteWithSeq).
+func (r *Recorder) RecordSessionChangeWithSeq(seq int64, data SessionChangeData, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
+		Type:      EventTypeSessionChange,
+		Timestamp: time.Now(),
+		Data:      data,
+	}, opts))
+}
+
 // RecordUIPromptAnswer records a user's response to a UI prompt from an MCP tool.
 // This creates an audit trail of user decisions made through the UI prompt system.
 func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string, opts ...RecordOption) error {

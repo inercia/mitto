@@ -1857,3 +1857,57 @@ func TestRecorder_RecordSessionChange_ListKind(t *testing.T) {
 		t.Errorf("value/previous_value should be empty for list kind, got %q / %q", decoded.Value, decoded.PreviousValue)
 	}
 }
+
+// TestRecorder_RecordSessionChangeWithSeq tests the pre-assigned-seq variant,
+// mirroring TestRecorder_RecordUserPromptCompleteWithSeq conventions.
+func TestRecorder_RecordSessionChangeWithSeq(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	const wantSeq int64 = 42
+	data := SessionChangeData{
+		Kind:          "model",
+		Value:         "claude-opus-4",
+		PreviousValue: "claude-sonnet-4-5",
+	}
+	if err := r.RecordSessionChangeWithSeq(wantSeq, data); err != nil {
+		t.Fatalf("RecordSessionChangeWithSeq failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(r.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	// Find the session_change event.
+	var found *Event
+	for i := range events {
+		if events[i].Type == EventTypeSessionChange {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("session_change event not found")
+	}
+	if found.Seq != wantSeq {
+		t.Errorf("seq = %d, want %d", found.Seq, wantSeq)
+	}
+
+	raw, err := json.Marshal(found.Data)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var decoded SessionChangeData
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if decoded.Kind != "model" {
+		t.Errorf("kind = %q, want %q", decoded.Kind, "model")
+	}
+	if decoded.Value != "claude-opus-4" {
+		t.Errorf("value = %q, want %q", decoded.Value, "claude-opus-4")
+	}
+	if decoded.PreviousValue != "claude-sonnet-4-5" {
+		t.Errorf("previous_value = %q, want %q", decoded.PreviousValue, "claude-sonnet-4-5")
+	}
+}

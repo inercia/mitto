@@ -239,3 +239,21 @@ func (bs *BackgroundSession) cmNotifyConfigChanged(configID, value string) {
 		bs.onConfigChanged(bs.persistedID, configID, value)
 	}
 }
+
+func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue string) {
+	if bs.recorder == nil {
+		return
+	}
+	seq := bs.getNextSeq()
+	data := session.SessionChangeData{Kind: kind, Value: value, PreviousValue: previousValue}
+	if err := bs.recorder.RecordSessionChangeWithSeq(seq, data); err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("Failed to record session change", "kind", kind, "value", value, "error", err)
+		}
+	}
+	bs.notifyObservers(func(o SessionObserver) {
+		if sc, ok := o.(SessionChangeObserver); ok {
+			sc.OnSessionChange(seq, data)
+		}
+	})
+}

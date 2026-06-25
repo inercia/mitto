@@ -33,6 +33,9 @@ const (
 	// WSMsgTypeConfigOptionChanged notifies that a session's config option changed.
 	WSMsgTypeConfigOptionChanged = "config_option_changed"
 
+	// WSMsgTypeSessionChange notifies clients of a first-class session_change timeline event.
+	WSMsgTypeSessionChange = "session_change"
+
 	// WSMsgTypeRunnerFallback notifies that the runner fell back to a different type.
 	WSMsgTypeRunnerFallback = "runner_fallback"
 
