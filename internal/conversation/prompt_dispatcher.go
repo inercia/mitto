@@ -595,6 +595,12 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	models := d.pdGetAgentModels()
 	if models == nil {
+		if l := d.pdLogger(); l != nil {
+			l.Debug("apply_model_preference",
+				"session_id", d.pdSessionID(),
+				"prompt_name", meta.PromptName,
+				"decision", "skip_no_agent_models")
+		}
 		return
 	}
 
@@ -606,15 +612,18 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	baseline := d.pdReadBaselineModel()
 	currentModel := string(models.CurrentModelId)
 	desired := baseline
+	matched := false
 	if len(preferredModels) > 0 {
 		if resolved := SelectPreferredModel(preferredModels, models); resolved != "" {
 			desired = resolved
+			matched = true
 		}
 		// no match → desired stays as baseline (prevents override leakage)
 	}
 
 	isOverride := desired != "" && desired != baseline
-	if desired != "" && desired != currentModel {
+	switching := desired != "" && desired != currentModel
+	if switching {
 		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), 15*time.Second)
 		if setErr := d.pdSetActiveModelOnly(setCtx, desired); setErr != nil {
 			if l := d.pdLogger(); l != nil {
@@ -622,6 +631,28 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 			}
 		}
 		setCancel()
+	}
+
+	if l := d.pdLogger(); l != nil {
+		decision := "switching"
+		if !switching {
+			switch {
+			case len(preferredModels) == 0:
+				decision = "skip_no_preference"
+			case !matched:
+				decision = "skip_no_match"
+			default:
+				decision = "skip_already_satisfied"
+			}
+		}
+		l.Debug("apply_model_preference",
+			"session_id", d.pdSessionID(),
+			"prompt_name", meta.PromptName,
+			"preferred_models", preferredModels,
+			"baseline", baseline,
+			"current_model", currentModel,
+			"desired", desired,
+			"decision", decision)
 	}
 
 	d.pdWriteOverrideActive(isOverride)

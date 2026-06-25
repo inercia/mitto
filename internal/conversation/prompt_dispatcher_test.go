@@ -1,11 +1,13 @@
 package conversation
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1136,11 +1138,16 @@ func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_NoOp(t *testing.T) 
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.agentModels = nil
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	p.applyModelPreference(d, PromptMeta{})
 
 	if len(d.setActiveModelCalls) != 0 {
 		t.Fatalf("expected no setActiveModel call when agentModels=nil, got %v", d.setActiveModelCalls)
+	}
+	if !strings.Contains(buf.String(), "decision=skip_no_agent_models") {
+		t.Fatalf("expected decision=skip_no_agent_models in log, got: %s", buf.String())
 	}
 }
 
@@ -1149,6 +1156,8 @@ func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_No
 	d := newFakePromptDeps()
 	d.agentModels = &acp.UnstableSessionModelState{CurrentModelId: "m-1"}
 	d.baselineModel = "m-1" // same as current
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	p.applyModelPreference(d, PromptMeta{}) // no preferred models
 
@@ -1157,6 +1166,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_No
 	}
 	if d.overrideActive {
 		t.Fatal("expected overrideActive=false when no preference and using baseline")
+	}
+	if !strings.Contains(buf.String(), "decision=skip_no_preference") {
+		t.Fatalf("expected decision=skip_no_preference in log, got: %s", buf.String())
 	}
 }
 
@@ -1171,6 +1183,8 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 		},
 	}
 	d.baselineModel = "m-1"
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Prefer "m-2" (matched by name "Model 2" with "contains" mode)
 	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"Model 2"}})
@@ -1180,6 +1194,9 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 	}
 	if !d.overrideActive {
 		t.Fatal("expected overrideActive=true when preferred differs from baseline")
+	}
+	if !strings.Contains(buf.String(), "decision=switching") {
+		t.Fatalf("expected decision=switching in log, got: %s", buf.String())
 	}
 }
 
@@ -1194,6 +1211,8 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(
 		},
 	}
 	d.baselineModel = "m-1"
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Prefer "m-2" which is already active.
 	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"Model 2"}})
@@ -1204,6 +1223,9 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(
 	// But override is still true because desired != baseline
 	if !d.overrideActive {
 		t.Fatal("expected overrideActive=true because desired differs from baseline")
+	}
+	if !strings.Contains(buf.String(), "decision=skip_already_satisfied") {
+		t.Fatalf("expected decision=skip_already_satisfied in log, got: %s", buf.String())
 	}
 }
 
@@ -1217,6 +1239,8 @@ func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverri
 		},
 	}
 	d.baselineModel = "m-1"
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Preference pattern doesn't match anything → desired stays at baseline.
 	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"nonexistent-model"}})
@@ -1226,6 +1250,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverri
 	}
 	if d.overrideActive {
 		t.Fatal("expected overrideActive=false when no match and desired==baseline")
+	}
+	if !strings.Contains(buf.String(), "decision=skip_no_match") {
+		t.Fatalf("expected decision=skip_no_match in log, got: %s", buf.String())
 	}
 }
 
