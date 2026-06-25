@@ -143,6 +143,20 @@ type listItem struct {
 	ID string `json:"id"`
 }
 
+// cleanupTimeout scales the bulk-delete timeout with the number of closed
+// issues being removed. On the Dolt backend each delete rewrites dependency
+// links, updates text references in connected issues, and commits, so large
+// closed-issue sets routinely take far longer than defaultTimeout. We budget a
+// generous per-issue allowance on top of a high floor.
+func cleanupTimeout(n int) time.Duration {
+	const perIssue = 750 * time.Millisecond
+	d := time.Duration(n) * perIssue
+	if d < syncTimeout {
+		return syncTimeout
+	}
+	return d
+}
+
 func (c *cliClient) Cleanup(ctx context.Context, dir string) (int, error) {
 	out, err := c.runJSON(ctx, dir, "list", "--json", "--status", "closed", "-n", "0")
 	if err != nil {
@@ -170,7 +184,7 @@ func (c *cliClient) Cleanup(ctx context.Context, dir string) (int, error) {
 	args = append(args, ids...)
 	args = append(args, "--force")
 
-	if _, err := c.runRaw(ctx, defaultTimeout, dir, args...); err != nil {
+	if _, err := c.runRaw(ctx, cleanupTimeout(len(ids)), dir, args...); err != nil {
 		return 0, err
 	}
 	return len(ids), nil

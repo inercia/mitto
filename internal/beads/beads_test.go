@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -403,6 +404,33 @@ func TestClient_Cleanup_DeletesWithForce(t *testing.T) {
 	}
 	if !strings.Contains(joined, "abc-1") || !strings.Contains(joined, "abc-2") {
 		t.Errorf("delete args missing IDs: %v", deleteArgs)
+	}
+}
+
+func TestCleanupTimeout_ScalesWithCount(t *testing.T) {
+	// Small counts use the high floor (syncTimeout), not the old 15s default.
+	if got := cleanupTimeout(0); got != syncTimeout {
+		t.Errorf("cleanupTimeout(0) = %v, want floor %v", got, syncTimeout)
+	}
+	if got := cleanupTimeout(10); got != syncTimeout {
+		t.Errorf("cleanupTimeout(10) = %v, want floor %v", got, syncTimeout)
+	}
+	// The floor must comfortably exceed the previous defaultTimeout.
+	if syncTimeout <= defaultTimeout {
+		t.Errorf("floor %v must exceed old defaultTimeout %v", syncTimeout, defaultTimeout)
+	}
+	// Large counts scale above the floor and grow monotonically.
+	big := cleanupTimeout(1000)
+	if big <= syncTimeout {
+		t.Errorf("cleanupTimeout(1000) = %v, want > floor %v", big, syncTimeout)
+	}
+	if cleanupTimeout(2000) <= big {
+		t.Errorf("cleanupTimeout must increase with count: 2000 (%v) <= 1000 (%v)", cleanupTimeout(2000), big)
+	}
+	// 363 closed issues (the case that exceeded the old 15s timeout) must get a
+	// budget well beyond the measured bulk-delete duration.
+	if got, want := cleanupTimeout(363), 363*750*time.Millisecond; got != want {
+		t.Errorf("cleanupTimeout(363) = %v, want %v", got, want)
 	}
 }
 
