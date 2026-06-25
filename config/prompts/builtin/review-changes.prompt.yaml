@@ -4,7 +4,7 @@ menus: prompts
 description: 'Review recent changes against requirements: completeness, correctness, tight scope'
 group: Code Quality
 backgroundColor: '#C8E6C9'
-enabledWhen: fileExists(".git/config")
+enabledWhen: FileExists(".git/config")
 prompt: |
   Review the **recent changes** in this repository — typically the work done to address a
   ticket/issue — and judge it against three questions, in this order:

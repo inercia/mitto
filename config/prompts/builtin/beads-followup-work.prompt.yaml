@@ -4,7 +4,7 @@ menus: prompts, conversation
 description: Review the conversation for incomplete work, follow-up items, and edge cases, organize them (grouping related items under epics — new or existing), and file them as beads
 backgroundColor: '#DCEDC8'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
 prompt: |
   ## Session Context
 

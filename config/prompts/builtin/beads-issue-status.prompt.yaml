@@ -9,7 +9,7 @@ parameters:
 description: Fact-check this bead's implementation status against the codebase
 backgroundColor: '#F0F4C3'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - "*sonnet*"
   - "*flash*"

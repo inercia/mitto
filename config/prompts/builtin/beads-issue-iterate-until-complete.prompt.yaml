@@ -12,7 +12,7 @@ parameters:
 description: Auto-periodic — keep advancing this bead toward completion, then self-terminate when nothing ready remains
 backgroundColor: '#C8E6C9'
 group: Tasks
-enabledWhen: '!session.isChild && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*") && item.status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Status != "closed"'
 periodic:
   trigger: onCompletion
   delay: 30

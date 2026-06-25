@@ -4,7 +4,7 @@ menus: prompts, beadsList
 description: Find stale, obsolete, or duplicate beads and close them after confirmation
 backgroundColor: '#BCAAA4'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - "*sonnet*"
   - "*flash*"

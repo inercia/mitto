@@ -12,7 +12,7 @@ parameters:
 description: Plan this bead and spawn parallel Mitto conversations — running the work in a chosen agent (workspace)
 backgroundColor: '#B2DFDB'
 group: Tasks
-enabledWhen: '!session.isChild && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*") && item.status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Status != "closed"'
 prompt: |
   ## Session Context
 

@@ -4,7 +4,7 @@ menus: prompts
 description: Create a beads issue — from the current conversation context or from scratch
 backgroundColor: '#C8E6C9'
 group: Tasks
-enabledWhen: commandExists("bd")
+enabledWhen: CommandExists("bd")
 preferredModels:
   - "*sonnet*"
   - "*flash*"

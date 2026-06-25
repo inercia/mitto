@@ -7,7 +7,7 @@ backgroundColor: '#C8E6C9'
 tags:
 - periodic
 - github
-enabledWhen: fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh"))
+enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
 prompt: |
   Monitor community and repo-wide contributions for the current repository:
   pending review requests addressed to you, bot dependency PRs (Dependabot,

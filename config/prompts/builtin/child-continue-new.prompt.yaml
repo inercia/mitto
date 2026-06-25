@@ -4,7 +4,7 @@ description: Continue the current work in a new conversation — in this or anot
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+enabledWhen: Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
 prompt: |
   Continue the current work in a brand-new conversation. Let the user choose which
   workspace to start it in (this one or another), optionally with a different model.

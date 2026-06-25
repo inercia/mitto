@@ -4,7 +4,7 @@ description: Send a status report to the parent conversation
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: session.isChild && parent.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+enabledWhen: Session.IsChild && Parent.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
 preferredModels:
   - "*haiku*"
   - "*flash*"

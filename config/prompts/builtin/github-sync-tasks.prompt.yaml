@@ -7,7 +7,7 @@ group: GitHub
 tags:
 - periodic
 - github
-enabledWhen: fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh")) && commandExists("bd")
+enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd")
 preferredModels:
   - "*haiku*"
   - "*flash*"

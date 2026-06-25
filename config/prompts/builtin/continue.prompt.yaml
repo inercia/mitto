@@ -4,7 +4,7 @@ description: Continue with the current task from where we left off
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: '!session.isPeriodicConversation'
+enabledWhen: '!Session.IsPeriodicConversation'
 prompt: |
   Before taking any action, review the current state of the work by reading relevant files,
   checking git status, and understanding what has already been completed.

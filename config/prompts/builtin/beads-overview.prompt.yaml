@@ -4,7 +4,7 @@ menus: prompts, beadsList
 description: 'Read-only health snapshot of the whole tracker: ready, blocked, in-progress, stale, and dependency cycles'
 backgroundColor: '#CFD8DC'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - "*haiku*"
   - "*flash*"

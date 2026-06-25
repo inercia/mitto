@@ -4,7 +4,7 @@ menus: prompts
 description: Break a JIRA ticket into sub-tickets and create them automatically
 backgroundColor: '#E1BEE7'
 group: JIRA
-enabledWhen: '!session.isChild && tools.hasPattern("jira_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("jira_*")'
 prompt: |
   ## Session Context
 

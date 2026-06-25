@@ -9,7 +9,7 @@ parameters:
 description: 'Discuss and refine a bead: resolve pending decisions, assess its quality, and sharpen it until it is ready to work on — capturing the rationale back into the tracker'
 backgroundColor: '#F8BBD0'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads") && item.status != "closed"
+enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
 prompt: |
   ## Session Context
 

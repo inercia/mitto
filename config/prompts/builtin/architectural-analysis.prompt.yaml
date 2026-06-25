@@ -6,7 +6,7 @@ backgroundColor: '#C8E6C9'
 group: Code Quality
 tags:
 - periodic
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
 prompt: |
   ## Session Context
 

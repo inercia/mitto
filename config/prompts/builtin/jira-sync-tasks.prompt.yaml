@@ -7,7 +7,7 @@ group: JIRA
 tags:
 - periodic
 - jira
-enabledWhen: tools.hasPattern("jira_*") && commandExists("bd")
+enabledWhen: Tools.HasPattern("jira_*") && CommandExists("bd")
 preferredModels:
   - "*haiku*"
   - "*flash*"
