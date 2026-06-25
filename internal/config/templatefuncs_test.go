@@ -388,11 +388,44 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 	}
 }
 
+// TestUserData verifies the UserData template function.
+func TestUserData(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		UserData: map[string]string{
+			"JIRA Ticket": "PROJ-42",
+			"env":         "prod",
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	udFn := fm["UserData"].(func(string) string)
+
+	// present key
+	if got := udFn("JIRA Ticket"); got != "PROJ-42" {
+		t.Errorf(`UserData("JIRA Ticket") = %q, want "PROJ-42"`, got)
+	}
+	// another present key
+	if got := udFn("env"); got != "prod" {
+		t.Errorf(`UserData("env") = %q, want "prod"`, got)
+	}
+	// absent key → ""
+	if got := udFn("missing"); got != "" {
+		t.Errorf(`UserData("missing") = %q, want ""`, got)
+	}
+
+	// nil UserData (menu-time context) must not panic and return "".
+	nilCtx := &PromptEnabledContext{}
+	fm2 := BuildTemplateFuncMap(nilCtx)
+	udFn2 := fm2["UserData"].(func(string) string)
+	if got := udFn2("any"); got != "" {
+		t.Errorf(`UserData nil map = %q, want ""`, got)
+	}
+}
+
 // TestBuildTemplateFuncMap_AllKeysPresent verifies all expected keys exist.
 func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
 	expected := []string{
-		"Arg", "Default",
+		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "CommandExists", "HasPattern",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}

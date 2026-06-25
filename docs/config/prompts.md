@@ -887,6 +887,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Children.Count }}` | Number of child conversations |
 | `{{ .Children.MCPCount }}` | Number of MCP-spawned children |
 | `{{ .Args.NAME }}` | Argument value for `NAME` (from prompt arguments) |
+| `{{ index .UserData "NAME" }}` | Per-conversation user-data field `NAME` (empty if unset); see also the `UserData` function below |
 | `{{ .Iteration.Number }}` | 0-based index of the current periodic run (0 for non-periodic) |
 | `{{ .Iteration.Max }}` | Configured max runs (0 = unlimited; 0 for non-periodic) |
 | `{{ .Iteration.IsPeriodic }}` | `true` when triggered by the periodic runner |
@@ -898,6 +899,7 @@ The following fields are available at send time. They are the **same fields used
 | Function | Signature | Meaning |
 | --- | --- | --- |
 | `arg` | `arg "NAME" "default"` | Argument value, or default if absent/empty (like `${NAME:-default}`) |
+| `UserData` | `UserData "NAME"` | Per-conversation user-data field value, or `""` if unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. |
 | `default` | `default "fallback" .Value` | `.Value` if non-empty, else fallback |
 | `cond` / `when` | `cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |
 | `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
@@ -920,7 +922,18 @@ prompt: |
 # Cond (CEL) + Arg
 prompt: |
   {{ if Cond "FileExists(\".git/config\")" }}Repo: {{ Arg "REPO" "current" }}{{ end }}
+
+# User data: set-if-unset, else continue
+prompt: |
+  {{ if UserData "JIRA Ticket" }}
+  Continue work on {{ UserData "JIRA Ticket" }}.
+  {{ else }}
+  No JIRA ticket is set yet. Determine it from the conversation and call
+  mitto_conversation_update with user_data to set "JIRA Ticket", then proceed.
+  {{ end }}
 ```
+
+The same field is available at menu time in `enabledWhen`, e.g. `enabledWhen: '"JIRA Ticket" in UserData && UserData["JIRA Ticket"] != ""'`.
 
 ### Escaping & Corner Cases
 

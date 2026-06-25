@@ -100,6 +100,32 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_UserData asserts that BuildCELContext populates ctx.UserData
+// from input.UserData (name→value map).
+func TestBuildCELContext_UserData(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		UserData:  map[string]string{"JIRA Ticket": "PROJ-42", "env": "prod"},
+	}
+	ctx := BuildCELContext(input)
+
+	if ctx.UserData == nil {
+		t.Fatal("expected ctx.UserData to be populated, got nil")
+	}
+	if ctx.UserData["JIRA Ticket"] != "PROJ-42" {
+		t.Errorf(`ctx.UserData["JIRA Ticket"] = %q, want "PROJ-42"`, ctx.UserData["JIRA Ticket"])
+	}
+	if ctx.UserData["env"] != "prod" {
+		t.Errorf(`ctx.UserData["env"] = %q, want "prod"`, ctx.UserData["env"])
+	}
+
+	// nil input.UserData must yield nil ctx.UserData (safe to index).
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.UserData != nil {
+		t.Errorf("expected nil ctx.UserData when input.UserData is nil, got %#v", emptyCtx.UserData)
+	}
+}
+
 // TestBuildCELContext_EmptyInput verifies no panics and zero values for new fields
 // when input has no ACP servers, no children, and no user-data JSON.
 func TestBuildCELContext_EmptyInput(t *testing.T) {

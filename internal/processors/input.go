@@ -82,6 +82,11 @@ type ProcessorInput struct {
 	// ({{ .Args.NAME }}) in prompt bodies. Excluded from JSON (json:"-") so raw,
 	// possibly-sensitive argument values are never sent to external command processors.
 	Arguments map[string]string `json:"-"`
+	// UserData is the name→value map of the conversation's user data attributes.
+	// Used to populate PromptEnabledContext.UserData for {{ UserData "NAME" }} / .UserData
+	// template access and CEL UserData["X"] expressions. Excluded from JSON (json:"-")
+	// so values are never sent to external command processors.
+	UserData map[string]string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

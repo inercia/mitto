@@ -710,3 +710,42 @@ func BenchmarkCompileAndEvaluate(b *testing.B) {
 		}
 	}
 }
+
+
+// TestCELEvaluator_UserData validates UserData["x"] and "x" in UserData.
+func TestCELEvaluator_UserData(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	ctx := &PromptEnabledContext{
+		UserData: map[string]string{
+			"JIRA Ticket": "PROJ-42",
+		},
+	}
+
+	tests := []struct {
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		// key present: membership test
+		{`"JIRA Ticket" in UserData`, ctx, true},
+		// key present: value comparison
+		{`UserData["JIRA Ticket"] == "PROJ-42"`, ctx, true},
+		// key absent
+		{`"missing" in UserData`, ctx, false},
+		// nil UserData (menu time) — normalized to empty map; must not error
+		{`"x" in UserData`, &PromptEnabledContext{}, false},
+		// empty map — absent key not in map
+		{`"x" in UserData`, &PromptEnabledContext{UserData: map[string]string{}}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}

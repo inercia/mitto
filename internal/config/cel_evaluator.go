@@ -110,6 +110,10 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// to safely branch — bare `Args["KEY"]` throws when the key is absent.
 		cel.Variable("Args", cel.MapType(cel.StringType, cel.DynType)),
 
+		// UserData — per-conversation user data (name→value). Nil at menu time;
+		// normalized to empty map in buildActivation so `"KEY" in UserData` is safe.
+		cel.Variable("UserData", cel.MapType(cel.StringType, cel.DynType)),
+
 		// CommandExists(name) bool — context-free; bound once here.
 		// Returns true if the given command name is found in the system PATH.
 		cel.Function("CommandExists",
@@ -289,6 +293,11 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 	for k, v := range ctx.Args {
 		argsAny[k] = v
 	}
+	// Convert UserData to map[string]any; normalized to empty so `"KEY" in UserData` is safe.
+	userDataAny := make(map[string]any, len(ctx.UserData))
+	for k, v := range ctx.UserData {
+		userDataAny[k] = v
+	}
 	return map[string]any{
 		"ACP.Name":        ctx.ACP.Name,
 		"ACP.Type":        ctx.ACP.Type,
@@ -349,6 +358,9 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 
 		// Args — prompt arguments. Empty at menu time; populated at send time.
 		"Args": argsAny,
+
+		// UserData — per-conversation user data. Empty at menu time; populated at send time.
+		"UserData": userDataAny,
 	}
 }
 

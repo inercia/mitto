@@ -193,6 +193,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// Args (send-time arguments) for Go-template field interpolation in prompt bodies.
 	// nil at menu time (no prompt dispatched yet); a nil map is safe to index.
 	ctx.Args = input.Arguments
+	// UserData — per-conversation user data map (name→value). nil when absent.
+	ctx.UserData = input.UserData
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer

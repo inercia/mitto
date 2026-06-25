@@ -840,12 +840,25 @@ func TestPromptDispatcher_BuildProcessorInput_UserDataJSON(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.userData = &session.UserData{
-		Attributes: []session.UserDataAttribute{{Name: "env", Value: "prod"}},
+		Attributes: []session.UserDataAttribute{
+			{Name: "env", Value: "prod"},
+			{Name: "JIRA Ticket", Value: "PROJ-99"},
+		},
 	}
 
 	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
 	if input.UserDataJSON == "" {
 		t.Fatal("expected UserDataJSON populated from user data attributes")
+	}
+	// UserData map must mirror Attributes.
+	if input.UserData == nil {
+		t.Fatal("expected UserData map populated from user data attributes")
+	}
+	if input.UserData["env"] != "prod" {
+		t.Errorf(`UserData["env"] = %q, want "prod"`, input.UserData["env"])
+	}
+	if input.UserData["JIRA Ticket"] != "PROJ-99" {
+		t.Errorf(`UserData["JIRA Ticket"] = %q, want "PROJ-99"`, input.UserData["JIRA Ticket"])
 	}
 }
 

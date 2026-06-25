@@ -113,6 +113,7 @@ CEL expression always read the same field from the same struct.
 | `{{ .Session.IsPeriodic }}` | `Session.IsPeriodic` | `Session.IsPeriodic` |
 | `{{ .Session.BeadsIssue }}` | `Session.BeadsIssue` | `Session.BeadsIssue` |
 | `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
+| `{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}` | `UserData["NAME"]` (new) | `UserData["NAME"]` (new) — per-conversation user-data field; `""` when unset |
 | `{{ .ACP.Name }}` | `ACP.Name` | `ACP.Name` |
 | `{{ .ACP.Type }}` | `ACP.Type` | `ACP.Type` |
 | `{{ .Workspace.Folder }}` | `Workspace.Folder` | `Workspace.Folder` |
@@ -137,6 +138,8 @@ evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so 
 always the real argument map (possibly empty).
 
 **Extending the CEL env (mitto-m7sb.5):** Add `cel.Variable("args", cel.MapType(cel.StringType, cel.StringType))` to `NewCELEvaluator` and map it in `buildActivation` as `"args": ctx.Args`. This allows `enabledWhen: "Args['BRANCH'] != \"\""` for conditional visibility that depends on arguments.
+
+**User data (mitto-5y9x):** `UserData` is declared and wired the same way as `Args` — a `cel.Variable("UserData", cel.MapType(cel.StringType, cel.DynType))` in `NewCELEvaluator`, normalized to an empty map in `buildActivation` so `"X" in UserData` never panics, plus the `UserData "NAME"` template func and the `.UserData` map. Unlike `Args`, `UserData` is populated at **both** menu time (`buildPromptEnabledContext`) and send time (`buildProcessorInput`) — from the same per-conversation attributes that back `Session.UserDataJSON` — so `enabledWhen` can gate on `UserData["X"]`.
 
 ---
 
@@ -174,6 +177,7 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 | Function | Signature | Semantics |
 |---|---|---|
 | `Arg` | `Arg(name, defaultVal string) string` | `Args[name]` if present AND non-empty, else `defaultVal`. Mirrors `${name:-default}` bash semantics exactly. |
+| `UserData` | `UserData(name string) string` | `UserData[name]` (per-conversation user-data field), or `""` when unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. The `.UserData` map is also directly accessible: `{{ index .UserData "JIRA Ticket" }}`. |
 | `Default` | `Default(fallback, val string) string` | Returns `val` if non-empty, else `fallback`. Same as sprig `default`. |
 | `Cond` | `Cond(celExpr string) (bool, error)` | Evaluate CEL expression against send-time context. |
 | `When` | alias for `Cond` | |
@@ -240,6 +244,11 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 All `@mitto:` tokens now have template equivalents. The `@mitto:` forms remain supported for
 backward compatibility in processors and prompt bodies, but usage in prompt bodies logs a
 deprecation warning (see `WarnDeprecatedMittoVars`). Prefer the template forms in new prompts.
+
+`@mitto:user_data` / `{{ .Session.UserDataJSON }}` still render the full JSON blob (kept for
+backward compat). For a single field, prefer the structured `{{ UserData "NAME" }}` func or
+`{{ index .UserData "NAME" }}` map access — they enable the set-if-unset, else-do-Y pattern
+that the opaque blob cannot drive.
 
 ---
 

@@ -182,12 +182,14 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		toolsAvailable bool
 		toolNames      []string
 		args           map[string]string
+		userData       map[string]string
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
 		toolsAvailable = ctx.Tools.Available
 		toolNames = ctx.Tools.Names
 		args = ctx.Args
+		userData = ctx.UserData
 	}
 
 	// cond/when: compile+evaluate a CEL expression against ctx using the singleton.
@@ -214,6 +216,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 			}
 			return ""
 		},
+		// UserData returns the conversation user-data value for name, or "" if absent.
+		// A nil map (absent at menu time) indexes safely to "".
+		"UserData": func(name string) string { return userData[name] },
 		"Default": func(fallback, val string) string {
 			if val != "" {
 				return val

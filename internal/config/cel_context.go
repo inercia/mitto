@@ -28,6 +28,10 @@ type PromptEnabledContext struct {
 	// template function. It is nil at menu time (enabledWhen evaluation), since no
 	// prompt has been dispatched yet; nil is safe (a nil map indexes to "").
 	Args map[string]string
+	// UserData is the per-conversation user data (name→value). Feeds the UserData
+	// template func ({{ UserData "NAME" }}), the .UserData map, and the CEL UserData
+	// variable. nil at menu time is safe (nil map indexes to "").
+	UserData map[string]string
 	// Iteration holds periodic-iteration info for the current run, enabling prompt
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
 	// All-zero (Number=0, IsPeriodic=false) for non-periodic prompts.

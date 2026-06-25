@@ -382,10 +382,15 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	}
 
 	var userDataJSON string
+	var userDataMap map[string]string
 	if d.pdHasStore() {
 		if ud, err := d.pdGetUserData(); err == nil && ud != nil && len(ud.Attributes) > 0 {
 			if udBytes, err := json.Marshal(ud.Attributes); err == nil {
 				userDataJSON = string(udBytes)
+			}
+			userDataMap = make(map[string]string, len(ud.Attributes))
+			for _, attr := range ud.Attributes {
+				userDataMap[attr.Name] = attr.Value
 			}
 		}
 	}
@@ -415,6 +420,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		HasMetadataDescription: hasMetadataDescription,
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
+		UserData:               userDataMap,
 	}
 }
 

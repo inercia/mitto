@@ -348,10 +348,16 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	}
 
 	// Session user data JSON for template rendering ({{ .Session.UserDataJSON }}).
+	// Also build UserData map (name→value) for {{ UserData "NAME" }} / CEL UserData["X"].
 	if ud, uerr := store.GetUserData(sessionID); uerr == nil && ud != nil && len(ud.Attributes) > 0 {
 		if udBytes, merr := json.Marshal(ud.Attributes); merr == nil {
 			ctx.Session.UserDataJSON = string(udBytes)
 		}
+		udMap := make(map[string]string, len(ud.Attributes))
+		for _, attr := range ud.Attributes {
+			udMap[attr.Name] = attr.Value
+		}
+		ctx.UserData = udMap
 	}
 
 	// Tools context - get from auxiliary manager if available

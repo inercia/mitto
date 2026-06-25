@@ -646,3 +646,41 @@ output: discard
 		t.Logf("Sentinel file content: %q", string(content))
 	}
 }
+
+
+// TestTemplateRender_UserData_NilMap verifies that {{ UserData "X" }} on a session
+// with no user data renders "" without error (fail-safe, not fail-closed).
+func TestTemplateRender_UserData_NilMap(t *testing.T) {
+	ts, orderFile := setupDeferredConfigServer(t)
+	// Session with no user data set — UserData map will be nil.
+	// Template should render to "" for missing key and not abort the send.
+	writeTemplatePrompt(t, ts, "tmpl-userdata-nil", "tmpl-userdata-nil",
+		`val:{{ UserData "JIRA Ticket" }}:end`)
+
+	lines := runTemplatePromptAndWait(t, ts, orderFile, "tmpl-userdata-nil", nil)
+	sent := promptLineFor(lines, "val:")
+	if sent == "" {
+		t.Fatal("prompt line not found in RPC order")
+	}
+	if !strings.Contains(sent, "val::end") {
+		t.Errorf("expected empty UserData to render as empty string, got: %q", sent)
+	}
+}
+
+// TestTemplateRender_UserData_DotAccess verifies that {{ index .UserData "X" }} on a
+// session with no user data renders "" without error.
+func TestTemplateRender_UserData_DotAccess(t *testing.T) {
+	ts, orderFile := setupDeferredConfigServer(t)
+	// Use index built-in to access .UserData map (nil-safe in Go templates).
+	writeTemplatePrompt(t, ts, "tmpl-userdata-dot", "tmpl-userdata-dot",
+		`val:{{ index .UserData "env" }}:end`)
+
+	lines := runTemplatePromptAndWait(t, ts, orderFile, "tmpl-userdata-dot", nil)
+	sent := promptLineFor(lines, "val:")
+	if sent == "" {
+		t.Fatal("prompt line not found in RPC order")
+	}
+	if !strings.Contains(sent, "val::end") {
+		t.Errorf("expected empty .UserData to render as empty string, got: %q", sent)
+	}
+}
