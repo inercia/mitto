@@ -9,30 +9,16 @@ import (
 	"github.com/inercia/mitto/internal/runner"
 )
 
-// HandleWorkspaceDetail dispatches sub-resource requests under
-// /api/workspaces/{uuid}/... to the appropriate handler.
-func (h *Handlers) HandleWorkspaceDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract the path after "/api/workspaces/", stripping apiPrefix first (mirrors handleSessionDetail).
-	path := r.URL.Path
-	path = strings.TrimPrefix(path, h.deps.APIPrefix)
-	path = strings.TrimPrefix(path, "/api/workspaces/")
+// HandleWorkspaceEffectiveRunnerConfig handles GET /api/workspaces/{uuid}/effective-runner-config.
+// The {uuid} wildcard is extracted by the mux via r.PathValue("uuid").
+func (h *Handlers) HandleWorkspaceEffectiveRunnerConfig(w http.ResponseWriter, r *http.Request) {
+	h.handleEffectiveRunnerConfig(w, r, r.PathValue("uuid"))
+}
 
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 2 {
-		http.NotFound(w, r)
-		return
-	}
-	uuid := parts[0]
-	subPath := parts[1]
-
-	switch subPath {
-	case "effective-runner-config":
-		h.handleEffectiveRunnerConfig(w, r, uuid)
-	case "restart-acp":
-		h.handleRestartWorkspaceACP(w, r, uuid)
-	default:
-		http.NotFound(w, r)
-	}
+// HandleWorkspaceRestartACP handles POST /api/workspaces/{uuid}/restart-acp.
+// The {uuid} wildcard is extracted by the mux via r.PathValue("uuid").
+func (h *Handlers) HandleWorkspaceRestartACP(w http.ResponseWriter, r *http.Request) {
+	h.handleRestartWorkspaceACP(w, r, r.PathValue("uuid"))
 }
 
 // EffectiveRunnerConfigResponse is the response for GET /api/workspaces/{uuid}/effective-runner-config.
@@ -46,11 +32,6 @@ type EffectiveRunnerConfigResponse struct {
 // handleEffectiveRunnerConfig handles GET /api/workspaces/{uuid}/effective-runner-config.
 // Returns the effective runner config resolved from global and agent levels only.
 func (h *Handlers) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Request, uuid string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-
 	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
 	if ws == nil {
 		http.Error(w, "Workspace not found", http.StatusNotFound)
@@ -83,11 +64,6 @@ func (h *Handlers) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Re
 // handleRestartWorkspaceACP handles POST /api/workspaces/{uuid}/restart-acp.
 // Restarts the shared ACP process for a workspace so that MCP changes take effect.
 func (h *Handlers) handleRestartWorkspaceACP(w http.ResponseWriter, r *http.Request, workspaceUUID string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-
 	// Verify workspace exists
 	ws := h.deps.SessionManager.GetWorkspaceByUUID(workspaceUUID)
 	if ws == nil {

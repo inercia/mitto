@@ -854,8 +854,14 @@ func NewServer(config Config) (*Server, error) {
 
 	// Register all API and WebSocket routes from the declarative route table.
 	// Login/logout are included in the table only when authMgr is non-nil.
+	// Method-qualified routes (rt.method != "") use Go 1.22 "METHOD path" patterns
+	// so the mux enforces the method and returns a central 405 automatically.
 	for _, rt := range s.apiRoutes(authMgr, csrfMgr, fileServer) {
-		mux.Handle(apiPrefix+rt.pattern, rt.handler)
+		pattern := apiPrefix + rt.pattern
+		if rt.method != "" {
+			pattern = rt.method + " " + pattern
+		}
+		mux.Handle(pattern, rt.handler)
 	}
 
 	// Robots.txt: discourage bot crawlers from indexing
