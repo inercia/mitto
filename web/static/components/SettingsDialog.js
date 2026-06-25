@@ -4,6 +4,7 @@ const { useState, useEffect, useMemo, useRef, html } = window.preact;
 // Import utilities
 import {
   secureFetch,
+  authFetch,
   apiUrl,
   hasNativeFolderPicker,
   pickFolder,
@@ -1338,9 +1339,7 @@ export function SettingsDialog({
 
     // Also load runner defaults
     try {
-      const res = await fetch(apiUrl("/api/runner-defaults"), {
-        credentials: "same-origin",
-      });
+      const res = await authFetch(apiUrl("/api/runner-defaults"));
       if (res.ok) {
         const defaults = await res.json();
         setRunnerDefaults(defaults || {});
@@ -1360,7 +1359,7 @@ export function SettingsDialog({
       // force=true ensures the settings dialog always shows the latest saved config.
       const [config, externalStatusRes] = await Promise.all([
         fetchConfig(null, /* force */ true),
-        fetch(apiUrl("/api/external-status"), { credentials: "same-origin" }),
+        authFetch(apiUrl("/api/external-status")),
       ]);
 
       // Load external status
@@ -1569,9 +1568,7 @@ export function SettingsDialog({
 
       // Load available flags and configured default flags
       try {
-        const flagsRes = await fetch(apiUrl("/api/advanced-flags"), {
-          credentials: "same-origin",
-        });
+        const flagsRes = await authFetch(apiUrl("/api/advanced-flags"));
         if (flagsRes.ok) {
           const flagsData = await flagsRes.json();
           setAvailableFlags(flagsData.flags || []);
@@ -1901,9 +1898,7 @@ export function SettingsDialog({
       // Hoist activeExternalPort so it is visible at the toast-building site below.
       let activeExternalPort = null;
       try {
-        const statusRes = await fetch(apiUrl("/api/external-status"), {
-          credentials: "same-origin",
-        });
+        const statusRes = await authFetch(apiUrl("/api/external-status"));
         if (statusRes.ok) {
           const status = await statusRes.json();
           setExternalEnabled(status.enabled);
