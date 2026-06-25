@@ -114,7 +114,7 @@ func HasTemplateSyntax(body string) bool {
 	return strings.Contains(body, templateOpenDelim)
 }
 
-// PrecompileTemplateConds statically validates that all cond/when string-literal
+// PrecompileTemplateConds statically validates that all Cond/When string-literal
 // arguments in body are valid CEL expressions. It is a best-effort helper: dynamic
 // (non-literal) cond arguments are compiled against whatever value they evaluate to
 // at dry-run time, which is acceptable.
@@ -144,8 +144,8 @@ func PrecompileTemplateConds(name, body string) error {
 	}
 	// Start with the full FuncMap so parse succeeds for templates that use other funcs.
 	fm := BuildTemplateFuncMap(&PromptEnabledContext{})
-	fm["cond"] = condStub
-	fm["when"] = condStub
+	fm["Cond"] = condStub
+	fm["When"] = condStub
 
 	t, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body)
 	if err != nil {

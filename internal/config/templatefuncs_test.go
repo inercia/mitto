@@ -289,7 +289,7 @@ func TestArg(t *testing.T) {
 		},
 	}
 	fm := BuildTemplateFuncMap(ctx)
-	argFn := fm["arg"].(func(string, ...string) string)
+	argFn := fm["Arg"].(func(string, ...string) string)
 
 	// present and non-empty
 	if got := argFn("BRANCH"); got != "main" {
@@ -320,7 +320,7 @@ func TestArg(t *testing.T) {
 func TestDefault(t *testing.T) {
 	ctx := &PromptEnabledContext{}
 	fm := BuildTemplateFuncMap(ctx)
-	defFn := fm["default"].(func(string, string) string)
+	defFn := fm["Default"].(func(string, string) string)
 
 	if got := defFn("fallback", "value"); got != "value" {
 		t.Errorf("default(fallback, value) = %q", got)
@@ -340,7 +340,7 @@ func TestBuildTemplateFuncMap_NilCtx(t *testing.T) {
 		t.Fatal("expected non-nil FuncMap")
 	}
 	// arg with nil ctx should return ""
-	argFn := fm["arg"].(func(string, ...string) string)
+	argFn := fm["Arg"].(func(string, ...string) string)
 	if got := argFn("ANY"); got != "" {
 		t.Errorf("nil ctx arg(ANY) = %q, want %q", got, "")
 	}
@@ -356,7 +356,7 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 	fm := BuildTemplateFuncMap(ctx)
 
 	// Direct invocation for join (no slice builtin available in the template).
-	joinFn := fm["join"].(func(string, []string) string)
+	joinFn := fm["Join"].(func(string, []string) string)
 	if got := joinFn(", ", []string{"a", "b", "c"}); got != "a, b, c" {
 		t.Errorf("join = %q, want %q", got, "a, b, c")
 	}
@@ -369,12 +369,12 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 		body string
 		want string
 	}{
-		{`{{ upper "hello" }}`, "HELLO"},
-		{`{{ lower "WORLD" }}`, "world"},
-		{`{{ trim "  hi  " }}`, "hi"},
-		{`{{ contains "foobar" "bar" }}`, "true"},
-		{`{{ hasPrefix "foobar" "foo" }}`, "true"},
-		{`{{ hasSuffix "foobar" "baz" }}`, "false"},
+		{`{{ Upper "hello" }}`, "HELLO"},
+		{`{{ Lower "WORLD" }}`, "world"},
+		{`{{ Trim "  hi  " }}`, "hi"},
+		{`{{ Contains "foobar" "bar" }}`, "true"},
+		{`{{ HasPrefix "foobar" "foo" }}`, "true"},
+		{`{{ HasSuffix "foobar" "baz" }}`, "false"},
 	}
 	for _, tc := range cases {
 		got, err := RenderPromptTemplate("test", tc.body, nil, fm)
@@ -392,9 +392,9 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
 	expected := []string{
-		"arg", "default",
-		"fileExists", "dirExists", "commandExists", "hasPattern",
-		"trim", "lower", "upper", "contains", "hasPrefix", "hasSuffix", "join",
+		"Arg", "Default",
+		"FileExists", "DirExists", "CommandExists", "HasPattern",
+		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {
 		if fm[key] == nil {
@@ -411,7 +411,7 @@ func TestBuildTemplateFuncMap_FuncMapPlugsIntoRender(t *testing.T) {
 	}
 	fm := BuildTemplateFuncMap(ctx)
 
-	got, err := RenderPromptTemplate("test", `Hello {{ upper (arg "NAME") }}!`, ctx, fm)
+	got, err := RenderPromptTemplate("test", `Hello {{ Upper (Arg "NAME") }}!`, ctx, fm)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestBuildTemplateFuncMap_FileExistsParity(t *testing.T) {
 	fm := BuildTemplateFuncMap(ctx)
 
 	for _, path := range []string{"present.txt", "absent.txt"} {
-		body := fmt.Sprintf(`{{ fileExists %q }}`, path)
+		body := fmt.Sprintf(`{{ FileExists %q }}`, path)
 		got, err := RenderPromptTemplate("test", body, ctx, fm)
 		if err != nil {
 			t.Fatalf("render error for %q: %v", path, err)
@@ -696,7 +696,7 @@ func TestCond_Parity(t *testing.T) {
 			celResult := evalCEL(t, e, expr, ctx)
 
 			// Template cond evaluation.
-			body := fmt.Sprintf(`{{ if cond %q }}yes{{ else }}no{{ end }}`, expr)
+			body := fmt.Sprintf(`{{ if Cond %q }}yes{{ else }}no{{ end }}`, expr)
 			got, err := RenderPromptTemplate("test", body, ctx, BuildTemplateFuncMap(ctx))
 			if err != nil {
 				t.Fatalf("render error: %v", err)
@@ -723,7 +723,7 @@ func TestCond_ArgsBranching(t *testing.T) {
 	fm := BuildTemplateFuncMap(ctx)
 
 	// true branch: MODE == "fast" (key present and matches)
-	body := `{{ if cond "\"MODE\" in Args && Args[\"MODE\"] == \"fast\"" }}fast{{ else }}slow{{ end }}`
+	body := `{{ if Cond "\"MODE\" in Args && Args[\"MODE\"] == \"fast\"" }}fast{{ else }}slow{{ end }}`
 	got, err := RenderPromptTemplate("test", body, ctx, fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -773,7 +773,7 @@ func TestCond_ArgsBranching(t *testing.T) {
 func TestCond_ErrorPropagation(t *testing.T) {
 	ctx := &PromptEnabledContext{}
 	fm := BuildTemplateFuncMap(ctx)
-	_, err := RenderPromptTemplate("t", `{{ cond "this is ::: not valid CEL" }}`, ctx, fm)
+	_, err := RenderPromptTemplate("t", `{{ Cond "this is ::: not valid CEL" }}`, ctx, fm)
 	if err == nil {
 		t.Fatal("expected non-nil error for invalid CEL expression, got nil")
 	}
@@ -783,7 +783,7 @@ func TestCond_ErrorPropagation(t *testing.T) {
 func TestCond_WhenAlias(t *testing.T) {
 	ctx := &PromptEnabledContext{}
 	fm := BuildTemplateFuncMap(ctx)
-	got, err := RenderPromptTemplate("test", `{{ if when "true" }}yes{{ else }}no{{ end }}`, ctx, fm)
+	got, err := RenderPromptTemplate("test", `{{ if When "true" }}yes{{ else }}no{{ end }}`, ctx, fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -795,7 +795,7 @@ func TestCond_WhenAlias(t *testing.T) {
 // TestCond_NilCtx verifies cond works when ctx is nil (Evaluate returns true,nil).
 func TestCond_NilCtx(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
-	got, err := RenderPromptTemplate("test", `{{ if cond "true" }}ok{{ end }}`, nil, fm)
+	got, err := RenderPromptTemplate("test", `{{ if Cond "true" }}ok{{ end }}`, nil, fm)
 	if err != nil {
 		t.Fatalf("unexpected error with nil ctx: %v", err)
 	}
@@ -804,14 +804,14 @@ func TestCond_NilCtx(t *testing.T) {
 	}
 }
 
-// TestBuildTemplateFuncMap_CondWhenKeysPresent verifies cond and when are registered.
+// TestBuildTemplateFuncMap_CondWhenKeysPresent verifies Cond and When are registered.
 func TestBuildTemplateFuncMap_CondWhenKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
-	if fm["cond"] == nil {
-		t.Error("FuncMap missing 'cond'")
+	if fm["Cond"] == nil {
+		t.Error("FuncMap missing 'Cond'")
 	}
-	if fm["when"] == nil {
-		t.Error("FuncMap missing 'when'")
+	if fm["When"] == nil {
+		t.Error("FuncMap missing 'When'")
 	}
 }
 
@@ -819,9 +819,9 @@ func TestBuildTemplateFuncMap_CondWhenKeysPresent(t *testing.T) {
 // PrecompileTemplateConds tests
 // =============================================================================
 
-// TestPrecompileTemplateConds_Valid returns nil for valid literal cond args.
+// TestPrecompileTemplateConds_Valid returns nil for valid literal Cond args.
 func TestPrecompileTemplateConds_Valid(t *testing.T) {
-	body := `{{ if cond "Session.IsChild" }}child{{ end }}`
+	body := `{{ if Cond "Session.IsChild" }}child{{ end }}`
 	if err := PrecompileTemplateConds("my-prompt", body); err != nil {
 		t.Errorf("expected nil for valid cond, got: %v", err)
 	}
@@ -829,7 +829,7 @@ func TestPrecompileTemplateConds_Valid(t *testing.T) {
 
 // TestPrecompileTemplateConds_Invalid returns non-nil error for invalid CEL.
 func TestPrecompileTemplateConds_Invalid(t *testing.T) {
-	body := `{{ if cond "this is ::: not valid CEL" }}x{{ end }}`
+	body := `{{ if Cond "this is ::: not valid CEL" }}x{{ end }}`
 	err := PrecompileTemplateConds("my-prompt", body)
 	if err == nil {
 		t.Fatal("expected non-nil error for invalid CEL literal, got nil")
@@ -850,9 +850,9 @@ func TestPrecompileTemplateConds_NoTemplate(t *testing.T) {
 	}
 }
 
-// TestPrecompileTemplateConds_ValidWhen returns nil when using the when alias.
+// TestPrecompileTemplateConds_ValidWhen returns nil when using the When alias.
 func TestPrecompileTemplateConds_ValidWhen(t *testing.T) {
-	body := `{{ if when "!Session.IsChild" }}root{{ end }}`
+	body := `{{ if When "!Session.IsChild" }}root{{ end }}`
 	if err := PrecompileTemplateConds("p", body); err != nil {
 		t.Errorf("expected nil for valid when alias, got: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestPrecompileTemplateConds_ValidWhen(t *testing.T) {
 
 // TestPrecompileTemplateConds_ParseError returns an error for template parse failures.
 func TestPrecompileTemplateConds_ParseError(t *testing.T) {
-	body := `{{ if cond "true" }}no end`
+	body := `{{ if Cond "true" }}no end`
 	err := PrecompileTemplateConds("p", body)
 	if err == nil {
 		t.Fatal("expected parse error, got nil")

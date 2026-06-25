@@ -205,7 +205,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 	}
 
 	return template.FuncMap{
-		"arg": func(name string, def ...string) string {
+		"Arg": func(name string, def ...string) string {
 			if v, ok := args[name]; ok && v != "" {
 				return v
 			}
@@ -214,24 +214,24 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 			}
 			return ""
 		},
-		"default": func(fallback, val string) string {
+		"Default": func(fallback, val string) string {
 			if val != "" {
 				return val
 			}
 			return fallback
 		},
-		"fileExists":    func(path string) bool { return fileExists(folder, path) },
-		"dirExists":     func(path string) bool { return dirExists(folder, path) },
-		"commandExists": func(name string) bool { return commandExists(name) },
-		"hasPattern":    func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
-		"cond":          condFn,
-		"when":          condFn, // alias for cond
-		"trim":          strings.TrimSpace,
-		"lower":         strings.ToLower,
-		"upper":         strings.ToUpper,
-		"contains":      strings.Contains,
-		"hasPrefix":     strings.HasPrefix,
-		"hasSuffix":     strings.HasSuffix,
-		"join":          func(sep string, elems []string) string { return strings.Join(elems, sep) },
+		"FileExists":    func(path string) bool { return fileExists(folder, path) },
+		"DirExists":     func(path string) bool { return dirExists(folder, path) },
+		"CommandExists": func(name string) bool { return commandExists(name) },
+		"HasPattern":    func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
+		"Cond":          condFn,
+		"When":          condFn, // alias for Cond
+		"Trim":          strings.TrimSpace,
+		"Lower":         strings.ToLower,
+		"Upper":         strings.ToUpper,
+		"Contains":      strings.Contains,
+		"HasPrefix":     strings.HasPrefix,
+		"HasSuffix":     strings.HasSuffix,
+		"Join":          func(sep string, elems []string) string { return strings.Join(elems, sep) },
 	}
 }
