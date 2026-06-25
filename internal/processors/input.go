@@ -52,6 +52,13 @@ type ProcessorInput struct {
 	// via "run now" (as opposed to the normal scheduled delivery).
 	// Used for @mitto:periodic_forced variable substitution.
 	IsPeriodicForced bool `json:"is_periodic_forced,omitempty"`
+	// IterationNumber is the 0-based index of the current periodic run.
+	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON
+	// (json:"-") so raw iteration values are never sent to external command processors.
+	IterationNumber int `json:"-"`
+	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
+	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON (json:"-").
+	MaxIterations int `json:"-"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`

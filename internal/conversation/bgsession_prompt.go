@@ -117,7 +117,12 @@ type PromptMeta struct {
 	FileIDs          []string        // IDs of files attached to the prompt
 	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
-	FreshContext     bool            // True to suppress history injection and use a new ACP session for this prompt
+	// IterationNumber is the 0-based index of the current periodic run (periodic.IterationCount
+	// at dispatch). Zero for non-periodic prompts. Feeds the {{ .Iteration.* }} template namespace.
+	IterationNumber int
+	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
+	MaxIterations int
+	FreshContext bool // True to suppress history injection and use a new ACP session for this prompt
 	// Arguments, when non-empty, triggers bash-like ${VAR}/${VAR:-default}
 	// substitution on the resolved prompt text before persistence and broadcast.
 	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that

@@ -126,6 +126,11 @@ CEL expression always read the same field from the same struct.
 | `{{ .Children.MCP }}` | — | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only |
 | `{{ .ACP.Available }}` | — | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers |
 | `{{ .Args.NAME }}` | `Args["NAME"]` (new) | `Args["NAME"]` (new) |
+| `{{ .Iteration.Number }}` | — | `Iteration.Number` — 0-based index of the current periodic run; 0 for non-periodic |
+| `{{ .Iteration.Max }}` | — | `Iteration.Max` — configured max runs (0 = unlimited); 0 for non-periodic |
+| `{{ .Iteration.IsPeriodic }}` | — | `Iteration.IsPeriodic` — `true` when triggered by the periodic runner |
+| `{{ .Iteration.IsFirst }}` | — | `Iteration.IsFirst` — `true` when `Number == 0` |
+| `{{ .Iteration.IsLast }}` | — | `Iteration.IsLast` — `true` when `Max > 0 && Number == Max-1` |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is

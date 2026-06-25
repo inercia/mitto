@@ -1226,3 +1226,50 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 		})
 	}
 }
+
+
+// TestRenderPromptTemplate_Iteration verifies that the {{ .Iteration.* }} template
+// namespace is available and branches correctly on Number=0 vs Number=2 (Max=3).
+func TestRenderPromptTemplate_Iteration(t *testing.T) {
+	body := `{{ if .Iteration.IsFirst }}first run{{ else }}run {{ .Iteration.Number }} of {{ .Iteration.Max }}{{ end }}`
+
+	// Number=0, Max=3 → "first run"
+	ctxFirst := &PromptEnabledContext{
+		Iteration: IterationContext{
+			Number:     0,
+			Max:        3,
+			IsPeriodic: true,
+			IsFirst:    true,
+			IsLast:     false,
+		},
+	}
+	gotFirst, err := RenderPromptTemplate("test-first", body, ctxFirst, nil)
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(first): unexpected error: %v", err)
+	}
+	if gotFirst != "first run" {
+		t.Errorf("first run: got %q, want %q", gotFirst, "first run")
+	}
+
+	// Number=2, Max=3 → "run 2 of 3"
+	ctxLast := &PromptEnabledContext{
+		Iteration: IterationContext{
+			Number:     2,
+			Max:        3,
+			IsPeriodic: true,
+			IsFirst:    false,
+			IsLast:     true,
+		},
+	}
+	gotLast, err := RenderPromptTemplate("test-last", body, ctxLast, nil)
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(last): unexpected error: %v", err)
+	}
+	if gotLast != "run 2 of 3" {
+		t.Errorf("last run: got %q, want %q", gotLast, "run 2 of 3")
+	}
+
+	if gotFirst == gotLast {
+		t.Error("expected different output for Number=0 vs Number=2, but got the same")
+	}
+}

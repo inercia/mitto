@@ -28,6 +28,26 @@ type PromptEnabledContext struct {
 	// template function. It is nil at menu time (enabledWhen evaluation), since no
 	// prompt has been dispatched yet; nil is safe (a nil map indexes to "").
 	Args map[string]string
+	// Iteration holds periodic-iteration info for the current run, enabling prompt
+	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
+	// All-zero (Number=0, IsPeriodic=false) for non-periodic prompts.
+	Iteration IterationContext
+}
+
+// IterationContext holds periodic-iteration info for CEL/template evaluation.
+// Number is the 0-based index of the current run (IterationCount at dispatch).
+// Values are zero for non-periodic prompts.
+type IterationContext struct {
+	// Number is the 0-based index of the current periodic run.
+	Number int
+	// Max is the configured maximum number of runs (0 = unlimited).
+	Max int
+	// IsPeriodic indicates the current prompt was triggered by the periodic runner.
+	IsPeriodic bool
+	// IsFirst is true when Number == 0.
+	IsFirst bool
+	// IsLast is true when Max > 0 && Number == Max-1.
+	IsLast bool
 }
 
 // ACPServerInfo describes a single ACP server available in the workspace.

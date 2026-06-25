@@ -887,6 +887,11 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Children.Count }}` | Number of child conversations |
 | `{{ .Children.MCPCount }}` | Number of MCP-spawned children |
 | `{{ .Args.NAME }}` | Argument value for `NAME` (from prompt arguments) |
+| `{{ .Iteration.Number }}` | 0-based index of the current periodic run (0 for non-periodic) |
+| `{{ .Iteration.Max }}` | Configured max runs (0 = unlimited; 0 for non-periodic) |
+| `{{ .Iteration.IsPeriodic }}` | `true` when triggered by the periodic runner |
+| `{{ .Iteration.IsFirst }}` | `true` when `Number == 0` |
+| `{{ .Iteration.IsLast }}` | `true` when `Max > 0 && Number == Max-1` |
 
 ### Functions
 

@@ -406,6 +406,8 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		MCPToolNames:           mcpToolNames,
 		IsPeriodic:             meta.SenderID == "periodic-runner",
 		IsPeriodicForced:       meta.IsPeriodicForced,
+		IterationNumber:        meta.IterationNumber,
+		MaxIterations:          meta.MaxIterations,
 		Arguments:              meta.Arguments,
 		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,

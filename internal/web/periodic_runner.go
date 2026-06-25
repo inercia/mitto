@@ -1151,6 +1151,8 @@ func (r *PeriodicRunner) deliverPrompt(bs *conversation.BackgroundSession, sessi
 		PromptName:       periodic.PromptName, // Pass prompt name so UI can render a badge instead of full text
 		Arguments:        periodic.Arguments,  // User-supplied values for ${VAR} substitution in the resolved text
 		IsPeriodicForced: forced,
+		IterationNumber:  periodic.IterationCount,
+		MaxIterations:    periodic.MaxIterations,
 		FreshContext:     periodic.FreshContext,
 		OnComplete: func(err error) {
 			if err != nil {

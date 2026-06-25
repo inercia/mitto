@@ -4056,3 +4056,73 @@ func buildProcessorYAML(cadence *CadenceConfig) string {
 	}
 	return sb.String()
 }
+
+
+// TestBuildCELContext_Iteration verifies that BuildCELContext correctly populates
+// the ctx.Iteration.* fields from ProcessorInput.IterationNumber / MaxIterations / IsPeriodic.
+func TestBuildCELContext_Iteration(t *testing.T) {
+	cases := []struct {
+		name           string
+		isPeriodic     bool
+		iterationNum   int
+		maxIterations  int
+		wantIsFirst    bool
+		wantIsLast     bool
+	}{
+		// (1) First run of a 3-run periodic sequence.
+		{
+			name:          "first-of-three",
+			isPeriodic:    true,
+			iterationNum:  0,
+			maxIterations: 3,
+			wantIsFirst:   true,
+			wantIsLast:    false,
+		},
+		// (2) Last run of a 3-run periodic sequence.
+		{
+			name:          "last-of-three",
+			isPeriodic:    true,
+			iterationNum:  2,
+			maxIterations: 3,
+			wantIsFirst:   false,
+			wantIsLast:    true,
+		},
+		// (3) Unlimited sequence (Max=0) — IsLast must always be false.
+		{
+			name:          "unlimited",
+			isPeriodic:    true,
+			iterationNum:  5,
+			maxIterations: 0,
+			wantIsFirst:   false,
+			wantIsLast:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &ProcessorInput{
+				SessionID:       "sess-iter",
+				IsPeriodic:      tc.isPeriodic,
+				IterationNumber: tc.iterationNum,
+				MaxIterations:   tc.maxIterations,
+			}
+			ctx := BuildCELContext(input)
+
+			if ctx.Iteration.Number != tc.iterationNum {
+				t.Errorf("Number: got %d, want %d", ctx.Iteration.Number, tc.iterationNum)
+			}
+			if ctx.Iteration.Max != tc.maxIterations {
+				t.Errorf("Max: got %d, want %d", ctx.Iteration.Max, tc.maxIterations)
+			}
+			if ctx.Iteration.IsPeriodic != tc.isPeriodic {
+				t.Errorf("IsPeriodic: got %v, want %v", ctx.Iteration.IsPeriodic, tc.isPeriodic)
+			}
+			if ctx.Iteration.IsFirst != tc.wantIsFirst {
+				t.Errorf("IsFirst: got %v, want %v", ctx.Iteration.IsFirst, tc.wantIsFirst)
+			}
+			if ctx.Iteration.IsLast != tc.wantIsLast {
+				t.Errorf("IsLast: got %v, want %v", ctx.Iteration.IsLast, tc.wantIsLast)
+			}
+		})
+	}
+}
