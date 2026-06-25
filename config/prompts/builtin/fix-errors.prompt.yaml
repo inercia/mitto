@@ -40,8 +40,8 @@ prompt: |
 
   Available ACP servers:
   {{ .ACP.AvailableText }}
-  {{- if .Children.AllText }}
 
+  {{- if .Children.AllText }}
   Existing children:
   {{ .Children.AllText }}
   {{- end }}
