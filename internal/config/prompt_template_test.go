@@ -1053,3 +1053,136 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 		}
 	}
 }
+
+// TestInteractionMode_ConditionalRendering verifies that the builtin prompts
+// which were migrated from verbose "Interaction Mode" prose (that manually
+// dumped {{ .Session.IsPeriodic }} / {{ .Session.IsPeriodicForced }}) to Go
+// template conditionals render the correct branch for each of the three
+// possible session states:
+//
+//	(1) Scheduled periodic  → IsPeriodic=true,  IsPeriodicForced=false → Silent
+//	(2) Force-triggered      → IsPeriodic=true,  IsPeriodicForced=true  → Interactive
+//	(3) Regular conversation → IsPeriodic=false, IsPeriodicForced=false → Interactive
+//
+// It also asserts that no raw .Session.IsPeriodic* variable text survives in
+// the rendered output — proving the conditional directives were consumed by the
+// template engine and that the old verbose variable dumps are gone.
+//
+// The test loads each file from the real builtin directory so it always
+// exercises the current on-disk content.
+func TestInteractionMode_ConditionalRendering(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	// silentMarker/interactiveMarker are substrings that appear ONLY in the
+	// silent / interactive branch of the top "Interaction Mode" block of each
+	// prompt (verified to not occur elsewhere in the file as prose).
+	cases := []struct {
+		file              string
+		name              string
+		silentMarker      string
+		interactiveMarker string
+	}{
+		{
+			file:              "architectural-analysis.prompt.yaml",
+			name:              "architectural-analysis",
+			silentMarker:      "a scheduled periodic run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+		},
+		{
+			file:              "jira-sync-tasks.prompt.yaml",
+			name:              "jira-sync-tasks",
+			silentMarker:      "a scheduled periodic run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+		},
+		{
+			file:              "github-sync-tasks.prompt.yaml",
+			name:              "github-sync-tasks",
+			silentMarker:      "a scheduled periodic run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+		},
+		{
+			file:              "github-babysit-contributions.prompt.yaml",
+			name:              "github-babysit-contributions",
+			silentMarker:      "a scheduled periodic run; the user is not watching.",
+			interactiveMarker: "a force-triggered run or a non-periodic conversation; the user may be present.",
+		},
+		{
+			file:              "github-babysit-my-prs.prompt.yaml",
+			name:              "github-babysit-my-prs",
+			silentMarker:      "a scheduled periodic run; the user is not watching.",
+			interactiveMarker: "a force-triggered run or a non-periodic conversation; the user may be present.",
+		},
+		{
+			file:              "beads-issue-iterate-until-complete.prompt.yaml",
+			name:              "beads-issue-iterate-until-complete",
+			silentMarker:      "Silent mode — a scheduled periodic run.",
+			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
+		},
+		{
+			file:              "github-iterate-babysit-new-prs.prompt.yaml",
+			name:              "github-iterate-babysit-new-prs",
+			silentMarker:      "Silent mode — scheduled periodic run.",
+			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(builtinDir, tc.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(tc.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
+			}
+			body := prompt.Content
+
+			render := func(periodic, forced bool) string {
+				ctx := &PromptEnabledContext{
+					Session: SessionContext{
+						IsPeriodic:       periodic,
+						IsPeriodicForced: forced,
+					},
+				}
+				out, rerr := RenderPromptTemplate(tc.name, body, ctx, BuildTemplateFuncMap(ctx))
+				if rerr != nil {
+					t.Fatalf("RenderPromptTemplate(%s) periodic=%v forced=%v: %v", tc.name, periodic, forced, rerr)
+				}
+				// The conditionals must be consumed; no raw variable dumps may survive.
+				if strings.Contains(out, ".Session.IsPeriodic") {
+					t.Errorf("%s periodic=%v forced=%v: raw '.Session.IsPeriodic' leaked into rendered output:\n%s", tc.name, periodic, forced, out)
+				}
+				return out
+			}
+
+			// (1) Scheduled periodic → Silent branch.
+			silent := render(true, false)
+			if !strings.Contains(silent, tc.silentMarker) {
+				t.Errorf("scheduled periodic: expected silent marker %q in output; got:\n%s", tc.silentMarker, silent)
+			}
+			if strings.Contains(silent, tc.interactiveMarker) {
+				t.Errorf("scheduled periodic: unexpected interactive marker %q in silent output:\n%s", tc.interactiveMarker, silent)
+			}
+
+			// (2) Force-triggered → Interactive branch.
+			forced := render(true, true)
+			if !strings.Contains(forced, tc.interactiveMarker) {
+				t.Errorf("force-triggered: expected interactive marker %q in output; got:\n%s", tc.interactiveMarker, forced)
+			}
+			if strings.Contains(forced, tc.silentMarker) {
+				t.Errorf("force-triggered: unexpected silent marker %q in interactive output:\n%s", tc.silentMarker, forced)
+			}
+
+			// (3) Regular conversation → Interactive branch.
+			regular := render(false, false)
+			if !strings.Contains(regular, tc.interactiveMarker) {
+				t.Errorf("regular conversation: expected interactive marker %q in output; got:\n%s", tc.interactiveMarker, regular)
+			}
+			if strings.Contains(regular, tc.silentMarker) {
+				t.Errorf("regular conversation: unexpected silent marker %q in interactive output:\n%s", tc.silentMarker, regular)
+			}
+		})
+	}
+}
