@@ -22,8 +22,8 @@ prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `{{ acpServers }}`
-  Existing children: `{{ mcpChildren }}`
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.MCPText }}`
 
   # Beads: Iterate Until Issue Complete
 
@@ -144,7 +144,7 @@ prompt: |
        difficulty: use a **faster/cheaper** agent for routine or well-scoped work,
        and reserve a more capable (slower/expensive) agent only for genuinely complex
        increments.
-     - Reuse a suitable **idle** child from `{{ mcpChildren }}` when possible via
+     - Reuse a suitable **idle** child from `{{ .Children.MCPText }}` when possible via
        `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
      - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "<target-bead> · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
      - Cap spawning at **one** new child per run to avoid runaway fan-out.

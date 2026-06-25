@@ -38,10 +38,10 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   Available ACP servers:
-  {{ acpServers }}
+  {{ .ACP.AvailableText }}
 
   Existing children:
-  {{ children }}
+  {{ .Children.AllText }}
 
   **Choosing the right ACP server:**
 

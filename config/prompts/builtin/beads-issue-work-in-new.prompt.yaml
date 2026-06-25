@@ -17,8 +17,8 @@ prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `{{ acpServers }}`
-  Existing children: `{{ children }}`
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.AllText }}`
 
   **Chosen agent for the work:** `${ACPServer}` — every work conversation you create
   below MUST run on this agent (pass `acp_server: "${ACPServer}"` to

@@ -20,7 +20,7 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Available ACP servers:
-  {{ acpServers }}
+  {{ .ACP.AvailableText }}
 
   ## Interaction Mode
 

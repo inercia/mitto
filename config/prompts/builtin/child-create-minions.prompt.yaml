@@ -26,10 +26,10 @@ prompt: |
   ## Phase 1: Analyze Context
 
   1. Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all MCP tool calls.
-  2. Available ACP servers for this workspace: `{{ acpServers }}`
+  2. Available ACP servers for this workspace: `{{ .ACP.AvailableText }}`
      Note each server's name, tags (e.g., `[coding, fast]`), and the `(current)` marker.
   3. `mitto_conversation_get_summary(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}")` → current work context
-  4. Existing child conversations: `{{ children }}`
+  4. Existing child conversations: `{{ .Children.AllText }}`
      If relevant children already exist, consider reusing them instead of creating new ones.
 
   ## Phase 2: Decompose the Problem
@@ -50,7 +50,7 @@ prompt: |
   Ask via `mitto_ui_options` (timeout: 60s):
   ```
   question: "Which AI agent would you like to use for the parallel tasks?"
-  options: <list of server names from {{ acpServers }}>
+  options: <list of server names from {{ .ACP.AvailableText }}>
   ```
 
   **On timeout**, auto-select by matching task characteristics to server tags:

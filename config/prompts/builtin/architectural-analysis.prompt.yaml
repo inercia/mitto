@@ -11,8 +11,8 @@ prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `{{ acpServers }}`
-  Existing children: `{{ children }}`
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.AllText }}`
 
   # Architectural Analysis
 
@@ -205,7 +205,7 @@ prompt: |
 
   - Match server tags to task: broad mechanical mapping → `"coding"`/`"fast"` servers; deep architectural
     reasoning → `"reasoning"`/`"planning"` servers; no match → the `(current)` server, then first available.
-  - If relevant children already exist (`{{ children }}`), reuse them via `mitto_conversation_send_prompt`
+  - If relevant children already exist (`{{ .Children.AllText }}`), reuse them via `mitto_conversation_send_prompt`
     instead of creating new ones.
   - `mitto_conversation_new(self_id: "{{ .Session.ID }}")` with a scoped package/area and a directive to
     **report findings only — not to file beads or make changes**.

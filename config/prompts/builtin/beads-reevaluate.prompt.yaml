@@ -9,8 +9,8 @@ prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `{{ acpServers }}`
-  Existing children: `{{ children }}`
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.AllText }}`
 
   # Beads: Reevaluate All Issues
 
@@ -81,13 +81,13 @@ prompt: |
 
   1. Select the beads that genuinely warrant deep evaluation. **Cap this at ~3–5 per run** to
      avoid spawning excessively; prefer the highest-impact or most-uncertain beads. Reuse an
-     existing child from `{{ children }}` if one already covers the same bead rather than
+     existing child from `{{ .Children.AllText }}` if one already covers the same bead rather than
      spawning a duplicate.
 
   2. For each selected bead, call `mitto_conversation_new_mitto` with `self_id: "{{ .Session.ID }}"` and:
      - `title`: the bead ID and a short label (e.g., `"bd-1234 · deep reevaluation"`)
      - `beads_issue`: the bead ID (links the child to this bead)
-     - `acp_server`: choose from `{{ acpServers }}` — prefer a faster/cheaper model
+     - `acp_server`: choose from `{{ .ACP.AvailableText }}` — prefer a faster/cheaper model
        for simple checks, and a slower/more capable model for complex reasoning
      - `initial_prompt`: a **self-contained** prompt that includes the bead ID, title, full
        description and acceptance criteria; the specific question(s) to answer (relevance,

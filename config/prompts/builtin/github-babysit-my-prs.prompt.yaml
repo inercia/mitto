@@ -18,7 +18,7 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Available ACP servers:
-  {{ acpServers }}
+  {{ .ACP.AvailableText }}
 
   When spawning new conversations to fix issues, prefer `"coding"` or `"fast"`
   tagged servers for straightforward fixes. **Never** configure spawned conversations
@@ -27,7 +27,7 @@ prompt: |
   ## Spawn Deduplication
 
   Existing child conversations (spawned by previous runs):
-  {{ mcpChildren }}
+  {{ .Children.MCPText }}
 
   Before spawning any new conversation, **check the list above**. Search for a
   child whose title matches the PR you are about to spawn for (e.g., title
@@ -376,7 +376,7 @@ prompt: |
       `mitto_ui_form`, and other interactive tools. Ask the user before risky
       actions (merges). Show the full summary table at the end.
   - **Spawn deduplication** (see "Spawn Deduplication" section above):
-    Check `{{ mcpChildren }}` for existing child conversations before spawning.
+    Check `{{ .Children.MCPText }}` for existing child conversations before spawning.
     Skip if a child for the same PR already exists. Max 3 spawns per run.
   - **Spawned conversations must never be periodic.** They are one-off tasks that
     should complete and stop. Do not call `mitto_conversation_set_periodic` on them.

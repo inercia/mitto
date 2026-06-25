@@ -14,8 +14,8 @@ prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `{{ acpServers }}`
-  Existing children: `{{ children }}`
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.AllText }}`
 
   # Beads: Start Work on a Bead
 
@@ -145,7 +145,7 @@ prompt: |
   possible, otherwise create a new one**:
 
   1. **Reuse vs. create:**
-     - Check the existing children listed above (`{{ children }}`). If one is **idle** (not
+     - Check the existing children listed above (`{{ .Children.AllText }}`). If one is **idle** (not
        currently running) and a good fit for this work item (same workspace, related prior task),
        **reuse it** by sending the worker prompt with
        `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.

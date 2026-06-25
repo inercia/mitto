@@ -12,7 +12,7 @@ prompt: |
   ## Phase 1: Context
 
   1. Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
-  2. Available ACP servers for this workspace: `{{ acpServers }}`
+  2. Available ACP servers for this workspace: `{{ .ACP.AvailableText }}`
      Note each server's name, tags (e.g., `[coding, fast]`, `[reasoning, planning]`), and the `(current)` marker.
   3. Your current workspace UUID is `{{ .Workspace.UUID }}`.
 
@@ -70,7 +70,7 @@ prompt: |
 
   ## Phase 4: Select ACP Server
 
-  If the target is the current workspace, choose from `{{ acpServers }}`.
+  If the target is the current workspace, choose from `{{ .ACP.AvailableText }}`.
   If the target is another workspace, use the ACP servers reported for it by
   `mitto_workspace_list` (prefer the one marked `is_default` for that folder).
 
