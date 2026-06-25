@@ -16,6 +16,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/inercia/mitto/internal/beads"
 	configPkg "github.com/inercia/mitto/internal/config"
@@ -236,6 +237,11 @@ type Deps struct {
 	// (nil periodic means deleted/disabled). May be nil; callers must nil-guard.
 	BroadcastPeriodicUpdated func(sessionID string, periodic *session.PeriodicPrompt)
 
+	// BroadcastBeadsCleanupProgress mirrors Server.BroadcastBeadsCleanupProgress:
+	// it broadcasts a global-events message reporting bulk closed-issue cleanup
+	// progress to all connected clients. May be nil.
+	BroadcastBeadsCleanupProgress func(workingDir string, deleted, total int, done bool, errMsg string)
+
 	// BootstrapOnCompletion mirrors Server.periodicRunner.BootstrapOnCompletion:
 	// kicks off the very first run for a fresh onCompletion conversation. May be
 	// nil; callers must nil-guard.
@@ -309,9 +315,12 @@ type Deps struct {
 // Handlers groups the REST API handler methods extracted from the web server.
 type Handlers struct {
 	deps Deps
+
+	beadsCleanupMu     sync.Mutex
+	beadsCleanupActive map[string]bool
 }
 
 // New creates a new Handlers with the given dependencies.
 func New(deps Deps) *Handlers {
-	return &Handlers{deps: deps}
+	return &Handlers{deps: deps, beadsCleanupActive: make(map[string]bool)}
 }

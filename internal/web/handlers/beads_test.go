@@ -40,8 +40,11 @@ func (c *stubBeadsClient) Create(_ context.Context, dir string, p beads.CreatePa
 	}
 	return []byte(`{}`), nil
 }
-func (c *stubBeadsClient) Delete(_ context.Context, _, _ string) error       { return nil }
-func (c *stubBeadsClient) Cleanup(_ context.Context, _ string) (int, error)  { return 0, nil }
+func (c *stubBeadsClient) Delete(_ context.Context, _, _ string) error { return nil }
+func (c *stubBeadsClient) ListClosedIDs(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (c *stubBeadsClient) DeleteIDs(_ context.Context, _ string, _ []string) error { return nil }
 func (c *stubBeadsClient) SetStatus(_ context.Context, _, _, _ string) error { return nil }
 func (c *stubBeadsClient) Update(_ context.Context, _ string, p beads.UpdateParams) error {
 	if c.updateFn != nil {

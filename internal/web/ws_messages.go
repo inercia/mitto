@@ -330,6 +330,12 @@ const (
 	// Data: { "changed_dirs": []string, "timestamp": string (ISO 8601) }
 	WSMsgTypePromptsChanged = "prompts_changed"
 
+	// WSMsgTypeBeadsCleanupProgress reports progress of a background bulk
+	// closed-issue cleanup started via POST /api/beads/cleanup. Sent repeatedly
+	// as batches complete, plus a final message with done=true (or error set).
+	// Data: { "working_dir": string, "deleted": int, "total": int, "done": bool, "error": string }
+	WSMsgTypeBeadsCleanupProgress = "beads_cleanup_progress"
+
 	// WSMsgTypeMCPToolsUnavailable notifies that Mitto MCP tools are not available in the workspace.
 	// Sent when user focuses/switches to a conversation and MCP availability check fails.
 	// Data: {

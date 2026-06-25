@@ -143,27 +143,30 @@ type beadsCleanupRequest struct {
 	WorkingDir string `json:"working_dir"`
 }
 
-// beadsCleanupResponse reports how many closed issues were deleted.
+// beadsCleanupResponse reports whether a background cleanup was started.
 type beadsCleanupResponse struct {
-	Deleted int `json:"deleted"`
+	Started        bool `json:"started"`
+	Total          int  `json:"total"`
+	AlreadyRunning bool `json:"already_running,omitempty"`
 }
 
+// beadsCleanupBatchSize is how many closed issues are deleted per bd invocation.
+const beadsCleanupBatchSize = 25
+
 // HandleBeadsCleanup handles POST /api/beads/cleanup.
-// Deletes every closed issue in the workspace: it lists closed issues via
-// "bd list --json --status closed -n 0", then runs "bd delete <ids...> --force".
-// Requires authentication via the standard auth middleware (same as other API endpoints).
+// It lists closed issues synchronously, then starts a background goroutine that
+// deletes them in batches and reports progress over the global-events WebSocket.
+// The HTTP response returns immediately so the 30 s middleware cap cannot fire.
 func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
-
 	var req beadsCleanupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	if req.WorkingDir == "" {
 		http.Error(w, "working_dir is required", http.StatusBadRequest)
 		return
@@ -177,13 +180,77 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.beadsClient().Cleanup(r.Context(), req.WorkingDir)
+	// Fast phase: list closed IDs using the request context.
+	ids, err := h.beadsClient().ListClosedIDs(r.Context(), req.WorkingDir)
 	if err != nil {
 		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
 		return
 	}
+	total := len(ids)
+	if total == 0 {
+		writeJSONOK(w, beadsCleanupResponse{Started: false, Total: 0})
+		return
+	}
 
-	writeJSONOK(w, beadsCleanupResponse{Deleted: count})
+	// Guard against concurrent cleanups for the same working dir.
+	if !h.tryStartBeadsCleanup(req.WorkingDir) {
+		writeJSONOK(w, beadsCleanupResponse{Started: false, Total: total, AlreadyRunning: true})
+		return
+	}
+
+	// Slow phase: delete in batches on a detached context so the 30s HTTP
+	// timeout cannot cancel it. Progress is reported over the global-events WS.
+	go h.runBeadsCleanup(req.WorkingDir, ids)
+
+	writeJSONOK(w, beadsCleanupResponse{Started: true, Total: total})
+}
+
+// runBeadsCleanup deletes closed issues in batches and broadcasts progress.
+func (h *Handlers) runBeadsCleanup(workingDir string, ids []string) {
+	defer h.finishBeadsCleanup(workingDir)
+
+	ctx := context.Background()
+	client := h.beadsClient()
+	total := len(ids)
+	deleted := 0
+
+	for start := 0; start < total; start += beadsCleanupBatchSize {
+		end := start + beadsCleanupBatchSize
+		if end > total {
+			end = total
+		}
+		batch := ids[start:end]
+		if err := client.DeleteIDs(ctx, workingDir, batch); err != nil {
+			h.broadcastBeadsCleanupProgress(workingDir, deleted, total, true, err.Error())
+			return
+		}
+		deleted += len(batch)
+		h.broadcastBeadsCleanupProgress(workingDir, deleted, total, deleted >= total, "")
+	}
+}
+
+func (h *Handlers) broadcastBeadsCleanupProgress(workingDir string, deleted, total int, done bool, errMsg string) {
+	if h.deps.BroadcastBeadsCleanupProgress != nil {
+		h.deps.BroadcastBeadsCleanupProgress(workingDir, deleted, total, done, errMsg)
+	}
+}
+
+// tryStartBeadsCleanup marks a working dir as having an in-flight cleanup.
+// It returns false if one is already running for that dir.
+func (h *Handlers) tryStartBeadsCleanup(dir string) bool {
+	h.beadsCleanupMu.Lock()
+	defer h.beadsCleanupMu.Unlock()
+	if h.beadsCleanupActive[dir] {
+		return false
+	}
+	h.beadsCleanupActive[dir] = true
+	return true
+}
+
+func (h *Handlers) finishBeadsCleanup(dir string) {
+	h.beadsCleanupMu.Lock()
+	defer h.beadsCleanupMu.Unlock()
+	delete(h.beadsCleanupActive, dir)
 }
 
 // beadsActionResponse is a minimal success body for delete/status actions.

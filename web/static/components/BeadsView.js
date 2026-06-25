@@ -2073,6 +2073,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   // "Clean up closed issues" confirmation + in-flight state.
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
+  const [cleanupProgress, setCleanupProgress] = useState(null);
 
   // Single-issue delete confirmation target + in-flight state, and the
   // in-flight flag for the close/reopen status toggle.
@@ -2481,10 +2482,12 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
 
   const closedCount = useMemo(() => issues.filter(i => i.status === "closed").length, [issues]);
 
-  // Permanently delete every closed issue, then refresh the list. The confirm
-  // dialog gates this destructive action.
+  // Start a background bulk-delete of all closed issues. The HTTP call returns
+  // immediately; progress arrives via the mitto:beads_cleanup_progress event.
   const handleCleanup = useCallback(async () => {
     setCleaningUp(true);
+    setCleanupProgress(null);
+    setShowCleanupConfirm(false);
     try {
       const res = await secureFetch(apiUrl("/api/beads/cleanup"), {
         method: "POST",
@@ -2494,20 +2497,51 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
         showToast && showToast({ style: "error", title: data.error || "Failed to clean up issues" });
-      } else {
-        const n = data.deleted || 0;
-        showToast && showToast({
-          style: "success",
-          title: n === 0 ? "No closed issues to remove" : `Removed ${n} closed issue${n === 1 ? "" : "s"}`,
-        });
-        fetchList();
+        setCleaningUp(false);
+        return;
       }
+      if (!data.started) {
+        if (data.already_running) {
+          showToast && showToast({ style: "info", title: "Cleanup already in progress" });
+        } else {
+          showToast && showToast({ style: "success", title: "No closed issues to remove" });
+        }
+        setCleaningUp(false);
+        return;
+      }
+      // Background job started; progress arrives via mitto:beads_cleanup_progress.
+      setCleanupProgress({ deleted: 0, total: data.total || 0 });
     } catch (err) {
       showToast && showToast({ style: "error", title: err.message || "Failed to clean up issues" });
-    } finally {
       setCleaningUp(false);
-      setShowCleanupConfirm(false);
     }
+  }, [workingDir, showToast]);
+
+  useEffect(() => {
+    const onProgress = (e) => {
+      const d = (e && e.detail) || {};
+      if (d.working_dir !== workingDir) return;
+      if (d.error) {
+        showToast && showToast({ style: "error", title: d.error || "Failed to clean up issues" });
+        setCleaningUp(false);
+        setCleanupProgress(null);
+        fetchList();
+        return;
+      }
+      setCleanupProgress({ deleted: d.deleted || 0, total: d.total || 0 });
+      if (d.done) {
+        const n = d.deleted || 0;
+        showToast && showToast({
+          style: "success",
+          title: `Removed ${n} closed issue${n === 1 ? "" : "s"}`,
+        });
+        setCleaningUp(false);
+        setCleanupProgress(null);
+        fetchList();
+      }
+    };
+    window.addEventListener("mitto:beads_cleanup_progress", onProgress);
+    return () => window.removeEventListener("mitto:beads_cleanup_progress", onProgress);
   }, [workingDir, showToast, fetchList]);
 
   // Permanently delete a single issue, then refresh the list. The confirm
@@ -3202,7 +3236,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
           onClick=${() => { if (closedCount === 0 || cleaningUp) return; setShowCleanupConfirm(true); }}
           aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
           class="btn btn-ghost btn-square btn-sm group inline-flex tooltip tooltip-top ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
-          data-tip=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
+          data-tip=${cleaningUp && cleanupProgress && cleanupProgress.total > 0 ? `Removing ${cleanupProgress.deleted}/${cleanupProgress.total}…` : closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
           aria-label=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
         >
           <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />

@@ -73,7 +73,8 @@ type Client interface {
 	Show(ctx context.Context, dir, id string) ([]byte, error)
 	Create(ctx context.Context, dir string, p CreateParams) ([]byte, error)
 	Delete(ctx context.Context, dir, id string) error
-	Cleanup(ctx context.Context, dir string) (int, error)
+	ListClosedIDs(ctx context.Context, dir string) ([]string, error)
+	DeleteIDs(ctx context.Context, dir string, ids []string) error
 	SetStatus(ctx context.Context, dir, id, action string) error
 	Update(ctx context.Context, dir string, p UpdateParams) error
 	Comment(ctx context.Context, dir, id, text string) error

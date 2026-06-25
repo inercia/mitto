@@ -360,50 +360,73 @@ func TestClient_SetStatus_PassesVerb(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup
+// ListClosedIDs / DeleteIDs
 // ---------------------------------------------------------------------------
 
-func TestClient_Cleanup_ZeroClosed_NoDeleteCall(t *testing.T) {
+func TestClient_ListClosedIDs_Empty(t *testing.T) {
 	r := &recordingRunner{responses: []runnerResp{
 		{stdout: []byte(`[]`)}, // empty list
 	}}
 	c := newClient(r)
-	count, err := c.Cleanup(context.Background(), "/dir")
+	ids, err := c.ListClosedIDs(context.Background(), "/dir")
 	if err != nil {
-		t.Fatalf("Cleanup() error: %v", err)
+		t.Fatalf("ListClosedIDs() error: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("count = %d, want 0", count)
+	if len(ids) != 0 {
+		t.Errorf("ids = %v, want empty", ids)
 	}
 	if len(r.calls) != 1 {
 		t.Errorf("expected 1 runner call (list only), got %d", len(r.calls))
 	}
 }
 
-func TestClient_Cleanup_DeletesWithForce(t *testing.T) {
+func TestClient_ListClosedIDs_ReturnIDs(t *testing.T) {
 	listJSON := `[{"id":"abc-1"},{"id":"abc-2"}]`
 	r := &recordingRunner{responses: []runnerResp{
-		{stdout: []byte(listJSON)}, // list call
-		{stdout: []byte("")},       // delete call
+		{stdout: []byte(listJSON)},
 	}}
 	c := newClient(r)
-	count, err := c.Cleanup(context.Background(), "/dir")
+	ids, err := c.ListClosedIDs(context.Background(), "/dir")
 	if err != nil {
-		t.Fatalf("Cleanup() error: %v", err)
+		t.Fatalf("ListClosedIDs() error: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("count = %d, want 2", count)
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 ids, got %d", len(ids))
 	}
-	if len(r.calls) != 2 {
-		t.Fatalf("expected 2 calls, got %d", len(r.calls))
+	if ids[0] != "abc-1" || ids[1] != "abc-2" {
+		t.Errorf("ids = %v, want [abc-1, abc-2]", ids)
 	}
-	deleteArgs := r.calls[1].args
-	joined := strings.Join(deleteArgs, " ")
+}
+
+func TestClient_DeleteIDs_NoOp_WhenEmpty(t *testing.T) {
+	r := &recordingRunner{}
+	c := newClient(r)
+	if err := c.DeleteIDs(context.Background(), "/dir", nil); err != nil {
+		t.Fatalf("DeleteIDs(nil) error: %v", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected 0 runner calls, got %d", len(r.calls))
+	}
+}
+
+func TestClient_DeleteIDs_DeletesWithForce(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte("")}, // delete call
+	}}
+	c := newClient(r)
+	ids := []string{"abc-1", "abc-2"}
+	if err := c.DeleteIDs(context.Background(), "/dir", ids); err != nil {
+		t.Fatalf("DeleteIDs() error: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(r.calls))
+	}
+	joined := strings.Join(r.calls[0].args, " ")
 	if !strings.Contains(joined, "--force") {
-		t.Errorf("delete args missing --force: %v", deleteArgs)
+		t.Errorf("delete args missing --force: %v", r.calls[0].args)
 	}
 	if !strings.Contains(joined, "abc-1") || !strings.Contains(joined, "abc-2") {
-		t.Errorf("delete args missing IDs: %v", deleteArgs)
+		t.Errorf("delete args missing IDs: %v", r.calls[0].args)
 	}
 }
 

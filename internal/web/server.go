@@ -732,6 +732,7 @@ func NewServer(config Config) (*Server, error) {
 		ErrPeriodicNotEnabled:              ErrPeriodicNotEnabled,
 		PeriodicDelayFloor:                 s.periodicDelayFloor,
 		BroadcastPeriodicUpdated:           s.BroadcastPeriodicUpdated,
+		BroadcastBeadsCleanupProgress:      s.BroadcastBeadsCleanupProgress,
 		BootstrapOnCompletion:              s.periodicRunner.BootstrapOnCompletion,
 		BroadcastSettingsUpdated:           s.BroadcastSessionSettingsUpdated,
 		BroadcastSessionDeleted:            s.BroadcastSessionDeleted,
@@ -1454,6 +1455,18 @@ func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDi
 			"session_count", sessionCount,
 			"clients", s.eventsManager.ClientCount())
 	}
+}
+
+// BroadcastBeadsCleanupProgress notifies all connected clients about the
+// progress of a background bulk closed-issue cleanup.
+func (s *Server) BroadcastBeadsCleanupProgress(workingDir string, deleted, total int, done bool, errMsg string) {
+	s.eventsManager.Broadcast(WSMsgTypeBeadsCleanupProgress, map[string]interface{}{
+		"working_dir": workingDir,
+		"deleted":     deleted,
+		"total":       total,
+		"done":        done,
+		"error":       errMsg,
+	})
 }
 
 // SetHealthMonitorDeps provides dependencies needed for dynamic health monitor management.

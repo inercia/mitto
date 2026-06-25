@@ -157,37 +157,34 @@ func cleanupTimeout(n int) time.Duration {
 	return d
 }
 
-func (c *cliClient) Cleanup(ctx context.Context, dir string) (int, error) {
+func (c *cliClient) ListClosedIDs(ctx context.Context, dir string) ([]string, error) {
 	out, err := c.runJSON(ctx, dir, "list", "--json", "--status", "closed", "-n", "0")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-
 	var items []listItem
 	if err := json.Unmarshal(out, &items); err != nil {
-		return 0, &CmdError{Err: errors.New("failed to parse closed issues")}
+		return nil, &CmdError{Err: errors.New("failed to parse closed issues")}
 	}
-
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
 		if it.ID != "" {
 			ids = append(ids, it.ID)
 		}
 	}
+	return ids, nil
+}
 
+func (c *cliClient) DeleteIDs(ctx context.Context, dir string, ids []string) error {
 	if len(ids) == 0 {
-		return 0, nil
+		return nil
 	}
-
 	args := make([]string, 0, len(ids)+2)
 	args = append(args, "delete")
 	args = append(args, ids...)
 	args = append(args, "--force")
-
-	if _, err := c.runRaw(ctx, cleanupTimeout(len(ids)), dir, args...); err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+	_, err := c.runRaw(ctx, cleanupTimeout(len(ids)), dir, args...)
+	return err
 }
 
 func (c *cliClient) SetStatus(ctx context.Context, dir, id, action string) error {
