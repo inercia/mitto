@@ -17,6 +17,18 @@ import (
 // maxFormHTMLSize is the maximum size of form HTML content (32KB).
 const maxFormHTMLSize = 32 * 1024
 
+// mittoFilePathRegex matches safe workspace-relative file paths for data-mitto-file.
+// Enforces: does not start with '/', uses only safe charset [A-Za-z0-9._/-].
+// Path traversal via ".." is additionally enforced in the post-sanitization pass
+// because RE2 cannot express "no two consecutive dots" without lookahead.
+var mittoFilePathRegex = regexp.MustCompile(`^[A-Za-z0-9._-][A-Za-z0-9._/-]*$`)
+
+// mittoLineRegex matches a positive line number (one or more digits) for data-mitto-line.
+var mittoLineRegex = regexp.MustCompile(`^[0-9]+$`)
+
+// mittoFileAttrRegex finds data-mitto-file attributes for post-sanitization validation.
+var mittoFileAttrRegex = regexp.MustCompile(`\bdata-mitto-file="([^"]*)"`)
+
 // formSanitizer is the shared bluemonday policy for form HTML.
 // It is safe for concurrent use.
 var formSanitizer = createFormSanitizer()
@@ -78,15 +90,54 @@ func createFormSanitizer() *bluemonday.Policy {
 	// General: id for label-input association
 	p.AllowAttrs("id").OnElements("div", "span", "p", "fieldset")
 
+	// data-mitto-file / data-mitto-line: inert file-link markers, wired by trusted
+	// frontend code to open the internal file viewer (path + line). Allowed only on
+	// span and label; href/src/other data-* remain fully banned.
+	// ".." path traversal is additionally enforced in the post-sanitization pass.
+	p.AllowAttrs("data-mitto-file").Matching(mittoFilePathRegex).OnElements("span", "label")
+	p.AllowAttrs("data-mitto-line").Matching(mittoLineRegex).OnElements("span", "label")
+
 	// --- Explicitly NOT allowed ---
 	// No: script, style, iframe, object, embed, link, meta, img, a, form, button
 	// No: on* event handlers (bluemonday strips these by default)
 	// No: style attribute (no inline CSS)
 	// No: class attribute (prevents UI spoofing)
-	// No: href, src, action, data-* attributes
+	// No: href, src, action attributes
 	// No: javascript: or data: URLs
+	// No: data-* attributes except data-mitto-file and data-mitto-line (span/label only)
 
 	return p
+}
+
+// isMittoFilePathUnsafe returns true if a data-mitto-file path value should be
+// rejected. This is defense-in-depth after bluemonday's charset regex and
+// specifically catches ".." traversal that RE2 cannot express.
+func isMittoFilePathUnsafe(path string) bool {
+	// Absolute path
+	if strings.HasPrefix(path, "/") {
+		return true
+	}
+	// URL schemes (charset regex blocks ":" but check defensively)
+	if strings.Contains(path, "://") {
+		return true
+	}
+	lp := strings.ToLower(path)
+	for _, scheme := range []string{"javascript:", "data:", "mailto:", "file:"} {
+		if strings.HasPrefix(lp, scheme) {
+			return true
+		}
+	}
+	// Backslash (charset regex blocks it, but check defensively)
+	if strings.Contains(path, "\\") {
+		return true
+	}
+	// Path traversal: any ".." segment
+	for _, seg := range strings.Split(path, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // allowedInputTypes are the input types we accept. Others are stripped to type="text".
@@ -134,6 +185,20 @@ func sanitizeFormHTML(html string) (string, error) {
 
 	// Apply bluemonday sanitization
 	sanitized := formSanitizer.Sanitize(html)
+
+	// Post-sanitization: strip data-mitto-file attributes with unsafe values
+	// (path traversal via "..", absolute paths, schemes). This is defense-in-depth;
+	// the bluemonday charset regex already rejects most dangerous patterns except "..".
+	sanitized = mittoFileAttrRegex.ReplaceAllStringFunc(sanitized, func(match string) string {
+		sub := mittoFileAttrRegex.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		if isMittoFilePathUnsafe(sub[1]) {
+			return ""
+		}
+		return match
+	})
 
 	// Post-sanitization: validate input types and strip unknown ones
 	sanitized = inputTypeRegex.ReplaceAllStringFunc(sanitized, func(match string) string {

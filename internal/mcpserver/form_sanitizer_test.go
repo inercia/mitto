@@ -392,6 +392,139 @@ func TestSanitizeFormHTML_DoesNotBreakLabelWrappedOptions(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// sanitizeFormHTML — data-mitto-file / data-mitto-line markers
+// =============================================================================
+
+func TestSanitizeFormHTML_AllowsMittoFileOnSpan(t *testing.T) {
+	html := `<span data-mitto-file="internal/web/server.go" data-mitto-line="142">internal/web/server.go:142</span><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, `data-mitto-file="internal/web/server.go"`) {
+		t.Errorf("expected data-mitto-file preserved on span, got: %s", result)
+	}
+	if !strings.Contains(result, `data-mitto-line="142"`) {
+		t.Errorf("expected data-mitto-line preserved on span, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_AllowsMittoFileOnLabel(t *testing.T) {
+	html := `<label data-mitto-file="cmd/main.go" data-mitto-line="1">cmd/main.go:1</label><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, `data-mitto-file="cmd/main.go"`) {
+		t.Errorf("expected data-mitto-file preserved on label, got: %s", result)
+	}
+	if !strings.Contains(result, `data-mitto-line="1"`) {
+		t.Errorf("expected data-mitto-line preserved on label, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_AllowsMittoFileVariousPaths(t *testing.T) {
+	paths := []string{
+		"a/b-c_d.ext",
+		".github/workflows/ci.yml",
+		"internal/web/server.go",
+		"README.md",
+	}
+	for _, path := range paths {
+		html := `<span data-mitto-file="` + path + `">` + path + `</span><input type="text" name="x">`
+		result, err := sanitizeFormHTML(html)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", path, err)
+		}
+		if !strings.Contains(result, `data-mitto-file="`+path+`"`) {
+			t.Errorf("expected data-mitto-file=%q to be preserved, got: %s", path, result)
+		}
+	}
+}
+
+func TestSanitizeFormHTML_StripsMittoFileDotDot(t *testing.T) {
+	html := `<span data-mitto-file="../etc/passwd">../etc/passwd</span><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "data-mitto-file") {
+		t.Errorf("expected data-mitto-file with '..' to be stripped, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_StripsMittoFileAbsolutePath(t *testing.T) {
+	html := `<span data-mitto-file="/etc/passwd">/etc/passwd</span><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "data-mitto-file") {
+		t.Errorf("expected data-mitto-file with absolute path to be stripped, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_StripsMittoFileScheme(t *testing.T) {
+	// These all contain characters (colon, parens, etc.) outside the allowed charset,
+	// so bluemonday strips them; confirmed by end-to-end behavior.
+	schemes := []string{
+		"javascript:alert(1)",
+		"http://evil.com",
+		"data:text/html,<h1>x</h1>",
+		"mailto:x@y.z",
+		"file:///etc/passwd",
+	}
+	for _, val := range schemes {
+		html := `<span data-mitto-file="` + val + `">link</span><input type="text" name="x">`
+		result, err := sanitizeFormHTML(html)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", val, err)
+		}
+		if strings.Contains(result, "data-mitto-file") {
+			t.Errorf("expected data-mitto-file with scheme %q to be stripped, got: %s", val, result)
+		}
+	}
+}
+
+func TestSanitizeFormHTML_StripsMittoFileBackslash(t *testing.T) {
+	// Backslash is outside the allowed charset; bluemonday strips the attribute.
+	html := `<span data-mitto-file="windows\path\file.go">file</span><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "data-mitto-file") {
+		t.Errorf("expected data-mitto-file with backslash to be stripped, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_StripsMittoLineNonNumeric(t *testing.T) {
+	html := `<span data-mitto-line="12; DROP">text</span><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "data-mitto-line") {
+		t.Errorf("expected non-numeric data-mitto-line to be stripped, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_StripsMittoFileOnDisallowedElement(t *testing.T) {
+	// data-mitto-file/line on div — bluemonday only allows these on span/label.
+	html := `<div data-mitto-file="foo/bar.go" data-mitto-line="10">text</div><input type="text" name="x">`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "data-mitto-file") {
+		t.Errorf("expected data-mitto-file on div to be stripped, got: %s", result)
+	}
+	if strings.Contains(result, "data-mitto-line") {
+		t.Errorf("expected data-mitto-line on div to be stripped, got: %s", result)
+	}
+}
+
 func TestSanitizeFormHTML_XSSPayloadsStripped(t *testing.T) {
 	payloads := []struct {
 		name string
