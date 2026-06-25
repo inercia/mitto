@@ -42,6 +42,13 @@ import {
   getChildCount,
 } from "./utils/sessionTree.js";
 
+// Import WebSocket utilities for app-activate debounce (mitto-c2p8.3)
+import {
+  createReconnectDebounceTracker,
+  shouldDebounceReconnect,
+  APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
+} from "./utils/websocket.js";
+
 // Import utilities
 import {
   openExternalURL,
@@ -205,6 +212,8 @@ function App() {
   // (mitto-17d). A ref avoids the hook-ordering problem: useWebSocket runs
   // before handleBeadsOpen exists.
   const onActiveSessionRemovedRef = useRef(null);
+  // Debounce tracker for macOS app-activate resync (mitto-c2p8.3)
+  const appActivateDebounceRef = useRef(createReconnectDebounceTracker());
   const {
     connected,
     messages,
@@ -1183,6 +1192,17 @@ function App() {
     // to trigger WebSocket reconnection and sync any missed messages.
     // Uses staggered reconnect so multiple sessions don't all send load_events simultaneously.
     window.mittoAppDidBecomeActive = () => {
+      const { debounced, elapsed } = shouldDebounceReconnect(
+        appActivateDebounceRef.current,
+        "__app_activate__",
+        { windowMs: APP_ACTIVATE_RESYNC_DEBOUNCE_MS },
+      );
+      if (debounced) {
+        console.debug(
+          `[macOS] App became active — skipping redundant resync (${elapsed}ms since last, debounce=${APP_ACTIVATE_RESYNC_DEBOUNCE_MS}ms)`,
+        );
+        return;
+      }
       console.log(
         "[macOS] App became active, triggering staggered reconnect and sync",
       );

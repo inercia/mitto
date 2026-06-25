@@ -683,6 +683,52 @@ describe("shouldDebounceReconnect", () => {
 });
 
 // =============================================================================
+// APP_ACTIVATE_RESYNC_DEBOUNCE_MS — macOS app-activate debounce (mitto-c2p8.3)
+// =============================================================================
+
+describe("APP_ACTIVATE_RESYNC_DEBOUNCE_MS app-activate debounce", () => {
+  test("constant is 15000ms", () => {
+    expect(WEBSOCKET_CONSTANTS.APP_ACTIVATE_RESYNC_DEBOUNCE_MS).toBe(15000);
+  });
+
+  test("first activation goes through", () => {
+    const tracker = createReconnectDebounceTracker();
+    const result = shouldDebounceReconnect(tracker, "__app_activate__", {
+      now: () => 1000,
+      windowMs: WEBSOCKET_CONSTANTS.APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
+    });
+    expect(result.debounced).toBe(false);
+  });
+
+  test("second activation ~5s later is suppressed", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "__app_activate__", {
+      now: () => 1000,
+      windowMs: WEBSOCKET_CONSTANTS.APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
+    });
+    const result = shouldDebounceReconnect(tracker, "__app_activate__", {
+      now: () => 6000, // 5000ms later — within 15000ms window
+      windowMs: WEBSOCKET_CONSTANTS.APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
+    });
+    expect(result.debounced).toBe(true);
+    expect(result.elapsed).toBe(5000);
+  });
+
+  test("activation after window elapses goes through again", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "__app_activate__", {
+      now: () => 1000,
+      windowMs: WEBSOCKET_CONSTANTS.APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
+    });
+    const result = shouldDebounceReconnect(tracker, "__app_activate__", {
+      now: () => 16001, // 15001ms later — past the 15000ms window
+      windowMs: WEBSOCKET_CONSTANTS.APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
+    });
+    expect(result.debounced).toBe(false);
+  });
+});
+
+// =============================================================================
 // forceReconnectActiveSession backoff behaviour (unit-level simulation)
 //
 // The hook itself is not unit-tested here, but we can verify that the
