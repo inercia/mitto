@@ -20,38 +20,21 @@ prompt: |
 
   # Iterate Until a Condition Is Met
 
-  You are turning **this** conversation into a self-driving loop. Keep working,
-  **one increment per run**, until the condition below is true — then stop
-  automatically.
+  Turn **this** conversation into a self-driving loop: do **one increment per run**
+  until the stop condition is true, then self-terminate. This setup run arms the loop
+  and does the first increment; every later run fires automatically a short while
+  after you stop responding (an "on completion" trigger) and continues unattended.
 
   **The stop condition is:**
 
-  > ${Condition}
+  > {{ .Args.Condition }}
 
-  This is the **setup run**: you record the condition, arm the loop, do the first
-  increment, then hand off to the periodic engine. Every following run fires
-  automatically a short while after you stop responding (an "on completion"
-  trigger), continues the work, re-checks the condition, and self-terminates when
-  it is finally met.
+  ## Step 1 — Arm the loop
 
-  ## Step 1 — Record the condition (durable)
-
-  Persist the condition so every future run can re-read it exactly — scheduled runs
-  do **not** receive this setup prompt again:
-
-  ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self",
-    user_data: [{"name": "Iterate Until Condition", "value": "${Condition}"}])
-  ```
-
-  (If the workspace rejects this user_data key, skip it — the condition is also
-  embedded into the recurring prompt in Step 2, which is sufficient.)
-
-  ## Step 2 — Arm the loop (make this conversation periodic, on completion)
-
-  Configure THIS conversation to re-run automatically after each completion. Set the
-  recurring prompt to the self-contained continuation template below, **with the
-  condition embedded literally** so each unattended run knows exactly when to stop:
+  Make this conversation re-run automatically after each completion. Set
+  `periodic_prompt` to the continuation prompt below, with `<CONDITION>` replaced by
+  the **literal text** of the stop condition above — scheduled runs never receive
+  this setup prompt, so the condition must be embedded:
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self",
@@ -60,78 +43,47 @@ prompt: |
     periodic_max_iterations: 20,
     periodic_max_duration_seconds: 14400,
     periodic_enabled: true,
-    periodic_prompt: "<the continuation prompt — built from the template below>")
+    periodic_prompt: "<continuation prompt — built from the template below>")
   ```
 
-  Build the `periodic_prompt` value from this template, replacing `<CONDITION>` with
-  the **literal text** of the stop condition above (keep everything else verbatim):
+  Continuation prompt template (keep verbatim except `<CONDITION>`):
 
       Continue the iterative task in this conversation.
 
       STOP CONDITION: <CONDITION>
 
-      This is an automated, unattended run. Do NOT use blocking interactive tools
-      (mitto_ui_options / mitto_ui_form / mitto_ui_textbox); use mitto_ui_notify only.
+      Automated, unattended run — use `mitto_ui_notify` only; never call
+      `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`, and never ask the
+      user to make work decisions. Decide autonomously.
 
-      1. Review the current state — read the relevant files, run the relevant
-         checks, inspect git status. Do not speculate about code you have not opened.
-      2. Evaluate the STOP CONDITION objectively against that real, observed state
-         (test output, file contents, command exit codes) — never against your
-         intentions. If you cannot verify it is true, treat it as not yet met.
-      3. If the STOP CONDITION is TRUE: stop the loop and finish — call
-         mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false),
+      1. Review the real current state — read the relevant files, run the relevant
+         checks, inspect git status. Never speculate about code you have not opened.
+      2. Evaluate the STOP CONDITION against that observed state (test output, file
+         contents, command exit codes), never against your intentions. If you cannot
+         verify it is true, treat it as not yet met.
+      3. If it is TRUE: disable the loop —
+         mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false) —
          then mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iteration complete",
          message: "<how the condition was satisfied>", style: "success"). Do nothing further.
-      4. If it is NOT yet true: do exactly ONE concrete increment of work toward it,
-         verify that increment, briefly note progress, then stop responding so the
-         next run continues. Do not try to finish everything in one run.
+      4. If it is NOT met: do exactly ONE concrete increment toward it, verify that
+         increment, briefly note progress, then stop responding so the next run continues.
   {{- if eq .Args.Commit "true" }}
-      5. If you made changes this run and the increment is verified, commit ONLY the
-         files you changed for this work — stage them explicitly by path
-         (git add <file> ...); never use git add -A, git add ., or git commit -a,
-         because unrelated uncommitted changes may exist in the repo and must be
-         left untouched. Use a concise, conventional commit message. If nothing
-         changed this run, skip the commit.
+         If you changed files and verified them, commit ONLY those files, staged
+         explicitly by path (git add <file> ...); never git add -A, git add ., or
+         git commit -a. Use a concise, conventional message; if nothing changed,
+         skip the commit.
   {{- end }}
 
-  ## Step 3 — Do the first increment now
+      If part of the work is **not properly defined** (the condition is unclear or a
+      requirement is genuinely ambiguous) or the `mitto_*` tools are unavailable, do
+      NOT guess — disable the loop, report what is blocking via `mitto_ui_notify`,
+      and stop.
 
-  Do not wait for the first scheduled run. Right now, in this setup run:
+  ## Step 2 — Do the first increment now
 
-  1. Review the current state of the work (read relevant files, run relevant checks).
-  2. Evaluate the stop condition against the real, observed state.
-     - If it is **already true**, disable the loop immediately —
-       `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)` —
-       notify the user with `mitto_ui_notify`, and stop. There is nothing to do.
-  3. Otherwise, perform exactly **one** concrete increment toward the condition,
-     verify it, and report what you advanced and what remains.
-  {{- if eq .Args.Commit "true" }}
-  4. If you changed files in this increment, commit **only** the files you changed,
-     staged explicitly by path (`git add <file> ...`) — never `git add -A`,
-     `git add .`, or `git commit -a`, since unrelated uncommitted changes may exist
-     and must be left untouched. Use a concise, conventional commit message; skip the
-     commit if nothing changed.
-  {{- end }}
-
-  Then stop responding; the periodic engine arms the next run automatically.
-
-  ## Guidelines
-
-  - **One increment per run.** Advance a meaningful step, then return — the next run
-    continues from the new state. Do not try to finish everything at once.
-  - **Decide autonomously; never ask the user.** Take every decision needed to make
-    progress yourself — do not stop to ask which approach to take or how to proceed.
-    The sole exception is when part of the work is **not properly defined or
-    understood** (the stop condition is unclear, or a requirement is genuinely
-    ambiguous): then do **not** guess — disable the loop
-    (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`),
-    report what is undefined via `mitto_ui_notify`, and stop.
-  - **Evaluate honestly.** Judge the condition against verifiable reality, never
-    against intentions or plans.
-  - **The loop is bounded** by `maxIterations` and `maxDuration` as safety nets, but
-    the condition becoming true is the intended exit. Always disable periodic when
-    it is met.
-  - **Stay quiet unless it matters.** On automated runs use `mitto_ui_notify` only
-    for meaningful milestones (increment done, condition met, blocked).
-  - If the `mitto_*` tools are unavailable, tell the user you cannot self-configure a
-    periodic loop and stop.
+  Don't wait for the first scheduled run. Right now, follow the continuation prompt
+  you just armed: review the state and evaluate the stop condition. If it is
+  **already true**, disable the loop and notify — there is nothing to do. Otherwise
+  perform exactly **one** increment toward it, verify it, and report what you
+  advanced and what remains. Then stop responding; the periodic engine arms the next
+  run automatically.
