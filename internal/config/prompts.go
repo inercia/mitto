@@ -149,11 +149,14 @@ func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 		return false
 	}
 
-	// Check enabledWhen CEL expression for acp.matchesServerType("serverType")
+	// Check enabledWhen CEL expression for ACP.MatchesServerType("serverType").
+	// We lowercase both sides for a case-insensitive prefix match: "acp.matchesserver"
+	// is a deliberate prefix of the lowercased canonical form "acp.matchesservertype",
+	// which still matches correctly while tolerating minor capitalisation variations.
 	if p.EnabledWhen != "" {
 		lowerExpr := strings.ToLower(p.EnabledWhen)
 		lowerServer := strings.ToLower(acpServer)
-		if strings.Contains(lowerExpr, "acp.matchesserver") && strings.Contains(lowerExpr, lowerServer) {
+		if strings.Contains(lowerExpr, "acp.matchesservertype") && strings.Contains(lowerExpr, lowerServer) {
 			return true
 		}
 	}
@@ -364,16 +367,16 @@ func GetPromptsDirModTime(dir string) time.Time {
 	return latest
 }
 
-// toolPatternCallRe matches tools.has*Pattern* function calls in CEL expressions.
-var toolPatternCallRe = regexp.MustCompile(`tools\.has(?:All|Any)?Patterns?\([^)]*`)
+// toolPatternCallRe matches Tools.Has*Pattern* function calls in CEL expressions.
+var toolPatternCallRe = regexp.MustCompile(`Tools\.Has(?:All|Any)?Patterns?\([^)]*`)
 
 // quotedStringRe matches double-quoted string literals.
 var quotedStringRe = regexp.MustCompile(`"([^"]+)"`)
 
 // extractToolPatternsFromCEL extracts tool glob patterns from enabledWhen CEL expressions.
-// Looks for tools.hasPattern("..."), tools.hasAllPatterns([...]), tools.hasAnyPattern([...]).
+// Looks for Tools.HasPattern("..."), Tools.HasAllPatterns([...]), Tools.HasAnyPattern([...]).
 func extractToolPatternsFromCEL(expr string) []string {
-	if expr == "" || !strings.Contains(expr, "tools.has") {
+	if expr == "" || !strings.Contains(expr, "Tools.Has") {
 		return nil
 	}
 	var patterns []string
@@ -390,7 +393,7 @@ func extractToolPatternsFromCEL(expr string) []string {
 }
 
 // CollectRequiredToolPatterns extracts all unique required tool patterns from a list of prompts.
-// Patterns come from enabledWhen CEL expressions (tools.hasPattern, tools.hasAllPatterns, etc.).
+// Patterns come from enabledWhen CEL expressions (Tools.HasPattern, Tools.HasAllPatterns, etc.).
 func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 	seen := make(map[string]bool)
 	var patterns []string
@@ -412,7 +415,7 @@ func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 }
 
 // CollectRequiredToolPatternsFromWebPrompts extracts all unique required tool patterns from WebPrompts.
-// Patterns come from enabledWhen CEL expressions (tools.hasPattern, tools.hasAllPatterns, etc.).
+// Patterns come from enabledWhen CEL expressions (Tools.HasPattern, Tools.HasAllPatterns, etc.).
 func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	seen := make(map[string]bool)
 	var patterns []string
