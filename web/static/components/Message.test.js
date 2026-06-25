@@ -321,3 +321,56 @@ describe("NamedPromptPill tooltip", () => {
     ).toBe("LONG=abc…(truncated)");
   });
 });
+
+// =============================================================================
+// sessionChangeText Tests
+// =============================================================================
+
+/**
+ * Mirror of sessionChangeText from Message.js for isolated unit testing.
+ * (Component file imports window.preact globals unavailable in Jest.)
+ */
+function sessionChangeText(m) {
+  const value = m.value || "";
+  const items = Array.isArray(m.items) ? m.items : [];
+  switch (m.kind) {
+    case "model":
+      return `Model changed to ${value}`;
+    case "mode":
+      return `Mode changed to ${value}`;
+    case "prompt_arguments":
+      return `Prompt arguments: ${items.join(", ")}`;
+    default: {
+      const what = m.label || m.kind || "Session";
+      if (value) return `${what} changed to ${value}`;
+      if (items.length) return `${what}: ${items.join(", ")}`;
+      return `${what} changed`;
+    }
+  }
+}
+
+describe("sessionChangeText", () => {
+  test("renders model kind as 'Model changed to <value>'", () => {
+    expect(
+      sessionChangeText({ kind: "model", value: "claude-x" }),
+    ).toBe("Model changed to claude-x");
+  });
+
+  test("unknown kind with label falls back to generic label text", () => {
+    expect(
+      sessionChangeText({ kind: "future_thing", label: "Foo" }),
+    ).toBe("Foo changed");
+  });
+
+  test("unknown kind with label and value uses generic 'changed to' text", () => {
+    expect(
+      sessionChangeText({ kind: "future_thing", label: "Foo", value: "bar" }),
+    ).toBe("Foo changed to bar");
+  });
+
+  test("unknown kind without label falls back to kind name", () => {
+    expect(sessionChangeText({ kind: "future_thing" })).toBe(
+      "future_thing changed",
+    );
+  });
+});

@@ -591,6 +591,18 @@ export function convertEventsToMessages(events, options = {}) {
           seq,
         });
         break;
+      case "session_change":
+        messages.push({
+          role: ROLE_SYSTEM,
+          kind: event.data?.kind,
+          label: event.data?.label,
+          value: event.data?.value,
+          previousValue: event.data?.previous_value,
+          items: event.data?.items,
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
     }
   }
   return messages;

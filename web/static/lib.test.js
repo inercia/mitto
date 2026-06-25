@@ -864,6 +864,41 @@ describe("convertEventsToMessages", () => {
     expect(result).toHaveLength(1);
     expect(result[0].images).toBeUndefined();
   });
+
+  test("converts session_change event (model kind) to ROLE_SYSTEM message", () => {
+    const events = [
+      {
+        type: "session_change",
+        data: { kind: "model", value: "claude-x" },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 7,
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_SYSTEM);
+    expect(result[0].kind).toBe("model");
+    expect(result[0].value).toBe("claude-x");
+    expect(result[0].seq).toBe(7);
+  });
+
+  test("converts session_change event (unknown kind) to ROLE_SYSTEM message carrying raw fields", () => {
+    const events = [
+      {
+        type: "session_change",
+        data: { kind: "future_thing", label: "Foo", value: "bar" },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 8,
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_SYSTEM);
+    expect(result[0].kind).toBe("future_thing");
+    expect(result[0].label).toBe("Foo");
+    expect(result[0].value).toBe("bar");
+    expect(result[0].seq).toBe(8);
+  });
 });
 
 // =============================================================================

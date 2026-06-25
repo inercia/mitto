@@ -24,6 +24,32 @@ import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 
 /**
+ * Compute human-readable text for a session_change system message.
+ * Single source of truth: both live WS push and reload paths produce
+ * a ROLE_SYSTEM message with kind/value/items fields; this function
+ * is the only place that maps kinds to display text.
+ */
+function sessionChangeText(m) {
+  const value = m.value || "";
+  const items = Array.isArray(m.items) ? m.items : [];
+  switch (m.kind) {
+    case "model":
+      return `Model changed to ${value}`;
+    case "mode":
+      return `Mode changed to ${value}`;
+    case "prompt_arguments":
+      return `Prompt arguments: ${items.join(", ")}`;
+    default: {
+      // Generic fallback so future/unknown kinds still render with no code change.
+      const what = m.label || m.kind || "Session";
+      if (value) return `${what} changed to ${value}`;
+      if (items.length) return `${what}: ${items.join(", ")}`;
+      return `${what} changed`;
+    }
+  }
+}
+
+/**
  * Check if a thought message appears to be reporting an upstream model/API error.
  * Uses conservative patterns to avoid false positives on normal thinking text
  * like "I think the error is in line 42".
@@ -201,7 +227,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         <div
           class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
-          ${message.text}
+          ${message.kind ? sessionChangeText(message) : message.text}
         </div>
       </div>
     `;

@@ -2783,6 +2783,41 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         break;
       }
 
+      case "session_change": {
+        const { seq, max_seq, kind, label, value, previous_value, items } =
+          msg.data;
+        if (max_seq) {
+          checkAndFillGap(sessionId, max_seq, seq);
+        }
+        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
+        if (seq) markSeqSeen(sessionId, seq);
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          // Dedup by seq: skip if a message with this seq already exists.
+          if (seq && (session.messages || []).some((m) => m.seq === seq))
+            return prev;
+          const newMessage = {
+            role: ROLE_SYSTEM,
+            kind,
+            label,
+            value,
+            previousValue: previous_value,
+            items,
+            seq,
+            timestamp: Date.now(),
+          };
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              messages: [...(session.messages || []), newMessage],
+            },
+          };
+        });
+        break;
+      }
+
       case "permission":
         console.log("Permission requested:", msg.data);
         break;
