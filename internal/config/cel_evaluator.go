@@ -46,75 +46,74 @@ type CELEvaluator struct {
 func NewCELEvaluator() (*CELEvaluator, error) {
 	env, err := cel.NewEnv(
 		// ACP variables
-		cel.Variable("acp.name", cel.StringType),
-		cel.Variable("acp.type", cel.StringType),
-		cel.Variable("acp.tags", cel.ListType(cel.StringType)),
-		cel.Variable("acp.autoApprove", cel.BoolType),
+		cel.Variable("ACP.Name", cel.StringType),
+		cel.Variable("ACP.Type", cel.StringType),
+		cel.Variable("ACP.Tags", cel.ListType(cel.StringType)),
+		cel.Variable("ACP.AutoApprove", cel.BoolType),
 
 		// Workspace variables
-		cel.Variable("workspace.uuid", cel.StringType),
-		cel.Variable("workspace.folder", cel.StringType),
-		cel.Variable("workspace.name", cel.StringType),
-		cel.Variable("workspace.hasUserDataSchema", cel.BoolType),
-		cel.Variable("workspace.hasMittoRC", cel.BoolType),
-		cel.Variable("workspace.hasMetadataDescription", cel.BoolType),
+		cel.Variable("Workspace.UUID", cel.StringType),
+		cel.Variable("Workspace.Folder", cel.StringType),
+		cel.Variable("Workspace.Name", cel.StringType),
+		cel.Variable("Workspace.HasUserDataSchema", cel.BoolType),
+		cel.Variable("Workspace.HasMittoRC", cel.BoolType),
+		cel.Variable("Workspace.HasMetadataDescription", cel.BoolType),
 
 		// Session variables
-		cel.Variable("session.id", cel.StringType),
-		cel.Variable("session.name", cel.StringType),
-		cel.Variable("session.isChild", cel.BoolType),
-		cel.Variable("session.isAutoChild", cel.BoolType),
-		cel.Variable("session.parentId", cel.StringType),
-		cel.Variable("session.isPeriodic", cel.BoolType),
-		cel.Variable("session.isPeriodicForced", cel.BoolType),
-		cel.Variable("session.isPeriodicConversation", cel.BoolType),
-		cel.Variable("session.hasBeadsIssue", cel.BoolType),
-		cel.Variable("session.beadsIssue", cel.StringType),
+		cel.Variable("Session.ID", cel.StringType),
+		cel.Variable("Session.Name", cel.StringType),
+		cel.Variable("Session.IsChild", cel.BoolType),
+		cel.Variable("Session.IsAutoChild", cel.BoolType),
+		cel.Variable("Session.ParentID", cel.StringType),
+		cel.Variable("Session.IsPeriodic", cel.BoolType),
+		cel.Variable("Session.IsPeriodicForced", cel.BoolType),
+		cel.Variable("Session.IsPeriodicConversation", cel.BoolType),
+		cel.Variable("Session.HasBeadsIssue", cel.BoolType),
+		cel.Variable("Session.BeadsIssue", cel.StringType),
 
 		// Parent variables
-		cel.Variable("parent.exists", cel.BoolType),
-		cel.Variable("parent.name", cel.StringType),
-		cel.Variable("parent.acpServer", cel.StringType),
+		cel.Variable("Parent.Exists", cel.BoolType),
+		cel.Variable("Parent.Name", cel.StringType),
+		cel.Variable("Parent.ACPServer", cel.StringType),
 
 		// Children variables
-		cel.Variable("children.count", cel.IntType),
-		cel.Variable("children.exists", cel.BoolType),
-		cel.Variable("children.mcpCount", cel.IntType),
-		cel.Variable("children.mcp_count", cel.IntType), // deprecated alias for children.mcpCount
-		cel.Variable("children.names", cel.ListType(cel.StringType)),
-		cel.Variable("children.acpServers", cel.ListType(cel.StringType)),
-		cel.Variable("children.promptingCount", cel.IntType),
-		cel.Variable("children.idleCount", cel.IntType),
+		cel.Variable("Children.Count", cel.IntType),
+		cel.Variable("Children.Exists", cel.BoolType),
+		cel.Variable("Children.MCPCount", cel.IntType),
+		cel.Variable("Children.Names", cel.ListType(cel.StringType)),
+		cel.Variable("Children.ACPServers", cel.ListType(cel.StringType)),
+		cel.Variable("Children.PromptingCount", cel.IntType),
+		cel.Variable("Children.IdleCount", cel.IntType),
 
 		// Tools variables
-		cel.Variable("tools.available", cel.BoolType),
-		cel.Variable("tools.names", cel.ListType(cel.StringType)),
+		cel.Variable("Tools.Available", cel.BoolType),
+		cel.Variable("Tools.Names", cel.ListType(cel.StringType)),
 
 		// Permissions variables
-		cel.Variable("permissions.canDoIntrospection", cel.BoolType),
-		cel.Variable("permissions.canSendPrompt", cel.BoolType),
-		cel.Variable("permissions.canPromptUser", cel.BoolType),
-		cel.Variable("permissions.canStartConversation", cel.BoolType),
-		cel.Variable("permissions.canInteractOtherWorkspaces", cel.BoolType),
-		cel.Variable("permissions.autoApprovePermissions", cel.BoolType),
+		cel.Variable("Permissions.CanDoIntrospection", cel.BoolType),
+		cel.Variable("Permissions.CanSendPrompt", cel.BoolType),
+		cel.Variable("Permissions.CanPromptUser", cel.BoolType),
+		cel.Variable("Permissions.CanStartConversation", cel.BoolType),
+		cel.Variable("Permissions.CanInteractOtherWorkspaces", cel.BoolType),
+		cel.Variable("Permissions.AutoApprovePermissions", cel.BoolType),
 
-		// item.* namespace variable (generic per-row context for list menus).
-		// Declared as a map so expressions like item.status compile; values are
+		// Item namespace variable (generic per-row context for list menus).
+		// Declared as a map so expressions like Item.Status compile; values are
 		// supplied per-row by callers via the activation. ReferencesItem reports
 		// whether a compiled expression touches this namespace.
-		cel.Variable("item", cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable("Item", cel.MapType(cel.StringType, cel.DynType)),
 
-		// args — prompt arguments supplied at send time (nil/empty at menu time).
-		// Declared as map<string,dyn> (same pattern as item) so CEL's native adapter
+		// Args — prompt arguments supplied at send time (nil/empty at menu time).
+		// Declared as map<string,dyn> (same pattern as Item) so CEL's native adapter
 		// handles map[string]any values correctly. Nil ctx.Args is normalized to an
-		// empty map in buildActivation. Use `"KEY" in args && args["KEY"] == "val"`
-		// to safely branch — bare `args["KEY"]` throws when the key is absent.
-		cel.Variable("args", cel.MapType(cel.StringType, cel.DynType)),
+		// empty map in buildActivation. Use `"KEY" in Args && Args["KEY"] == "val"`
+		// to safely branch — bare `Args["KEY"]` throws when the key is absent.
+		cel.Variable("Args", cel.MapType(cel.StringType, cel.DynType)),
 
-		// commandExists(name) bool — context-free; bound once here.
+		// CommandExists(name) bool — context-free; bound once here.
 		// Returns true if the given command name is found in the system PATH.
-		cel.Function("commandExists",
-			cel.Overload("commandExists_string",
+		cel.Function("CommandExists",
+			cel.Overload("CommandExists_string",
 				[]*cel.Type{cel.StringType},
 				cel.BoolType,
 				cel.UnaryBinding(commandExistsImpl()),
@@ -190,12 +189,12 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// They run at parse time (before type-checking), so the original
 		// tools.*/acp.*/fileExists/dirExists calls never reach the checker.
 		cel.Macros(
-			cel.ReceiverMacro("hasPattern", 1, toolsHasPatternMacro),
-			cel.ReceiverMacro("hasAllPatterns", 1, toolsHasAllPatternsMacro),
-			cel.ReceiverMacro("hasAnyPattern", 1, toolsHasAnyPatternMacro),
-			cel.ReceiverMacro("matchesServerType", 1, acpMatchesServerTypeMacro),
-			cel.GlobalMacro("fileExists", 1, fileExistsMacro),
-			cel.GlobalMacro("dirExists", 1, dirExistsMacro),
+			cel.ReceiverMacro("HasPattern", 1, toolsHasPatternMacro),
+			cel.ReceiverMacro("HasAllPatterns", 1, toolsHasAllPatternsMacro),
+			cel.ReceiverMacro("HasAnyPattern", 1, toolsHasAnyPatternMacro),
+			cel.ReceiverMacro("MatchesServerType", 1, acpMatchesServerTypeMacro),
+			cel.GlobalMacro("FileExists", 1, fileExistsMacro),
+			cel.GlobalMacro("DirExists", 1, dirExistsMacro),
 		),
 	)
 	if err != nil {
@@ -244,8 +243,8 @@ func (e *CELEvaluator) Compile(expression string) (*CompiledExpression, error) {
 	return ce, nil
 }
 
-// referencesItemNamespace reports whether the AST references the item.* namespace
-// (the bare "item" identifier or any "item."-prefixed qualified name).
+// referencesItemNamespace reports whether the AST references the Item namespace
+// (the bare "Item" identifier or any "Item."-prefixed qualified name).
 func referencesItemNamespace(ast *cel.Ast) bool {
 	matches := celast.MatchDescendants(
 		celast.NavigateAST(ast.NativeRep()),
@@ -254,7 +253,7 @@ func referencesItemNamespace(ast *cel.Ast) bool {
 				return false
 			}
 			name := e.AsIdent()
-			return name == "item" || strings.HasPrefix(name, "item.")
+			return name == "Item" || strings.HasPrefix(name, "Item.")
 		},
 	)
 	return len(matches) > 0
@@ -291,66 +290,65 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		argsAny[k] = v
 	}
 	return map[string]any{
-		"acp.name":        ctx.ACP.Name,
-		"acp.type":        ctx.ACP.Type,
-		"acp.tags":        ctx.ACP.Tags,
-		"acp.autoApprove": ctx.ACP.AutoApprove,
+		"ACP.Name":        ctx.ACP.Name,
+		"ACP.Type":        ctx.ACP.Type,
+		"ACP.Tags":        ctx.ACP.Tags,
+		"ACP.AutoApprove": ctx.ACP.AutoApprove,
 
-		"workspace.uuid":                   ctx.Workspace.UUID,
-		"workspace.folder":                 ctx.Workspace.Folder,
-		"workspace.name":                   ctx.Workspace.Name,
-		"workspace.hasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
-		"workspace.hasMittoRC":             ctx.Workspace.HasMittoRC,
-		"workspace.hasMetadataDescription": ctx.Workspace.HasMetadataDescription,
+		"Workspace.UUID":                   ctx.Workspace.UUID,
+		"Workspace.Folder":                 ctx.Workspace.Folder,
+		"Workspace.Name":                   ctx.Workspace.Name,
+		"Workspace.HasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
+		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
+		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
-		"session.id":                     ctx.Session.ID,
-		"session.name":                   ctx.Session.Name,
-		"session.isChild":                ctx.Session.IsChild,
-		"session.isAutoChild":            ctx.Session.IsAutoChild,
-		"session.parentId":               ctx.Session.ParentID,
-		"session.isPeriodic":             ctx.Session.IsPeriodic,
-		"session.isPeriodicForced":       ctx.Session.IsPeriodicForced,
-		"session.isPeriodicConversation": ctx.Session.IsPeriodicConversation,
-		"session.hasBeadsIssue":          ctx.Session.HasBeadsIssue,
-		"session.beadsIssue":             ctx.Session.BeadsIssue,
+		"Session.ID":                     ctx.Session.ID,
+		"Session.Name":                   ctx.Session.Name,
+		"Session.IsChild":                ctx.Session.IsChild,
+		"Session.IsAutoChild":            ctx.Session.IsAutoChild,
+		"Session.ParentID":               ctx.Session.ParentID,
+		"Session.IsPeriodic":             ctx.Session.IsPeriodic,
+		"Session.IsPeriodicForced":       ctx.Session.IsPeriodicForced,
+		"Session.IsPeriodicConversation": ctx.Session.IsPeriodicConversation,
+		"Session.HasBeadsIssue":          ctx.Session.HasBeadsIssue,
+		"Session.BeadsIssue":             ctx.Session.BeadsIssue,
 
-		"parent.exists":    ctx.Parent.Exists,
-		"parent.name":      ctx.Parent.Name,
-		"parent.acpServer": ctx.Parent.ACPServer,
+		"Parent.Exists":    ctx.Parent.Exists,
+		"Parent.Name":      ctx.Parent.Name,
+		"Parent.ACPServer": ctx.Parent.ACPServer,
 
-		"children.count":          int64(ctx.Children.Count),
-		"children.exists":         ctx.Children.Exists,
-		"children.mcpCount":       int64(ctx.Children.MCPCount),
-		"children.mcp_count":      int64(ctx.Children.MCPCount), // deprecated alias
-		"children.names":          ctx.Children.Names,
-		"children.acpServers":     ctx.Children.ACPServers,
-		"children.promptingCount": int64(ctx.Children.PromptingCount),
-		"children.idleCount":      int64(ctx.Children.IdleCount),
+		"Children.Count":          int64(ctx.Children.Count),
+		"Children.Exists":         ctx.Children.Exists,
+		"Children.MCPCount":       int64(ctx.Children.MCPCount),
+		"Children.Names":          ctx.Children.Names,
+		"Children.ACPServers":     ctx.Children.ACPServers,
+		"Children.PromptingCount": int64(ctx.Children.PromptingCount),
+		"Children.IdleCount":      int64(ctx.Children.IdleCount),
 
-		"tools.available": ctx.Tools.Available,
-		"tools.names":     ctx.Tools.Names,
+		"Tools.Available": ctx.Tools.Available,
+		"Tools.Names":     ctx.Tools.Names,
 
-		"permissions.canDoIntrospection":         ctx.Permissions.CanDoIntrospection,
-		"permissions.canSendPrompt":              ctx.Permissions.CanSendPrompt,
-		"permissions.canPromptUser":              ctx.Permissions.CanPromptUser,
-		"permissions.canStartConversation":       ctx.Permissions.CanStartConversation,
-		"permissions.canInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
-		"permissions.autoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
+		"Permissions.CanDoIntrospection":         ctx.Permissions.CanDoIntrospection,
+		"Permissions.CanSendPrompt":              ctx.Permissions.CanSendPrompt,
+		"Permissions.CanPromptUser":              ctx.Permissions.CanPromptUser,
+		"Permissions.CanStartConversation":       ctx.Permissions.CanStartConversation,
+		"Permissions.CanInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
+		"Permissions.AutoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
 
-		// item.* per-row context. All keys are always present (empty string when
-		// no item context is set) so expressions like item.status resolve cleanly.
+		// Item per-row context. All keys are always present (empty string when
+		// no item context is set) so expressions like Item["Status"] resolve cleanly.
 		// Callers populate ctx.Item for per-row list-menu evaluation (mitto-o0u.1).
 		// See ReferencesItem for how callers detect item-dependent expressions.
-		"item": map[string]any{
-			"id":       ctx.Item.Id,
-			"status":   ctx.Item.Status,
-			"type":     ctx.Item.Type,
-			"priority": ctx.Item.Priority,
-			"kind":     ctx.Item.Kind,
+		"Item": map[string]any{
+			"Id":       ctx.Item.Id,
+			"Status":   ctx.Item.Status,
+			"Type":     ctx.Item.Type,
+			"Priority": ctx.Item.Priority,
+			"Kind":     ctx.Item.Kind,
 		},
 
-		// args — prompt arguments. Empty at menu time; populated at send time.
-		"args": argsAny,
+		// Args — prompt arguments. Empty at menu time; populated at send time.
+		"Args": argsAny,
 	}
 }
 
@@ -375,47 +373,47 @@ func isIdent(e celast.Expr, name string) bool {
 	return e != nil && e.Kind() == celast.IdentKind && e.AsIdent() == name
 }
 
-// toolsHasPatternMacro rewrites tools.hasPattern(p) -> __mitto_hasPattern(tools.available, tools.names, p).
+// toolsHasPatternMacro rewrites Tools.HasPattern(p) -> __mitto_hasPattern(Tools.Available, Tools.Names, p).
 func toolsHasPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "tools") {
+	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("tools.available"), eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
-// toolsHasAllPatternsMacro rewrites tools.hasAllPatterns(a) -> __mitto_hasAllPatterns(tools.available, tools.names, a).
+// toolsHasAllPatternsMacro rewrites Tools.HasAllPatterns(a) -> __mitto_hasAllPatterns(Tools.Available, Tools.Names, a).
 func toolsHasAllPatternsMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "tools") {
+	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("tools.available"), eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
-// toolsHasAnyPatternMacro rewrites tools.hasAnyPattern(a) -> __mitto_hasAnyPattern(tools.available, tools.names, a).
+// toolsHasAnyPatternMacro rewrites Tools.HasAnyPattern(a) -> __mitto_hasAnyPattern(Tools.Available, Tools.Names, a).
 func toolsHasAnyPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "tools") {
+	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("tools.available"), eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
-// acpMatchesServerTypeMacro rewrites acp.matchesServerType(t) ->
-// __mitto_matchesServerType(acp.name, acp.type, t).
+// acpMatchesServerTypeMacro rewrites ACP.MatchesServerType(t) ->
+// __mitto_matchesServerType(ACP.Name, ACP.Type, t).
 func acpMatchesServerTypeMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "acp") {
+	if !isIdent(target, "ACP") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_matchesServerType", eh.NewIdent("acp.name"), eh.NewIdent("acp.type"), args[0]), nil
+	return eh.NewCall("__mitto_matchesServerType", eh.NewIdent("ACP.Name"), eh.NewIdent("ACP.Type"), args[0]), nil
 }
 
-// fileExistsMacro rewrites fileExists(p) -> __mitto_fileExists(workspace.folder, p).
+// fileExistsMacro rewrites FileExists(p) -> __mitto_fileExists(Workspace.Folder, p).
 func fileExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	return eh.NewCall("__mitto_fileExists", eh.NewIdent("workspace.folder"), args[0]), nil
+	return eh.NewCall("__mitto_fileExists", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
-// dirExistsMacro rewrites dirExists(p) -> __mitto_dirExists(workspace.folder, p).
+// dirExistsMacro rewrites DirExists(p) -> __mitto_dirExists(Workspace.Folder, p).
 func dirExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	return eh.NewCall("__mitto_dirExists", eh.NewIdent("workspace.folder"), args[0]), nil
+	return eh.NewCall("__mitto_dirExists", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
 // valToString returns the Go string for a CEL string value, or "" otherwise.
