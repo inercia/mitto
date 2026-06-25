@@ -284,6 +284,26 @@ export class CodeEditor {
     this.view?.focus();
   }
 
+  /**
+   * Scroll to and select the start of the given line (1-based). Clamped to
+   * document bounds; silently no-ops for invalid input or before init.
+   * @param {number} lineNumber - 1-based line number
+   */
+  scrollToLine(lineNumber) {
+    if (!this.view || !this._modules) return;
+    const n = Math.floor(Number(lineNumber));
+    if (!Number.isFinite(n) || n < 1) return;
+    const doc = this.view.state.doc;
+    const total = doc.lines;
+    const clamped = Math.min(n, total);
+    const line = doc.line(clamped);
+    const { EditorView } = this._modules.view;
+    this.view.dispatch({
+      selection: { anchor: line.from, head: line.from },
+      effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+    });
+  }
+
   /** Destroy the editor and release resources. */
   destroy() {
     if (this.view) {

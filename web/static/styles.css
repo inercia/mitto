@@ -608,17 +608,21 @@
   color: #93c5fd;
 }
 
-/* File links - styled with dotted underline */
-.markdown-content a.file-link,
-a.file-link {
+/* File links - styled with dotted underline.
+ * Selectors are element-agnostic so that inert <span>/<label> markers wired
+ * up by trusted frontend code (e.g. mitto_ui_form file markers) get the same
+ * affordance as real <a> links. */
+.markdown-content .file-link,
+.file-link {
   color: #34d399; /* Green to distinguish from external links */
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
+  cursor: pointer;
 }
 
-.markdown-content a.file-link:hover,
-a.file-link:hover {
+.markdown-content .file-link:hover,
+.file-link:hover {
   color: #6ee7b7;
   text-decoration-style: solid;
 }
@@ -751,13 +755,13 @@ a.mailto-link:hover {
   color: #1d4ed8;
 }
 
-.light .markdown-content a.file-link,
-.light a.file-link {
+.light .markdown-content .file-link,
+.light .file-link {
   color: #059669; /* Darker green for light mode */
 }
 
-.light .markdown-content a.file-link:hover,
-.light a.file-link:hover {
+.light .markdown-content .file-link:hover,
+.light .file-link:hover {
   color: #047857;
 }
 

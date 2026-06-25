@@ -10,6 +10,7 @@ import {
   hasNativeFilePicker,
   pickFiles,
   isNativeApp,
+  getAPIPrefix,
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
@@ -29,6 +30,65 @@ import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import { flattenPrompts, getMissingPromptParameters } from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
+
+/**
+ * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
+ * inside a sanitized mitto_ui_form into clickable links that open Mitto's internal file viewer.
+ *
+ * The agent never emits anchors/hrefs — the URL is built from the trusted current workspace
+ * UUID + a validated workspace-relative path + optional line number. Idempotent: only wires
+ * elements that haven't been wired yet (guarded by dataset.mittoFileLinkWired).
+ */
+function wireMittoFileMarkers(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  const markers = root.querySelectorAll("[data-mitto-file]");
+  if (!markers.length) return;
+
+  const apiPrefix = getAPIPrefix();
+  const workspaceUUID =
+    window.mittoCurrentWorkspaceUUID ||
+    sessionStorage.getItem("mittoCurrentWorkspaceUUID") ||
+    "";
+  const wsPath = window.mittoCurrentWorkspace || "";
+  if (!workspaceUUID) return;
+
+  markers.forEach((el) => {
+    if (el.dataset.mittoFileLinkWired === "true") return;
+    const rel = el.getAttribute("data-mitto-file");
+    if (!rel) return;
+    // Defensive re-validation: the backend sanitizer already enforces this,
+    // but never trust agent-supplied content even after sanitization.
+    if (rel.startsWith("/") || rel.includes("..") || rel.includes("://")) return;
+    const lower = rel.toLowerCase();
+    if (
+      lower.startsWith("javascript:") ||
+      lower.startsWith("data:") ||
+      lower.startsWith("file:") ||
+      lower.startsWith("mailto:")
+    ) return;
+
+    const lineRaw = el.getAttribute("data-mitto-line") || "";
+    const line = /^\d+$/.test(lineRaw) ? lineRaw : "";
+
+    let viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(rel)}`;
+    if (line) viewerUrl += `&line=${encodeURIComponent(line)}`;
+    if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+
+    el.classList.add("file-link");
+    el.style.cursor = "pointer";
+    el.dataset.mittoFileLinkWired = "true";
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+        const fullUrl = new URL(viewerUrl, window.location.origin).href;
+        window.mittoOpenViewer(fullUrl);
+      } else {
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      }
+    });
+  });
+}
 
 /**
  * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
@@ -2049,6 +2109,7 @@ ${activeUIPrompt.text || ""}</textarea
                             ) {
                               el.innerHTML = activeUIPrompt.formHTML;
                               el.dataset.formInitialized = "true";
+                              wireMittoFileMarkers(el);
                             }
                           }}
                         ></div>

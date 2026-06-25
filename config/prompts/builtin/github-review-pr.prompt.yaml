@@ -133,15 +133,19 @@ prompt: |
 
   Present **all** candidate comments in a single `mitto_ui_form(self_id: "{{ .Session.ID }}")`.
   Use one `<fieldset>` per comment: the legend shows the repo-root-relative path
-  and line (links aren't allowed inside the form, so the path is shown as plain
-  text), an Approve/Reject choice, and a textarea **pre-filled** with your
-  suggested comment so the user can edit it in place. End with an overall verdict.
+  and line as a **clickable file marker** — wrap it in a
+  `<span data-mitto-file="<repo-relative-path>" data-mitto-line="<N>">…</span>`
+  so the web UI turns it into a link that opens the file in the internal viewer
+  at that line (omit `data-mitto-line` for file-level findings). The path must be
+  repo-root-relative — no leading `/`, no `..`. Add an Approve/Reject choice, and
+  a textarea **pre-filled** with your suggested comment so the user can edit it in
+  place. End with an overall verdict.
 
   ```html
   <p>Review each candidate comment. Approve or reject it, and edit the text to change it before posting.</p>
 
   <fieldset>
-  <legend>① internal/auth/login.go — line 88</legend>
+  <legend>① <span data-mitto-file="internal/auth/login.go" data-mitto-line="88">internal/auth/login.go — line 88</span></legend>
   <p>Password comparison uses <code>==</code>, vulnerable to timing attacks.</p>
   <p>Decision:</p>
   <label><input type="radio" name="c1_decision" value="approve" checked> Approve</label>
@@ -151,7 +155,7 @@ prompt: |
   </fieldset>
 
   <fieldset>
-  <legend>② internal/web/server.go — (file-level, no line)</legend>
+  <legend>② <span data-mitto-file="internal/web/server.go">internal/web/server.go — (file-level, no line)</span></legend>
   <p>This new helper duplicates logic already in queue_manager.go.</p>
   <p>Decision:</p>
   <label><input type="radio" name="c2_decision" value="approve" checked> Approve</label>

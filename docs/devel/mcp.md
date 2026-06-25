@@ -321,9 +321,9 @@ Returns:
 Present a sanitized HTML form to the user and wait for submission. Requires `can_prompt_user` flag.
 
 The HTML is strictly sanitized to allow only form-related elements (input, select, textarea, label,
-fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handlers, images, links,
-iframes, and all other elements are stripped. Submit/cancel buttons are added automatically.
-Form values are returned as key-value pairs keyed by each element's `name` attribute.
+fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handlers, images, links
+(`<a>`/`href`), iframes, and all other elements are stripped. Submit/cancel buttons are added
+automatically. Form values are returned as key-value pairs keyed by each element's `name` attribute.
 
 | Parameter         | Type   | Required | Description                                         |
 | ----------------- | ------ | -------- | --------------------------------------------------- |
@@ -362,6 +362,24 @@ and do **not** list bare `<input>` options separated by `<br>` — in that marku
 renders glued to the question line while the rest break correctly, which looks broken. (As a safety
 net, the form CSS also forces standalone `<p>`/heading/`<strong>` headings inside a form to
 block-level, but wrapping each option in a `<label>` is the reliable pattern.)
+
+**Clickable workspace-file references.** `<a>`/`href` remain banned, but a form may include an
+**inert, data-only marker** on a `<span>` or `<label>` that the web UI turns into a clickable link
+opening Mitto's internal file viewer (`viewer.html`) at an optional line:
+
+```html
+<span data-mitto-file="internal/web/server.go" data-mitto-line="142">internal/web/server.go:142</span>
+```
+
+- `data-mitto-file` — a **workspace-relative** path. Absolute paths (leading `/`), `..` traversal,
+  URL schemes (`javascript:`, `data:`, `http://`, …) and backslashes are rejected by the sanitizer.
+- `data-mitto-line` — digits only (optional). When present, the viewer scrolls to and highlights
+  that line.
+- These attributes are allowed **only** on `<span>` and `<label>`; on any other element they are
+  stripped. The agent never supplies a URL or scheme — trusted frontend code builds the viewer URL
+  from the **current workspace** UUID plus the validated path and line, so the marker is inert until
+  the UI wires it up and cannot target another workspace. Works in both the browser and the native
+  macOS app.
 
 #### `mitto_conversation_new`
 
