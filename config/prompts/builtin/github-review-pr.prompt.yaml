@@ -1,0 +1,222 @@
+icon: search
+name: 'GitHub: review a Pull Request'
+menus: prompts
+description: Review a pull request you were asked to review, from the local checkout — inspect the PR safely, follow repo conventions, and produce editable, approvable comments
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- github
+enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+prompt: |
+  Review a pull request that someone has requested your review on, working from
+  the local checkout of the repository where the PR was opened. Inspect the PR
+  **without destroying any local changes**, review it against best practices and
+  the repository's own conventions, understand the author's intent and whether
+  the change suits the project's needs, then present editable, approvable review
+  comments via an interactive form.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Ground rules
+
+  - **Never destroy or disturb local work.** The user may have uncommitted changes
+    in this checkout. Do **not** `git checkout` / `git switch` the working tree, and
+    do not stash, reset, or pull. Prefer read-only inspection; when you need the
+    PR's files on disk, use a **temporary worktree** (see Step 2).
+  - **Ask when unsure.** If intent, scope, or the right call on a finding is
+    ambiguous, ask the user with `mitto_ui_options` rather than guessing.
+  - **Follow the repo's conventions**, not just generic best practice.
+
+  ## Step 1 — Identify the PR
+
+  Confirm `gh` is authenticated; if `gh auth status` fails, tell the user and stop.
+
+  Identify the repository and the PR to review:
+
+  ```bash
+  git rev-parse --show-toplevel
+  gh repo view --json nameWithOwner -q .nameWithOwner
+  # PRs where your review was requested:
+  gh pr list --search "review-requested:@me" --state open \
+    --json number,title,author,headRefName,baseRefName,updatedAt --limit 30
+  ```
+
+  - If the user already named a PR (number, URL, or branch), use it.
+  - If several reviews are pending, let the user pick:
+    ```
+    mitto_ui_options(self_id: "{{ .Session.ID }}",
+      question: "Which PR should I review?",
+      options: [ { label: "#<N> <title> — by <author>" }, ... ],
+      allow_free_text: true)
+    ```
+  - If none match and the user didn't specify, ask for the PR number or URL.
+
+  Capture `<number>`, `<headRefName>`, `<baseRefName>`, the author, and `nameWithOwner`.
+
+  ## Step 2 — Get the PR contents safely
+
+  Start read-only — this never touches the working tree:
+
+  ```bash
+  gh pr view <number> --json title,body,author,labels,commits,files,additions,deletions,baseRefName,headRefName,url
+  gh pr diff <number>
+  ```
+
+  Check whether the working tree is dirty before doing anything heavier:
+
+  ```bash
+  git status --porcelain
+  ```
+
+  If you need the PR's files on disk for full context (surrounding code, running
+  greps, reading whole files at the PR head), use a **temporary worktree** so the
+  user's checkout is untouched — this works whether or not the tree is dirty:
+
+  ```bash
+  git fetch origin pull/<number>/head
+  TMPDIR=$(mktemp -d)
+  git worktree add --detach "$TMPDIR" FETCH_HEAD
+  # read files under "$TMPDIR"; do NOT modify them
+  ```
+
+  Clean up the worktree at the very end (Step 7):
+
+  ```bash
+  git worktree remove "$TMPDIR" --force
+  ```
+
+  ## Step 3 — Understand intent and fit
+
+  Before judging the code, understand **what** the PR does and **why**:
+
+  - Read the PR title, description, linked issues, and commit messages.
+  - What problem is it solving? What is the author's intent and approach?
+  - Does it **suit the project's needs** — right scope, aligned with direction,
+    not solving the wrong problem or over-engineering?
+  - Note open questions about the rationale to raise with the author (or the user).
+
+  ## Step 4 — Learn the repository's conventions
+
+  Read the project's own rules so your review matches them — don't impose generic
+  preferences over documented conventions:
+
+  - `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING*`, `README`, `docs/`
+  - `.augment/rules/`, `.cursor/rules/`, `.editorconfig`, linter/formatter configs
+  - The surrounding code style in the files the PR touches
+
+  ## Step 5 — Review the code
+
+  Review the diff (and surrounding code) across five axes, applying the repo's
+  conventions on top:
+
+  | Axis | Look for |
+  |------|----------|
+  | Correctness | Meets intent, edge cases, error paths, off-by-one, races, adequate tests |
+  | Readability | Clear names, simple control flow, no needless complexity or dead code |
+  | Architecture | Fits existing patterns, clean boundaries, no duplication, deps flow correctly |
+  | Security | Input validated, no secrets, no injection, untrusted external data |
+  | Performance | No N+1, no unbounded loops, pagination, nothing heavy in hot paths |
+
+  Read tests first — they reveal intent and coverage gaps. Approve changes that
+  improve overall code health even if imperfect; don't block on pure preference.
+  If a finding's validity or severity is unclear, **ask the user** before
+  including it.
+
+  Collect findings; for each, capture:
+  1. **Path** relative to the repo root (e.g. `internal/web/server.go`).
+  2. **Line number**, if the finding maps to a specific line (otherwise file-level).
+  3. **The comment / suggestion** — concise and actionable.
+
+  ## Step 6 — Present candidate comments for approval
+
+  Present **all** candidate comments in a single `mitto_ui_form(self_id: "{{ .Session.ID }}")`.
+  Use one `<fieldset>` per comment: the legend shows the repo-root-relative path
+  and line (links aren't allowed inside the form, so the path is shown as plain
+  text), an Approve/Reject choice, and a textarea **pre-filled** with your
+  suggested comment so the user can edit it in place. End with an overall verdict.
+
+  ```html
+  <p>Review each candidate comment. Approve or reject it, and edit the text to change it before posting.</p>
+
+  <fieldset>
+  <legend>① internal/auth/login.go — line 88</legend>
+  <p>Password comparison uses <code>==</code>, vulnerable to timing attacks.</p>
+  <p>Decision:</p>
+  <label><input type="radio" name="c1_decision" value="approve" checked> Approve</label>
+  <label><input type="radio" name="c1_decision" value="reject"> Reject</label>
+  <label for="c1_text">Comment (edit to modify):</label>
+  <textarea name="c1_text" rows="3">Password comparison uses `==`, which is vulnerable to timing attacks. Consider `subtle.ConstantTimeCompare`.</textarea>
+  </fieldset>
+
+  <fieldset>
+  <legend>② internal/web/server.go — (file-level, no line)</legend>
+  <p>This new helper duplicates logic already in queue_manager.go.</p>
+  <p>Decision:</p>
+  <label><input type="radio" name="c2_decision" value="approve" checked> Approve</label>
+  <label><input type="radio" name="c2_decision" value="reject"> Reject</label>
+  <label for="c2_text">Comment (edit to modify):</label>
+  <textarea name="c2_text" rows="3">This helper appears to duplicate logic already in `queue_manager.go`; consider delegating to it.</textarea>
+  </fieldset>
+
+  <p>Overall verdict:</p>
+  <label><input type="radio" name="verdict" value="comment" checked> Comment only</label>
+  <label><input type="radio" name="verdict" value="approve"> Approve the PR</label>
+  <label><input type="radio" name="verdict" value="request_changes"> Request changes</label>
+  ```
+
+  Generate one fieldset per real finding, with stable names `c<N>_decision` and
+  `c<N>_text`, and pre-fill each textarea with your suggested comment. Interpreting
+  the result:
+  - A comment is included only if `c<N>_decision == "approve"`.
+  - Use the (possibly edited) `c<N>_text` as the final comment text.
+  - If the user cancels or approves nothing, post nothing and say so.
+  - If there are many findings (e.g. more than ~15), split them into batches of
+    ~10 per form to keep each form manageable.
+
+  ## Step 7 — Post the review (with confirmation)
+
+  Confirm before posting anything:
+
+  ```
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
+    question: "Post these <count> comments to PR #<number> as a '<verdict>' review?",
+    options: [
+      { label: "Post to the PR" },
+      { label: "Just show me the review here" },
+      { label: "Cancel" }
+    ])
+  ```
+
+  If posting, build a single review. Line-specific comments use the reviews API so
+  they land inline; file-level/general comments go in the review body:
+
+  ```bash
+  gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+    -f event=COMMENT \
+    -f body="<summary + any file-level comments>" \
+    -F "comments[][path]=<path>" -F "comments[][line]=<line>" -F "comments[][body]=<text>"
+    # repeat the three -F lines once per inline comment
+  ```
+
+  Map the verdict to `event`: comment → `COMMENT`, approve → `APPROVE`, request
+  changes → `REQUEST_CHANGES`. If the reviews API is awkward for your case, fall
+  back to a single `gh pr review <number> --comment|--approve|--request-changes
+  --body "<full review>"` (without inline anchoring).
+
+  Finally, remove any temporary worktree created in Step 2:
+
+  ```bash
+  git worktree remove "$TMPDIR" --force
+  ```
+
+  ## Guidelines
+
+  - **Never** modify, stash, reset, or switch the user's working tree; use a
+    temporary worktree plus read-only `gh` commands, and always clean the worktree up.
+  - Review against the **repo's conventions** first, generic best practice second.
+  - Comment on the PR's **rationale and fit**, not just line-level nits.
+  - **Ask the user** whenever intent or a finding's validity is unclear.
+  - Pre-fill every textarea with your suggested comment so edits are easy.
+  - Confirm before posting; if the user cancels, post nothing.
