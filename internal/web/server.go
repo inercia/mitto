@@ -849,77 +849,14 @@ func NewServer(config Config) (*Server, error) {
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Auth routes (always register, they handle their own enabled/disabled state)
-	// These use the API prefix for security through obscurity
-	if authMgr != nil {
-		mux.HandleFunc(apiPrefix+"/api/login", authMgr.HandleLogin)
-		mux.HandleFunc(apiPrefix+"/api/logout", authMgr.HandleLogout)
-	}
-
-	// CSRF token endpoint (always available for getting tokens)
-	mux.HandleFunc(apiPrefix+"/api/csrf-token", csrfMgr.HandleCSRFToken)
-
-	// API routes - all use the API prefix for security through obscurity
-	mux.HandleFunc(apiPrefix+"/api/sessions", s.handleSessions)
-	mux.HandleFunc(apiPrefix+"/api/sessions/running", s.apiHandlers.HandleRunningSessions)
-	mux.HandleFunc(apiPrefix+"/api/sessions/", s.handleSessionDetail)
-	mux.HandleFunc(apiPrefix+"/api/workspaces", s.apiHandlers.HandleWorkspaces)
-	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.apiHandlers.HandleWorkspaceDetail)
-	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
-	mux.HandleFunc(apiPrefix+"/api/workspace-prompts/toggle-enabled", s.apiHandlers.HandleWorkspacePromptsToggleEnabled)
-	mux.HandleFunc(apiPrefix+"/api/workspace-processors", s.apiHandlers.HandleWorkspaceProcessors)
-	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.apiHandlers.HandleWorkspaceProcessorsToggleEnabled)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.apiHandlers.HandleWorkspaceMCPTools)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.apiHandlers.HandleWorkspaceMCPInstall)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.apiHandlers.HandleWorkspaceMCPRemove)
-	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.apiHandlers.HandleWorkspaceMetadata)
-	mux.HandleFunc(apiPrefix+"/api/folder-group", s.apiHandlers.HandleFolderGroup)
-	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.apiHandlers.HandleWorkspaceUserDataSchema)
-	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
-	mux.HandleFunc(apiPrefix+"/api/agent-types", s.apiHandlers.HandleAgentTypes)
-	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.apiHandlers.HandleScanAgents)
-	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.apiHandlers.HandleConfirmAgents)
-	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.apiHandlers.HandleSupportedRunners)
-	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.apiHandlers.HandleRunnerDefaults)
-	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.apiHandlers.HandleAdvancedFlags)
-	mux.HandleFunc(apiPrefix+"/api/external-status", s.apiHandlers.HandleExternalStatus)
-	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.apiHandlers.HandleImprovePrompt)
-	mux.HandleFunc(apiPrefix+"/api/badge-click", s.apiHandlers.HandleBadgeClick)
-	mux.HandleFunc(apiPrefix+"/api/beads/list", s.apiHandlers.HandleBeadsList)
-	mux.HandleFunc(apiPrefix+"/api/beads/stats", s.apiHandlers.HandleBeadsStats)
-	mux.HandleFunc(apiPrefix+"/api/beads/show", s.apiHandlers.HandleBeadsShow)
-	mux.HandleFunc(apiPrefix+"/api/beads/create", s.apiHandlers.HandleBeadsCreate)
-	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.apiHandlers.HandleBeadsCleanup)
-	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.apiHandlers.HandleBeadsDelete)
-	mux.HandleFunc(apiPrefix+"/api/beads/status", s.apiHandlers.HandleBeadsStatus)
-	mux.HandleFunc(apiPrefix+"/api/beads/update", s.apiHandlers.HandleBeadsUpdate)
-	mux.HandleFunc(apiPrefix+"/api/beads/comment", s.apiHandlers.HandleBeadsComment)
-	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.apiHandlers.HandleBeadsDep)
-	mux.HandleFunc(apiPrefix+"/api/beads/config", s.apiHandlers.HandleBeadsConfig)
-	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.apiHandlers.HandleBeadsUpstream)
-	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.apiHandlers.HandleBeadsSync)
-	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.apiHandlers.HandleUIPreferences)
-
-	// File save endpoints - restricted to localhost only (used by native macOS app)
-	mux.HandleFunc(apiPrefix+"/api/save-file-to-path", s.apiHandlers.HandleSaveFileToPath)
-	mux.HandleFunc(apiPrefix+"/api/check-file-exists", s.apiHandlers.HandleCheckFileExists)
-
-	// Auth info endpoint (public, used by login page to adapt its UI)
-	mux.HandleFunc(apiPrefix+"/api/auth-info", s.apiHandlers.HandleAuthInfo)
-
-	// M3: Health check endpoint for load balancer integration and monitoring
-	// This endpoint is intentionally NOT behind auth to allow health checks
-	mux.HandleFunc(apiPrefix+"/api/health", s.apiHandlers.HandleHealthCheck)
-
-	// Callback trigger endpoint (public, no auth required)
-	mux.HandleFunc(apiPrefix+"/api/callback/", s.apiHandlers.HandleCallbackTrigger)
-
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)
-	mux.Handle(apiPrefix+"/api/files", fileServer)
 
-	// WebSocket endpoints - also use the API prefix
-	mux.HandleFunc(apiPrefix+"/api/events", s.handleGlobalEventsWS) // Global events (session lifecycle)
+	// Register all API and WebSocket routes from the declarative route table.
+	// Login/logout are included in the table only when authMgr is non-nil.
+	for _, rt := range s.apiRoutes(authMgr, csrfMgr, fileServer) {
+		mux.Handle(apiPrefix+rt.pattern, rt.handler)
+	}
 
 	// Robots.txt: discourage bot crawlers from indexing
 	mux.HandleFunc("/robots.txt", handleRobotsTxt)
