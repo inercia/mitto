@@ -1200,6 +1200,16 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		return fmt.Errorf("shared ACP process is not running")
 	}
 
+	// Saturation fail-fast (mitto-13ck.1, reusing the mitto-13ck.2 state machine): if
+	// recent RPCs against this shared process have repeatedly timed out, it is hung or
+	// overloaded. Fail fast instead of exhausting all attempts (each an 8s hang) and
+	// leaving aux sessions on the wrong model. A single alive-but-slow set_model on a
+	// NON-saturated process still gets its full per-attempt budget (mitto-f7q) — only an
+	// already-tripped saturation flag short-circuits here.
+	if p.isSaturated() {
+		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+	}
+
 	// Acquire the per-process serialisation semaphore, respecting caller ctx.
 	// This ensures only one set_model RPC is in-flight at a time — concurrent
 	// callers queue here instead of racing the serially-served agent subprocess.
@@ -1231,6 +1241,14 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 				return fmt.Errorf("set_model: ACP process has exited")
 			default:
 			}
+		}
+
+		// Mid-flight fail-fast (mitto-13ck.1): once the shared process trips the saturation
+		// flag (this call's earlier attempts or a sibling RPC repeatedly timed out), bail at
+		// the next attempt boundary instead of draining another full 8s budget. Attempt 1
+		// always proceeds so a single slow set_model on a healthy process keeps its budget.
+		if attempt > 1 && p.isSaturated() {
+			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w", attempt-1, context.DeadlineExceeded)
 		}
 
 		// Backoff between retries (skip before first attempt).
@@ -1265,6 +1283,7 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		attemptCancel()
 
 		if err == nil {
+			p.recordRPCSuccess()
 			if attempt > 1 && p.logger != nil {
 				p.logger.Info("SharedACPProcess.SetSessionModel succeeded after retry",
 					"session_id", sessionID,
@@ -1276,6 +1295,9 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		lastErr = err
+		if errors.Is(err, context.DeadlineExceeded) {
+			p.recordRPCTimeout()
+		}
 		if p.logger != nil {
 			p.logger.Warn("SharedACPProcess.SetSessionModel failed",
 				"session_id", sessionID,

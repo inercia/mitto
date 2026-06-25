@@ -1088,6 +1088,34 @@ func TestLoadSession_SaturatedFailsFast(t *testing.T) {
 	}
 }
 
+// TestSetSessionModel_SaturatedFailsFast is a regression test for mitto-13ck.1.
+// When the shared process is flagged saturated, SetSessionModel must return in <500ms
+// with a context.DeadlineExceeded-wrapped error instead of exhausting all attempts
+// (each an 8s hang). The entry guard fires before the semaphore acquisition.
+func TestSetSessionModel_SaturatedFailsFast(t *testing.T) {
+	p := &SharedACPProcess{
+		conn:        new(acp.ClientSideConnection),
+		setModelSem: make(chan struct{}, 1),
+		// processDone left nil = process considered alive; saturation must fire regardless.
+	}
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	start := time.Now()
+	err := p.SetSessionModel(context.Background(), "session-id", "some-model")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("SetSessionModel must return an error when saturated")
+	}
+	const maxElapsed = 500 * time.Millisecond
+	if elapsed > maxElapsed {
+		t.Errorf("SetSessionModel took %v on saturated process; want < %v (fail-fast not working)", elapsed, maxElapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected errors.Is(err, context.DeadlineExceeded)=true, got: %v", err)
+	}
+}
+
 // TestShouldFailFastCreateAttempt verifies the pure decision helper (mitto-13ck.2).
 func TestShouldFailFastCreateAttempt(t *testing.T) {
 	bigBudget := sessionCreateAttemptTimeout * 2
