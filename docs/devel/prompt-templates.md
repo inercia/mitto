@@ -226,9 +226,9 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 | `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | int, not string |
 | `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | bool, not `"true"`/`"false"` string |
 | `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`session.isPeriodicForced`). |
-| `@mitto:available_acp_servers` | `{{ acpServers }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
-| `@mitto:children` | `{{ children }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp], id2"` |
-| `@mitto:mcp_children` | `{{ mcpChildren }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only |
+| `@mitto:available_acp_servers` | `{{ .ACP.AvailableText }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
+| `@mitto:children` | `{{ .Children.AllText }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp], id2"` |
+| `@mitto:mcp_children` | `{{ .Children.MCPText }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only |
 | `@mitto:user_data` | `{{ .Session.UserDataJSON }}` | JSON of session user-data attributes; `""` when none |
 | `@mitto:user_data_schema` | `{{ .Workspace.UserDataSchemaJSON }}` | JSON of workspace user-data schema fields; `""` when none |
 
