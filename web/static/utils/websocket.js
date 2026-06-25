@@ -180,7 +180,7 @@ const RECONNECT_DEBOUNCE_MS = 3000;
 
 // App-activate resync debounce (ms). macOS fires "App became active" in rapid bursts;
 // collapse reactivations within this window into a single resync (bead mitto-c2p8.3).
-const APP_ACTIVATE_RESYNC_DEBOUNCE_MS = 15000;
+export const APP_ACTIVATE_RESYNC_DEBOUNCE_MS = 15000;
 
 // Maximum number of consecutive reconnect attempts before giving up on a session.
 // After this many failures, the client assumes the session is permanently gone

@@ -49,6 +49,14 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
+  // Skip cross-origin requests entirely. Re-fetching them from inside the SW
+  // is treated as a connect-src operation by the page CSP and triggers
+  // violations for resources like Google Fonts (referenced from styles-v2.css)
+  // or proxy-injected scripts (e.g. Cloudflare beacon when fronted by CF).
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
   // Skip non-GET requests, API calls, and WebSocket upgrades.
   // Use segment-based matching to handle API prefix deployments (e.g., /mitto/api/...).
   const pathSegments = url.pathname.split("/").filter(Boolean);
