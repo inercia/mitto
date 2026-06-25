@@ -757,6 +757,46 @@ func TestBuiltinPrompts_NoDeprecatedMittoVars(t *testing.T) {
 	t.Logf("checked %d builtin prompts — zero deprecated @mitto: tokens ✓", len(prompts))
 }
 
+// TestBuiltinPrompts_AllRenderWithoutError is a regression test for mitto-vjos.2.
+// TestBuiltinPrompts_NoDeprecatedMittoVars (above) loads but never RENDERS builtins,
+// so a broken template expression like {{ Name }} instead of {{ .Session.Name }}
+// would only fail-open silently in production. This test actually renders every
+// builtin prompt with a representative context and fails if any template errors out.
+func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	prompts, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Skipf("cannot load builtins from %s: %v", builtinDir, err)
+	}
+	if len(prompts) == 0 {
+		t.Skip("no builtin prompts found")
+	}
+
+	ctx := &PromptEnabledContext{
+		Session: SessionContext{
+			ID:            "test-session",
+			Name:          "Test Conversation",
+			BeadsIssue:    "mitto-test",
+			HasBeadsIssue: true,
+			ParentID:      "parent-1",
+			IsChild:       true,
+		},
+		Args: map[string]string{"IssueID": "mitto-test", "Condition": "all tests pass"},
+	}
+
+	var failures []string
+	for _, p := range prompts {
+		funcs := BuildTemplateFuncMap(ctx)
+		if _, rerr := RenderPromptTemplate(p.Name, p.Content, ctx, funcs); rerr != nil {
+			failures = append(failures, p.Name+": "+rerr.Error())
+		}
+	}
+	if len(failures) > 0 {
+		t.Errorf("builtin prompts failed to render (broken template funcs / fields):\n  %s", strings.Join(failures, "\n  "))
+	}
+	t.Logf("rendered %d builtin prompts — all templates valid ✓", len(prompts))
+}
+
 // TestStatus_ThreeModeTargetResolution tests the three target-bead
 // resolution branches of beads-issue-status.prompt.yaml:
 //
