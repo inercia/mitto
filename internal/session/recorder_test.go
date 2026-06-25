@@ -1774,3 +1774,86 @@ func TestRecordOption_SizeCap_DropsEntireMap(t *testing.T) {
 		t.Errorf("expected Meta to be dropped (nil) when oversized, got %v", ev.Meta)
 	}
 }
+
+// TestRecorder_RecordSessionChange_ScalarKind tests recording a scalar session change
+// (e.g. model switch with Value and PreviousValue).
+func TestRecorder_RecordSessionChange_ScalarKind(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	data := SessionChangeData{
+		Kind:          "model",
+		Label:         "Claude Sonnet 4.5",
+		Value:         "claude-sonnet-4-5",
+		PreviousValue: "claude-opus-4",
+	}
+	if err := r.RecordSessionChange(data); err != nil {
+		t.Fatalf("RecordSessionChange failed: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeSessionChange {
+		t.Fatalf("event type = %q, want %q", ev.Type, EventTypeSessionChange)
+	}
+	if ev.Seq <= 0 {
+		t.Errorf("expected positive seq, got %d", ev.Seq)
+	}
+
+	dataMap, ok := ev.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event data is %T, want map[string]interface{}", ev.Data)
+	}
+	if kind, _ := dataMap["kind"].(string); kind != "model" {
+		t.Errorf("kind = %q, want %q", kind, "model")
+	}
+	if val, _ := dataMap["value"].(string); val != "claude-sonnet-4-5" {
+		t.Errorf("value = %q, want %q", val, "claude-sonnet-4-5")
+	}
+	if prev, _ := dataMap["previous_value"].(string); prev != "claude-opus-4" {
+		t.Errorf("previous_value = %q, want %q", prev, "claude-opus-4")
+	}
+	if _, exists := dataMap["items"]; exists {
+		t.Errorf("items should be absent (omitempty) for scalar kind, got %v", dataMap["items"])
+	}
+}
+
+// TestRecorder_RecordSessionChange_ListKind tests recording a list session change
+// (e.g. prompt_arguments with Items only — never argument values).
+func TestRecorder_RecordSessionChange_ListKind(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	data := SessionChangeData{
+		Kind:  "prompt_arguments",
+		Items: []string{"repo_name", "branch"},
+	}
+	if err := r.RecordSessionChange(data); err != nil {
+		t.Fatalf("RecordSessionChange failed: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeSessionChange {
+		t.Fatalf("event type = %q, want %q", ev.Type, EventTypeSessionChange)
+	}
+	if ev.Seq <= 0 {
+		t.Errorf("expected positive seq, got %d", ev.Seq)
+	}
+
+	raw, err := json.Marshal(ev.Data)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var decoded SessionChangeData
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if decoded.Kind != "prompt_arguments" {
+		t.Errorf("kind = %q, want %q", decoded.Kind, "prompt_arguments")
+	}
+	if len(decoded.Items) != 2 || decoded.Items[0] != "repo_name" || decoded.Items[1] != "branch" {
+		t.Errorf("items = %v, want [repo_name branch]", decoded.Items)
+	}
+	if decoded.Value != "" || decoded.PreviousValue != "" {
+		t.Errorf("value/previous_value should be empty for list kind, got %q / %q", decoded.Value, decoded.PreviousValue)
+	}
+}

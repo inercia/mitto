@@ -511,6 +511,16 @@ func (r *Recorder) MaxSeq() int64 {
 	return meta.MaxSeq
 }
 
+// RecordSessionChange records a user-initiated session change event.
+// A struct param keeps the API future-proof as new kinds are added.
+func (r *Recorder) RecordSessionChange(data SessionChangeData, opts ...RecordOption) error {
+	return r.recordEvent(applyOptions(Event{
+		Type:      EventTypeSessionChange,
+		Timestamp: time.Now(),
+		Data:      data,
+	}, opts))
+}
+
 // RecordUIPromptAnswer records a user's response to a UI prompt from an MCP tool.
 // This creates an audit trail of user decisions made through the UI prompt system.
 func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string, opts ...RecordOption) error {

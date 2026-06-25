@@ -89,7 +89,8 @@ const (
 	EventTypeError          EventType = "error"
 	EventTypeSessionStart   EventType = "session_start"
 	EventTypeSessionEnd     EventType = "session_end"
-	EventTypeUIPromptAnswer EventType = "ui_prompt_answer"
+	EventTypeUIPromptAnswer  EventType = "ui_prompt_answer"
+	EventTypeSessionChange   EventType = "session_change"
 )
 
 // SessionStatus represents the status of a session.
@@ -231,6 +232,17 @@ type SessionEndData struct {
 	EventCount   int    `json:"event_count,omitempty"`   // Number of events in session at shutdown
 	WasPrompting bool   `json:"was_prompting,omitempty"` // Whether a response was in progress
 	ACPConnected bool   `json:"acp_connected,omitempty"` // Whether ACP connection was active
+}
+
+// SessionChangeData records a user-initiated session change as a first-class
+// timeline event. Generic by design: Kind discriminates the change category so
+// new kinds need no new event type / recorder / observer / WS message.
+type SessionChangeData struct {
+	Kind          string   `json:"kind"`                     // "model" | "mode" | "prompt_arguments" | ...
+	Label         string   `json:"label,omitempty"`          // optional human label
+	Value         string   `json:"value,omitempty"`          // scalar new value (e.g. model id)
+	PreviousValue string   `json:"previous_value,omitempty"` // scalar prior value
+	Items         []string `json:"items,omitempty"`          // list payload (e.g. argument NAMES — never values)
 }
 
 // Metadata contains session metadata stored separately from the event log.

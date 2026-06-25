@@ -42,8 +42,9 @@ var eventDataTypes = map[EventType]reflect.Type{
 	EventTypeFileRead:       reflect.TypeOf(FileOperationData{}),
 	EventTypeFileWrite:      reflect.TypeOf(FileOperationData{}),
 	EventTypeError:          reflect.TypeOf(ErrorData{}),
-	EventTypeSessionStart:   reflect.TypeOf(SessionStartData{}),
-	EventTypeSessionEnd:     reflect.TypeOf(SessionEndData{}),
+	EventTypeSessionStart:  reflect.TypeOf(SessionStartData{}),
+	EventTypeSessionEnd:    reflect.TypeOf(SessionEndData{}),
+	EventTypeSessionChange: reflect.TypeOf(SessionChangeData{}),
 }
 
 // DecodeEventData decodes the event data into the appropriate type.
