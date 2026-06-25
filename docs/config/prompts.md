@@ -312,7 +312,7 @@ description: "Pick a JIRA ticket and spawn parallel conversations"
 group: "JIRA"
 backgroundColor: "#BBDEFB"
 enabled: true
-enabledWhen: '!session.isChild && acp.matchesServerType(["augment", "claude-code"]) && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: '!Session.IsChild && ACP.MatchesServerType(["augment", "claude-code"]) && Tools.HasAllPatterns(["jira_*", "mitto_conversation_*"])'
 prompt: |
   (prompt body here)
 ```
@@ -400,7 +400,7 @@ prompt: |
   Check the repository for pending review requests and stale branches.
 ```
 
-Pair this with the `session.isPeriodicConversation` CEL variable (see
+Pair this with the `Session.IsPeriodicConversation` CEL variable (see
 [enabledWhen](#enabledwhen-conditional-enablement)) if you also want the prompt
 hidden everywhere outside periodic conversations.
 
@@ -432,8 +432,8 @@ Prompts without a `group` are collected under an **"Other"** submenu.
   evaluated for the **active** conversation — the context menu evaluates each
   prompt's `enabledWhen` against the **conversation you right-clicked**. The menu
   is populated on demand for that specific conversation, so context-dependent
-  prompts (e.g. `enabledWhen: "session.isChild"` for "Report to parent", or
-  `enabledWhen: "children.exists"` for "Continue in existing") appear
+  prompts (e.g. `enabledWhen: "Session.IsChild"` for "Report to parent", or
+  `enabledWhen: "Children.Exists"` for "Continue in existing") appear
   only on the conversations where they apply.
 - `@mitto:` [variable substitution](#variable-substitution-in-prompts) is applied
   to the enqueued text in the target conversation's context before it reaches the
@@ -867,7 +867,7 @@ A template may itself emit `${VAR}` tokens (step 2 outputs text that step 3 then
 
 ### Context Fields
 
-The following fields are available at send time. They are the **same fields used in `enabledWhen` CEL expressions** (e.g. `{{ .Session.ID }}` == `session.id`). See [devel §4](../devel/prompt-templates.md#4-the-unified-context-configpromptenabledcontext--args) for the full accessor↔CEL↔Go-field mapping.
+The following fields are available at send time. They are the **same fields used in `enabledWhen` CEL expressions** (e.g. `{{ .Session.ID }}` == `Session.ID`). See [devel §4](../devel/prompt-templates.md#4-the-unified-context-configpromptenabledcontext--args) for the full accessor↔CEL↔Go-field mapping.
 
 | Template accessor | Description |
 | --- | --- |
@@ -912,16 +912,16 @@ prompt: |
 prompt: |
   {{ if .Session.IsChild }}You are a child session.{{ else }}You are a root session.{{ end }}
 
-# cond (CEL) + arg
+# Cond (CEL) + Arg
 prompt: |
-  {{ if cond "fileExists(\".git/config\")" }}Repo: {{ arg "REPO" "current" }}{{ end }}
+  {{ if Cond "FileExists(\".git/config\")" }}Repo: {{ Arg "REPO" "current" }}{{ end }}
 ```
 
 ### Escaping & Corner Cases
 
 - Emit a literal `{{` with `{{ "{{" }}` — the delimiter cannot be backslash-escaped.
 - Close blocks with `{{ end }}` (not `fi`).
-- Inside a `cond "..."` CEL string, escape inner double-quotes: `cond "fileExists(\".git/config\")"`.
+- Inside a `Cond "..."` CEL string, escape inner double-quotes: `Cond "FileExists(\".git/config\")"`.
 - Struct-field typos (e.g. `{{ .Session.IDd }}`) are caught at **load time** (fail-fast validation). Missing `.Args.X` map keys render as empty string (`missingkey=zero`).
 
 See [devel §10](../devel/prompt-templates.md#10-corner-cases) for the full corner-case reference.
@@ -1007,7 +1007,7 @@ A prompt that helps the agent use Mitto MCP tools efficiently:
 
 ```yaml
 name: "Spawn Workers"
-enabledWhen: 'tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'Tools.HasPattern("mitto_conversation_*")'
 prompt: |
   ## Session Context
 
@@ -1053,7 +1053,7 @@ expressions.
 ```yaml
 name: "Create Minions"
 description: "Break work into parallel tasks"
-enabledWhen: "!session.isChild"
+enabledWhen: "!Session.IsChild"
 prompt: |
   (prompt body here)
 ```
@@ -1064,102 +1064,102 @@ prompt is shown (fail-open behavior for safety).
 
 ### Available Context Variables
 
-#### ACP Server Context (`acp.*`)
+#### ACP Server Context (`ACP.*`)
 
 Information about the AI agent (ACP server) used in the current conversation.
 
 | Variable          | Type      | Description                                |
 | ----------------- | --------- | ------------------------------------------ |
-| `acp.name`        | string    | ACP server name (e.g., `"Claude Code"`)    |
-| `acp.type`        | string    | Server type (e.g., `"claude"`, `"auggie"`) |
-| `acp.tags`        | list[str] | Server tags (e.g., `["coding", "fast"]`)   |
-| `acp.autoApprove` | bool      | Whether auto-approve is enabled            |
+| `ACP.Name`        | string    | ACP server name (e.g., `"Claude Code"`)    |
+| `ACP.Type`        | string    | Server type (e.g., `"claude"`, `"auggie"`) |
+| `ACP.Tags`        | list[str] | Server tags (e.g., `["coding", "fast"]`)   |
+| `ACP.AutoApprove` | bool      | Whether auto-approve is enabled            |
 
-#### Workspace Context (`workspace.*`)
+#### Workspace Context (`Workspace.*`)
 
 Information about the current workspace.
 
 | Variable           | Type   | Description                  |
 | ------------------ | ------ | ---------------------------- |
-| `workspace.uuid`   | string | Unique workspace identifier  |
-| `workspace.folder` | string | Workspace directory path     |
-| `workspace.name`   | string | Display name (if configured) |
+| `Workspace.UUID`   | string | Unique workspace identifier  |
+| `Workspace.Folder` | string | Workspace directory path     |
+| `Workspace.Name`   | string | Display name (if configured) |
 
-#### Session Context (`session.*`)
+#### Session Context (`Session.*`)
 
 Information about the current conversation/session.
 
 | Variable              | Type   | Description                                              |
 | --------------------- | ------ | -------------------------------------------------------- |
-| `session.id`          | string | Session identifier                                       |
-| `session.name`        | string | Session display name                                     |
-| `session.isChild`     | bool   | `true` if this is a child conversation                   |
-| `session.isAutoChild` | bool   | `true` if created automatically by parent                |
-| `session.parentId`    | string | Parent session ID (empty if not a child)                 |
-| `session.isPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
-| `session.isPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
-| `session.hasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
-| `session.beadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
+| `Session.ID`          | string | Session identifier                                       |
+| `Session.Name`        | string | Session display name                                     |
+| `Session.IsChild`     | bool   | `true` if this is a child conversation                   |
+| `Session.IsAutoChild` | bool   | `true` if created automatically by parent                |
+| `Session.ParentID`    | string | Parent session ID (empty if not a child)                 |
+| `Session.IsPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
+| `Session.IsPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
+| `Session.HasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
+| `Session.BeadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
 
-#### Parent Context (`parent.*`)
+#### Parent Context (`Parent.*`)
 
 Information about the parent conversation (only meaningful for child sessions).
 
 | Variable           | Type   | Description                     |
 | ------------------ | ------ | ------------------------------- |
-| `parent.exists`    | bool   | `true` if parent session exists |
-| `parent.name`      | string | Parent session name             |
-| `parent.acpServer` | string | ACP server used by parent       |
+| `Parent.Exists`    | bool   | `true` if parent session exists |
+| `Parent.Name`      | string | Parent session name             |
+| `Parent.ACPServer` | string | ACP server used by parent       |
 
-#### Children Context (`children.*`)
+#### Children Context (`Children.*`)
 
 Information about child conversations spawned from this session.
 
 | Variable              | Type      | Description                                  |
 | --------------------- | --------- | -------------------------------------------- |
-| `children.count`      | int       | Number of direct child sessions              |
-| `children.exists`     | bool      | `true` if has at least one child             |
-| `children.mcpCount`   | int       | Number of children created via MCP tools     |
-| `children.names`      | list[str] | List of child session names                  |
-| `children.acpServers` | list[str] | List of ACP servers used by children         |
+| `Children.Count`      | int       | Number of direct child sessions              |
+| `Children.Exists`     | bool      | `true` if has at least one child             |
+| `Children.MCPCount`   | int       | Number of children created via MCP tools     |
+| `Children.Names`      | list[str] | List of child session names                  |
+| `Children.ACPServers` | list[str] | List of ACP servers used by children         |
 
-#### Permissions Context (`permissions.*`)
+#### Permissions Context (`Permissions.*`)
 
 Information about the permissions granted to the current session.
 
 | Variable                                | Type | Description                                                           |
 | --------------------------------------- | ---- | --------------------------------------------------------------------- |
-| `permissions.canDoIntrospection`        | bool | Whether the session can access Mitto's MCP server for introspection   |
-| `permissions.canSendPrompt`             | bool | Whether the session can send prompts to other conversations           |
-| `permissions.canPromptUser`             | bool | Whether MCP tools can display interactive prompts to the user         |
-| `permissions.canStartConversation`      | bool | Whether the session can create new conversations                      |
-| `permissions.canInteractOtherWorkspaces`| bool | Whether the session can interact with other workspaces                |
-| `permissions.autoApprovePermissions`    | bool | Whether permission requests are auto-approved                         |
+| `Permissions.CanDoIntrospection`        | bool | Whether the session can access Mitto's MCP server for introspection   |
+| `Permissions.CanSendPrompt`             | bool | Whether the session can send prompts to other conversations           |
+| `Permissions.CanPromptUser`             | bool | Whether MCP tools can display interactive prompts to the user         |
+| `Permissions.CanStartConversation`      | bool | Whether the session can create new conversations                      |
+| `Permissions.CanInteractOtherWorkspaces`| bool | Whether the session can interact with other workspaces                |
+| `Permissions.AutoApprovePermissions`    | bool | Whether permission requests are auto-approved                         |
 
-#### MCP Tools Context (`tools.*`)
+#### MCP Tools Context (`Tools.*`)
 
 Information about available MCP tools. Note: Tool information may not be available
 immediately when a session starts.
 
 | Variable          | Type      | Description                                                |
 | ----------------- | --------- | --------------------------------------------------------- |
-| `tools.available` | bool      | `true` once the tool list is known (a non-empty result has been fetched); `false` while it is still being warmed up |
-| `tools.names`     | list[str] | List of available tool names                              |
+| `Tools.Available` | bool      | `true` once the tool list is known (a non-empty result has been fetched); `false` while it is still being warmed up |
+| `Tools.Names`     | list[str] | List of available tool names                              |
 
 **Custom functions:**
 
 | Function                              | Returns | Description                                                   |
 | ------------------------------------- | ------- | ------------------------------------------------------------- |
-| `acp.matchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
-| `acp.matchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
-| `tools.hasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern (fail-open while `tools.available` is `false`) |
-| `tools.hasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied (fail-open while `tools.available` is `false`) |
-| `tools.hasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied (fail-open while `tools.available` is `false`) |
+| `ACP.MatchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
+| `ACP.MatchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
+| `Tools.HasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern (fail-open while `Tools.Available` is `false`) |
+| `Tools.HasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied (fail-open while `Tools.Available` is `false`) |
+| `Tools.HasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied (fail-open while `Tools.Available` is `false`) |
 
 The glob pattern supports `*` (any characters) and `?` (single character).
 
-**`acp.matchesServerType` details:**
-- Compares against `acp.type` only (case-insensitive), not the display name
+**`ACP.MatchesServerType` details:**
+- Compares against `ACP.Type` only (case-insensitive), not the display name
 - **Fail-open**: Returns `true` when no ACP server is active (so prompts remain visible during startup)
 
 ### CEL Expression Examples
@@ -1168,92 +1168,92 @@ The glob pattern supports `*` (any characters) and `?` (single character).
 
 ```yaml
 # Only show in parent conversations (not in children)
-enabledWhen: "!session.isChild"
+enabledWhen: "!Session.IsChild"
 
 # Only show in child conversations
-enabledWhen: "session.isChild"
+enabledWhen: "Session.IsChild"
 
 # Only show in manually-created child conversations
-enabledWhen: "session.isChild && !session.isAutoChild"
+enabledWhen: "Session.IsChild && !Session.IsAutoChild"
 
 # Show only if this session has spawned children
-enabledWhen: "children.exists"
+enabledWhen: "Children.Exists"
 
 # Show only if this session has no children
-enabledWhen: "children.count == 0"
+enabledWhen: "Children.Count == 0"
 ```
 
 #### ACP Server Filtering
 
 ```yaml
 # Only for a specific ACP server type (case-insensitive, fail-open)
-enabledWhen: 'acp.matchesServerType("augment")'
+enabledWhen: 'ACP.MatchesServerType("augment")'
 
 # Only for one of several server types
-enabledWhen: 'acp.matchesServerType(["augment", "claude-code"])'
+enabledWhen: 'ACP.MatchesServerType(["augment", "claude-code"])'
 
 # Only for Claude-based servers (name prefix match)
-enabledWhen: 'acp.name.startsWith("Claude")'
+enabledWhen: 'ACP.Name.startsWith("Claude")'
 
 # Only for servers tagged with "coding"
-enabledWhen: '"coding" in acp.tags'
+enabledWhen: '"coding" in ACP.Tags'
 
 # Only for fast models
-enabledWhen: '"fast" in acp.tags || "quick" in acp.tags'
+enabledWhen: '"fast" in ACP.Tags || "quick" in ACP.Tags'
 
 # Only when auto-approve is disabled
-enabledWhen: "!acp.autoApprove"
+enabledWhen: "!ACP.AutoApprove"
 ```
 
 #### MCP Tool Requirements
 
 ```yaml
 # Only show if GitHub tools are available
-enabledWhen: 'tools.hasPattern("github_*")'
+enabledWhen: 'Tools.HasPattern("github_*")'
 
 # Only show if Jira tools are available
-enabledWhen: 'tools.hasPattern("jira_*")'
+enabledWhen: 'Tools.HasPattern("jira_*")'
 
 # Require ALL tool patterns to be satisfied (AND logic)
-enabledWhen: 'tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: 'Tools.HasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # Require ANY tool pattern to be satisfied (OR logic)
-enabledWhen: 'tools.hasAnyPattern(["github_*", "gitlab_*"])'
+enabledWhen: 'Tools.HasAnyPattern(["github_*", "gitlab_*"])'
 
 # Only show if any database tool is available
-enabledWhen: 'tools.hasPattern("*_database_*") || tools.hasPattern("*_sql_*")'
+enabledWhen: 'Tools.HasPattern("*_database_*") || Tools.HasPattern("*_sql_*")'
 
 # Only when tools have been loaded
-enabledWhen: "tools.available"
+enabledWhen: "Tools.Available"
 ```
 
 #### Permissions
 
 ```yaml
 # Only show delegation prompts when sending to other conversations is allowed
-enabledWhen: "children.exists && permissions.canSendPrompt"
+enabledWhen: "Children.Exists && Permissions.CanSendPrompt"
 
 # Only show "spawn workers" when conversation creation is allowed
-enabledWhen: "!session.isChild && permissions.canStartConversation"
+enabledWhen: "!Session.IsChild && Permissions.CanStartConversation"
 
 # Require both creation and communication permissions
-enabledWhen: "!session.isChild && permissions.canStartConversation && permissions.canSendPrompt"
+enabledWhen: "!Session.IsChild && Permissions.CanStartConversation && Permissions.CanSendPrompt"
 ```
 
 #### Combined Conditions
 
 ```yaml
 # Coordinator prompt: only in parent sessions with coding servers
-enabledWhen: '!session.isChild && "coding" in acp.tags'
+enabledWhen: '!Session.IsChild && "coding" in ACP.Tags'
 
 # Report-to-parent prompt: only in children with existing parent
-enabledWhen: "session.isChild && parent.exists"
+enabledWhen: "Session.IsChild && Parent.Exists"
 
 # GitHub PR prompt: only with GitHub tools and not in child sessions
-enabledWhen: '!session.isChild && tools.hasPattern("github_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("github_*")'
 
 # Complex workspace check
-enabledWhen: 'workspace.folder.contains("my-project") && "fast" in acp.tags'
+enabledWhen: 'Workspace.Folder.contains("my-project") && "fast" in ACP.Tags'
 ```
 
 #### Real-World Examples from Builtin Prompts
@@ -1263,27 +1263,27 @@ These examples are from Mitto's built-in prompts:
 ```yaml
 # "Create minions" - Spawn parallel worker conversations
 # Only in parent conversations, requires Mitto MCP tools
-enabledWhen: '!session.isChild && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("mitto_conversation_*")'
 
 # "Report to parent" - Send status back to parent
 # Only in child conversations that have a parent
-enabledWhen: 'session.isChild && parent.exists && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'Session.IsChild && Parent.Exists && Tools.HasPattern("mitto_conversation_*")'
 
 # "Continue work in child" - Resume work in existing child
 # Only when the session has spawned children
-enabledWhen: 'children.exists && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'Children.Exists && Tools.HasPattern("mitto_conversation_*")'
 
 # "JIRA: start work" - Pick a ticket and spawn workers
 # Only in parent conversations, requires both JIRA and Mitto tools
-enabledWhen: '!session.isChild && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: '!Session.IsChild && Tools.HasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # "Improve Augment rules" - Update .augment/rules
 # Only when using Augment-type agents (not Claude Code or other agents)
-enabledWhen: 'acp.matchesServerType("augment")'
+enabledWhen: 'ACP.MatchesServerType("augment")'
 
 # "Handoff to new conversation" - Continue in a new session
 # Only in parent conversations, requires Mitto tools
-enabledWhen: '!session.isChild && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("mitto_conversation_*")'
 ```
 
 ### CEL Language Reference
@@ -1294,7 +1294,7 @@ CEL is a simple expression language designed for evaluation. Key features:
 
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Logical: `&&` (and), `||` (or), `!` (not)
-- Membership: `in` (e.g., `"tag" in acp.tags`)
+- Membership: `in` (e.g., `"tag" in ACP.Tags`)
 - Ternary: `condition ? value_if_true : value_if_false`
 
 **String functions:**
@@ -1316,16 +1316,16 @@ CEL is a simple expression language designed for evaluation. Key features:
 
 ```cel
 // String operations
-acp.name.startsWith("Claude")
-workspace.folder.contains("/projects/")
+ACP.Name.startsWith("Claude")
+Workspace.Folder.contains("/projects/")
 
 // List operations
-acp.tags.size() > 0
-acp.tags.exists(t, t == "coding")
-children.names.all(n, n.startsWith("Worker"))
+ACP.Tags.size() > 0
+ACP.Tags.exists(t, t == "coding")
+Children.Names.all(n, n.startsWith("Worker"))
 
 // Ternary
-children.count > 5 ? true : acp.autoApprove
+Children.Count > 5 ? true : ACP.AutoApprove
 ```
 
 For full CEL documentation, see the [CEL Language Definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md).
@@ -1335,8 +1335,8 @@ For full CEL documentation, see the [CEL Language Definition](https://github.com
 - **Invalid expression syntax**: Prompt is shown (fail-open), warning logged
 - **Evaluation error**: Prompt is shown (fail-open), warning logged
 - **Missing context**: Default values used (empty strings, false booleans, zero counts)
-- **Tools not yet loaded**: `tools.available` is `false` and `tools.names` is empty. The
-  `tools.hasPattern` / `tools.hasAllPatterns` / `tools.hasAnyPattern` functions **fail open**
+- **Tools not yet loaded**: `Tools.Available` is `false` and `Tools.Names` is empty. The
+  `Tools.HasPattern` / `Tools.HasAllPatterns` / `Tools.HasAnyPattern` functions **fail open**
   (return `true`) in this state, so tool-gated prompts are shown during the MCP-tools cache
   warm-up window rather than being hidden. Once the tool list is known they evaluate normally.
 

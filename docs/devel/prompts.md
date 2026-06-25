@@ -80,7 +80,7 @@ The **evaluation context differs by caller** — this is the subtle part:
   `web/static/hooks/useWorkspacePrompts.js`) passes
   `?dir=...&session_id=<that conversation>`. `enabledWhen` is therefore
   evaluated against *the specific conversation being right-clicked* — its
-  `session.isChild`, `children.*`, `permissions.*`, `parent.*`, `tools.*`.
+  `Session.IsChild`, `Children.*`, `Permissions.*`, `Parent.*`, `Tools.*`.
 - **Beads menus** (`fetchBeadsPromptsForWorkspace` /
   `fetchBeadsListPromptsForWorkspace` in
   `web/static/hooks/useBeadsIntegration.js`) pass
@@ -88,8 +88,8 @@ The **evaluation context differs by caller** — this is the subtle part:
   for per-issue rows the `item_*` params (`item_kind`, `item_id`,
   `item_status`, `item_type`, `item_priority`). When no session is active the
   backend builds a session-less context via `buildWorkspacePromptEnabledContext`
-  so gates like `commandExists("bd")`, `dirExists(".beads")`, and
-  `item.status != "closed"` still evaluate. The `item.*` namespace lets each row
+  so gates like `CommandExists("bd")`, `DirExists(".beads")`, and
+  `Item.Status != "closed"` still evaluate. The `Item.*` namespace lets each row
   gate itself (e.g. hide **Start work** on closed issues).
 
 After fetching, the client filters once more by

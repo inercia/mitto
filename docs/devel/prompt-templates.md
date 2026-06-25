@@ -29,7 +29,7 @@ File: `internal/processors/arguments.go` — `SubstituteArguments(text string, a
 
 Applied in `resolveAndSubstitute` (step 3 below) when `meta.Arguments` is non-empty.
 Regex: `` `\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}` `` (captured in `argPlaceholderRe`).
-`${VAR}` → `args["VAR"]` or `""`; `${VAR:-default}` → value when present AND non-empty, else default.
+`${VAR}` → `Args["VAR"]` or `""`; `${VAR:-default}` → value when present AND non-empty, else default.
 
 ### 2.2  `@mitto:variable` — session-context substitution
 
@@ -100,48 +100,48 @@ extended with one new field:
 Args map[string]string  // arguments passed to the prompt (meta.Arguments); nil at menu time
 ```
 
-This guarantees that `{{ .Session.ID }}` in a template and `session.id` in an `enabledWhen`
+This guarantees that `{{ .Session.ID }}` in a template and `Session.ID` in an `enabledWhen`
 CEL expression always read the same field from the same struct.
 
 **Template accessor ↔ CEL variable ↔ Go field (guaranteed same value):**
 
 | Template accessor | CEL variable | Go field (`PromptEnabledContext`) |
 |---|---|---|
-| `{{ .Session.ID }}` | `session.id` | `Session.ID` |
-| `{{ .Session.Name }}` | `session.name` | `Session.Name` |
-| `{{ .Session.IsChild }}` | `session.isChild` | `Session.IsChild` |
-| `{{ .Session.IsPeriodic }}` | `session.isPeriodic` | `Session.IsPeriodic` |
-| `{{ .Session.BeadsIssue }}` | `session.beadsIssue` | `Session.BeadsIssue` |
+| `{{ .Session.ID }}` | `Session.ID` | `Session.ID` |
+| `{{ .Session.Name }}` | `Session.Name` | `Session.Name` |
+| `{{ .Session.IsChild }}` | `Session.IsChild` | `Session.IsChild` |
+| `{{ .Session.IsPeriodic }}` | `Session.IsPeriodic` | `Session.IsPeriodic` |
+| `{{ .Session.BeadsIssue }}` | `Session.BeadsIssue` | `Session.BeadsIssue` |
 | `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
-| `{{ .ACP.Name }}` | `acp.name` | `ACP.Name` |
-| `{{ .ACP.Type }}` | `acp.type` | `ACP.Type` |
-| `{{ .Workspace.Folder }}` | `workspace.folder` | `Workspace.Folder` |
-| `{{ .Workspace.UUID }}` | `workspace.uuid` | `Workspace.UUID` |
+| `{{ .ACP.Name }}` | `ACP.Name` | `ACP.Name` |
+| `{{ .ACP.Type }}` | `ACP.Type` | `ACP.Type` |
+| `{{ .Workspace.Folder }}` | `Workspace.Folder` | `Workspace.Folder` |
+| `{{ .Workspace.UUID }}` | `Workspace.UUID` | `Workspace.UUID` |
 | `{{ .Workspace.UserDataSchemaJSON }}` | — | `Workspace.UserDataSchemaJSON` — JSON of workspace user-data schema fields |
-| `{{ .Parent.Name }}` | `parent.name` | `Parent.Name` |
-| `{{ .Parent.Exists }}` | `parent.exists` | `Parent.Exists` |
-| `{{ .Children.Count }}` | `children.count` | `Children.Count` |
-| `{{ .Children.MCPCount }}` | `children.mcpCount` | `Children.MCPCount` |
+| `{{ .Parent.Name }}` | `Parent.Name` | `Parent.Name` |
+| `{{ .Parent.Exists }}` | `Parent.Exists` | `Parent.Exists` |
+| `{{ .Children.Count }}` | `Children.Count` | `Children.Count` |
+| `{{ .Children.MCPCount }}` | `Children.MCPCount` | `Children.MCPCount` |
 | `{{ .Children.All }}` | — | `Children.All` — `[]config.ChildInfo` for all children |
 | `{{ .Children.MCP }}` | — | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only |
 | `{{ .ACP.Available }}` | — | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers |
-| `{{ .Args.NAME }}` | `args["NAME"]` (new) | `Args["NAME"]` (new) |
+| `{{ .Args.NAME }}` | `Args["NAME"]` (new) | `Args["NAME"]` (new) |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is
 always the real argument map (possibly empty).
 
-**Extending the CEL env (mitto-m7sb.5):** Add `cel.Variable("args", cel.MapType(cel.StringType, cel.StringType))` to `NewCELEvaluator` and map it in `buildActivation` as `"args": ctx.Args`. This allows `enabledWhen: "args['BRANCH'] != \"\""` for conditional visibility that depends on arguments.
+**Extending the CEL env (mitto-m7sb.5):** Add `cel.Variable("args", cel.MapType(cel.StringType, cel.StringType))` to `NewCELEvaluator` and map it in `buildActivation` as `"args": ctx.Args`. This allows `enabledWhen: "Args['BRANCH'] != \"\""` for conditional visibility that depends on arguments.
 
 ---
 
-## 5. Expression language: `cond` / `when` template functions
+## 5. Expression language: `Cond` / `When` template functions
 
-The `cond` (alias `when`) template function evaluates a CEL expression string at send time:
+The `Cond` (alias `When`) template function evaluates a CEL expression string at send time:
 
 ```go
 // Example use in a prompt body:
-{{ if cond "session.isChild && fileExists(\".git/config\")" }}
+{{ if Cond "Session.IsChild && FileExists(\".git/config\")" }}
   Parent: {{ .Session.ParentID }}
 {{ end }}
 ```
@@ -155,7 +155,7 @@ Implementation:
 The only difference is the context is populated with send-time values (including `Args`).
 
 **Load-time validation (mitto-m7sb.4):** In `ParsePromptFile` and the MCP `mitto_prompt_update`
-path, pre-compile all string-literal arguments to `cond`/`when` calls using the static AST walk
+path, pre-compile all string-literal arguments to `Cond`/`When` calls using the static AST walk
 (the same `Compile` call, discarding the result). This catches syntax errors at save time.
 
 ---
@@ -168,13 +168,13 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 
 | Function | Signature | Semantics |
 |---|---|---|
-| `arg` | `arg(name, defaultVal string) string` | `Args[name]` if present AND non-empty, else `defaultVal`. Mirrors `${name:-default}` bash semantics exactly. |
-| `default` | `default(fallback, val string) string` | Returns `val` if non-empty, else `fallback`. Same as sprig `default`. |
-| `cond` | `cond(celExpr string) (bool, error)` | Evaluate CEL expression against send-time context. |
-| `when` | alias for `cond` | |
-| `fileExists` | `fileExists(path string) bool` | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`. |
-| `dirExists` | `dirExists(path string) bool` | Directory exists. Calls `statResolved`. |
-| `commandExists` | `commandExists(name string) bool` | Command is in PATH (`exec.LookPath`). |
+| `Arg` | `Arg(name, defaultVal string) string` | `Args[name]` if present AND non-empty, else `defaultVal`. Mirrors `${name:-default}` bash semantics exactly. |
+| `Default` | `Default(fallback, val string) string` | Returns `val` if non-empty, else `fallback`. Same as sprig `default`. |
+| `Cond` | `Cond(celExpr string) (bool, error)` | Evaluate CEL expression against send-time context. |
+| `When` | alias for `Cond` | |
+| `FileExists` | `FileExists(path string) bool` | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`. |
+| `DirExists` | `DirExists(path string) bool` | Directory exists. Calls `statResolved`. |
+| `CommandExists` | `CommandExists(name string) bool` | Command is in PATH (`exec.LookPath`). |
 
 **No `html` escaping.** Use `text/template` (not `html/template`). Prompt bodies are
 plain text / Markdown sent to an AI agent, not rendered in a browser.
@@ -188,7 +188,7 @@ plain text / Markdown sent to an AI agent, not rendered in a browser.
 | Send time (`renderTemplateBody`) | **Fail-closed** | Return error from `resolveAndSubstitute` → `PromptWithMeta` returns error → error broadcast to UI observers, send aborted |
 | Load time (`ParsePromptFile`) | **Fail-fast** | `text/template.New(...).Parse(body)` on every prompt load; return parse error |
 | Save / update time (MCP `mitto_prompt_update`) | **Fail-fast** | Same parse call before persisting |
-| `cond`/`when` literal args (load time) | **Fail-fast** | `CELEvaluator.Compile(litArg)` during AST walk; discard program |
+| `Cond`/`When` literal args (load time) | **Fail-fast** | `CELEvaluator.Compile(litArg)` during AST walk; discard program |
 
 Errors at send time use `bs.notifyObservers(func(o SessionObserver) { o.OnError(msg) })` with a
 descriptive message (e.g., `"template error in prompt 'my-prompt': ..."`).
@@ -225,7 +225,7 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 | `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | |
 | `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | int, not string |
 | `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | bool, not `"true"`/`"false"` string |
-| `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`session.isPeriodicForced`). |
+| `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`Session.IsPeriodicForced`). |
 | `@mitto:available_acp_servers` | `{{ .ACP.AvailableText }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
 | `@mitto:children` | `{{ .Children.AllText }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp], id2"` |
 | `@mitto:mcp_children` | `{{ .Children.MCPText }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only |
@@ -243,20 +243,20 @@ deprecation warning (see `WarnDeprecatedMittoVars`). Prefer the template forms i
 ### 10.1  Timing asymmetry: `Args` is empty at menu time
 
 `enabledWhen` runs at menu time; `Args` is `nil` (no prompt has been dispatched yet). Do NOT
-write `enabledWhen` expressions that branch on `args["BRANCH"]` for menu visibility — those
+write `enabledWhen` expressions that branch on `Args["BRANCH"]` for menu visibility — those
 will always evaluate the empty-map path. Template `{{ .Args.NAME }}` is send-time only.
 
 ### 10.2  CEL single-quote nesting inside template double-quotes
 
 Go template strings use backtick literals or escaped double quotes. CEL string literals use
-double quotes. When embedding a CEL expression inside `{{ if cond "..." }}`:
+double quotes. When embedding a CEL expression inside `{{ if Cond "..." }}`:
 
 ```
 # Wrong — inner double-quotes break the template string:
-{{ if cond "fileExists(".git/config")" }}
+{{ if Cond "FileExists(".git/config")" }}
 
 # Right — escape inner double-quotes:
-{{ if cond "fileExists(\".git/config\")" }}
+{{ if Cond "FileExists(\".git/config\")" }}
 ```
 
 ### 10.3  Literal double-brace escaping
@@ -278,7 +278,7 @@ avoid emitting blank lines:
 ```yaml
 prompt: |
   Header text.
-  {{- if cond "session.isChild" }}
+  {{- if Cond "Session.IsChild" }}
   Parent: {{ .Session.ParentID }}
   {{- end }}
   Footer text.
@@ -305,9 +305,9 @@ text (with un-rendered `{{ ... }}` tokens) is sent to the auxiliary title genera
 correct: title generation reads the prompt template for summarization purposes, not for execution.
 No special handling is required.
 
-### 10.9  `tools.hasPattern` fail-open is menu-time only
+### 10.9  `Tools.HasPattern` fail-open is menu-time only
 
-At menu time, `ToolsContext.Available == false` causes `tools.hasPattern` to return `true`
+At menu time, `ToolsContext.Available == false` causes `Tools.HasPattern` to return `true`
 (fail-open) so tool-gated prompts aren't hidden during MCP tool cache warm-up. At send time
 (template `cond` evaluation), the real tool list is always available (warm cache). No asymmetry
 issue for the `cond` function.

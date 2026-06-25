@@ -53,7 +53,7 @@ description: "Review code for quality"
 group: "Code Quality"
 backgroundColor: "#4a90d9"
 enabled: true
-enabledWhen: "acp.matchesServerType('augment') && tools.hasPattern('filesystem_*')"
+enabledWhen: "ACP.MatchesServerType('augment') && Tools.HasPattern('filesystem_*')"
 prompt: |
   Please review the following code for quality, readability, and potential bugs.
 ```
@@ -150,13 +150,13 @@ Updates replicate the 5-layer REST API merge. Name slugification via `config.Slu
 
 ## Frontend & Builtin Conventions
 
-**Frontend**: Never merge client-side — backend does all merging. Refetch on: file changes, visibility change, 30s interval (session-scoped CEL filters like `session.isChild` trigger refetch on activeSessionId change).
+**Frontend**: Never merge client-side — backend does all merging. Refetch on: file changes, visibility change, 30s interval (session-scoped CEL filters like `Session.IsChild` trigger refetch on activeSessionId change).
 
-**Builtin content**: Prefer **Go template syntax** (`{{ .Session.ID }}`, `{{ if .Session.IsChild }}...{{ end }}`, `{{ if cond "..." }}...{{ end }}`) for new and edited builtin prompt bodies. `@mitto:*` tokens are **deprecated in prompt bodies** (a non-fatal warning is logged at load/save) — EXCEPT for the keep-list tokens (`@mitto:available_acp_servers`, `@mitto:children`, `@mitto:mcp_children`, `@mitto:user_data`, `@mitto:user_data_schema`) which have no template equivalent yet and do not trigger a warning. `@mitto:` stays fully supported in **processors** (not deprecated there). See `docs/devel/prompt-templates.md` for the full engine spec and `docs/config/prompts.md#go-template-syntax-in-prompts` for the user-facing reference and migration table. Cross-session UI: propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`.
+**Builtin content**: Prefer **Go template syntax** (`{{ .Session.ID }}`, `{{ if .Session.IsChild }}...{{ end }}`, `{{ if Cond "..." }}...{{ end }}`) for new and edited builtin prompt bodies. `@mitto:*` tokens are **deprecated in prompt bodies** (a non-fatal warning is logged at load/save) — EXCEPT for the keep-list tokens (`@mitto:available_acp_servers`, `@mitto:children`, `@mitto:mcp_children`, `@mitto:user_data`, `@mitto:user_data_schema`) which have no template equivalent yet and do not trigger a warning. `@mitto:` stays fully supported in **processors** (not deprecated there). See `docs/devel/prompt-templates.md` for the full engine spec and `docs/config/prompts.md#go-template-syntax-in-prompts` for the user-facing reference and migration table. Cross-session UI: propose best plan, confirm via `mitto_ui_options(allow_free_text: true)`.
 
 ## enabledWhen Filtering & Preferred Models
 
-Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `fileExists(".git/config")`, `commandExists("gh")`, `tools.hasPattern("github_*")`.
+Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `FileExists(".git/config")`, `CommandExists("gh")`, `Tools.HasPattern("github_*")`.
 
 ### preferredModels Field
 
@@ -174,4 +174,4 @@ Backend calls `selectPreferredModel()` to pick the best matching active model fr
 
 - `EnabledWhen` has `json:"-"` → settings override of a builtin loses `enabledWhen`. Merge logic must carry forward from lower-priority source.
 - Never round-trip merged prompts via `POST /api/config` — set `prompts: []` explicitly. Backend must filter `req.Prompts` to `Source == PromptSourceSettings` only.
-- Context-adaptive prompts: avoid `commandExists("bd") && dirExists(".beads")` in `enabledWhen` — it hides the prompt exactly when mode 3 (conversation menu, no linked bead) applies.
+- Context-adaptive prompts: avoid `CommandExists("bd") && DirExists(".beads")` in `enabledWhen` — it hides the prompt exactly when mode 3 (conversation menu, no linked bead) applies.

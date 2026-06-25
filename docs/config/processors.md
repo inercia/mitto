@@ -306,7 +306,7 @@ when:
   match: first
 mutate: append
 priority: 90
-enabledWhen: 'acp.tags.exists(t, t == "reasoning")'
+enabledWhen: 'ACP.Tags.exists(t, t == "reasoning")'
 text: |
   ---
   You are running on a premium reasoning model. For tasks that involve
@@ -473,8 +473,8 @@ environment:
   MY_VAR: "value"
 
 # CEL expression for conditional activation (empty = always apply)
-# Same context as prompt enabledWhen: acp.*, session.*, parent.*, children.*, workspace.*, tools.*
-enabledWhen: 'acp.tags.exists(t, t == "reasoning") && tools.hasAllPatterns(["mitto_conversation_*", "jira_*"])'
+# Same context as prompt enabledWhen: ACP.*, Session.*, Parent.*, Children.*, Workspace.*, Tools.*
+enabledWhen: 'ACP.Tags.exists(t, t == "reasoning") && Tools.HasAllPatterns(["mitto_conversation_*", "jira_*"])'
 ```
 
 ### `when:` Block Reference
@@ -558,18 +558,18 @@ expression must evaluate to `true`.
 
 **CEL context** — Same variables and functions as prompt `enabledWhen`:
 
-- `acp.name`, `acp.type`, `acp.tags`, `acp.autoApprove`
-- `acp.matchesServerType("type")`, `acp.matchesServerType(["a", "b"])` — matches ACP server type only, not display name
-- `session.id`, `session.name`, `session.isChild`, `session.isAutoChild`, `session.parentId`, `session.isPeriodic`
-- `parent.exists`, `parent.name`, `parent.acpServer`
-- `children.count`, `children.exists`, `children.mcpCount`, `children.names`, `children.acpServers`
-- `workspace.uuid`, `workspace.folder`, `workspace.name`
-- `tools.available`, `tools.names`
-- `tools.hasPattern("glob_*")`, `tools.hasAllPatterns(["g1", "g2"])`, `tools.hasAnyPattern(["g1", "g2"])`
-- `permissions.canDoIntrospection`, `permissions.canSendPrompt`, `permissions.canPromptUser`, `permissions.canStartConversation`, `permissions.canInteractOtherWorkspaces`, `permissions.autoApprovePermissions`
-- `commandExists("git")` — returns true if the given command is found in the system PATH and is executable
-- `fileExists("Makefile")` — returns true if the path exists and is a file (not directory); relative paths resolved against workspace folder
-- `dirExists(".github/workflows")` — returns true if the path exists and is a directory; relative paths resolved against workspace folder
+- `ACP.Name`, `ACP.Type`, `ACP.Tags`, `ACP.AutoApprove`
+- `ACP.MatchesServerType("type")`, `ACP.MatchesServerType(["a", "b"])` — matches ACP server type only, not display name
+- `Session.ID`, `Session.Name`, `Session.IsChild`, `Session.IsAutoChild`, `Session.ParentID`, `Session.IsPeriodic`
+- `Parent.Exists`, `Parent.Name`, `Parent.ACPServer`
+- `Children.Count`, `Children.Exists`, `Children.MCPCount`, `Children.Names`, `Children.ACPServers`
+- `Workspace.UUID`, `Workspace.Folder`, `Workspace.Name`
+- `Tools.Available`, `Tools.Names`
+- `Tools.HasPattern("glob_*")`, `Tools.HasAllPatterns(["g1", "g2"])`, `Tools.HasAnyPattern(["g1", "g2"])`
+- `Permissions.CanDoIntrospection`, `Permissions.CanSendPrompt`, `Permissions.CanPromptUser`, `Permissions.CanStartConversation`, `Permissions.CanInteractOtherWorkspaces`, `Permissions.AutoApprovePermissions`
+- `CommandExists("git")` — returns true if the given command is found in the system PATH and is executable
+- `FileExists("Makefile")` — returns true if the path exists and is a file (not directory); relative paths resolved against workspace folder
+- `DirExists(".github/workflows")` — returns true if the path exists and is a directory; relative paths resolved against workspace folder
 
 ### Automatic Re-run (`rerun`)
 
@@ -1050,7 +1050,7 @@ args:
 input: none
 output: prepend
 on_error: skip
-enabledWhen: 'workspace.folder.startsWith("/path/to/my-project")'
+enabledWhen: 'Workspace.Folder.startsWith("/path/to/my-project")'
 ```
 
 Alternatively, place the processor in `$workspace/.mitto/processors/` to scope it
