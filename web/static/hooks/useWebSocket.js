@@ -202,9 +202,9 @@ async function checkAuthOrRedirect() {
   // Deduplicate: if an auth check is already in-flight, share that Promise
   // rather than firing a fresh HTTP request for each concurrent caller.
   if (!_authCheckInflight) {
-    _authCheckInflight = fetch(apiUrl("/api/config"), {
-      credentials: "same-origin",
-    })
+    // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
+    // routes 401s through the shared handleUnauthorized → redirectToLogin().
+    _authCheckInflight = authFetch(apiUrl("/api/config"))
       .then((res) => ({ status: res.status, ok: res.ok }))
       .finally(() => {
         _authCheckInflight = null;
@@ -252,9 +252,9 @@ async function checkAuthOrRedirect() {
 async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetch(apiUrl("/api/config"), {
-        credentials: "same-origin",
-      });
+      // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
+      // routes 401s through the shared handleUnauthorized → redirectToLogin().
+      const response = await authFetch(apiUrl("/api/config"));
 
       // Got a response - check if authenticated
       if (response.status === 401) {
