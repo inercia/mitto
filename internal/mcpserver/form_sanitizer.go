@@ -45,6 +45,14 @@ func createFormSanitizer() *bluemonday.Policy {
 	// label: for (associates with input id)
 	p.AllowAttrs("for").OnElements("label")
 
+	// Allow attribute-less <label> to survive. bluemonday drops <label> with no
+	// attributes (unlike <div>/<p>/<strong>, which it keeps by default). Without
+	// this, the recommended option markup — <label><input type="checkbox"> text
+	// </label> with no "for" — has its <label> stripped, collapsing each option to
+	// bare inline input+text so multiple options share a line. Keeping the label
+	// (block-styled in CSS) puts each option on its own row.
+	p.AllowNoAttrs().OnElements("label")
+
 	// input: core form attributes
 	p.AllowAttrs(
 		"type", "name", "value", "placeholder",
@@ -92,6 +100,16 @@ var allowedInputTypes = map[string]bool{
 // inputTypeRegex matches type="..." in input elements.
 var inputTypeRegex = regexp.MustCompile(`(?i)<input\b[^>]*\btype\s*=\s*["']([^"']*)["'][^>]*>`)
 
+// bareOptionRegex matches a checkbox/radio <input> that directly follows inline
+// text (a non-'>' character) rather than a tag boundary. Agents frequently list
+// each option as a bare <input> immediately followed by its label text, without
+// wrapping the pair in a <label> and without a <br> between options. Such options
+// flow inline and share a line. We insert a <br> before these inputs so each
+// option starts on its own row. Inputs that already follow a tag boundary (the
+// captured char is '>' — e.g. <label>, <br>, <p>, <div>, </label>) are left
+// untouched because those cases already break onto their own line.
+var bareOptionRegex = regexp.MustCompile(`(?i)([^>\s])(\s*)(<input\b[^>]*\btype\s*=\s*["'](?:checkbox|radio)["'][^>]*>)`)
+
 // sanitizeFormHTML sanitizes the provided HTML, allowing only form-related elements.
 // Returns an error if the HTML is empty or exceeds the size limit.
 func sanitizeFormHTML(html string) (string, error) {
@@ -130,6 +148,9 @@ func sanitizeFormHTML(html string) (string, error) {
 		}
 		return match
 	})
+
+	// Put each bare checkbox/radio option on its own line. See bareOptionRegex.
+	sanitized = bareOptionRegex.ReplaceAllString(sanitized, "${1}${2}<br>${3}")
 
 	sanitized = strings.TrimSpace(sanitized)
 	if sanitized == "" {

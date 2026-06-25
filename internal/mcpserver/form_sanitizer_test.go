@@ -357,6 +357,41 @@ func TestSanitizeFormHTML_RealWorldDeploymentForm(t *testing.T) {
 	}
 }
 
+func TestSanitizeFormHTML_BreaksBareInlineOptions(t *testing.T) {
+	// Agent emitted two checkbox options as bare <input> + text, with no <label>
+	// wrapper and no <br> between them, so they would flow inline on one line.
+	html := `<label>Include untracked files?</label>` +
+		`<input type="checkbox" name="agents"> Include .agents/ (usually NOT committed)` +
+		`<input type="checkbox" name="script" checked> Include scripts/run.sh (helper)`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// A <br> must be inserted before the second option (which follows inline text)
+	// so it renders on its own line.
+	if !strings.Contains(result, `<br><input type="checkbox" name="script"`) {
+		t.Errorf("expected <br> before the second bare option, got: %s", result)
+	}
+	// Both options must still be present.
+	if !strings.Contains(result, `name="agents"`) || !strings.Contains(result, `name="script"`) {
+		t.Errorf("expected both options preserved, got: %s", result)
+	}
+}
+
+func TestSanitizeFormHTML_DoesNotBreakLabelWrappedOptions(t *testing.T) {
+	// Options correctly wrapped in <label> elements (already block-level) must be
+	// left untouched — no spurious <br> inserted inside or before them.
+	html := `<label><input type="checkbox" name="a"> Option A</label>` +
+		`<label><input type="radio" name="b"> Option B</label>`
+	result, err := sanitizeFormHTML(html)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "<br>") {
+		t.Errorf("expected no <br> inserted for label-wrapped options, got: %s", result)
+	}
+}
+
 func TestSanitizeFormHTML_XSSPayloadsStripped(t *testing.T) {
 	payloads := []struct {
 		name string
