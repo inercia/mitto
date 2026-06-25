@@ -38,6 +38,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/sessions", handler: http.HandlerFunc(s.handleSessions)},
 		apiRoute{pattern: "/api/sessions/running", handler: http.HandlerFunc(s.apiHandlers.HandleRunningSessions)},
 		apiRoute{pattern: "/api/sessions/", handler: http.HandlerFunc(s.handleSessionDetail)},
+		// Specific sub-resource patterns take precedence over the /api/sessions/ subtree.
+		apiRoute{pattern: "/api/sessions/{id}/user-data", handler: http.HandlerFunc(s.handleSessionUserData)},
+		apiRoute{pattern: "/api/sessions/{id}/callback", handler: http.HandlerFunc(s.handleSessionCallbackRoute)},
+		apiRoute{pattern: "/api/sessions/{id}/settings", handler: http.HandlerFunc(s.handleSessionSettings)},
+		apiRoute{pattern: "/api/sessions/{id}/prune", handler: http.HandlerFunc(s.handleSessionPrune)},
+		apiRoute{pattern: "/api/sessions/{id}/changes", handler: http.HandlerFunc(s.handleSessionChanges)},
 	)
 
 	// Workspace endpoints.

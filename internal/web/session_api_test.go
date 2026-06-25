@@ -2204,3 +2204,36 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 		t.Errorf("ungated prompt missing, got %v", names)
 	}
 }
+
+
+// TestSessionSubresourceRoutingPrecedence proves that specific patterns like
+// /api/sessions/{id}/settings win over the /api/sessions/ subtree fallback,
+// and that unmigrated sub-paths (events, periodic, …) still fall through to the
+// subtree handler.
+func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
+	mux := http.NewServeMux()
+	hit := ""
+	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) { hit = "detail" })
+	for _, sub := range []string{"user-data", "callback", "settings", "prune", "changes"} {
+		s := sub
+		mux.HandleFunc("/api/sessions/{id}/"+s, func(w http.ResponseWriter, r *http.Request) { hit = s + ":" + r.PathValue("id") })
+	}
+
+	cases := map[string]string{
+		"/api/sessions/abc123/settings":  "settings:abc123",
+		"/api/sessions/abc123/prune":     "prune:abc123",
+		"/api/sessions/abc123/changes":   "changes:abc123",
+		"/api/sessions/abc123/user-data": "user-data:abc123",
+		"/api/sessions/abc123/callback":  "callback:abc123",
+		"/api/sessions/abc123":           "detail", // base still falls through
+		"/api/sessions/abc123/events":    "detail", // unmigrated subpath still falls through
+	}
+	for path, want := range cases {
+		hit = ""
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+		if hit != want {
+			t.Errorf("path %s routed to %q, want %q", path, hit, want)
+		}
+	}
+}

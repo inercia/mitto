@@ -37,6 +37,50 @@ type SessionListResponse = handlers.SessionListResponse
 
 // handleSessionDetail handles GET, PATCH, DELETE {prefix}/api/sessions/{id}, GET {prefix}/api/sessions/{id}/events,
 // WS {prefix}/api/sessions/{id}/ws, and image operations
+// sessionIDFromPath extracts the {id} path wildcard and validates it. On an
+// invalid ID it writes a 400 and returns ok=false.
+func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	sessionID := r.PathValue("id")
+	if !IsValidSessionID(sessionID) {
+		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
+		return "", false
+	}
+	return sessionID, true
+}
+
+// Thin *Server wrappers for session sub-resources peeled out of handleSessionDetail.
+// Each reads the {id} wildcard via sessionIDFromPath and delegates to the handler package.
+
+func (s *Server) handleSessionUserData(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionUserData(w, r, id)
+	}
+}
+
+func (s *Server) handleSessionCallbackRoute(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionCallback(w, r, id)
+	}
+}
+
+func (s *Server) handleSessionSettings(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionSettings(w, r, id)
+	}
+}
+
+func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionPrune(w, r, id)
+	}
+}
+
+func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionChanges(w, r, id)
+	}
+}
+
 func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// Extract session ID from path: {prefix}/api/sessions/{id} or {prefix}/api/sessions/{id}/events etc.
 	// First strip the API prefix, then strip /api/sessions/
@@ -62,12 +106,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isImagesRequest := len(parts) > 1 && parts[1] == "images"
 	isFilesRequest := len(parts) > 1 && parts[1] == "files"
 	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
-	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
 	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
-	isCallbackRequest := len(parts) > 1 && parts[1] == "callback"
-	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
-	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
-	isChangesRequest := len(parts) > 1 && parts[1] == "changes"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -108,12 +147,6 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle user data operations
-	if isUserDataRequest {
-		s.apiHandlers.HandleSessionUserData(w, r, sessionID)
-		return
-	}
-
 	// Handle periodic prompt operations
 	if isPeriodicRequest {
 		// Check for sub-paths like /periodic/run-now
@@ -122,30 +155,6 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			periodicSubPath = parts[2]
 		}
 		s.apiHandlers.HandleSessionPeriodic(w, r, sessionID, periodicSubPath)
-		return
-	}
-
-	// Handle callback token operations
-	if isCallbackRequest {
-		s.apiHandlers.HandleSessionCallback(w, r, sessionID)
-		return
-	}
-
-	// Handle advanced settings operations
-	if isSettingsRequest {
-		s.apiHandlers.HandleSessionSettings(w, r, sessionID)
-		return
-	}
-
-	// Handle prune operations
-	if isPruneRequest {
-		s.apiHandlers.HandleSessionPrune(w, r, sessionID)
-		return
-	}
-
-	// Handle git changes operations
-	if isChangesRequest {
-		s.apiHandlers.HandleSessionChanges(w, r, sessionID)
 		return
 	}
 
