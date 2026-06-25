@@ -2,6 +2,7 @@ package acpproc
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"reflect"
 	"sync"
@@ -985,6 +986,106 @@ func TestProcessInitializeAttemptTimeoutBound(t *testing.T) {
 	}
 	t.Logf("processInitializeAttemptTimeout=%v, maxRetries=%d, maxBackoff=%v → total max=%v (pre-fix was %v)",
 		processInitializeAttemptTimeout, maxProcessStartRetries, maxBackoffTotal, totalMax, preFix)
+}
+
+// TestSharedACPProcess_SaturationStateMachine verifies the saturation state machine
+// (mitto-13ck.2): initial state is unsaturated, threshold trips it, success clears it,
+// and the cooldown self-clears when it elapses.
+func TestSharedACPProcess_SaturationStateMachine(t *testing.T) {
+	p := &SharedACPProcess{}
+
+	// Initially not saturated.
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false initially")
+	}
+
+	// Trip saturation by reaching the threshold.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	if !p.isSaturated() {
+		t.Fatal("expected isSaturated()=true after threshold timeouts")
+	}
+
+	// A successful RPC clears saturation.
+	p.recordRPCSuccess()
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false after recordRPCSuccess")
+	}
+	if p.consecutiveRPCTimeouts != 0 {
+		t.Errorf("expected consecutiveRPCTimeouts=0 after success, got %d", p.consecutiveRPCTimeouts)
+	}
+
+	// Cooldown self-clear: drive saturated again then backdate the timer.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	p.saturatedUntil = time.Now().Add(-time.Second) // force expiry
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false after cooldown elapsed")
+	}
+	if p.consecutiveRPCTimeouts != 0 {
+		t.Errorf("expected consecutiveRPCTimeouts reset to 0 on cooldown expiry, got %d", p.consecutiveRPCTimeouts)
+	}
+}
+
+// TestNewSession_SaturatedFailsFast is a regression test for mitto-13ck.2.
+// When the shared process is flagged saturated, NewSession must return in <500ms
+// with a context.DeadlineExceeded-wrapped error instead of draining the full retry budget.
+func TestNewSession_SaturatedFailsFast(t *testing.T) {
+	p := &SharedACPProcess{
+		conn: new(acp.ClientSideConnection),
+		// processDone left nil = process considered alive; saturation must fire regardless.
+	}
+
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+
+	start := time.Now()
+	_, err := p.NewSession(context.Background(), ".", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("NewSession must return an error when saturated")
+	}
+	const maxElapsed = 500 * time.Millisecond
+	if elapsed > maxElapsed {
+		t.Errorf("NewSession took %v on saturated process; want < %v (fail-fast not working)", elapsed, maxElapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected errors.Is(err, context.DeadlineExceeded)=true, got: %v", err)
+	}
+}
+
+// TestLoadSession_SaturatedFailsFast is a regression test for mitto-13ck.2.
+// When the shared process is flagged saturated, LoadSession must return in <500ms
+// with a context.DeadlineExceeded-wrapped error. The saturation guard fires before
+// the caps check so caps can be left nil.
+func TestLoadSession_SaturatedFailsFast(t *testing.T) {
+	p := &SharedACPProcess{
+		conn: new(acp.ClientSideConnection),
+		// caps left nil — saturation guard fires before caps check.
+	}
+
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+
+	start := time.Now()
+	_, err := p.LoadSession(context.Background(), "acp-session-id", ".", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("LoadSession must return an error when saturated")
+	}
+	const maxElapsed = 500 * time.Millisecond
+	if elapsed > maxElapsed {
+		t.Errorf("LoadSession took %v on saturated process; want < %v (fail-fast not working)", elapsed, maxElapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected errors.Is(err, context.DeadlineExceeded)=true, got: %v", err)
+	}
 }
 
 // TestAuxStartupJitter verifies the de-stagger jitter helper (mitto-xicp): values are

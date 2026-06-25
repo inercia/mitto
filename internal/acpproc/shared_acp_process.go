@@ -103,6 +103,18 @@ const (
 	// Do NOT increase toward 60 s — that defeats the purpose. (mitto-13ck.2)
 	processInitializeAttemptTimeout = 25 * time.Second
 
+	// sessionSaturationTimeoutThreshold is the number of consecutive NewSession/
+	// LoadSession RPC timeouts after which the shared process is treated as
+	// saturated/hung (mitto-13ck.2). Subsequent start/resume RPCs then fail fast
+	// with a clear deadline-classified error instead of each independently draining
+	// the full retry budget on an unresponsive process. A single successful RPC
+	// resets the counter.
+	sessionSaturationTimeoutThreshold = 3
+	// sessionSaturationCooldown is how long the saturated flag holds before a probe
+	// RPC is allowed through again. Kept short so a recovered process resumes serving
+	// quickly; a probe failure re-trips the flag.
+	sessionSaturationCooldown = 30 * time.Second
+
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
 	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
@@ -194,6 +206,15 @@ type SharedACPProcess struct {
 	// callers block (respecting their ctx) until the slot is released.
 	// This semaphore guards ONLY set_model — it must never be held during prompts.
 	setModelSem chan struct{}
+
+	// Saturation tracking (mitto-13ck.2): consecutive NewSession/LoadSession RPC
+	// timeouts against this shared process. After sessionSaturationTimeoutThreshold
+	// consecutive timeouts the process is flagged saturated until saturatedUntil,
+	// causing new start/resume RPCs to fail fast. Cleared on the next successful RPC
+	// or when the cooldown elapses. Guarded by saturationMu.
+	saturationMu           sync.Mutex
+	consecutiveRPCTimeouts int
+	saturatedUntil         time.Time
 
 	// Restart tracking
 	restartMu    sync.Mutex
@@ -701,6 +722,44 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	return "", nil
 }
 
+// recordRPCTimeout records a NewSession/LoadSession RPC timeout. After
+// sessionSaturationTimeoutThreshold consecutive timeouts, the process is flagged
+// saturated for sessionSaturationCooldown (mitto-13ck.2).
+func (p *SharedACPProcess) recordRPCTimeout() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	p.consecutiveRPCTimeouts++
+	if p.consecutiveRPCTimeouts >= sessionSaturationTimeoutThreshold {
+		p.saturatedUntil = time.Now().Add(sessionSaturationCooldown)
+	}
+}
+
+// recordRPCSuccess clears saturation tracking after a successful NewSession/
+// LoadSession RPC (mitto-13ck.2).
+func (p *SharedACPProcess) recordRPCSuccess() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	p.consecutiveRPCTimeouts = 0
+	p.saturatedUntil = time.Time{}
+}
+
+// isSaturated reports whether the shared process is currently flagged saturated.
+// When the cooldown has elapsed it self-clears and returns false so a single
+// probe RPC can re-evaluate the process's health (mitto-13ck.2).
+func (p *SharedACPProcess) isSaturated() bool {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	if p.saturatedUntil.IsZero() {
+		return false
+	}
+	if time.Now().After(p.saturatedUntil) {
+		p.saturatedUntil = time.Time{}
+		p.consecutiveRPCTimeouts = 0
+		return false
+	}
+	return true
+}
+
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
@@ -726,6 +785,15 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			return nil, fmt.Errorf("shared ACP process has exited")
 		default:
 		}
+	}
+
+	// Saturation fail-fast (mitto-13ck.2): if recent NewSession/LoadSession RPCs
+	// against this shared process have repeatedly timed out, the process is hung or
+	// overloaded. Fail fast with a clear deadline-classified error instead of
+	// draining the full retry budget on a process that is not responding — which
+	// previously surfaced as a user-visible "context deadline exceeded".
+	if p.isSaturated() {
+		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
 	}
 
 	if cwd == "" {
@@ -772,6 +840,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		attemptCancel()
 
 		if err == nil {
+			p.recordRPCSuccess()
 			handle := &conversation.SessionHandle{
 				SessionID: string(sessResp.SessionId),
 				Process:   p,
@@ -796,6 +865,9 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		}
 
 		lastErr = err
+		if errors.Is(err, context.DeadlineExceeded) {
+			p.recordRPCTimeout()
+		}
 		if p.logger != nil {
 			p.logger.Warn("SharedACPProcess.NewSession failed",
 				"attempt", attempt,
@@ -840,6 +912,12 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		}
 	}
 
+	// Saturation fail-fast (mitto-13ck.2): see NewSession. A hung/overloaded shared
+	// process makes session/load hang its full deadline; fail fast instead.
+	if p.isSaturated() {
+		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+	}
+
 	if caps == nil || !caps.LoadSession {
 		return nil, fmt.Errorf("agent does not support session loading")
 	}
@@ -863,6 +941,9 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	rpcDuration := time.Since(rpcStart)
 
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			p.recordRPCTimeout()
+		}
 		if p.logger != nil {
 			p.logger.Info("SharedACPProcess.LoadSession failed",
 				"acp_session_id", acpSessionID,
@@ -874,6 +955,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		return nil, fmt.Errorf("failed to load session: %w", err)
 	}
 
+	p.recordRPCSuccess()
 	handle := &conversation.SessionHandle{
 		SessionID:    acpSessionID,
 		Capabilities: *caps,
