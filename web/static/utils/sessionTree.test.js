@@ -166,22 +166,27 @@ describe('sessionTree', () => {
       const allKnownSessionIds = new Set(['root-1', 'orphan-1', 'archived-parent']);
 
       const warnCalls = [];
+      const debugCalls = [];
       const origWarn = console.warn;
+      const origDebug = console.debug;
       console.warn = (...args) => warnCalls.push(args);
+      console.debug = (...args) => debugCalls.push(args);
       try {
         const { orphans } = buildSessionTree(sessions, allKnownSessionIds);
 
         expect(orphans).toHaveLength(1);
         expect(orphans[0]._isOrphan).toBe(true);
         expect(orphans[0]._parentInOtherTab).toBe(true);
-        // Should NOT have warned (parent exists elsewhere)
+        // Should NOT have warned or debug-logged (parent exists elsewhere)
         expect(warnCalls).toHaveLength(0);
+        expect(debugCalls).toHaveLength(0);
       } finally {
         console.warn = origWarn;
+        console.debug = origDebug;
       }
     });
 
-    test('warns when parent is truly missing (not in allKnownSessionIds)', () => {
+    test('logs DEBUG when parent is truly missing (not in allKnownSessionIds)', () => {
       const sessions = [
         { session_id: 'root-1', parent_session_id: null },
         { session_id: 'orphan-1', parent_session_id: 'deleted-parent' },
@@ -190,21 +195,26 @@ describe('sessionTree', () => {
       const allKnownSessionIds = new Set(['root-1', 'orphan-1']);
 
       const warnCalls = [];
+      const debugCalls = [];
       const origWarn = console.warn;
+      const origDebug = console.debug;
       console.warn = (...args) => warnCalls.push(args);
+      console.debug = (...args) => debugCalls.push(args);
       try {
         const { orphans } = buildSessionTree(sessions, allKnownSessionIds);
 
         expect(orphans).toHaveLength(1);
         expect(orphans[0]._isOrphan).toBe(true);
         expect(orphans[0]._parentInOtherTab).toBe(false);
-        expect(warnCalls).toHaveLength(1);
-        expect(warnCalls[0]).toEqual([
+        expect(warnCalls).toHaveLength(0);
+        expect(debugCalls).toHaveLength(1);
+        expect(debugCalls[0]).toEqual([
           'buildSessionTree: Found orphaned children for missing parent:',
           'deleted-parent'
         ]);
       } finally {
         console.warn = origWarn;
+        console.debug = origDebug;
       }
     });
 
@@ -213,9 +223,9 @@ describe('sessionTree', () => {
         { session_id: 'root-1', parent_session_id: null },
         { session_id: 'orphan-1', parent_session_id: 'missing-parent' },
       ];
-      // No allKnownSessionIds passed — should still work (warns)
-      const origWarn = console.warn;
-      console.warn = () => {};
+      // No allKnownSessionIds passed — should still work (debug logs)
+      const origDebug = console.debug;
+      console.debug = () => {};
       try {
         const { orphans } = buildSessionTree(sessions);
 
@@ -223,29 +233,29 @@ describe('sessionTree', () => {
         expect(orphans[0]._isOrphan).toBe(true);
         expect(orphans[0]._parentInOtherTab).toBe(false);
       } finally {
-        console.warn = origWarn;
+        console.debug = origDebug;
       }
     });
 
-    test('deduplicates warnings for the same missing parent across calls', () => {
+    test('deduplicates DEBUG logs for the same missing parent across calls', () => {
       const sessions = [
         { session_id: 'root-1', parent_session_id: null },
         { session_id: 'orphan-1', parent_session_id: 'deleted-parent' },
       ];
       const allKnownSessionIds = new Set(['root-1', 'orphan-1']);
 
-      const warnCalls = [];
-      const origWarn = console.warn;
-      console.warn = (...args) => warnCalls.push(args);
+      const debugCalls = [];
+      const origDebug = console.debug;
+      console.debug = (...args) => debugCalls.push(args);
       try {
         // Call buildSessionTree twice with the same missing parent
         buildSessionTree(sessions, allKnownSessionIds);
         buildSessionTree(sessions, allKnownSessionIds);
 
-        // Should only have warned once (deduplication)
-        expect(warnCalls).toHaveLength(1);
+        // Should only have debug-logged once (deduplication)
+        expect(debugCalls).toHaveLength(1);
       } finally {
-        console.warn = origWarn;
+        console.debug = origDebug;
       }
     });
   });

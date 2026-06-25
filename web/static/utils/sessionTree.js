@@ -5,8 +5,8 @@
  * Handles parent-child relationships created via mitto_conversation_new MCP tool.
  */
 
-// Deduplicate orphan warnings across repeated buildSessionTree calls.
-// Only warns once per missing parent per page load.
+// Deduplicate orphan debug logs across repeated buildSessionTree calls.
+// Only logs once per missing parent per page load.
 const _warnedOrphanParents = new Set();
 
 // Exported for testing only — resets the orphan warning deduplication set
@@ -64,8 +64,8 @@ export function buildSessionTree(sessions, allKnownSessionIds = null) {
       const parentExistsElsewhere = allKnownSessionIds ? allKnownSessionIds.has(parentId) : false;
 
       if (!parentExistsElsewhere && !_warnedOrphanParents.has(parentId)) {
-        // Parent is truly missing — warn once per parent per page load
-        console.warn('buildSessionTree: Found orphaned children for missing parent:', parentId);
+        // log once per parent per page load (DEBUG: orphans are hoisted to root; dangling parent refs are expected after parent delete/archive)
+        console.debug('buildSessionTree: Found orphaned children for missing parent:', parentId);
         _warnedOrphanParents.add(parentId);
       }
 
