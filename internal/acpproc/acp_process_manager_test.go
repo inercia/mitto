@@ -1088,6 +1088,89 @@ func TestLoadSession_SaturatedFailsFast(t *testing.T) {
 	}
 }
 
+// TestShouldFailFastCreateAttempt verifies the pure decision helper (mitto-13ck.2).
+func TestShouldFailFastCreateAttempt(t *testing.T) {
+	bigBudget := sessionCreateAttemptTimeout * 2
+	smallBudget := sessionCreateAttemptTimeout / 2
+
+	cases := []struct {
+		name        string
+		attempt     int
+		saturated   bool
+		hasDeadline bool
+		remaining   time.Duration
+		wantBail    bool
+	}{
+		{"attempt=1 always proceeds even if saturated", 1, true, true, smallBudget, false},
+		{"attempt=1 always proceeds even if low budget", 1, false, true, smallBudget, false},
+		{"attempt=2 saturated -> bail", 2, true, false, 0, true},
+		{"attempt=2 not saturated no deadline -> proceed", 2, false, false, 0, false},
+		{"attempt=2 not saturated remaining < timeout -> bail", 2, false, true, smallBudget, true},
+		{"attempt=2 not saturated remaining >= timeout -> proceed", 2, false, true, bigBudget, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bail, reason := shouldFailFastCreateAttempt(tc.attempt, tc.saturated, tc.hasDeadline, tc.remaining)
+			if bail != tc.wantBail {
+				t.Errorf("bail=%v, want %v (reason=%q)", bail, tc.wantBail, reason)
+			}
+			if bail && reason == "" {
+				t.Error("reason must be non-empty when bail=true")
+			}
+			if !bail && reason != "" {
+				t.Errorf("reason must be empty when bail=false, got %q", reason)
+			}
+		})
+	}
+}
+
+// TestLoadSession_ExpiredContextNoSaturation verifies that LoadSession's entry guard
+// (mitto-13ck.2) returns fast without incrementing the saturation counter when the
+// caller's context is already cancelled on entry.
+func TestLoadSession_ExpiredContextNoSaturation(t *testing.T) {
+	// Build a minimal SharedACPProcess sufficient to reach the entry guard:
+	// conn non-nil, processDone nil (alive), caps nil — saturation guard fires
+	// before caps check, and entry guard fires before the RPC.
+	p := &SharedACPProcess{
+		conn: new(acp.ClientSideConnection),
+	}
+
+	// Verify baseline: counter starts at 0.
+	p.saturationMu.Lock()
+	before := p.consecutiveRPCTimeouts
+	p.saturationMu.Unlock()
+	if before != 0 {
+		t.Fatalf("expected consecutiveRPCTimeouts=0 initially, got %d", before)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	start := time.Now()
+	_, err := p.LoadSession(ctx, "acp-session-id", ".", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("LoadSession must return an error for cancelled context")
+	}
+	const maxElapsed = 500 * time.Millisecond
+	if elapsed > maxElapsed {
+		t.Errorf("LoadSession took %v; want < %v", elapsed, maxElapsed)
+	}
+
+	// Saturation counter must NOT have incremented.
+	p.saturationMu.Lock()
+	after := p.consecutiveRPCTimeouts
+	p.saturationMu.Unlock()
+	if after != before {
+		t.Errorf("consecutiveRPCTimeouts changed from %d to %d; expired-context must not increment it", before, after)
+	}
+	if p.isSaturated() {
+		t.Error("process must not be flagged saturated after expired-context entry guard")
+	}
+}
+
 // TestAuxStartupJitter verifies the de-stagger jitter helper (mitto-xicp): values are
 // always in [0, max) for positive max, and 0 for non-positive max.
 func TestAuxStartupJitter(t *testing.T) {

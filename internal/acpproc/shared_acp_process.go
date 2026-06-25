@@ -743,6 +743,25 @@ func (p *SharedACPProcess) recordRPCSuccess() {
 	p.saturatedUntil = time.Time{}
 }
 
+// shouldFailFastCreateAttempt decides whether a NewSession retry attempt should
+// bail early instead of consuming another full per-attempt budget. The first
+// attempt always proceeds (the first victim pays the budget); subsequent
+// attempts bail if the shared process has become saturated mid-flight, or if the
+// caller's remaining deadline can no longer fund a full per-attempt budget.
+// Returns a non-empty reason when the attempt should fail fast.
+func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, remaining time.Duration) (bail bool, reason string) {
+	if attempt <= 1 {
+		return false, ""
+	}
+	if saturated {
+		return true, "shared ACP process became saturated mid-flight"
+	}
+	if hasDeadline && remaining < sessionCreateAttemptTimeout {
+		return true, "insufficient remaining budget for another attempt"
+	}
+	return false, ""
+}
+
 // isSaturated reports whether the shared process is currently flagged saturated.
 // When the cooldown has elapsed it self-clears and returns false so a single
 // probe RPC can re-evaluate the process's health (mitto-13ck.2).
@@ -809,6 +828,22 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		// Honour caller cancellation before each attempt.
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, ctx.Err())
+		}
+
+		// Mid-flight fail-fast (mitto-13ck.2): once a sibling caller has tripped the
+		// saturation flag, bail at the next retry boundary instead of draining another
+		// full per-attempt budget on a process that is not responding. Also bail if the
+		// caller's remaining deadline can no longer fund a full attempt.
+		{
+			hasDeadline := false
+			var remaining time.Duration
+			if dl, ok := ctx.Deadline(); ok {
+				hasDeadline = true
+				remaining = time.Until(dl)
+			}
+			if bail, reason := shouldFailFastCreateAttempt(attempt, p.isSaturated(), hasDeadline, remaining); bail {
+				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w", reason, attempt-1, context.DeadlineExceeded)
+			}
 		}
 
 		// Jittered backoff between retries (skip before first attempt). Mirrors set_model
@@ -924,6 +959,18 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 
 	if cwd == "" {
 		cwd = "."
+	}
+
+	// Entry guard (mitto-13ck.2): if the caller's context is already done on entry,
+	// fail fast with the real cause WITHOUT recording an RPC timeout. An expired
+	// caller budget is not evidence the shared process is hung — recording it would
+	// inflate the saturation counter with a false signal.
+	if err := ctx.Err(); err != nil {
+		if p.logger != nil {
+			p.logger.Info("SharedACPProcess.LoadSession: context already done on entry; failing fast",
+				"acp_session_id", acpSessionID, "error", err)
+		}
+		return nil, fmt.Errorf("session/load: context already done on entry: %w", err)
 	}
 
 	ctxRemainingMs := int64(-1)
