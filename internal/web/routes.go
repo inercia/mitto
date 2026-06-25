@@ -37,8 +37,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	routes = append(routes,
 		apiRoute{pattern: "/api/sessions", handler: http.HandlerFunc(s.handleSessions)},
 		apiRoute{pattern: "/api/sessions/running", handler: http.HandlerFunc(s.apiHandlers.HandleRunningSessions)},
-		apiRoute{pattern: "/api/sessions/", handler: http.HandlerFunc(s.handleSessionDetail)},
-		// Specific sub-resource patterns take precedence over the /api/sessions/ subtree.
+		apiRoute{method: "GET", pattern: "/api/sessions/{id}", handler: http.HandlerFunc(s.handleSessionGet)},
+		apiRoute{method: "PATCH", pattern: "/api/sessions/{id}", handler: http.HandlerFunc(s.handleSessionUpdate)},
+		apiRoute{method: "DELETE", pattern: "/api/sessions/{id}", handler: http.HandlerFunc(s.handleSessionDelete)},
+		apiRoute{method: "GET", pattern: "/api/sessions/{id}/events", handler: http.HandlerFunc(s.handleSessionEvents)},
+		apiRoute{pattern: "/api/sessions/{id}/ws", handler: http.HandlerFunc(s.handleSessionWS)},
+		// Specific sub-resource patterns registered alongside base /api/sessions/{id}.
 		apiRoute{pattern: "/api/sessions/{id}/user-data", handler: http.HandlerFunc(s.handleSessionUserData)},
 		apiRoute{pattern: "/api/sessions/{id}/callback", handler: http.HandlerFunc(s.handleSessionCallbackRoute)},
 		apiRoute{pattern: "/api/sessions/{id}/settings", handler: http.HandlerFunc(s.handleSessionSettings)},

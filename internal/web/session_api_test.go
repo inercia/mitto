@@ -151,6 +151,17 @@ func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+// newSessionDetailMux registers the migrated base session routes onto a fresh
+// ServeMux so tests exercise real Go 1.22 method+pattern routing (incl. 405).
+func newSessionDetailMux(s *Server) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sessions/{id}", s.handleSessionGet)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleSessionUpdate)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleSessionDelete)
+	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleSessionEvents)
+	return mux
+}
+
 func TestHandleSessionDetail_MethodNotAllowed(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -169,7 +180,7 @@ func TestHandleSessionDetail_MethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/20260131-120000-abcd1234", nil)
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
@@ -567,7 +578,7 @@ func TestHandleSessionDetail_GET(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/20260131-120000-abcd1234", nil)
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
@@ -606,7 +617,7 @@ func TestHandleSessionDetail_DELETE(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/20260131-120000-de123456", nil)
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
@@ -918,7 +929,7 @@ func TestHandleSessionDetail_PATCH(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
@@ -2206,14 +2217,17 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 }
 
 
-// TestSessionSubresourceRoutingPrecedence proves that specific patterns like
-// /api/sessions/{id}/settings win over the /api/sessions/ subtree fallback,
-// and that unmigrated sub-paths (events, periodic, …) still fall through to the
-// subtree handler.
+// TestSessionSubresourceRoutingPrecedence proves that specific sub-resource
+// patterns coexist correctly with the base /api/sessions/{id} route: each
+// registered sub-path wins over the base, and the base/events routes respond
+// independently. No subtree fallback exists in the final routing model.
 func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 	mux := http.NewServeMux()
 	hit := ""
-	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) { hit = "detail" })
+	// Base routes (increment 5 — method-qualified, no subtree fallback).
+	mux.HandleFunc("GET /api/sessions/{id}", func(w http.ResponseWriter, r *http.Request) { hit = "base:" + r.PathValue("id") })
+	mux.HandleFunc("GET /api/sessions/{id}/events", func(w http.ResponseWriter, r *http.Request) { hit = "events:" + r.PathValue("id") })
+	// Leaf sub-resources (increments 3+4).
 	for _, sub := range []string{"user-data", "callback", "settings", "prune", "changes"} {
 		s := sub
 		mux.HandleFunc("/api/sessions/{id}/"+s, func(w http.ResponseWriter, r *http.Request) { hit = s + ":" + r.PathValue("id") })
@@ -2252,17 +2266,17 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 		"/api/sessions/abc123/user-data": "user-data:abc123",
 		"/api/sessions/abc123/callback":  "callback:abc123",
 		// Sub-resources with optional trailing sub-ID (increment 4).
-		"/api/sessions/abc123/images":           "images:abc123:",
-		"/api/sessions/abc123/images/img7":       "images:abc123:img7",
-		"/api/sessions/abc123/files":             "files:abc123:",
-		"/api/sessions/abc123/files/f9":          "files:abc123:f9",
-		"/api/sessions/abc123/queue":             "queue:abc123:",
-		"/api/sessions/abc123/queue/m42":         "queue:abc123:m42",
-		"/api/sessions/abc123/periodic":          "periodic:abc123:",
-		"/api/sessions/abc123/periodic/run-now":  "periodic:abc123:run-now",
-		// Unmigrated paths still fall through to detail.
-		"/api/sessions/abc123":        "detail",
-		"/api/sessions/abc123/events": "detail",
+		"/api/sessions/abc123/images":          "images:abc123:",
+		"/api/sessions/abc123/images/img7":      "images:abc123:img7",
+		"/api/sessions/abc123/files":            "files:abc123:",
+		"/api/sessions/abc123/files/f9":         "files:abc123:f9",
+		"/api/sessions/abc123/queue":            "queue:abc123:",
+		"/api/sessions/abc123/queue/m42":        "queue:abc123:m42",
+		"/api/sessions/abc123/periodic":         "periodic:abc123:",
+		"/api/sessions/abc123/periodic/run-now": "periodic:abc123:run-now",
+		// Base and events routes (increment 5 — explicit, no subtree).
+		"/api/sessions/abc123":        "base:abc123",
+		"/api/sessions/abc123/events": "events:abc123",
 	}
 	for path, want := range cases {
 		hit = ""

@@ -139,17 +139,12 @@ func hasRenderableConversationEvent(events []session.Event) bool {
 // handleSessionWS handles WebSocket connections for a specific session.
 // Route: {prefix}/api/sessions/{id}/ws
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from URL path: {prefix}/api/sessions/{id}/ws
-	// First strip the API prefix, then strip /api/sessions/
-	path := r.URL.Path
-	path = strings.TrimPrefix(path, s.apiPrefix)
-	path = strings.TrimPrefix(path, "/api/sessions/")
-	parts := strings.Split(path, "/")
-	if len(parts) < 2 || parts[0] == "" || parts[1] != "ws" {
-		http.Error(w, "Invalid session WebSocket path", http.StatusBadRequest)
+	// Session ID comes from the {id} path wildcard (route: /api/sessions/{id}/ws).
+	sessionID := r.PathValue("id")
+	if !IsValidSessionID(sessionID) {
+		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
 		return
 	}
-	sessionID := parts[0]
 	clientIP := middleware.GetClientIPWithProxyCheck(r)
 
 	// Use secure upgrader with compression for external connections

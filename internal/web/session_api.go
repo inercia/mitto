@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
-	"strings"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
@@ -35,8 +34,6 @@ var resolveOwningWorkspace = handlers.ResolveOwningWorkspace
 // references in the web package (e.g. tests) compiling.
 type SessionListResponse = handlers.SessionListResponse
 
-// handleSessionDetail handles GET, PATCH, DELETE {prefix}/api/sessions/{id}, GET {prefix}/api/sessions/{id}/events,
-// WS {prefix}/api/sessions/{id}/ws, and image operations
 // sessionIDFromPath extracts the {id} path wildcard and validates it. On an
 // invalid ID it writes a 400 and returns ok=false.
 func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -48,7 +45,7 @@ func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (stri
 	return sessionID, true
 }
 
-// Thin *Server wrappers for session sub-resources peeled out of handleSessionDetail.
+// Thin *Server wrappers for session sub-resources.
 // Each reads the {id} wildcard via sessionIDFromPath and delegates to the handler package.
 
 func (s *Server) handleSessionUserData(w http.ResponseWriter, r *http.Request) {
@@ -109,44 +106,27 @@ func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: {prefix}/api/sessions/{id} or {prefix}/api/sessions/{id}/events etc.
-	// First strip the API prefix, then strip /api/sessions/
-	path := r.URL.Path
-	path = strings.TrimPrefix(path, s.apiPrefix)
-	path = strings.TrimPrefix(path, "/api/sessions/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "Session ID required", http.StatusBadRequest)
-		return
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleGetSession(w, r, id, false)
 	}
+}
 
-	sessionID := parts[0]
-
-	// Validate session ID format to prevent path traversal
-	if !IsValidSessionID(sessionID) {
-		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
-		return
+func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleGetSession(w, r, id, true)
 	}
+}
 
-	isEventsRequest := len(parts) > 1 && parts[1] == "events"
-	isWSRequest := len(parts) > 1 && parts[1] == "ws"
-
-	// Handle WebSocket upgrade for per-session connections
-	if isWSRequest {
-		s.handleSessionWS(w, r)
-		return
+func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleUpdateSession(w, r, id)
 	}
+}
 
-	switch r.Method {
-	case http.MethodGet:
-		s.apiHandlers.HandleGetSession(w, r, sessionID, isEventsRequest)
-	case http.MethodPatch:
-		s.apiHandlers.HandleUpdateSession(w, r, sessionID)
-	case http.MethodDelete:
-		s.apiHandlers.HandleDeleteSession(w, sessionID)
-	default:
-		methodNotAllowed(w)
+func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleDeleteSession(w, id)
 	}
 }
 
