@@ -4,11 +4,39 @@ menus: prompts
 description: Diagnose and fix CI pipeline failures
 group: CI
 backgroundColor: '#B2DFDB'
+tags:
+- periodic
+- ci
 prompt: |
   Check CI status and read failure logs before making changes. Do not speculate —
   read the logs and relevant source files.
 
   Diagnose and fix CI pipeline failures for the current branch.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Scheduled mode** — a periodic run; the user is not watching.
+  - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
+  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
+    interactive/blocking UI tool. They will stall an unattended run.
+  - Act **autonomously**: diagnose and fix CI-failing issues, verifying locally
+    (tests, build, lint) since you will **not** push.
+  - When local verification passes (nothing left to fix), notify success and
+    **stop iterating** so the loop doesn't spin:
+    `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`.
+  - If a failure is ambiguous or needs a human decision (flaky test, infra outage,
+    CI-config/dependency change), do not guess — notify and stop.
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
+  - You may use `mitto_ui_options`, `mitto_ui_form`, and other interactive tools in
+    addition to `mitto_ui_notify`. Ask before risky changes (CI config, dependencies).
+  {{- end }}
 
   Only fix CI-failing issues. Keep changes minimal.
 
@@ -47,6 +75,11 @@ prompt: |
   ```
 
   If passing, report success and stop.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: also disable your own periodic so the loop stops
+  (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`),
+  then send a `mitto_ui_notify` success.
+  {{- end }}
 
   ### 4. Diagnose
 
@@ -71,6 +104,12 @@ prompt: |
   When there are **3+ independent CI failures** in different areas (e.g., test failures in separate packages, a lint error AND a build error AND a test failure), delegate fixes to parallel child conversations.
 
   **Do NOT delegate** for: a single failure, cascading failures from one root cause, or simple lint/format fixes.
+
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: before spawning, check `{{ .Children.AllText }}` and reuse an
+  existing child for the same failure instead of duplicating. Spawn at most **3 per
+  run**. **Spawned conversations must never be periodic** — they are one-off tasks.
+  {{- end }}
 
   **Session context for delegation:**
 
@@ -106,13 +145,31 @@ prompt: |
   ```
 
   ### 7. Commit and Push
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  Suggest user commit and push the changes.
+  In scheduled mode: **commit** your fixes, but do **NOT push** — pushing is left to
+  the user. Stage only the files you changed, explicitly by path (`git add <file> ...`);
+  never `git add -A`/`.` or `git commit -a`. Skip the commit if nothing changed this
+  run. Then `mitto_ui_notify` that fixes were committed and ask the user to push to
+  re-run CI.
+  {{- else }}
+
+  Suggest the user commit and push the changes.
+  {{- end }}
 
   ## Guidelines
 
   - Check CI status before attempting fixes
-  - Get user approval before modifying CI config or dependencies
+  - Modifying CI config or dependencies: in interactive mode get user approval; in
+    scheduled mode do **not** make these changes — notify and stop instead
   - Report flaky tests as flaky rather than retrying blindly
   - Note infrastructure-related failures explicitly
   - Group related fixes in a single commit
+  - **Interaction mode** (see "Interaction Mode" section above):
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+    - **Scheduled periodic**: notify-only; fix + commit (never push); verify locally;
+      stop iterating when green; spawned children must never be periodic.
+  {{- else }}
+    - **Force-triggered or non-periodic**: you may use interactive UI; ask before
+      risky changes; suggest commit + push at the end.
+  {{- end }}
