@@ -774,7 +774,8 @@
             return;
           }
 
-          const response = await fetch(fileUrl, { cache: 'no-store' });
+          const response = await fetch(fileUrl, { credentials: "include", cache: 'no-store' });
+          if (response.status === 401) { redirectToLogin(); return; }
           if (!response.ok) {
             throw new Error(
               response.status === 404
@@ -868,7 +869,7 @@
                 renderedStale = false;
                 try {
                   const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
-                  const renderResponse = await fetch(renderUrl, { cache: 'no-store' });
+                  const renderResponse = await fetch(renderUrl, { credentials: "include", cache: 'no-store' });
                   if (renderResponse.ok) {
                     let htmlContent = await renderResponse.text();
                     if (htmlContent.trimStart().startsWith("<!DOCTYPE") || htmlContent.trimStart().toLowerCase().startsWith("<html")) {
@@ -1009,7 +1010,7 @@
               diffEl.innerHTML = '<div class="diff-no-changes">Loading diff...</div>';
               try {
                 const diffUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&diff=true`;
-                const resp = await fetch(diffUrl, { cache: 'no-store' });
+                const resp = await fetch(diffUrl, { credentials: "include", cache: 'no-store' });
                 diffContent = await resp.text();
                 diffLoaded = true;
               } catch (err) {
@@ -1112,6 +1113,11 @@
           function getCSRFToken() {
             const match = document.cookie.match(/(^| )mitto_csrf=([^;]+)/);
             return match ? match[2] : null;
+          }
+
+          // Redirect to the login page (auth middleware returned 401).
+          function redirectToLogin() {
+            window.location.href = `${apiPrefix}/auth.html`;
           }
 
           async function ensureCSRFToken() {
@@ -1361,7 +1367,8 @@
           if (isMarkdown) {
             // Fetch server-rendered HTML for markdown
             const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
-            const renderResponse = await fetch(renderUrl, { cache: 'no-store' });
+            const renderResponse = await fetch(renderUrl, { credentials: "include", cache: 'no-store' });
+            if (renderResponse.status === 401) { redirectToLogin(); return; }
             if (!renderResponse.ok) throw new Error(`HTTP ${renderResponse.status}`);
             let htmlContent = await renderResponse.text();
 
@@ -1591,7 +1598,7 @@
               : `workspace=${encodeURIComponent(wsPath || "")}`;
             const url = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(filePath)}`;
             try {
-              const resp = await fetch(url, { method: "HEAD", cache: 'no-store' });
+              const resp = await fetch(url, { method: "HEAD", credentials: "include", cache: 'no-store' });
               return resp.ok;
             } catch { return false; }
           }
