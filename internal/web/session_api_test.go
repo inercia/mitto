@@ -2218,15 +2218,51 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 		s := sub
 		mux.HandleFunc("/api/sessions/{id}/"+s, func(w http.ResponseWriter, r *http.Request) { hit = s + ":" + r.PathValue("id") })
 	}
+	// Sub-resources with optional trailing sub-ID (same handler registered for both).
+	mux.HandleFunc("/api/sessions/{id}/images", func(w http.ResponseWriter, r *http.Request) {
+		hit = "images:" + r.PathValue("id") + ":" + r.PathValue("imageId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/images/{imageId}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "images:" + r.PathValue("id") + ":" + r.PathValue("imageId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		hit = "files:" + r.PathValue("id") + ":" + r.PathValue("fileId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/files/{fileId}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "files:" + r.PathValue("id") + ":" + r.PathValue("fileId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/queue", func(w http.ResponseWriter, r *http.Request) {
+		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/periodic", func(w http.ResponseWriter, r *http.Request) {
+		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
+	})
+	mux.HandleFunc("/api/sessions/{id}/periodic/{subPath}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
+	})
 
 	cases := map[string]string{
+		// Leaf sub-resources from increment 3 — still routed correctly.
 		"/api/sessions/abc123/settings":  "settings:abc123",
 		"/api/sessions/abc123/prune":     "prune:abc123",
 		"/api/sessions/abc123/changes":   "changes:abc123",
 		"/api/sessions/abc123/user-data": "user-data:abc123",
 		"/api/sessions/abc123/callback":  "callback:abc123",
-		"/api/sessions/abc123":           "detail", // base still falls through
-		"/api/sessions/abc123/events":    "detail", // unmigrated subpath still falls through
+		// Sub-resources with optional trailing sub-ID (increment 4).
+		"/api/sessions/abc123/images":           "images:abc123:",
+		"/api/sessions/abc123/images/img7":       "images:abc123:img7",
+		"/api/sessions/abc123/files":             "files:abc123:",
+		"/api/sessions/abc123/files/f9":          "files:abc123:f9",
+		"/api/sessions/abc123/queue":             "queue:abc123:",
+		"/api/sessions/abc123/queue/m42":         "queue:abc123:m42",
+		"/api/sessions/abc123/periodic":          "periodic:abc123:",
+		"/api/sessions/abc123/periodic/run-now":  "periodic:abc123:run-now",
+		// Unmigrated paths still fall through to detail.
+		"/api/sessions/abc123":        "detail",
+		"/api/sessions/abc123/events": "detail",
 	}
 	for path, want := range cases {
 		hit = ""

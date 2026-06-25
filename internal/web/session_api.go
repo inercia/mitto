@@ -81,6 +81,34 @@ func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionImages(w, r, id, r.PathValue("imageId"))
+	}
+}
+
+func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionFiles(w, r, id, r.PathValue("fileId"))
+	}
+}
+
+func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		queuePath := ""
+		if msgID := r.PathValue("msgId"); msgID != "" {
+			queuePath = "/" + msgID
+		}
+		s.apiHandlers.HandleSessionQueue(w, r, id, queuePath)
+	}
+}
+
+func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionPeriodic(w, r, id, r.PathValue("subPath"))
+	}
+}
+
 func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// Extract session ID from path: {prefix}/api/sessions/{id} or {prefix}/api/sessions/{id}/events etc.
 	// First strip the API prefix, then strip /api/sessions/
@@ -103,58 +131,10 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 
 	isEventsRequest := len(parts) > 1 && parts[1] == "events"
 	isWSRequest := len(parts) > 1 && parts[1] == "ws"
-	isImagesRequest := len(parts) > 1 && parts[1] == "images"
-	isFilesRequest := len(parts) > 1 && parts[1] == "files"
-	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
-	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
 		s.handleSessionWS(w, r)
-		return
-	}
-
-	// Handle image operations
-	if isImagesRequest {
-		// Extract image ID if present: /api/sessions/{id}/images/{imageId}
-		imagePath := ""
-		if len(parts) > 2 {
-			imagePath = parts[2]
-		}
-		s.apiHandlers.HandleSessionImages(w, r, sessionID, imagePath)
-		return
-	}
-
-	// Handle file operations
-	if isFilesRequest {
-		// Extract file ID if present: /api/sessions/{id}/files/{fileId}
-		filePath := ""
-		if len(parts) > 2 {
-			filePath = parts[2]
-		}
-		s.apiHandlers.HandleSessionFiles(w, r, sessionID, filePath)
-		return
-	}
-
-	// Handle queue operations
-	if isQueueRequest {
-		// Extract message ID if present: /api/sessions/{id}/queue/{msgId}
-		queuePath := ""
-		if len(parts) > 2 {
-			queuePath = "/" + parts[2]
-		}
-		s.apiHandlers.HandleSessionQueue(w, r, sessionID, queuePath)
-		return
-	}
-
-	// Handle periodic prompt operations
-	if isPeriodicRequest {
-		// Check for sub-paths like /periodic/run-now
-		periodicSubPath := ""
-		if len(parts) > 2 {
-			periodicSubPath = parts[2]
-		}
-		s.apiHandlers.HandleSessionPeriodic(w, r, sessionID, periodicSubPath)
 		return
 	}
 

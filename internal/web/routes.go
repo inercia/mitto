@@ -44,6 +44,15 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/sessions/{id}/settings", handler: http.HandlerFunc(s.handleSessionSettings)},
 		apiRoute{pattern: "/api/sessions/{id}/prune", handler: http.HandlerFunc(s.handleSessionPrune)},
 		apiRoute{pattern: "/api/sessions/{id}/changes", handler: http.HandlerFunc(s.handleSessionChanges)},
+		// Sub-resources with an optional trailing sub-ID; the same wrapper handles both.
+		apiRoute{pattern: "/api/sessions/{id}/images", handler: http.HandlerFunc(s.handleSessionImages)},
+		apiRoute{pattern: "/api/sessions/{id}/images/{imageId}", handler: http.HandlerFunc(s.handleSessionImages)},
+		apiRoute{pattern: "/api/sessions/{id}/files", handler: http.HandlerFunc(s.handleSessionFiles)},
+		apiRoute{pattern: "/api/sessions/{id}/files/{fileId}", handler: http.HandlerFunc(s.handleSessionFiles)},
+		apiRoute{pattern: "/api/sessions/{id}/queue", handler: http.HandlerFunc(s.handleSessionQueue)},
+		apiRoute{pattern: "/api/sessions/{id}/queue/{msgId}", handler: http.HandlerFunc(s.handleSessionQueue)},
+		apiRoute{pattern: "/api/sessions/{id}/periodic", handler: http.HandlerFunc(s.handleSessionPeriodic)},
+		apiRoute{pattern: "/api/sessions/{id}/periodic/{subPath}", handler: http.HandlerFunc(s.handleSessionPeriodic)},
 	)
 
 	// Workspace endpoints.
