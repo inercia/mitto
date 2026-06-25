@@ -2876,6 +2876,24 @@ func TestFormatACPError(t *testing.T) {
 			contains: "internal error",
 		},
 		// ---
+		// --- Saturated shared process (mitto-13ck.2) ---
+		{
+			name:     "saturated shared process -> busy",
+			errMsg:   "shared ACP process is saturated (repeated RPC timeouts); failing fast: context deadline exceeded",
+			contains: "busy",
+		},
+		{
+			name:     "saturated mid-flight -> busy",
+			errMsg:   "session/new: shared ACP process became saturated mid-flight (after 1 attempt(s)); failing fast: context deadline exceeded",
+			contains: "busy",
+		},
+		{
+			// regression: non-saturated deadline still maps to the cancelled message
+			name:     "plain context deadline still cancelled",
+			errMsg:   "context deadline exceeded",
+			contains: "cancelled",
+		},
+		// ---
 		{
 			name:     "unknown error",
 			errMsg:   "some unknown error occurred",

@@ -314,6 +314,17 @@ func isContextTooLargeError(err error) bool {
 		strings.Contains(errMsgLower, "context too large for model")
 }
 
+// isAgentBusyError reports whether err is a saturated/overloaded shared ACP
+// process fail-fast error (mitto-13ck.2). These errors wrap context.DeadlineExceeded
+// but represent a BUSY agent, not a cancellation, so they must be classified
+// before the generic context-cancelled branch in formatACPError.
+func isAgentBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "saturated")
+}
+
 // isRateLimitError returns true if the error indicates the upstream API is
 // rate-limiting the session.
 func isRateLimitError(err error) bool {
@@ -361,6 +372,14 @@ func formatACPError(err error) string {
 		strings.Contains(errMsg, "stream ended unexpectedly") {
 		return "Lost connection to the AI agent. The agent process may have crashed or been restarted. " +
 			"Please try sending your message again."
+	}
+
+	// Saturated/overloaded shared ACP process (mitto-13ck.2): start/resume failed fast
+	// because the shared agent process is busy. This wraps context.DeadlineExceeded, so
+	// it MUST be checked before the generic context-cancelled branch below to avoid the
+	// misleading "request was cancelled" message.
+	if isAgentBusyError(err) {
+		return "The agent is busy — please try again in a moment."
 	}
 
 	// Context cancelled (user cancelled or session closed)
