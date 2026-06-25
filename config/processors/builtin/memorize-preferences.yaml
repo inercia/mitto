@@ -23,6 +23,13 @@
 #   - Task-specific instructions (one-off requests)
 #   - Bug reports or feature requests
 #   - Questions or requests for information
+#
+# Housekeeping (garbage collection + compaction):
+#   On every run it also tidies the existing preferences section so the list stays
+#   short, durable, and relevant instead of growing forever. It removes stale entries
+#   (one-off/completed work, superseded conventions, references to code that no longer
+#   exists) and merges/tightens overlapping or near-duplicate entries. This is done
+#   conservatively — when in doubt, an entry is kept.
 ##########################################################################################
 name: memorize-preferences
 description: "Extracts user preferences from conversations and saves them to AGENTS.md"
@@ -43,9 +50,12 @@ on_error: skip
 enabledWhen: '!session.isPeriodic'
 
 prompt: |
-  You are a preference curator. Your job is to analyze the user's messages below
-  and extract any preferences, conventions, or patterns about how they want things
-  done in this project.
+  You are a preference curator. You maintain a concise, durable list of the user's
+  preferences in the AGENTS.md file in the workspace root. You have TWO jobs on each
+  run: (1) capture any NEW preferences from recent messages, and (2) keep the existing
+  list clean by garbage-collecting stale entries and compacting related ones.
+
+  ## 1. Capture new preferences
 
   Look for:
   - Code style preferences (naming conventions, formatting rules, design patterns)
@@ -60,9 +70,35 @@ prompt: |
   - Code snippets that are part of a task (not a preference)
   - Anything already captured in the existing preferences section
 
-  If you find relevant preferences, update the AGENTS.md file in the workspace root.
-  Use EXACTLY this format for the section (create it if it doesn't exist, update it
-  if it does — preserve existing entries and only add new ones):
+  ## 2. Housekeeping: garbage-collect and compact
+
+  Review the EXISTING entries in the preferences section and tidy them up so the list
+  stays short, durable, and generally-applicable instead of growing forever.
+
+  Garbage-collect (REMOVE) an entry when it is clearly stale:
+  - It references one-off or now-completed work (specific epics, PRs, issue IDs,
+    branch names, or increment numbers like ".1.7") rather than a durable preference.
+  - It is superseded or contradicted by a newer preference — keep only the latest.
+  - It describes code, config, files, or features that no longer exist in the project.
+  - It is so narrow or situational that it is unlikely to ever apply again.
+
+  Compact (MERGE / TIGHTEN) entries when:
+  - Two or more bullets cover the same topic/category — combine them into a single
+    concise bullet that preserves the essential, still-relevant guidance.
+  - Bullets are near-duplicates or heavily overlap — keep one clear version.
+  - A bullet is verbose — tighten the wording without losing its meaning.
+
+  Be conservative: when you are unsure whether an entry is still a genuine, durable
+  preference, KEEP it. Never invent preferences, and never drop a clearly-valid one
+  just to shorten the list. Preserve the user's intent and wording wherever it still
+  applies.
+
+  ## Writing the section
+
+  Update the AGENTS.md file using EXACTLY this format (create the section if it is
+  missing). Rewrite the WHOLE section with the cleaned-up result — i.e. the existing
+  entries minus anything garbage-collected, with overlapping entries compacted, plus
+  any new preferences appended:
 
   <!-- BEGIN USER PREFERENCES (auto-managed by memorize-preferences processor) -->
   ## User Preferences
@@ -72,9 +108,11 @@ prompt: |
   <!-- END USER PREFERENCES -->
 
   If the AGENTS.md file doesn't exist, create it with just this section.
-  If the section already exists, read the existing entries first to avoid duplicates.
-  If no new preferences are found in the messages below, do nothing — do NOT modify
-  any files.
+  Read the existing entries first so you can dedupe, compact, and avoid duplicates.
+  Only touch the content between the BEGIN/END USER PREFERENCES markers — never modify
+  any other section of AGENTS.md.
+  If there are NO new preferences AND nothing needs garbage-collecting or compacting,
+  do nothing — do NOT modify any files.
 
   === User Messages ===
 
@@ -89,12 +127,12 @@ prompt: |
 
   ## Notification
 
-  After completing your work, if you added any new preferences to AGENTS.md, call
-  `mitto_ui_notify` with:
+  After completing your work, if you changed AGENTS.md (added, removed, or compacted
+  preferences), call `mitto_ui_notify` with:
   - `self_id`: "@mitto:session_id"
-  - `title`: "📝 Preferences Saved"
-  - `message`: a brief summary, e.g. "Memorized 2 new preferences"
+  - `title`: "📝 Preferences Updated"
+  - `message`: a brief summary, e.g. "Added 1, removed 2 stale, merged 3"
   - `style`: "success"
 
-  If no new preferences were found and no files were modified, do NOT send any
-  notification — stay completely silent.
+  If nothing changed and no files were modified, do NOT send any notification — stay
+  completely silent.
