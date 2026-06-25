@@ -134,7 +134,7 @@ func TestToWebPrompt(t *testing.T) {
 		Description:     "Test description",
 		Group:           "Testing",
 		Menus:           "conversation",
-		EnabledWhen:     `acp.matchesServerType(["auggie", "claude-code"])`,
+		EnabledWhen:     `ACP.MatchesServerType(["auggie", "claude-code"])`,
 	}
 
 	wp := prompt.ToWebPrompt()
@@ -165,7 +165,7 @@ func TestToWebPrompt(t *testing.T) {
 		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
 	}
 	// EnabledWhen CEL expression should be passed through
-	wantEnabledWhen := `acp.matchesServerType(["auggie", "claude-code"])`
+	wantEnabledWhen := `ACP.MatchesServerType(["auggie", "claude-code"])`
 	if wp.EnabledWhen != wantEnabledWhen {
 		t.Errorf("WebPrompt.EnabledWhen = %q, want %q", wp.EnabledWhen, wantEnabledWhen)
 	}
@@ -454,7 +454,7 @@ func TestPromptsToWebPrompts_Empty(t *testing.T) {
 
 func TestParsePromptFile_WithACPs(t *testing.T) {
 	data := []byte(`name: "Claude Only Prompt"
-enabledWhen: 'acp.matchesServerType("claude-code")'
+enabledWhen: 'ACP.MatchesServerType("claude-code")'
 prompt: |
   This prompt is only for Claude Code.
 `)
@@ -467,7 +467,7 @@ prompt: |
 	if prompt.Name != "Claude Only Prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Claude Only Prompt")
 	}
-	want := `acp.matchesServerType("claude-code")`
+	want := `ACP.MatchesServerType("claude-code")`
 	if prompt.EnabledWhen != want {
 		t.Errorf("EnabledWhen = %q, want %q", prompt.EnabledWhen, want)
 	}
@@ -475,7 +475,7 @@ prompt: |
 
 func TestParsePromptFile_WithMultipleACPs(t *testing.T) {
 	data := []byte(`name: "Multi ACP Prompt"
-enabledWhen: 'acp.matchesServerType(["auggie", "claude-code", "custom-acp"])'
+enabledWhen: 'ACP.MatchesServerType(["auggie", "claude-code", "custom-acp"])'
 prompt: |
   This prompt works with multiple ACPs.
 `)
@@ -485,7 +485,7 @@ prompt: |
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	want := `acp.matchesServerType(["auggie", "claude-code", "custom-acp"])`
+	want := `ACP.MatchesServerType(["auggie", "claude-code", "custom-acp"])`
 	if prompt.EnabledWhen != want {
 		t.Errorf("EnabledWhen = %q, want %q", prompt.EnabledWhen, want)
 	}
@@ -587,12 +587,12 @@ func TestIsSpecificToACP(t *testing.T) {
 		want        bool
 	}{
 		{"empty enabledWhen is not specific", "", "auggie", false},
-		{"empty ACP server", `acp.matchesServerType("auggie")`, "", false},
-		{"exact match single", `acp.matchesServerType("auggie")`, "auggie", true},
-		{"case insensitive match", `acp.matchesServerType("Auggie")`, "auggie", true},
-		{"no match", `acp.matchesServerType("claude-code")`, "auggie", false},
-		{"multiple ACPs with match", `acp.matchesServerType(["claude-code", "auggie"])`, "auggie", true},
-		{"multiple ACPs without match", `acp.matchesServerType(["claude-code", "other"])`, "auggie", false},
+		{"empty ACP server", `ACP.MatchesServerType("auggie")`, "", false},
+		{"exact match single", `ACP.MatchesServerType("auggie")`, "auggie", true},
+		{"case insensitive match", `ACP.MatchesServerType("Auggie")`, "auggie", true},
+		{"no match", `ACP.MatchesServerType("claude-code")`, "auggie", false},
+		{"multiple ACPs with match", `ACP.MatchesServerType(["claude-code", "auggie"])`, "auggie", true},
+		{"multiple ACPs without match", `ACP.MatchesServerType(["claude-code", "other"])`, "auggie", false},
 	}
 
 	for _, tt := range tests {
@@ -608,10 +608,10 @@ func TestIsSpecificToACP(t *testing.T) {
 
 func TestCollectRequiredToolPatterns(t *testing.T) {
 	prompts := []*PromptFile{
-		{Name: "P1", EnabledWhen: `tools.hasAllPatterns(["jira_*", "slack_*"])`},
-		{Name: "P2", EnabledWhen: `tools.hasAllPatterns(["jira_*", "github_*"])`},
+		{Name: "P1", EnabledWhen: `Tools.HasAllPatterns(["jira_*", "slack_*"])`},
+		{Name: "P2", EnabledWhen: `Tools.HasAllPatterns(["jira_*", "github_*"])`},
 		{Name: "P3", EnabledWhen: ""},
-		{Name: "P4", EnabledWhen: `tools.hasPattern("slack_*")`},
+		{Name: "P4", EnabledWhen: `Tools.HasPattern("slack_*")`},
 	}
 
 	patterns := CollectRequiredToolPatterns(prompts)
@@ -653,7 +653,7 @@ func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 
 func TestParsePromptFile_WithEnabledWhenTools(t *testing.T) {
 	data := []byte(`name: "Jira Prompt"
-enabledWhen: 'tools.hasAllPatterns(["jira_*", "slack_*"])'
+enabledWhen: 'Tools.HasAllPatterns(["jira_*", "slack_*"])'
 prompt: |
   This prompt requires Jira and Slack tools.
 `)
@@ -666,7 +666,7 @@ prompt: |
 	if prompt.Name != "Jira Prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Jira Prompt")
 	}
-	want := `tools.hasAllPatterns(["jira_*", "slack_*"])`
+	want := `Tools.HasAllPatterns(["jira_*", "slack_*"])`
 	if prompt.EnabledWhen != want {
 		t.Errorf("EnabledWhen = %q, want %q", prompt.EnabledWhen, want)
 	}
@@ -676,12 +676,12 @@ func TestToWebPrompt_IncludesEnabledWhen(t *testing.T) {
 	prompt := &PromptFile{
 		Name:        "Test",
 		Content:     "Content here",
-		EnabledWhen: `acp.matchesServerType("auggie") && tools.hasAllPatterns(["jira_*", "slack_*"])`,
+		EnabledWhen: `ACP.MatchesServerType("auggie") && Tools.HasAllPatterns(["jira_*", "slack_*"])`,
 	}
 
 	wp := prompt.ToWebPrompt()
 
-	want := `acp.matchesServerType("auggie") && tools.hasAllPatterns(["jira_*", "slack_*"])`
+	want := `ACP.MatchesServerType("auggie") && Tools.HasAllPatterns(["jira_*", "slack_*"])`
 	if wp.EnabledWhen != want {
 		t.Errorf("WebPrompt.EnabledWhen = %q, want %q", wp.EnabledWhen, want)
 	}
@@ -693,9 +693,9 @@ func TestToWebPrompt_IncludesEnabledWhen(t *testing.T) {
 func TestFilterPromptsSpecificToACP(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "All ACPs", EnabledWhen: ""},
-		{Name: "Claude Only", EnabledWhen: `acp.matchesServerType("claude-code")`},
-		{Name: "Auggie Only", EnabledWhen: `acp.matchesServerType("auggie")`},
-		{Name: "Both", EnabledWhen: `acp.matchesServerType(["claude-code", "auggie"])`},
+		{Name: "Claude Only", EnabledWhen: `ACP.MatchesServerType("claude-code")`},
+		{Name: "Auggie Only", EnabledWhen: `ACP.MatchesServerType("auggie")`},
+		{Name: "Both", EnabledWhen: `ACP.MatchesServerType(["claude-code", "auggie"])`},
 	}
 
 	// Filter for auggie - should only get prompts with explicit acp filter in enabledWhen

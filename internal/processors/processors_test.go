@@ -232,8 +232,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL matches acp.name",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.name == "auggie-opus"`},
+			name: "enabledWhen CEL matches ACP.Name",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Name == "auggie-opus"`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-opus",
 				AvailableACPServers: []AvailableACPServer{
@@ -244,8 +244,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL acp.name no match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.name == "auggie-opus"`},
+			name: "enabledWhen CEL ACP.Name no match",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Name == "auggie-opus"`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-fast",
 				AvailableACPServers: []AvailableACPServer{
@@ -256,8 +256,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL matches acp.tags",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			name: "enabledWhen CEL matches ACP.Tags",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Tags.exists(t, t == "reasoning")`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-opus",
 				AvailableACPServers: []AvailableACPServer{
@@ -269,7 +269,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL tags no match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Tags.exists(t, t == "reasoning")`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-fast",
 				AvailableACPServers: []AvailableACPServer{
@@ -280,8 +280,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.exists",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.exists`},
+			name: "enabledWhen CEL Children.Exists",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.Exists`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Sub task"},
@@ -291,15 +291,15 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name:           "enabledWhen CEL children.exists false",
-			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.exists`},
+			name:           "enabledWhen CEL Children.Exists false",
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.Exists`},
 			input:          &ProcessorInput{},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.mcp_count threshold met",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.mcp_count >= 2`},
+			name: "enabledWhen CEL Children.MCPCount threshold met",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.MCPCount >= 2`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
@@ -310,8 +310,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL children.mcp_count below threshold",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.mcp_count >= 2`},
+			name: "enabledWhen CEL Children.MCPCount below threshold",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.MCPCount >= 2`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
@@ -322,8 +322,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.promptingCount zero when none prompting",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			name: "enabledWhen CEL Children.PromptingCount zero when none prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.PromptingCount == 0`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: false},
@@ -334,8 +334,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL children.promptingCount non-zero when child is prompting",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			name: "enabledWhen CEL Children.PromptingCount non-zero when child is prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.PromptingCount == 0`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
@@ -346,8 +346,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.idleCount correct",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.idleCount == 1`},
+			name: "enabledWhen CEL Children.IdleCount correct",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.IdleCount == 1`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
@@ -374,8 +374,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "tools.hasAllPatterns all patterns satisfied",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "jira_*"])`},
+			name: "Tools.HasAllPatterns all patterns satisfied",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasAllPatterns(["mitto_*", "jira_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list", "jira_search"},
 			},
@@ -383,8 +383,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "tools.hasAllPatterns some patterns not satisfied",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "slack_*"])`},
+			name: "Tools.HasAllPatterns some patterns not satisfied",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasAllPatterns(["mitto_*", "slack_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},
@@ -392,8 +392,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name:           "tools.hasPattern no tools available",
-			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			name:           "Tools.HasPattern no tools available",
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("mitto_*")`},
 			input:          &ProcessorInput{MCPToolNames: []string{}},
 			isFirstMessage: true,
 			expected:       false,
@@ -408,8 +408,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "tools.hasPattern exact tool match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_conversation_new")`},
+			name: "Tools.HasPattern exact tool match",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("mitto_conversation_new")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -417,8 +417,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL tools.hasPattern",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			name: "enabledWhen CEL Tools.HasPattern",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("mitto_*")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -426,8 +426,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL tools.hasPattern no match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("slack_*")`},
+			name: "enabledWhen CEL Tools.HasPattern no match",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("slack_*")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},

@@ -50,7 +50,7 @@ func TestParity_FileExists(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("path=%q", tc.path), func(t *testing.T) {
 			goResult := fileExists(tmpDir, tc.path)
-			celExpr := fmt.Sprintf("fileExists(%q)", tc.path)
+			celExpr := fmt.Sprintf("FileExists(%q)", tc.path)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v for path %q", goResult, celResult, tc.path)
@@ -85,7 +85,7 @@ func TestParity_DirExists(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("path=%q", tc.path), func(t *testing.T) {
 			goResult := dirExists(tmpDir, tc.path)
-			celExpr := fmt.Sprintf("dirExists(%q)", tc.path)
+			celExpr := fmt.Sprintf("DirExists(%q)", tc.path)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v for path %q", goResult, celResult, tc.path)
@@ -113,7 +113,7 @@ func TestParity_CommandExists(t *testing.T) {
 			if goResult != tc.want {
 				t.Errorf("commandExists(%q) = %v, want %v", tc.cmd, goResult, tc.want)
 			}
-			celExpr := fmt.Sprintf("commandExists(%q)", tc.cmd)
+			celExpr := fmt.Sprintf("CommandExists(%q)", tc.cmd)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v for cmd %q", goResult, celResult, tc.cmd)
@@ -145,7 +145,7 @@ func TestParity_HasPattern(t *testing.T) {
 				t.Errorf("hasPattern(%v, names, %q) = %v, want %v", tc.available, tc.pattern, goResult, tc.want)
 			}
 			ctx := &PromptEnabledContext{Tools: ToolsContext{Available: tc.available, Names: names}}
-			celExpr := fmt.Sprintf("tools.hasPattern(%q)", tc.pattern)
+			celExpr := fmt.Sprintf("Tools.HasPattern(%q)", tc.pattern)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v for pattern %q available=%v", goResult, celResult, tc.pattern, tc.available)
@@ -185,7 +185,7 @@ func TestParity_HasAllPatterns(t *testing.T) {
 				}
 				celPatterns += fmt.Sprintf("%q", p)
 			}
-			celExpr := fmt.Sprintf("tools.hasAllPatterns([%s])", celPatterns)
+			celExpr := fmt.Sprintf("Tools.HasAllPatterns([%s])", celPatterns)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v for patterns %v available=%v", goResult, celResult, tc.patterns, tc.available)
@@ -223,7 +223,7 @@ func TestParity_HasAnyPattern(t *testing.T) {
 				}
 				celPatterns += fmt.Sprintf("%q", p)
 			}
-			celExpr := fmt.Sprintf("tools.hasAnyPattern([%s])", celPatterns)
+			celExpr := fmt.Sprintf("Tools.HasAnyPattern([%s])", celPatterns)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v", goResult, celResult)
@@ -268,7 +268,7 @@ func TestParity_MatchesServerType(t *testing.T) {
 				}
 				celTypes += fmt.Sprintf("%q", st)
 			}
-			celExpr := fmt.Sprintf("acp.matchesServerType([%s])", celTypes)
+			celExpr := fmt.Sprintf("ACP.MatchesServerType([%s])", celTypes)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v", goResult, celResult)
@@ -680,14 +680,14 @@ func TestCond_Parity(t *testing.T) {
 	e := newTestEvaluator(t)
 
 	exprs := []string{
-		"session.isChild",
-		"!session.isChild",
-		`acp.matchesServerType("augment")`,
-		`acp.matchesServerType("claude")`,
-		`fileExists("present.txt")`,
-		`fileExists("absent.txt")`,
-		`tools.hasPattern("mitto_*")`,
-		`tools.hasPattern("notion_*")`,
+		"Session.IsChild",
+		"!Session.IsChild",
+		`ACP.MatchesServerType("augment")`,
+		`ACP.MatchesServerType("claude")`,
+		`FileExists("present.txt")`,
+		`FileExists("absent.txt")`,
+		`Tools.HasPattern("mitto_*")`,
+		`Tools.HasPattern("notion_*")`,
 	}
 
 	for _, expr := range exprs {
@@ -713,7 +713,7 @@ func TestCond_Parity(t *testing.T) {
 // TestCond_ArgsBranching verifies that the args CEL variable is accessible from
 // cond expressions and that ctx.Args values flow through correctly.
 func TestCond_ArgsBranching(t *testing.T) {
-	// Use `"KEY" in args && args["KEY"] == "val"` — CEL map access throws on missing
+	// Use `"KEY" in Args && Args["KEY"] == "val"` — CEL map access throws on missing
 	// keys (unlike Go's zero-value return), so the `in` guard prevents the error.
 
 	// 1. Template branching via args.
@@ -723,7 +723,7 @@ func TestCond_ArgsBranching(t *testing.T) {
 	fm := BuildTemplateFuncMap(ctx)
 
 	// true branch: MODE == "fast" (key present and matches)
-	body := `{{ if cond "\"MODE\" in args && args[\"MODE\"] == \"fast\"" }}fast{{ else }}slow{{ end }}`
+	body := `{{ if cond "\"MODE\" in Args && Args[\"MODE\"] == \"fast\"" }}fast{{ else }}slow{{ end }}`
 	got, err := RenderPromptTemplate("test", body, ctx, fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -752,20 +752,20 @@ func TestCond_ArgsBranching(t *testing.T) {
 		t.Errorf("expected %q, got %q", "slow", got3)
 	}
 
-	// 2. Direct CEL evaluation of "MODE" in args (via newTestEvaluator).
+	// 2. Direct CEL evaluation of "MODE" in Args (via newTestEvaluator).
 	e := newTestEvaluator(t)
 	ctxWithMode := &PromptEnabledContext{Args: map[string]string{"MODE": "fast"}}
-	if !evalCEL(t, e, `"MODE" in args`, ctxWithMode) {
-		t.Error(`"MODE" in args should be true when Args has MODE`)
+	if !evalCEL(t, e, `"MODE" in Args`, ctxWithMode) {
+		t.Error(`"MODE" in Args should be true when Args has MODE`)
 	}
 	ctxNoMode := &PromptEnabledContext{Args: map[string]string{}}
-	if evalCEL(t, e, `"MODE" in args`, ctxNoMode) {
-		t.Error(`"MODE" in args should be false when Args is empty`)
+	if evalCEL(t, e, `"MODE" in Args`, ctxNoMode) {
+		t.Error(`"MODE" in Args should be false when Args is empty`)
 	}
 	// nil Args normalizes to empty map — no panic.
 	ctxNilArgs := &PromptEnabledContext{Args: nil}
-	if evalCEL(t, e, `"MODE" in args`, ctxNilArgs) {
-		t.Error(`"MODE" in args should be false when Args is nil`)
+	if evalCEL(t, e, `"MODE" in Args`, ctxNilArgs) {
+		t.Error(`"MODE" in Args should be false when Args is nil`)
 	}
 }
 
@@ -821,7 +821,7 @@ func TestBuildTemplateFuncMap_CondWhenKeysPresent(t *testing.T) {
 
 // TestPrecompileTemplateConds_Valid returns nil for valid literal cond args.
 func TestPrecompileTemplateConds_Valid(t *testing.T) {
-	body := `{{ if cond "session.isChild" }}child{{ end }}`
+	body := `{{ if cond "Session.IsChild" }}child{{ end }}`
 	if err := PrecompileTemplateConds("my-prompt", body); err != nil {
 		t.Errorf("expected nil for valid cond, got: %v", err)
 	}
@@ -852,7 +852,7 @@ func TestPrecompileTemplateConds_NoTemplate(t *testing.T) {
 
 // TestPrecompileTemplateConds_ValidWhen returns nil when using the when alias.
 func TestPrecompileTemplateConds_ValidWhen(t *testing.T) {
-	body := `{{ if when "!session.isChild" }}root{{ end }}`
+	body := `{{ if when "!Session.IsChild" }}root{{ end }}`
 	if err := PrecompileTemplateConds("p", body); err != nil {
 		t.Errorf("expected nil for valid when alias, got: %v", err)
 	}

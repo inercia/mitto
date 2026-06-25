@@ -1568,8 +1568,8 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		{
 			name: "nil context returns all prompts",
 			prompts: []config.WebPrompt{
-				makePrompt("a", withEnabledWhen(`acp.matchesServerType("augment")`)),
-				makePrompt("b", withEnabledWhen("session.isChild")),
+				makePrompt("a", withEnabledWhen(`ACP.MatchesServerType("augment")`)),
+				makePrompt("b", withEnabledWhen("Session.IsChild")),
 			},
 			ctx:       nil,
 			wantNames: []string{"a", "b"},
@@ -1581,109 +1581,109 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			ctx:       &config.PromptEnabledContext{},
 			wantNames: []string{"plain"},
 		},
-		// 3a. acp.matchesServerType type match — included
+		// 3a. ACP.MatchesServerType type match — included
 		{
 			name:    "acp_matchesServerType type match included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 3b. acp.matchesServerType display name does not match — excluded
+		// 3b. ACP.MatchesServerType display name does not match — excluded
 		{
 			name:    "acp_matchesServerType display name does not match excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("Auggie (Opus 4.6)")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("Auggie (Opus 4.6)")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: nil,
 		},
-		// 4. acp.matchesServerType type match with different display name
+		// 4. ACP.MatchesServerType type match with different display name
 		{
 			name:    "acp_matchesServerType type match different display name",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Sonnet 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 5. acp.matchesServerType list of server types
+		// 5. ACP.MatchesServerType list of server types
 		{
 			name:    "acp_matchesServerType list match",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType(["augment", "claude-code"])`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType(["augment", "claude-code"])`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Claude Code (Opus 4.6)", Type: "claude-code"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 6. acp.matchesServerType case insensitive (matches type)
+		// 6. ACP.MatchesServerType case insensitive (matches type)
 		{
 			name:    "acp_matchesServerType case insensitive",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("AUGMENT")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("AUGMENT")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 7. acp.matchesServerType fail-open when no ACP active
+		// 7. ACP.MatchesServerType fail-open when no ACP active
 		{
 			name:    "acp_matchesServerType fail-open no acp active",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "", Type: ""},
 			},
 			wantNames: []string{"p"},
 		},
-		// 8. tools.hasPattern satisfied
+		// 8. Tools.HasPattern satisfied
 		{
 			name:    "tools_hasPattern satisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
 				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new", "other_tool"}},
 			},
 			wantNames: []string{"p"},
 		},
-		// 9. tools.hasPattern unsatisfied
+		// 9. Tools.HasPattern unsatisfied
 		{
 			name:    "tools_hasPattern unsatisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
 				Tools: config.ToolsContext{Available: true, Names: []string{"other_tool"}},
 			},
 			wantNames: nil,
 		},
-		// 10. tools.hasAllPatterns all satisfied
+		// 10. Tools.HasAllPatterns all satisfied
 		{
 			name:    "tools_hasAllPatterns all satisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
 				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo", "jira_bar"}},
 			},
 			wantNames: []string{"p"},
 		},
-		// 11. tools.hasAllPatterns partially satisfied — excluded
+		// 11. Tools.HasAllPatterns partially satisfied — excluded
 		{
 			name:    "tools_hasAllPatterns partially satisfied excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
 				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
-		// 12. tools.hasPattern fetched-empty tools — excluded (fail-closed)
+		// 12. Tools.HasPattern fetched-empty tools — excluded (fail-closed)
 		{
 			name:    "tools_hasPattern fetched-empty tools excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
 				Tools: config.ToolsContext{Available: true, Names: nil},
 			},
 			wantNames: nil,
 		},
-		// 12b. tools.hasPattern unknown tools — included (fail-open during warm-up)
+		// 12b. Tools.HasPattern unknown tools — included (fail-open during warm-up)
 		{
 			name:    "tools_hasPattern unknown tools fail-open included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
 				Tools: config.ToolsContext{Available: false, Names: nil},
 			},
@@ -1692,7 +1692,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		// 13. enabledWhen CEL true expression
 		{
 			name:    "enabledWhen CEL true expression included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("Session.IsChild"))},
 			ctx: &config.PromptEnabledContext{
 				Session: config.SessionContext{IsChild: true},
 			},
@@ -1701,7 +1701,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		// 14. enabledWhen CEL false expression
 		{
 			name:    "enabledWhen CEL false expression excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("Session.IsChild"))},
 			ctx: &config.PromptEnabledContext{
 				Session: config.SessionContext{IsChild: false},
 			},
@@ -1711,7 +1711,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		{
 			name: "enabledWhen CEL complex expression included",
 			prompts: []config.WebPrompt{
-				makePrompt("p", withEnabledWhen(`"reasoning" in acp.tags`)),
+				makePrompt("p", withEnabledWhen(`"reasoning" in ACP.Tags`)),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Tags: []string{"reasoning", "fast"}},
@@ -1725,12 +1725,12 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			ctx:       &config.PromptEnabledContext{},
 			wantNames: []string{"p"},
 		},
-		// 17. Combined: acp.matchesServerType + tools.hasPattern + CEL all pass
+		// 17. Combined: ACP.MatchesServerType + Tools.HasPattern + CEL all pass
 		{
 			name: "combined acp_matchesServerType and tools_hasPattern and CEL all pass",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("mitto_*") && !session.isChild`),
+					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("mitto_*") && !Session.IsChild`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
@@ -1740,12 +1740,12 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			wantNames: []string{"p"},
 		},
-		// 18. Combined: acp.matchesServerType passes, tools.hasPattern fails
+		// 18. Combined: ACP.MatchesServerType passes, Tools.HasPattern fails
 		{
 			name: "combined acp_matchesServerType passes tools_hasPattern fails excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("jira_*")`),
+					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("jira_*")`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
@@ -1754,12 +1754,12 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			wantNames: nil,
 		},
-		// 19. Combined: acp.matchesServerType fails — whole expression excluded
+		// 19. Combined: ACP.MatchesServerType fails — whole expression excluded
 		{
 			name: "combined acp_matchesServerType fails excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServerType("claude") && tools.hasPattern("mitto_*") && true`),
+					withEnabledWhen(`ACP.MatchesServerType("claude") && Tools.HasPattern("mitto_*") && true`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
@@ -1773,10 +1773,10 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name: "mixed prompts correct order",
 			prompts: []config.WebPrompt{
 				makePrompt("included-1"),
-				makePrompt("excluded-acp", withEnabledWhen(`acp.matchesServerType("claude")`)),
-				makePrompt("included-2", withEnabledWhen("!session.isChild")),
-				makePrompt("excluded-mcp", withEnabledWhen(`tools.hasPattern("jira_*")`)),
-				makePrompt("included-3", withEnabledWhen(`acp.matchesServerType("augment")`)),
+				makePrompt("excluded-acp", withEnabledWhen(`ACP.MatchesServerType("claude")`)),
+				makePrompt("included-2", withEnabledWhen("!Session.IsChild")),
+				makePrompt("excluded-mcp", withEnabledWhen(`Tools.HasPattern("jira_*")`)),
+				makePrompt("included-3", withEnabledWhen(`ACP.MatchesServerType("augment")`)),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
@@ -1945,7 +1945,7 @@ func TestResolveOwningWorkspace(t *testing.T) {
 // the PromptEnabledContext.Item) while still evaluating non-item prompts against
 // the rest of the context. This replaces the old per-row-only item filter: with
 // mitto-gns the beads menus run the full filterPromptsByEnabled so every gate
-// (item.*, session.isChild, permissions, commandExists, …) is applied at once.
+// (item.*, Session.IsChild, permissions, CommandExists, …) is applied at once.
 func TestFilterPromptsByEnabled_ItemGating(t *testing.T) {
 	s := &Server{}
 
@@ -1956,8 +1956,8 @@ func TestFilterPromptsByEnabled_ItemGating(t *testing.T) {
 		return p
 	}
 
-	itemPrompt := makePrompt("start-work", `item.status != "closed"`)
-	nonItemPrompt := makePrompt("triage", `session.isChild == false`)
+	itemPrompt := makePrompt("start-work", `Item.Status != "closed"`)
+	nonItemPrompt := makePrompt("triage", `Session.IsChild == false`)
 	noExprPrompt := makePrompt("review", "")
 
 	closedCtx := &config.PromptEnabledContext{
@@ -2114,11 +2114,11 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 }
 
 // TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession is a regression test
-// for the beads-menu bug where dir-based enabledWhen gates (dirExists/fileExists)
+// for the beads-menu bug where dir-based enabledWhen gates (DirExists/FileExists)
 // were evaluated against the active session's working dir instead of the dir
 // query param. The frontend always appends &session_id=<activeConversation>, so
 // when that conversation lived in a folder without ".beads" the gate
-// dirExists(".beads") evaluated false and every beads prompt was filtered out —
+// DirExists(".beads") evaluated false and every beads prompt was filtered out —
 // leaving the per-issue context menu empty. The fix makes the requested dir
 // authoritative for the workspace namespace (applyWorkspaceNamespace), so the
 // gate evaluates against the dir param even with a session_id present.
@@ -2133,7 +2133,7 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	rcContent := `prompts:
   - name: "Beads Gated"
     prompt: "x"
-    enabledWhen: 'dirExists(".beads")'
+    enabledWhen: 'DirExists(".beads")'
   - name: "Ungated"
     prompt: "y"
 `
@@ -2198,7 +2198,7 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	}
 	names := decode(t, w.Body.Bytes())
 	if !hasName(names, "Beads Gated") {
-		t.Errorf("dir-gated prompt was filtered out: dirExists(\".beads\") evaluated against the session's folder instead of the dir param; got %v", names)
+		t.Errorf("dir-gated prompt was filtered out: DirExists(\".beads\") evaluated against the session's folder instead of the dir param; got %v", names)
 	}
 	if !hasName(names, "Ungated") {
 		t.Errorf("ungated prompt missing, got %v", names)
