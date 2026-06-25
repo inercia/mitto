@@ -49,6 +49,14 @@ prompt: |
   present, so you *may* use the interactive `mitto_ui_*` tools (ask before risky actions
   like merges/rebases).
   {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run, so no further run will fire). Any PRs still open
+  after this run will **not** be monitored further — post a closing `mitto_ui_notify`
+  summary listing which PRs remain open, so the user can re-run this prompt later to
+  keep babysitting them.
+  {{- end }}
 
   ## Step 1 — Identify the repository and verify auth
 
@@ -71,6 +79,15 @@ prompt: |
   ## Step 2 — Determine the target PR set
 
   Build the set of PRs to babysit this run, in priority order:
+  {{- if .Iteration.IsFirst }}
+
+  This is the **first run** — there are no babysat PRs from earlier runs yet, so you
+  will normally establish the set from your recently-created PRs (source 2 below).
+  {{- else }}
+
+  This is a **continuation run** — first recover the PRs you were already babysitting
+  from earlier runs of this conversation (source 1 below) before considering new ones.
+  {{- end }}
 
   1. **PRs already under babysitting** (preferred). Recover them from prior runs of
      **this** conversation:
