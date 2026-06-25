@@ -14,6 +14,16 @@ prompt: |
 
   ## Step 1 — Find tickets to decompose
 
+  {{ if UserData "JIRA Ticket" -}}
+  A ticket is saved for this conversation: **`{{ UserData "JIRA Ticket" }}`**.
+
+  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask the user:
+  - **Option 1**: `"Decompose {{ UserData "JIRA Ticket" }} (your current ticket)"` — if chosen, skip to Step 3 using `{{ UserData "JIRA Ticket" }}` as the ticket key.
+  - **Option 2**: `"Search the active sprint for a ticket to decompose"` — if chosen, proceed with the sprint search below.
+
+  If the user chooses Option 2, or if no ticket is saved:
+  {{- else }}
+  {{- end }}
   1. Use `jira_get_agile_boards_jira` to find the relevant board (ask the user if there are multiple boards and you're not sure which one to use).
   2. Use `jira_get_sprints_from_board_jira` with `state=active` to get the active sprint.
   3. Use `jira_search_jira` with a JQL query like:

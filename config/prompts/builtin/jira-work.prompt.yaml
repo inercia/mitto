@@ -18,14 +18,15 @@ prompt: |
 
   ## Step 0 — Check for prior ticket context
 
-  Before doing anything else, review the current conversation history to check whether a specific JIRA ticket has already been discussed (e.g., a ticket key like `PROJ-1234` was mentioned, ticket details were fetched, or a ticket was previously selected).
+  {{ if UserData "JIRA Ticket" -}}
+  A ticket is saved for this conversation: **`{{ UserData "JIRA Ticket" }}`**.
 
-  - If a ticket **has** been discussed in this conversation:
-    Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask the user whether to:
-    - **Option 1**: `"Start working on [TICKET-KEY]: [summary]"` — if the user chooses this, skip directly to Step 3 (fetch full ticket details) using that ticket key.
-    - **Option 2**: `"Work on a different ticket"` — if the user chooses this, continue to Step 1 (the normal ticket selection flow).
-
-  - If **no** ticket has been previously discussed in this conversation: skip this step and proceed directly to Step 1.
+  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask the user:
+  - **Option 1**: `"Continue on {{ UserData "JIRA Ticket" }}"` — if chosen, skip directly to Step 3 using `{{ UserData "JIRA Ticket" }}` as the ticket key.
+  - **Option 2**: `"Work on a different ticket"` — if chosen, continue to Step 1.
+  {{- else }}
+  No prior ticket is saved for this conversation — proceed directly to Step 1.
+  {{- end }}
 
   ## Step 1 — Find tickets to work on
 
@@ -42,6 +43,10 @@ prompt: |
   - If **multiple tickets** are found: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to present the ticket list and ask the user which one to work on. Include the ticket key and summary in each option label.
   - If **exactly one ticket** is found: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to confirm with the user before proceeding.
   - If **no tickets** are found: inform the user and stop.
+
+  Once the ticket key is confirmed, persist it so other JIRA prompts can reuse it without re-searching:
+  1. Call `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}", user_data: [{"name": "JIRA Ticket", "value": "<chosen-key>"}])`.
+  2. If it fails with a schema/unknown-attribute error, first call `mitto_workspace_update(self_id: "{{ .Session.ID }}", user_data_schema: [{"name": "JIRA Ticket", "description": "The JIRA ticket key for the current task", "type": "string"}], user_data_schema_merge: true)`, then retry step 1.
 
   ## Step 3 — Fetch full ticket details
 

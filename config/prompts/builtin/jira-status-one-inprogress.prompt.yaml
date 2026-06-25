@@ -53,6 +53,10 @@ prompt: |
 
   Present the filtered tickets using `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
 
+  {{ if UserData "JIRA Ticket" -}}
+  The saved ticket for this conversation is **`{{ UserData "JIRA Ticket" }}`** — if this key is among the filtered tickets, list it first and mark it as the suggested default.
+  {{- end }}
+
   ## Step 5 — Fetch full ticket details
 
   For the selected ticket, run the following in parallel:
