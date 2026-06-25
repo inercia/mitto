@@ -6,6 +6,42 @@ menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 enabledWhen: '!Session.IsPeriodicConversation'
 prompt: |
+  {{- if .Session.BeadsIssue }}
+  This conversation is linked to beads issue `{{ .Session.BeadsIssue }}` — frame everything
+  below in the context of that ticket.
+
+  First, load the ticket and its dependencies:
+
+  ```bash
+  bd show {{ .Session.BeadsIssue }} --long --json      # full fields, acceptance, design, status
+  bd dep tree {{ .Session.BeadsIssue }}                # blockers and what it blocks
+  bd show {{ .Session.BeadsIssue }} --children --json  # child beads (is it an epic?)
+  ```
+
+  Then review current state: read relevant files, check git status and recent changes, and
+  any prior `bd comment` history on the ticket.
+
+  Analyze progress and suggest next steps **for this ticket**.
+
+  ### Review
+
+  1. **Completed**: Which acceptance criteria are already met
+  2. **Current state**: Where things stand relative to `{{ .Session.BeadsIssue }}`
+  3. **Remaining**: Acceptance criteria still unmet, plus blockers/dependencies from the tree
+     (for an **epic**, identify the next workable child, respecting dependencies)
+
+  ### Suggest Next Steps
+
+  | Priority | Task | Reason | Effort |
+  |----------|------|--------|--------|
+  | 1 | ... | ... | Small/Medium/Large |
+
+  Prefer steps that advance this ticket's acceptance criteria or unblock its dependents.
+  Consider: dependencies, risk (tackle risky items early), value (high-impact first), blockers.
+
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Proceed with top priority task?"
+  **Without**: Ask in conversation.
+  {{- else }}
   Review current state: read relevant files, check git status and recent changes.
 
   Analyze progress and suggest next steps.
@@ -26,3 +62,4 @@ prompt: |
 
   **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Proceed with top priority task?"
   **Without**: Ask in conversation.
+  {{- end }}

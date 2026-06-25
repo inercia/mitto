@@ -103,6 +103,16 @@ prompt: |
 
   This sets the assignee to you and the status to `in_progress` (idempotent if already claimed by you).
 
+  ## Step 3b — Link this conversation to the chosen bead
+
+  This conversation was launched without a linked beads issue. Now that you have claimed
+  `<bead-id>`, link it to this conversation so the tracker and UI reflect what you are
+  actually working on:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<bead-id>")
+  ```
+
   ## Step 4 — Fetch full bead details
 
   Now that the bead is claimed, load everything about it so you can plan accurately — work through this **in this conversation**:

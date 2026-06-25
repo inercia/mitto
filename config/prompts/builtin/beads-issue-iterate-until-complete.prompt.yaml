@@ -54,6 +54,20 @@ prompt: |
   **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
   present, so you *may* surface progress more freely with notifications.
   {{- end }}
+  {{- if not .Iteration.IsFirst }}
+
+  **Continuation run.** Earlier runs of this conversation have already advanced this
+  work. Before doing anything else, review the prior `bd comment` "Iterate run:"
+  entries on the target bead and the existing children in `{{ .Children.MCPText }}`,
+  so you continue from where the last run stopped instead of repeating it.
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run, so no further run will fire). Do **not** begin an
+  increment you cannot finish now — instead wrap up: log current status with
+  `bd comment`, then post a closing summary via `mitto_ui_notify`.
+  {{- end }}
 
   **Decision-making is identical in both modes**: **do not ask the user to make work decisions** — not which ticket to work on, not
   how to proceed, not which design option to take. **Decide autonomously.** The *only* thing
@@ -98,6 +112,25 @@ prompt: |
     **Do NOT ask the user** which child; this is automated.
 
   Treat the issue chosen here as **`<target>`** for the rest of this run.
+
+  ## Step 1b — Keep the durable conversation link correct
+
+  This conversation's linked beads issue is the **durable anchor** that future periodic
+  runs resolve from (see the target resolution above), so it must always point at the
+  **top-level target** — the epic or standalone issue — never at a per-run child:
+
+  - If this conversation is **not yet linked** to a beads issue but you resolved the target
+    from the `IssueID` argument, link the top-level target now so subsequent runs are
+    durable:
+
+    ```
+    mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<top-level target: the epic or standalone issue>")
+    ```
+
+  - **Do NOT** overwrite this link with the per-run child when advancing an epic. Each child
+    you dispatch already receives its own `beads_issue` link on its **child conversation**
+    (Step 3); overwriting the anchor here would make the next run lose the epic and break
+    iteration.
 
   ## Step 2 — Only act on READY issues
 

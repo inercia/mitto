@@ -93,6 +93,25 @@ prompt: |
   {{- end }}
 
   {{ if $target -}}
+  ## Step 1c — Link this conversation to the bead you will work
+
+  Keep this conversation's linked beads issue matching the bead you are actually going to
+  work, so the tracker and UI stay accurate:
+
+  - If you narrowed an epic down to a **single** child in Step 1b, link **that child**.
+  - If `{{ $target }}` was supplied as the `IssueID` argument and this conversation was not
+    already linked to it, link `{{ $target }}`.
+  - If you are tackling **multiple** independent children of an epic in parallel, leave this
+    conversation linked to the **epic** (the parent), since it orchestrates all of them.
+
+  When a change is needed:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<the bead this conversation is really working>")
+  ```
+  {{- end }}
+
+  {{ if $target -}}
   ## Step 2 — Claim the bead
 
   Atomically claim the bead so others know it is being worked on:

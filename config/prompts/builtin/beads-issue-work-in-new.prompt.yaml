@@ -62,6 +62,22 @@ prompt: |
        - **Do not** offer any child that is blocked (directly or transitively) by an unfinished child — it is not in a workable state yet.
     5. **Wait for the user's confirmation.** Once they confirm, treat the chosen child (or children) as the bead(s) to work for the rest of this prompt — substitute the chosen child bead ID for `${IssueID}` in the steps below (claim, plan, dispatch, and log against the chosen child). If the user picked multiple independent children, plan and dispatch each of them. Leave the epic itself open as the parent.
 
+  ## Step 1c — Link this conversation to the bead you will work
+
+  Keep this conversation's linked beads issue matching the bead actually being worked, so
+  the tracker and UI stay accurate:
+
+  - If you narrowed an epic down to a **single** child in Step 1b, link **that child**.
+  - Otherwise, if this conversation is not already linked to `${IssueID}`, link `${IssueID}`.
+  - If you are tackling **multiple** independent children of an epic in parallel, leave this
+    conversation linked to the **epic** (the parent), since it orchestrates all of them.
+
+  When a change is needed:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<the bead this conversation is really working>")
+  ```
+
   ## Step 2 — Claim the bead
 
   Atomically claim the bead so others know it is being worked on:
