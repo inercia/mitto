@@ -37,19 +37,18 @@ prompt: |
   one-off tasks.
 
   ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
-  - `{{ .Session.IsPeriodicForced }}` = was this periodic run manually triggered by the user?
-
-  **Silent mode — scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND
-  `{{ .Session.IsPeriodicForced }}` = "false"):
+  **Silent mode — scheduled periodic run.**
   - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
     `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching, never block.
   - Act autonomously when safe (clean rebases); otherwise just notify.
+  {{- else }}
 
-  **Interactive mode** (`{{ .Session.IsPeriodic }}` = "false", e.g. the very first send, or
-  `{{ .Session.IsPeriodicForced }}` = "true"): a user may be present, so you *may* use the
-  interactive `mitto_ui_*` tools (ask before risky actions like merges/rebases).
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present, so you *may* use the interactive `mitto_ui_*` tools (ask before risky actions
+  like merges/rebases).
+  {{- end }}
 
   ## Step 1 — Identify the repository and verify auth
 
@@ -244,11 +243,13 @@ prompt: |
   - **Never modify the local checkout** — the user may have uncommitted work there.
     Always rebase in a temporary worktree and force-push with `--force-with-lease`
     (never `--force`).
-  - **Interaction mode**: in **scheduled** runs (`{{ .Session.IsPeriodic }}` = "true",
-    `{{ .Session.IsPeriodicForced }}` = "false") use **only** `mitto_ui_notify` — never block
-    on interactive UI, and do **not** auto-merge. In **force-triggered or
-    non-periodic** runs you may use `mitto_ui_options`/`mitto_ui_form` and offer to
-    merge with confirmation.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  - **Interaction mode**: this is a **scheduled** run — use **only** `mitto_ui_notify`,
+    never block on interactive UI, and do **not** auto-merge.
+  {{- else }}
+  - **Interaction mode**: this is a **force-triggered or non-periodic** run — you may use
+    `mitto_ui_options`/`mitto_ui_form` and offer to merge with confirmation.
+  {{- end }}
   - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning and skip if a child
     already exists for the same PR + task; cap at **3 spawns per run**, prioritizing
     rebase conflicts > CI failures > unresolved comments. Spawned conversations are

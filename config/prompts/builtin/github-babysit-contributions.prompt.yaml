@@ -23,19 +23,18 @@ prompt: |
   {{ .ACP.AvailableText }}
 
   ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  - **Periodic run**: `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
-  - **Force-triggered**: `{{ .Session.IsPeriodicForced }}` = was this periodic run manually triggered by the user?
-
-  **If this is a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND `{{ .Session.IsPeriodicForced }}` = "false"):
+  **Silent mode** — a scheduled periodic run; the user is not watching.
   - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
-    interactive/blocking UI tool. The user is not watching.
+    interactive/blocking UI tool.
+  {{- else }}
 
-  **If this is a force-triggered run** (`{{ .Session.IsPeriodicForced }}` = "true") **or a
-  non-periodic conversation** (`{{ .Session.IsPeriodic }}` = "false"):
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
   - You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
     and other interactive tools in addition to `mitto_ui_notify`.
+  {{- end }}
 
   ## Step 1 — Identify the repository
 
@@ -160,12 +159,14 @@ prompt: |
 
   - If `gh` authentication fails, stop immediately and inform the user.
   - **Interaction mode** (see "Interaction Mode" section above):
-    - **Scheduled periodic** (`{{ .Session.IsPeriodic }}` = "true", `{{ .Session.IsPeriodicForced }}` = "false"):
-      Use only `mitto_ui_notify`. No interactive UI. Skip the summary — only
-      send notifications for actionable items.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+    - **Scheduled periodic**: Use only `mitto_ui_notify`. No interactive UI. Skip the
+      summary — only send notifications for actionable items.
+  {{- else }}
     - **Force-triggered or non-periodic**: You may use `mitto_ui_options`,
       `mitto_ui_form`, and other interactive tools. Ask the user before risky
       actions (merges, branch deletions). Show the full summary at the end.
+  {{- end }}
   - **Notification batching**: batch repetitive items (pending reviews, bot PRs)
     into a single notification per category to avoid spamming the user —
     especially important in periodic mode.

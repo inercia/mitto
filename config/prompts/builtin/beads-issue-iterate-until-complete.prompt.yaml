@@ -40,23 +40,22 @@ prompt: |
 
   ## Interaction Mode — READ THIS FIRST
 
-  This prompt almost always runs **unattended on a schedule**. Check these variables:
+  This prompt almost always runs **unattended on a schedule**.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
-  - `{{ .Session.IsPeriodicForced }}` = was a periodic run manually triggered by the user?
-
-  **Silent mode — a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND
-  `{{ .Session.IsPeriodicForced }}` = "false"):
+  **Silent mode — a scheduled periodic run.**
   - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
     Nobody is watching. Never block waiting for input.
   - When a decision is ambiguous, do **not** guess and do **not** ask — record the
     question on the bead and defer it (see Step 4).
+  {{- else }}
 
-  **Interactive mode** (`{{ .Session.IsPeriodic }}` = "false", e.g. the very first send, or
-  `{{ .Session.IsPeriodicForced }}` = "true"): a user may be present, so you *may* surface
-  progress more freely with notifications. But the **decision-making is identical to silent
-  mode**: **do not ask the user to make work decisions** — not which ticket to work on, not
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present, so you *may* surface progress more freely with notifications.
+  {{- end }}
+
+  **Decision-making is identical in both modes**: **do not ask the user to make work decisions** — not which ticket to work on, not
   how to proceed, not which design option to take. **Decide autonomously.** The *only* thing
   you must never decide alone is a requirement that is **not properly defined or understood**
   in the ticket itself — in that case you **defer the ticket** (Step 4) rather than asking or

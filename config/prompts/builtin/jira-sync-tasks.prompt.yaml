@@ -29,18 +29,16 @@ prompt: |
   {{ .Session.UserDataJSON }}
 
   ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  This prompt runs in two modes. Check these variables to decide which applies:
-
-  - `{{ .Session.IsPeriodic }}` = is this a scheduled periodic execution?
-  - `{{ .Session.IsPeriodicForced }}` = was a periodic run manually triggered by the user?
-
-  **Interactive mode — a regular conversation** (`{{ .Session.IsPeriodic }}` = "false") **or a force-triggered periodic run** (`{{ .Session.IsPeriodicForced }}` = "true"):
-  - The user is present. Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
-
-  **Silent mode — a scheduled periodic run** (`{{ .Session.IsPeriodic }}` = "true" AND `{{ .Session.IsPeriodicForced }}` = "false"):
+  **Silent mode** — a scheduled periodic run; the user is not watching.
   - Use **only** `mitto_ui_notify` — non-blocking notifications only.
-  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. The user is not watching.
+  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
+  {{- else }}
+
+  **Interactive mode** — a regular conversation or a force-triggered periodic run; the user is present.
+  - Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+  {{- end }}
 
   ## Step 1 — Get the "Jira Tasks" query
 
