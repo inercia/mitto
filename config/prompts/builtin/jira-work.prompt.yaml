@@ -10,7 +10,9 @@ prompt: |
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
   Available ACP servers: `{{ .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
+  {{- end }}
 
   # JIRA: Start Work on a Ticket
 

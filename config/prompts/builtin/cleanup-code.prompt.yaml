@@ -69,9 +69,11 @@ prompt: |
 
   Available ACP servers:
   {{ .ACP.AvailableText }}
+  {{- if .Children.AllText }}
 
   Existing children:
   {{ .Children.AllText }}
+  {{- end }}
 
   **Choosing the right ACP server:**
 

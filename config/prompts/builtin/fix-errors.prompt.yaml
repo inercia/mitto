@@ -40,9 +40,11 @@ prompt: |
 
   Available ACP servers:
   {{ .ACP.AvailableText }}
+  {{- if .Children.AllText }}
 
   Existing children:
   {{ .Children.AllText }}
+  {{- end }}
 
   **How to delegate:**
 

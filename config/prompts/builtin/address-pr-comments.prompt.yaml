@@ -74,7 +74,9 @@ prompt: |
 
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
   Available ACP servers: `{{ .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
   Existing children: `{{ .Children.AllText }}`
+  {{- end }}
 
   1. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (marked `(current)` in the list above).
   2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones

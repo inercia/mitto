@@ -29,8 +29,10 @@ prompt: |
   2. Available ACP servers for this workspace: `{{ .ACP.AvailableText }}`
      Note each server's name, tags (e.g., `[coding, fast]`), and the `(current)` marker.
   3. `mitto_conversation_get_summary(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}")` → current work context
+  {{- if .Children.AllText }}
   4. Existing child conversations: `{{ .Children.AllText }}`
      If relevant children already exist, consider reusing them instead of creating new ones.
+  {{- end }}
 
   ## Phase 2: Decompose the Problem
 
