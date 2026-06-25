@@ -78,30 +78,40 @@ useEffect(() => {
 }, [fetchStoredSessions, forceReconnectActiveSession]);
 ```
 
-## Additional Resilience Events
+## Resilience Events & Session Staleness
 
-| Event                         | Purpose                | Response Time |
-| ----------------------------- | ---------------------- | ------------- |
-| `visibilitychange`            | Tab switch, phone wake | ~300ms        |
-| `online`/`offline`            | Network loss/restore   | ~500ms        |
-| `navigator.connection.change` | WiFi <-> Cellular      | ~500ms        |
-| `freeze`/`resume`             | iOS Safari page freeze | ~300ms        |
-
-## Session Staleness Detection
-
-When phone locked overnight, auth session may have expired:
-
-```javascript
-const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
-if (hiddenDuration > STALE_THRESHOLD_MS) {
-    const { authenticated } = await checkAuthWithRetry();
-    if (!authenticated) return; // Redirect to login
-}
-```
+| Event          | Purpose                | Staleness                          |
+| -------------- | ---------------------- | ---------------------------------- |
+| `visibilitychange` | Tab switch, phone wake | If hidden >1h, verify auth first   |
+| `online`/`offline` | Network loss/restore   |                                    |
+| `freeze`/`resume`  | iOS Safari freeze      |                                    |
 
 ## Extended Timeouts for Mobile
 
 Prompt ACK 30s (vs 15s desktop), Keepalive 30s, Reconnect 2s (vs 1s) — account for higher latency and iOS WebSocket suspension.
+
+## macOS App Activation Resync Debounce (mitto-c2p8.3)
+
+macOS fires "App became active" in rapid bursts (multiple sources: `applicationDidBecomeActive`, `NSWorkspaceScreensDidWakeNotification`, `NSWorkspaceDidWakeNotification`). Without debouncing, each burst triggers full staggered reconnect + load_events, causing thundering herd.
+
+**Implementation:**
+- Frontend: `APP_ACTIVATE_RESYNC_DEBOUNCE_MS = 15000` (15 seconds)
+- Backend: `appActivateDebounce = 2 * time.Second` (Go)
+- Pattern: Leading-edge debounce — first activation goes through, subsequent ones within the window are skipped
+
+```javascript
+// In app.js: window.mittoAppDidBecomeActive (called by native Swift)
+const { debounced, elapsed } = shouldDebounceReconnect(
+  appActivateDebounceRef.current,
+  "__app_activate__",
+  { windowMs: APP_ACTIVATE_RESYNC_DEBOUNCE_MS },
+);
+if (debounced) {
+  console.debug(`[macOS] App became active — skipping redundant resync (${elapsed}ms since last)`);
+  return;
+}
+reconnectAllSessionsStaggered(); // Only on first activation
+```
 
 ## Agent Response as Implicit ACK
 
