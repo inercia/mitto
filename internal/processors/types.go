@@ -256,10 +256,10 @@ type Processor struct {
 	OnError ErrorHandling `yaml:"on_error,omitempty" json:"on_error,omitempty"`
 
 	// EnabledWhen is an optional CEL expression that determines whether this processor applies.
-	// Uses the same CEL context as prompt enabledWhen expressions (acp.*, session.*, parent.*,
-	// children.*, workspace.*, tools.*). If empty, the processor always applies (subject to
+	// Uses the same CEL context as prompt enabledWhen expressions (ACP.*, Session.*, Parent.*,
+	// Children.*, Workspace.*, Tools.*). If empty, the processor always applies (subject to
 	// other filters). If the expression evaluates to false, the processor is skipped.
-	// Example: 'acp.tags.exists(t, t == "reasoning")' — only apply for reasoning models.
+	// Example: 'ACP.Tags.exists(t, t == "reasoning")' — only apply for reasoning models.
 	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"enabled_when,omitempty"`
 
 	// FilePath is the path to the processor's YAML file (set internally).

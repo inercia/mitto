@@ -7,8 +7,8 @@
 #
 # Activation conditions:
 #   1. At least 1 child conversation exists (enabledWhen CEL)
-#   2. All children are currently idle, i.e. none are prompting (children.promptingCount == 0)
-#   3. The mitto_conversation_delete_* MCP tool is available (tools.hasPattern CEL)
+#   2. All children are currently idle, i.e. none are prompting (Children.PromptingCount == 0)
+#   3. The mitto_conversation_delete_* MCP tool is available (Tools.HasPattern CEL)
 #
 # Throttling:
 #   - Fires on the first message, then re-runs every 10 user messages or 15 minutes
@@ -26,7 +26,7 @@ when:
     afterTokens: 40000
 mutate: append
 priority: 95
-enabledWhen: 'children.count > 0 && children.promptingCount == 0 && tools.hasPattern("mitto_conversation_delete_*")'
+enabledWhen: 'Children.Count > 0 && Children.PromptingCount == 0 && Tools.HasPattern("mitto_conversation_delete_*")'
 text: |
   ---
   [Child Conversation Cleanup Reminder]

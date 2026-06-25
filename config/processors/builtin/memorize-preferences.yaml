@@ -47,7 +47,7 @@ timeout: 120s
 on_error: skip
 
 # Skip periodic prompts — only process real user messages
-enabledWhen: '!session.isPeriodic'
+enabledWhen: '!Session.IsPeriodic'
 
 prompt: |
   You are a preference curator. You maintain a concise, durable list of the user's

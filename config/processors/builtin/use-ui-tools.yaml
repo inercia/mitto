@@ -10,7 +10,7 @@
 name: use-ui-tools
 description: "Reminds the agent to use Mitto UI tools for interactive input"
 enabled: true
-enabledWhen: 'tools.hasPattern("mitto_ui_*")'
+enabledWhen: 'Tools.HasPattern("mitto_ui_*")'
 when:
   on: userPrompt
   match: first

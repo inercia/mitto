@@ -31,8 +31,8 @@ type ProcessorInput struct {
 	// WorkspaceUUID is the workspace identifier.
 	WorkspaceUUID string `json:"workspace_uuid,omitempty"`
 	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
-	// Used for @mitto:beads_issue variable substitution and the session.hasBeadsIssue /
-	// session.beadsIssue CEL context in enabledWhen expressions.
+	// Used for @mitto:beads_issue variable substitution and the Session.HasBeadsIssue /
+	// Session.BeadsIssue CEL context in enabledWhen expressions.
 	BeadsIssue string `json:"beads_issue,omitempty"`
 	// AvailableACPServers lists the ACP servers that have workspaces configured for the
 	// session's working directory. Mirrors the data reported by the MCP tool.
@@ -42,7 +42,7 @@ type ProcessorInput struct {
 	// Each entry includes the session ID, name, and ACP server.
 	ChildSessions []ChildSession `json:"child_sessions,omitempty"`
 	// MCPToolNames is the list of MCP tool names available in the current workspace.
-	// Used for tools.* CEL context in enabledWhen expressions.
+	// Used for Tools.* CEL context in enabledWhen expressions.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
 	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
@@ -56,13 +56,13 @@ type ProcessorInput struct {
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`
 	// HasUserDataSchema indicates whether the workspace has a user data schema.
-	// Used for workspace.hasUserDataSchema CEL variable.
+	// Used for Workspace.HasUserDataSchema CEL variable.
 	HasUserDataSchema bool `json:"-"`
 	// HasMittoRC indicates whether a .mittorc file exists in the workspace.
-	// Used for workspace.hasMittoRC CEL variable.
+	// Used for Workspace.HasMittoRC CEL variable.
 	HasMittoRC bool `json:"-"`
 	// HasMetadataDescription indicates whether the workspace has metadata.description set.
-	// Used for workspace.hasMetadataDescription CEL variable.
+	// Used for Workspace.HasMetadataDescription CEL variable.
 	HasMetadataDescription bool `json:"-"`
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
 	// Used for @mitto:user_data_schema variable substitution.

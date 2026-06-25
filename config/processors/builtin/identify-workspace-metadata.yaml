@@ -22,7 +22,7 @@ timeout: 120s
 on_error: skip
 
 # Only activate when .mittorc exists but has no metadata description, and not periodic
-enabledWhen: 'workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic'
+enabledWhen: 'Workspace.HasMittoRC && !Workspace.HasMetadataDescription && !Session.IsPeriodic'
 
 prompt: |
   You are a workspace metadata curator. Your job is to analyze the project in the

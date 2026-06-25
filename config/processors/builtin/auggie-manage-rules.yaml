@@ -24,7 +24,7 @@ timeout: 300s
 on_error: skip
 
 # Only for Auggie sessions, skip periodic prompts, and only when rules don't exist yet
-enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic && !dirExists(".augment/rules")'
+enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsPeriodic && !DirExists(".augment/rules")'
 
 prompt: |
   You generate `.augment/rules` files for this workspace for the first time.

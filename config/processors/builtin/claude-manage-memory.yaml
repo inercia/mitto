@@ -24,7 +24,7 @@ timeout: 300s
 on_error: skip
 
 # Only for Claude Code sessions, skip periodic prompts, and only when memory files don't exist yet
-enabledWhen: 'acp.matchesServerType("claude-code") && !session.isPeriodic && !fileExists("CLAUDE.md") && !dirExists(".claude")'
+enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsPeriodic && !FileExists("CLAUDE.md") && !DirExists(".claude")'
 
 prompt: |
   You generate Claude Code memory files for this workspace for the first time.

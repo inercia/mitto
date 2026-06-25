@@ -9,7 +9,7 @@
 # your mitto config, or rename them to include a keyword like "opus", "o3", etc.
 #
 # Uses the same CEL context as prompt enabledWhen expressions.
-# Also requires mitto_conversation_* MCP tools to be available (tools.hasPattern CEL).
+# Also requires mitto_conversation_* MCP tools to be available (Tools.HasPattern CEL).
 ##########################################################################################
 name: delegate-to-coder
 description: "Suggests delegating coding tasks to a faster model when using a premium reasoning model"
@@ -24,9 +24,9 @@ when:
 mutate: append
 priority: 90
 enabledWhen: >-
-  acp.tags.exists(t, t == "reasoning")
-  || acp.tags.exists(t, t == "thinking")
-  || acp.name.matches("(?i)opus|o3|deep-research|codex")
+  ACP.Tags.exists(t, t == "reasoning")
+  || ACP.Tags.exists(t, t == "thinking")
+  || ACP.Name.matches("(?i)opus|o3|deep-research|codex")
 text: |
   ---
   [Multi-Agent Delegation Guidance]
