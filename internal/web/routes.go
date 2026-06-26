@@ -97,18 +97,18 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	)
 
 	// Beads (issue tracker) endpoints.
-	// The read endpoints (list/show/stats) follow the RESTful /api/issues
-	// convention (see docs/devel/rest-api-conventions.md §7.5/§8); the
-	// remaining verb-style routes are migrated in later slices.
+	// Read and core CRUD follow the RESTful /api/issues convention
+	// (see docs/devel/rest-api-conventions.md §7.5/§8); the remaining
+	// verb-style routes are migrated in later slices.
 	routes = append(routes,
 		apiRoute{method: "GET", pattern: "/api/issues", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsList)},
 		apiRoute{method: "GET", pattern: "/api/issues/stats", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStats)},
 		apiRoute{method: "GET", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsShow)},
-		apiRoute{pattern: "/api/beads/create", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCreate)},
+		apiRoute{method: "POST", pattern: "/api/issues", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCreate)},
+		apiRoute{method: "PATCH", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpdate)},
+		apiRoute{method: "DELETE", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDelete)},
 		apiRoute{pattern: "/api/beads/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
-		apiRoute{pattern: "/api/beads/delete", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDelete)},
 		apiRoute{pattern: "/api/beads/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},
-		apiRoute{pattern: "/api/beads/update", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpdate)},
 		apiRoute{pattern: "/api/beads/comment", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsComment)},
 		apiRoute{pattern: "/api/beads/dep", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDep)},
 		apiRoute{pattern: "/api/beads/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},

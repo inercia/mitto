@@ -18,9 +18,8 @@ type beadsCreateDep struct {
 	Type string `json:"type,omitempty"`
 }
 
-// beadsCreateRequest is the JSON body for POST /api/beads/create.
+// beadsCreateRequest is the JSON body for POST /api/issues.
 type beadsCreateRequest struct {
-	WorkingDir   string           `json:"working_dir"`
 	Title        string           `json:"title"`
 	Type         string           `json:"type,omitempty"`
 	Priority     *int             `json:"priority,omitempty"` // pointer so 0 ("Critical") is distinguishable from absent
@@ -31,7 +30,7 @@ type beadsCreateRequest struct {
 	Dependencies []beadsCreateDep `json:"dependencies,omitempty"`
 }
 
-// HandleBeadsCreate handles POST /api/beads/create.
+// HandleBeadsCreate handles POST /api/issues?working_dir=...
 // Runs "bd create <title> --json [--type T] [--priority N] [-d D]" in the workspace directory.
 // When title is empty but description is non-empty, the title is auto-generated via the
 // auxiliary session (with a 60s timeout) and falls back to conversation.GenerateQuickTitle, then "New Issue".
@@ -48,11 +47,12 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
@@ -66,14 +66,14 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
+	if !h.isKnownWorkspaceDir(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
 	// Auto-generate title from description when the caller omitted it.
 	if title == "" {
-		ws := h.deps.SessionManager.GetWorkspace(req.WorkingDir)
+		ws := h.deps.SessionManager.GetWorkspace(workingDir)
 		if ws == nil || ws.UUID == "" {
 			writeErrorJSON(w, http.StatusInternalServerError, "", "unable to resolve workspace")
 			return
@@ -117,7 +117,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		deps = append(deps, t+":"+dep.ID)
 	}
 
-	out, err := h.beadsClient().Create(r.Context(), req.WorkingDir, beads.CreateParams{
+	out, err := h.beadsClient().Create(r.Context(), workingDir, beads.CreateParams{
 		Title:       title,
 		Type:        req.Type,
 		Priority:    req.Priority,
@@ -258,45 +258,35 @@ type beadsActionResponse struct {
 	OK bool `json:"ok"`
 }
 
-// beadsDeleteRequest is the JSON body for POST /api/beads/delete.
-type beadsDeleteRequest struct {
-	WorkingDir string `json:"working_dir"`
-	ID         string `json:"id"`
-}
-
-// HandleBeadsDelete handles POST /api/beads/delete.
+// HandleBeadsDelete handles DELETE /api/issues/{id}?working_dir=...
 // Runs "bd delete <id> --force" in the workspace directory.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodDelete {
 		methodNotAllowed(w)
 		return
 	}
 
-	var req beadsDeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
-		return
-	}
-
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	id := r.PathValue("id")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
-	if strings.TrimSpace(req.ID) == "" {
+	if strings.TrimSpace(id) == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
+	if !h.isKnownWorkspaceDir(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
-	if err := h.beadsClient().Delete(r.Context(), req.WorkingDir, req.ID); err != nil {
+	if err := h.beadsClient().Delete(r.Context(), workingDir, id); err != nil {
 		writeBeadsError(w, err)
 		return
 	}
@@ -362,14 +352,12 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, beadsActionResponse{OK: true})
 }
 
-// beadsUpdateRequest is the JSON body for POST /api/beads/update.
+// beadsUpdateRequest is the JSON body for PATCH /api/issues/{id}.
 // Description, Title, Priority, Assignee and Notes are pointers so an omitted
 // field (nil) is distinguishable from an intentional value (an empty
 // description, assignee or notes clears the field; an empty title is rejected;
 // priority 0 is a valid "Critical" value).
 type beadsUpdateRequest struct {
-	WorkingDir  string  `json:"working_dir"`
-	ID          string  `json:"id"`
 	Description *string `json:"description,omitempty"`
 	Title       *string `json:"title,omitempty"`
 	Type        *string `json:"type,omitempty"`
@@ -378,7 +366,7 @@ type beadsUpdateRequest struct {
 	Notes       *string `json:"notes,omitempty"`    // pointer so an empty string (clear notes) is distinguishable from absent
 }
 
-// HandleBeadsUpdate handles POST /api/beads/update.
+// HandleBeadsUpdate handles PATCH /api/issues/{id}?working_dir=...
 // Runs "bd update <id> [--title <title>] [-d <description>] [--priority N] [-a <assignee>] [--notes <notes>]"
 // in the workspace directory. At least one of title, description, priority,
 // assignee or notes must be supplied. When the description is an empty string,
@@ -387,7 +375,7 @@ type beadsUpdateRequest struct {
 // notes value clears the notes.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPatch {
 		methodNotAllowed(w)
 		return
 	}
@@ -398,15 +386,17 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	id := r.PathValue("id")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
-	if strings.TrimSpace(req.ID) == "" {
+	if strings.TrimSpace(id) == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
@@ -422,13 +412,13 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "priority must be between 0 and 4")
 		return
 	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
+	if !h.isKnownWorkspaceDir(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
-	if err := h.beadsClient().Update(r.Context(), req.WorkingDir, beads.UpdateParams{
-		ID:          req.ID,
+	if err := h.beadsClient().Update(r.Context(), workingDir, beads.UpdateParams{
+		ID:          id,
 		Title:       req.Title,
 		Type:        req.Type,
 		Description: req.Description,

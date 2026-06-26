@@ -376,7 +376,7 @@ func TestHandleBeadsShow_UnknownWorkspace(t *testing.T) {
 
 func TestHandleBeadsCreate_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodGet, "/api/beads/create", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/issues?working_dir=/test/workspace", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsCreate(w, req)
@@ -387,7 +387,7 @@ func TestHandleBeadsCreate_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsCreate_InvalidBody(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/test/workspace",
 		strings.NewReader(`not-json`))
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
@@ -400,8 +400,8 @@ func TestHandleBeadsCreate_InvalidBody(t *testing.T) {
 func TestHandleBeadsCreate_BothEmpty(t *testing.T) {
 	// Both title and description empty (or whitespace-only) → 400.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"/test/workspace","title":"   "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"   "}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -444,8 +444,8 @@ func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T)
 	}
 
 	s := New(Deps{SessionManager: sm, BeadsClient: mock})
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"/test/workspace","title":"","description":"Fix the authentication bug in the login flow"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"","description":"Fix the authentication bug in the login flow"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -467,8 +467,8 @@ func TestHandleBeadsCreate_EmptyTitleWithDescription_FallbackTitle(t *testing.T)
 func TestHandleBeadsCreate_EmptyTitleNoDescriptionWhitespace_Rejected(t *testing.T) {
 	// Explicitly: only description whitespace → both empty → 400.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"/test/workspace","title":"","description":"   "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"","description":"   "}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -480,7 +480,7 @@ func TestHandleBeadsCreate_EmptyTitleNoDescriptionWhitespace_Rejected(t *testing
 
 func TestHandleBeadsCreate_MissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
+	req := httptest.NewRequest(http.MethodPost, "/api/issues",
 		strings.NewReader(`{"title":"Test"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
@@ -508,8 +508,8 @@ func TestHandleBeadsCreate_MissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsCreate_RelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"relative/path","title":"Test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=relative/path",
+		strings.NewReader(`{"title":"Test"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -521,8 +521,8 @@ func TestHandleBeadsCreate_RelativeWorkingDir(t *testing.T) {
 
 func TestHandleBeadsCreate_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"/unknown/dir","title":"Test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/unknown/dir",
+		strings.NewReader(`{"title":"Test"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -534,8 +534,8 @@ func TestHandleBeadsCreate_UnknownWorkspace(t *testing.T) {
 
 func TestHandleBeadsCreate_NilSessionManager(t *testing.T) {
 	s := New(Deps{})
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"/test/workspace","title":"Test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"Test"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -549,8 +549,8 @@ func TestHandleBeadsCreate_BdErrorReturnsJSONError(t *testing.T) {
 	// Valid request reaching bd execution — bd may or may not be present.
 	// On success: 200 (bd returns JSON). On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
-		strings.NewReader(`{"working_dir":"/test/workspace","title":"Test issue"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"Test issue"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -643,8 +643,9 @@ func TestHandleBeadsCleanup_BdErrorReturnsJSONError(t *testing.T) {
 
 func TestHandleBeadsDelete_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodGet, "/api/beads/delete", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1?working_dir=/test/workspace", nil)
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsDelete(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -652,24 +653,11 @@ func TestHandleBeadsDelete_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestHandleBeadsDelete_InvalidBody(t *testing.T) {
-	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/delete",
-		strings.NewReader(`not-json`))
-	req.RemoteAddr = "127.0.0.1:1"
-	w := httptest.NewRecorder()
-	s.handleBeadsDelete(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
 func TestHandleBeadsDelete_MissingID(t *testing.T) {
+	// No path value set → id = "" → 400.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/delete",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"  "}`))
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues?working_dir=/test/workspace", nil)
 	req.RemoteAddr = "127.0.0.1:1"
-	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDelete(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -694,10 +682,9 @@ func TestHandleBeadsDelete_MissingID(t *testing.T) {
 
 func TestHandleBeadsDelete_MissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/delete",
-		strings.NewReader(`{"id":"abc-1"}`))
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/abc-1", nil)
 	req.RemoteAddr = "127.0.0.1:1"
-	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsDelete(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -707,10 +694,9 @@ func TestHandleBeadsDelete_MissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsDelete_RelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/delete",
-		strings.NewReader(`{"working_dir":"relative/path","id":"abc-1"}`))
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/abc-1?working_dir=relative/path", nil)
 	req.RemoteAddr = "127.0.0.1:1"
-	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsDelete(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -720,10 +706,9 @@ func TestHandleBeadsDelete_RelativeWorkingDir(t *testing.T) {
 
 func TestHandleBeadsDelete_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/delete",
-		strings.NewReader(`{"working_dir":"/unknown/dir","id":"abc-1"}`))
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/abc-1?working_dir=/unknown/dir", nil)
 	req.RemoteAddr = "127.0.0.1:1"
-	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsDelete(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -844,8 +829,9 @@ func TestHandleBeadsStatus_UndeferActionAccepted(t *testing.T) {
 
 func TestHandleBeadsUpdate_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodGet, "/api/beads/update", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1?working_dir=/test/workspace", nil)
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -855,9 +841,10 @@ func TestHandleBeadsUpdate_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsUpdate_InvalidBody(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
 		strings.NewReader(`not-json`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -867,9 +854,10 @@ func TestHandleBeadsUpdate_InvalidBody(t *testing.T) {
 
 func TestHandleBeadsUpdate_MissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"id":"abc-1","description":"x"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1",
+		strings.NewReader(`{"description":"x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -879,9 +867,10 @@ func TestHandleBeadsUpdate_MissingWorkingDir(t *testing.T) {
 }
 
 func TestHandleBeadsUpdate_MissingID(t *testing.T) {
+	// No path value set → id = "" → 400.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"  ","description":"x"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues?working_dir=/test/workspace",
+		strings.NewReader(`{"description":"x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -893,9 +882,10 @@ func TestHandleBeadsUpdate_MissingID(t *testing.T) {
 
 func TestHandleBeadsUpdate_MissingDescription(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -906,9 +896,10 @@ func TestHandleBeadsUpdate_MissingDescription(t *testing.T) {
 
 func TestHandleBeadsUpdate_RelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"relative/path","id":"abc-1","description":"x"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=relative/path",
+		strings.NewReader(`{"description":"x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -919,9 +910,10 @@ func TestHandleBeadsUpdate_RelativeWorkingDir(t *testing.T) {
 
 func TestHandleBeadsUpdate_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/unknown/dir","id":"abc-1","description":"x"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/unknown/dir",
+		strings.NewReader(`{"description":"x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -934,9 +926,10 @@ func TestHandleBeadsUpdate_EmptyDescriptionAllowed(t *testing.T) {
 	// An empty (but present) description is valid — never a 4xx for the empty value.
 	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","description":""}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"description":""}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -948,9 +941,10 @@ func TestHandleBeadsUpdate_EmptyDescriptionAllowed(t *testing.T) {
 func TestHandleBeadsUpdate_EmptyTitleRejected(t *testing.T) {
 	// A present but blank title is rejected — bd requires a non-empty title.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","title":"  "}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"  "}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -963,9 +957,10 @@ func TestHandleBeadsUpdate_TitleOnlyAllowed(t *testing.T) {
 	// A non-empty title with no description is valid — never a 4xx for this.
 	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","title":"New title"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"title":"New title"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -978,9 +973,10 @@ func TestHandleBeadsUpdate_PriorityOnlyAllowed(t *testing.T) {
 	// A priority-only update is valid — never a 4xx for the value itself.
 	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","priority":0}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"priority":0}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -992,9 +988,10 @@ func TestHandleBeadsUpdate_PriorityOnlyAllowed(t *testing.T) {
 func TestHandleBeadsUpdate_PriorityOutOfRangeRejected(t *testing.T) {
 	// A priority outside the 0-4 range is rejected before reaching bd execution.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","priority":7}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"priority":7}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -1022,9 +1019,10 @@ func TestHandleBeadsUpdate_AssigneeOnlyAllowed(t *testing.T) {
 	// An assignee-only update is valid — never a 4xx for this.
 	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","assignee":"alice"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"assignee":"alice"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -1037,9 +1035,10 @@ func TestHandleBeadsUpdate_EmptyAssigneeAllowed(t *testing.T) {
 	// An empty (but present) assignee is valid — it clears the field.
 	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","assignee":""}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"assignee":""}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
@@ -1059,9 +1058,10 @@ func TestHandleBeadsUpdate_TypeAccepted(t *testing.T) {
 			return nil
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","type":"bug"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/issues/abc-1?working_dir=/test/workspace",
+		strings.NewReader(`{"type":"bug"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)

@@ -233,7 +233,7 @@ function labelValue(label, value) {
  *    opens instantly without an extra network request. Subtasks are computed
  *    from the full issue list via the parent field.
  *  - Create mode (`isCreating` is true): shows editable fields for a new issue
- *    plus a "Save" footer that POSTs to /api/beads/create.
+ *    plus a "Save" footer that POSTs to /api/issues.
  *
  * The panel is a dock-mode daisyUI Drawer (drawer-dock; see styles.css) docked
  * to the right edge of the beads view area and confined to its own width — NOT a
@@ -423,13 +423,13 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     if (!description.trim()) return;
     setSubmitting(true);
     try {
-      const body = { working_dir: workingDir, type, priority, description: description.trim() };
+      const body = { type, priority, description: description.trim() };
       if (title.trim()) body.title = title.trim();
       if (createParentId) body.parent = createParentId;
       if (createAssignee.trim()) body.assignee = createAssignee.trim();
       if (createNotes.trim()) body.notes = createNotes.trim();
       if (createDeps.length) body.dependencies = createDeps.map(d => ({ id: d.id, type: d.type || "blocks" }));
-      const res = await secureFetch(apiUrl("/api/beads/create"), {
+      const res = await secureFetch(apiUrl("/api/issues") + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -710,10 +710,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     }
   }, []);
 
-  // Unified Save: posts all dirty fields in one /api/beads/update call.
+  // Unified Save: patches all dirty fields in one PATCH /api/issues/{id} call.
   const handleViewSave = useCallback(async () => {
     if (!data || !data.id || savingView) return;
-    const body = { working_dir: workingDir, id: data.id };
+    const body = {};
     const t = viewDraft.title.trim();
     if (t !== "" && t !== viewOriginal.title) body.title = t;
     if (viewDraft.type !== viewOriginal.type) body.type = viewDraft.type;
@@ -721,11 +721,11 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     if (viewDraft.description !== viewOriginal.description) body.description = viewDraft.description;
     if (viewDraft.assignee.trim() !== viewOriginal.assignee) body.assignee = viewDraft.assignee.trim();
     if (viewDraft.notes !== viewOriginal.notes) body.notes = viewDraft.notes;
-    if (Object.keys(body).filter(k => k !== "working_dir" && k !== "id").length === 0) return;
+    if (Object.keys(body).length === 0) return;
     setSavingView(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/update"), {
-        method: "POST",
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(data.id)}`) + "?working_dir=" + encodeURIComponent(workingDir), {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
@@ -1832,10 +1832,8 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     const id = deleteTarget.id;
     setDeletingIssue(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/delete"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id }),
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(id)}`) + "?working_dir=" + encodeURIComponent(workingDir), {
+        method: "DELETE",
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
@@ -2589,10 +2587,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         const ordered = [...deleteTargetDescendants].sort((a, b) => b.depth - a.depth);
         for (const { issue: child } of ordered) {
           try {
-            const cres = await secureFetch(apiUrl("/api/beads/delete"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ working_dir: workingDir, id: child.id }),
+            const cres = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(child.id)}`) + "?working_dir=" + encodeURIComponent(workingDir), {
+              method: "DELETE",
             });
             const cdata = await readBeadsResponse(cres);
             if (!cres.ok || cdata.error) childDeleteFailed++;
@@ -2603,10 +2599,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         }
       }
 
-      const res = await secureFetch(apiUrl("/api/beads/delete"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id }),
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(id)}`) + "?working_dir=" + encodeURIComponent(workingDir), {
+        method: "DELETE",
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
