@@ -4654,8 +4654,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
             console.error("Failed to create session:", errorData);
-            errorCode = errorData.error;
-            errorMessage = errorData.message || "Failed to create session";
+            errorCode = errorData.error?.code;
+            errorMessage = errorData.error?.message || "Failed to create session";
           } else {
             const errorText = await response.text();
             console.error("Failed to create session:", errorText);

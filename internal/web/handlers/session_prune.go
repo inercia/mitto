@@ -36,17 +36,17 @@ func (h *Handlers) HandleSessionPrune(w http.ResponseWriter, r *http.Request, se
 
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	// Verify session exists
 	if _, err := store.GetMetadata(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
-		http.Error(w, "Failed to get session", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session")
 		return
 	}
 
@@ -55,7 +55,7 @@ func (h *Handlers) HandleSessionPrune(w http.ResponseWriter, r *http.Request, se
 	if h.deps.SessionManager != nil {
 		if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
 			if bs.IsPrompting() {
-				http.Error(w, "Session is currently processing a prompt — wait for it to finish before pruning", http.StatusConflict)
+				writeErrorJSON(w, http.StatusConflict, "", "Session is currently processing a prompt — wait for it to finish before pruning")
 				return
 			}
 		}
@@ -73,7 +73,7 @@ func (h *Handlers) HandleSessionPrune(w http.ResponseWriter, r *http.Request, se
 		keepLast = session.DefaultPruneKeepLast
 	}
 	if keepLast < session.MinPruneKeepLast {
-		http.Error(w, "keep_last must be at least 50", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "keep_last must be at least 50")
 		return
 	}
 
@@ -83,14 +83,14 @@ func (h *Handlers) HandleSessionPrune(w http.ResponseWriter, r *http.Request, se
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to prune session", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to prune session: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to prune session: "+err.Error())
 		return
 	}
 
 	// Read updated metadata to get authoritative counts
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
-		http.Error(w, "Failed to read updated metadata after prune", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read updated metadata after prune")
 		return
 	}
 

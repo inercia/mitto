@@ -57,7 +57,7 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -66,7 +66,7 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to list sessions", "error", err)
 		}
-		http.Error(w, "Failed to list sessions", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to list sessions")
 		return
 	}
 

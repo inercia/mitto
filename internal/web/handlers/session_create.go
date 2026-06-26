@@ -124,7 +124,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	bs, err := h.deps.SessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
 	if err != nil {
 		if err == conversation.ErrTooManySessions {
-			http.Error(w, "Maximum number of sessions reached (32)", http.StatusServiceUnavailable)
+			writeErrorJSON(w, http.StatusServiceUnavailable, "too_many_sessions", "Maximum number of sessions reached (32)")
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -142,7 +142,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if h.deps.BroadcastACPStartFailed != nil {
 			h.deps.BroadcastACPStartFailed("", req.Name, err, workspace.ACPServer)
 		}
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to create session")
 		return
 	}
 
