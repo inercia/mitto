@@ -81,7 +81,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	// Config and discovery endpoints.
 	routes = append(routes,
 		apiRoute{pattern: "/api/config", handler: http.HandlerFunc(s.handleConfig)},
-		apiRoute{pattern: "/api/agent-types", handler: http.HandlerFunc(s.apiHandlers.HandleAgentTypes)},
+		apiRoute{pattern: "/api/agents/types", handler: http.HandlerFunc(s.apiHandlers.HandleAgentTypes)},
 		apiRoute{pattern: "/api/agents/scan", handler: http.HandlerFunc(s.apiHandlers.HandleScanAgents)},
 		apiRoute{pattern: "/api/agents/confirm", handler: http.HandlerFunc(s.apiHandlers.HandleConfirmAgents)},
 		apiRoute{pattern: "/api/supported-runners", handler: http.HandlerFunc(s.apiHandlers.HandleSupportedRunners)},

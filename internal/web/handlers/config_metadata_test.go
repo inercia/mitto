@@ -113,7 +113,7 @@ func TestHandleRunnerDefaults_MethodNotAllowed(t *testing.T) {
 func TestHandleAgentTypes_MethodNotAllowed(t *testing.T) {
 	h := New(Deps{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/agent-types", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/types", nil)
 	w := httptest.NewRecorder()
 
 	h.HandleAgentTypes(w, req)

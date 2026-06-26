@@ -11,7 +11,7 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
-// HandleAgentTypes handles GET /api/agent-types.
+// HandleAgentTypes handles GET /api/agents/types.
 // Returns the list of available agent definitions by reading subdirectory names
 // from the agents directory (both builtin and user-created).
 func (h *Handlers) HandleAgentTypes(w http.ResponseWriter, r *http.Request) {

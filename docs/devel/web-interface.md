@@ -121,7 +121,7 @@ Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/wo
 | Path | Method(s) | Description |
 | ---- | --------- | ----------- |
 | `/api/config` | GET, POST | Get full server configuration (GET); save updated configuration (POST) |
-| `/api/agent-types` | GET | List configured ACP agent types |
+| `/api/agents/types` | GET | List configured ACP agent types |
 | `/api/agents/scan` | GET | Scan for installed agent definitions |
 | `/api/agents/confirm` | POST | Confirm/register scanned agents |
 | `/api/supported-runners` | GET | List supported runner types (public, no auth) |
