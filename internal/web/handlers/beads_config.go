@@ -48,15 +48,15 @@ func (h *Handlers) HandleBeadsConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) handleBeadsConfigGet(w http.ResponseWriter, r *http.Request) {
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(workingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -76,24 +76,24 @@ func (h *Handlers) handleBeadsConfigGet(w http.ResponseWriter, r *http.Request) 
 func (h *Handlers) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) {
 	var req beadsConfigSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !beads.IsValidConfigKey(req.Key) {
-		http.Error(w, "invalid config key", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -111,19 +111,19 @@ func (h *Handlers) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request
 	key := r.URL.Query().Get("key")
 
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(workingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !beads.IsValidConfigKey(key) {
-		http.Error(w, "invalid config key", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -175,15 +175,15 @@ func (h *Handlers) HandleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) handleBeadsUpstreamGet(w http.ResponseWriter, r *http.Request) {
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(workingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -203,24 +203,24 @@ func (h *Handlers) handleBeadsUpstreamGet(w http.ResponseWriter, r *http.Request
 func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request) {
 	var req beadsUpstreamRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !beads.IsValidUpstream(req.Upstream) {
-		http.Error(w, "upstream must be one of: none, jira, github, gitlab, linear, prompts", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "upstream must be one of: none, jira, github, gitlab, linear, prompts")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -245,11 +245,11 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 			}
 			p, ok := promptIdx[strings.ToLower(name)]
 			if !ok {
-				http.Error(w, fmt.Sprintf("%s: prompt %q not found in this folder's prompt list", field, name), http.StatusBadRequest)
+				writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("%s: prompt %q not found in this folder's prompt list", field, name))
 				return
 			}
 			if len(p.Parameters) > 0 {
-				http.Error(w, fmt.Sprintf("%s: prompt %q requires parameters and cannot be used as a beads action prompt", field, name), http.StatusBadRequest)
+				writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("%s: prompt %q requires parameters and cannot be used as a beads action prompt", field, name))
 				return
 			}
 		}
@@ -302,20 +302,20 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsSyncRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -331,7 +331,7 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	case "pull", "push", "sync", "status":
 		// valid
 	default:
-		http.Error(w, "action must be one of: pull, push, sync, status", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "action must be one of: pull, push, sync, status")
 		return
 	}
 

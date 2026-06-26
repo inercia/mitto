@@ -1137,6 +1137,21 @@ func TestHandleBeadsConfig_GetMissingWorkingDir(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "working_dir is required" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "working_dir is required")
+	}
 }
 
 func TestHandleBeadsConfig_GetRelativeWorkingDir(t *testing.T) {
@@ -1206,6 +1221,21 @@ func TestHandleBeadsConfig_SetInvalidKey(t *testing.T) {
 	s.handleBeadsConfig(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "invalid config key" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "invalid config key")
 	}
 }
 
@@ -1301,6 +1331,22 @@ func TestHandleBeadsUpstream_SetInvalidUpstream(t *testing.T) {
 	s.handleBeadsUpstream(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	const wantMsg = "upstream must be one of: none, jira, github, gitlab, linear, prompts"
+	if env.Error.Message != wantMsg {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
 	}
 }
 
@@ -1568,6 +1614,22 @@ func TestHandleBeadsSync_InvalidAction(t *testing.T) {
 	s.handleBeadsSync(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	const wantMsg = "action must be one of: pull, push, sync, status"
+	if env.Error.Message != wantMsg {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
 	}
 }
 

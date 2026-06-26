@@ -49,6 +49,17 @@ import {
 import { ModelSelection } from "./ModelSelection.js";
 import { Tooltip } from "./Tooltip.js";
 
+// Flatten the canonical nested error envelope {error:{code,message,details}} to a
+// flat message string. Returns "" when there is no error. Also accepts the legacy
+// flat {error:"..."} shape (the HTTP-200 bd-failure path) unchanged.
+function beadsErrorMessage(data) {
+  if (!data || !data.error) return "";
+  if (typeof data.error === "object") {
+    return (data.error && data.error.message) || "Request failed";
+  }
+  return data.error;
+}
+
 // Recommended beads config keys per upstream task system. Shown as context-sensitive
 // help under the upstream selector in the Beads tab.
 const BEADS_UPSTREAM_HELP = {
@@ -1191,10 +1202,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     try {
       const res = await secureFetch(apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}`));
       const data = await res.json();
-      if (data && data.error) {
-        // bd missing or not initialized in this folder.
+      const errMsg = beadsErrorMessage(data);
+      if (errMsg) {
+        // bd missing or not initialized in this folder, or a validation error.
         setBeadsConfig(null);
-        setBeadsConfigError(data.error);
+        setBeadsConfigError(errMsg);
       } else {
         setBeadsConfig(data || {});
       }
@@ -1219,8 +1231,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         body: JSON.stringify({ working_dir: workingDir, key, value }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Failed to set config");
-      if (data && data.error) throw new Error(data.stderr || data.error);
+      if (!res.ok) throw new Error(beadsErrorMessage(data) || "Failed to set config");
+      if (data && data.error) throw new Error(data.stderr || beadsErrorMessage(data));
       await reloadBeadsConfig(workingDir);
     } catch (err) {
       setBeadsConfigError(err.message || "Failed to set config");
@@ -1241,8 +1253,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         { method: "DELETE" },
       );
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Failed to delete config");
-      if (data && data.error) throw new Error(data.stderr || data.error);
+      if (!res.ok) throw new Error(beadsErrorMessage(data) || "Failed to delete config");
+      if (data && data.error) throw new Error(data.stderr || beadsErrorMessage(data));
       await reloadBeadsConfig(workingDir);
     } catch (err) {
       setBeadsConfigError(err.message || "Failed to delete config");
@@ -1304,8 +1316,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Failed to set upstream");
-      if (data && data.error) throw new Error(data.error);
+      if (!res.ok) throw new Error(beadsErrorMessage(data) || "Failed to set upstream");
+      if (data && data.error) throw new Error(beadsErrorMessage(data));
       setBeadsUpstream((data && data.upstream) || upstream);
       setBeadsPullPrompt((data && data.pull_prompt) || "");
       setBeadsPushPrompt((data && data.push_prompt) || "");
@@ -1350,8 +1362,8 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Failed to save prompt");
-      if (data && data.error) throw new Error(data.error);
+      if (!res.ok) throw new Error(beadsErrorMessage(data) || "Failed to save prompt");
+      if (data && data.error) throw new Error(beadsErrorMessage(data));
     } catch (err) {
       setter(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to save prompt");
