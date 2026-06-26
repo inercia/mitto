@@ -279,11 +279,10 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// beadsSyncRequest is the JSON body for POST /api/beads/sync.
+// beadsSyncRequest is the JSON body for POST /api/issues/sync.
 // Action must be "pull", "push", "sync", or "status".
 type beadsSyncRequest struct {
-	WorkingDir string `json:"working_dir"`
-	Action     string `json:"action"`
+	Action string `json:"action"`
 }
 
 // beadsSyncResponse carries the captured bd output on success.
@@ -292,13 +291,28 @@ type beadsSyncResponse struct {
 	Output string `json:"output,omitempty"`
 }
 
-// HandleBeadsSync handles POST /api/beads/sync. It runs the configured
-// upstream's pull/push/sync/status command for the folder. The integration is
-// read authoritatively from folders.json — the client only chooses the action.
+// HandleBeadsSync handles POST /api/issues/sync?working_dir=... It runs the
+// configured upstream's pull/push/sync/status command for the folder. The
+// integration is read authoritatively from folders.json — the client only
+// chooses the action.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -308,21 +322,8 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.WorkingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
-		return
-	}
-	if !filepath.IsAbs(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
-		return
-	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
-		return
-	}
-
 	// The integration is read from folders.json, never trusted from the client.
-	upstream := config.FolderBeadsUpstream(req.WorkingDir)
+	upstream := config.FolderBeadsUpstream(workingDir)
 	if upstream == "" || upstream == "none" {
 		writeErrorJSON(w, http.StatusInternalServerError, "", "no upstream task system is configured for this folder")
 		return
@@ -337,7 +338,7 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.beadsClient().Sync(r.Context(), req.WorkingDir, upstream, req.Action)
+	out, err := h.beadsClient().Sync(r.Context(), workingDir, upstream, req.Action)
 	if err != nil {
 		writeBeadsError(w, err)
 		return

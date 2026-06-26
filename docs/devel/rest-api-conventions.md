@@ -218,7 +218,7 @@ All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them
 | `/api/beads/create` | POST | `/api/issues` | POST | migrate | Create on collection |
 | `/api/beads/update` | POST | `/api/issues/{id}` | PATCH | migrate | Use PATCH for partial update |
 | `/api/beads/delete` | POST | `/api/issues/{id}` | DELETE | migrate | Use DELETE |
-| `/api/beads/status` | GET | `/api/issues/status` | GET | migrate | Collection-level status |
+| `/api/beads/status` | POST | `/api/issues/{id}/status` | POST | migrate | Per-issue lifecycle action (close/reopen/defer/undefer); id in path, action in body |
 | `/api/beads/comment` | POST | `/api/issues/{id}/comments` | POST | migrate | Sub-resource on issue |
 | `/api/beads/dep` | POST | `/api/issues/{id}/dependencies` | POST | migrate | Sub-resource on issue |
 | `/api/beads/config` | GET, PUT | `/api/issues/config` | GET, PUT | migrate | Issues config sub-resource |

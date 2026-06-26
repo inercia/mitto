@@ -138,11 +138,6 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 	w.Write(out) //nolint:errcheck
 }
 
-// beadsCleanupRequest is the JSON body for POST /api/beads/cleanup.
-type beadsCleanupRequest struct {
-	WorkingDir string `json:"working_dir"`
-}
-
 // beadsCleanupResponse reports whether a background cleanup was started.
 type beadsCleanupResponse struct {
 	Started        bool `json:"started"`
@@ -153,7 +148,7 @@ type beadsCleanupResponse struct {
 // beadsCleanupBatchSize is how many closed issues are deleted per bd invocation.
 const beadsCleanupBatchSize = 25
 
-// HandleBeadsCleanup handles POST /api/beads/cleanup.
+// HandleBeadsCleanup handles POST /api/issues/cleanup?working_dir=...
 // It lists closed issues synchronously, then starts a background goroutine that
 // deletes them in batches and reports progress over the global-events WebSocket.
 // The HTTP response returns immediately so the 30 s middleware cap cannot fire.
@@ -162,26 +157,22 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	var req beadsCleanupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
-		return
-	}
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
+	if !h.isKnownWorkspaceDir(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
 	// Fast phase: list closed IDs using the request context.
-	ids, err := h.beadsClient().ListClosedIDs(r.Context(), req.WorkingDir)
+	ids, err := h.beadsClient().ListClosedIDs(r.Context(), workingDir)
 	if err != nil {
 		writeBeadsError(w, err)
 		return
@@ -193,14 +184,14 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Guard against concurrent cleanups for the same working dir.
-	if !h.tryStartBeadsCleanup(req.WorkingDir) {
+	if !h.tryStartBeadsCleanup(workingDir) {
 		writeJSONOK(w, beadsCleanupResponse{Started: false, Total: total, AlreadyRunning: true})
 		return
 	}
 
 	// Slow phase: delete in batches on a detached context so the 30s HTTP
 	// timeout cannot cancel it. Progress is reported over the global-events WS.
-	go h.runBeadsCleanup(req.WorkingDir, ids)
+	go h.runBeadsCleanup(workingDir, ids)
 
 	writeJSONOK(w, beadsCleanupResponse{Started: true, Total: total})
 }
@@ -294,15 +285,13 @@ func (h *Handlers) HandleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, beadsActionResponse{OK: true})
 }
 
-// beadsStatusRequest is the JSON body for POST /api/beads/status.
+// beadsStatusRequest is the JSON body for POST /api/issues/{id}/status.
 // Action must be "close", "reopen", "defer" or "undefer".
 type beadsStatusRequest struct {
-	WorkingDir string `json:"working_dir"`
-	ID         string `json:"id"`
-	Action     string `json:"action"`
+	Action string `json:"action"`
 }
 
-// HandleBeadsStatus handles POST /api/beads/status.
+// HandleBeadsStatus handles POST /api/issues/{id}/status?working_dir=...
 // Runs "bd close|reopen|defer|undefer <id>" in the workspace directory.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
@@ -311,22 +300,28 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req beadsStatusRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
-		return
-	}
-
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	id := r.PathValue("id")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
-	if strings.TrimSpace(req.ID) == "" {
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+	if !isValidBeadsIssueRef(id) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
+		return
+	}
+
+	var req beadsStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
@@ -339,12 +334,7 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
-		return
-	}
-
-	if err := h.beadsClient().SetStatus(r.Context(), req.WorkingDir, req.ID, verb); err != nil {
+	if err := h.beadsClient().SetStatus(r.Context(), workingDir, id, verb); err != nil {
 		writeBeadsError(w, err)
 		return
 	}

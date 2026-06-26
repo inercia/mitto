@@ -331,7 +331,7 @@ const (
 	WSMsgTypePromptsChanged = "prompts_changed"
 
 	// WSMsgTypeBeadsCleanupProgress reports progress of a background bulk
-	// closed-issue cleanup started via POST /api/beads/cleanup. Sent repeatedly
+	// closed-issue cleanup started via POST /api/issues/cleanup. Sent repeatedly
 	// as batches complete, plus a final message with done=true (or error set).
 	// Data: { "working_dir": string, "deleted": int, "total": int, "done": bool, "error": string }
 	WSMsgTypeBeadsCleanupProgress = "beads_cleanup_progress"

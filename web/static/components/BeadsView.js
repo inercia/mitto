@@ -1784,10 +1784,10 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     const action = iss.status === "closed" ? "reopen" : "close";
     setStatusBusy(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/status"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(iss.id)}/status`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: iss.id, action }),
+        body: JSON.stringify({ action }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
@@ -1808,10 +1808,10 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     const action = iss.status === "deferred" ? "undefer" : "defer";
     setStatusBusy(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/status"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(iss.id)}/status`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: iss.id, action }),
+        body: JSON.stringify({ action }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
@@ -2171,16 +2171,16 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     return () => { cancelled = true; };
   }, [workingDir]);
 
-  // Trigger an upstream sync action (pull/push/sync) via POST /api/beads/sync.
+  // Trigger an upstream sync action (pull/push/sync) via POST /api/issues/sync.
   // The backend reads the integration from folders.json; we only send the action.
   const handleSync = useCallback(async (action) => {
     if (!workingDir || syncAction) return;
     setSyncAction(action);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/sync"), {
+      const res = await secureFetch(apiUrl("/api/issues/sync") + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, action }),
+        body: JSON.stringify({ action }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
@@ -2497,10 +2497,8 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setCleanupProgress(null);
     setShowCleanupConfirm(false);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/cleanup"), {
+      const res = await secureFetch(apiUrl("/api/issues/cleanup") + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
@@ -2570,10 +2568,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
       if (childAction === "close") {
         for (const { issue: child } of deleteTargetOpenDescendants) {
           try {
-            const cres = await secureFetch(apiUrl("/api/beads/status"), {
+            const cres = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(child.id)}/status`) + "?working_dir=" + encodeURIComponent(workingDir), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ working_dir: workingDir, id: child.id, action: "close" }),
+              body: JSON.stringify({ action: "close" }),
             });
             const cdata = await readBeadsResponse(cres);
             if (!cres.ok || cdata.error) closeFailed++;
@@ -2639,10 +2637,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     const action = issue.status === "closed" ? "reopen" : "close";
     setStatusBusy(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/status"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(issue.id)}/status`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: issue.id, action }),
+        body: JSON.stringify({ action }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
@@ -2659,17 +2657,17 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   }, [workingDir, showToast, fetchList]);
 
   // Defer or undefer a single issue ("on ice" for later) depending on its
-  // current status, then refresh. Shares the /api/beads/status endpoint, which
-  // also handles the defer/undefer verbs.
+  // current status, then refresh. Uses /api/issues/{id}/status, which also
+  // handles the defer/undefer verbs.
   const handleToggleDefer = useCallback(async (issue) => {
     if (!issue) return;
     const action = issue.status === "deferred" ? "undefer" : "defer";
     setStatusBusy(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/status"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(issue.id)}/status`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: issue.id, action }),
+        body: JSON.stringify({ action }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
