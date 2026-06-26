@@ -15,6 +15,8 @@ Resources are nested under their parent. Workspaces are identified by `{uuid}` (
 
 Where a query param is still needed for workspace context outside the hierarchy (e.g., global prompts listing before a workspace UUID is known), use `working_dir` as the canonical param name — **not** `dir`. Audit note: `?dir=` currently appears in several workspace-prompt endpoints and must be migrated to `?working_dir=`.
 
+**Decision (see §8 #11):** workspace-prompt endpoints are the canonical case of this exception and therefore stay flat (`/api/workspace-prompts`), **not** nested under `{uuid}`; only the `?dir=`→`?working_dir=` rename (and dropping the `toggle-enabled` verb path) applies.
+
 ---
 
 ## 2. Path Naming
@@ -158,8 +160,8 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 | `/api/workspaces` | POST | `/api/workspaces` | POST | keep | Correct already |
 | `/api/workspaces` | DELETE | `/api/workspaces` | DELETE | keep | Correct (workspace is identified by `?working_dir=`) |
 | `/api/workspaces/` | GET | `/api/workspaces/{uuid}` | GET | migrate | Replace query-param lookup with UUID path segment |
-| `/api/workspace-prompts` | GET, POST, DELETE | `/api/workspaces/{uuid}/prompts` | GET, POST, DELETE | migrate | Nest under workspace; use `{uuid}` not `?dir=` |
-| `/api/workspace-prompts/toggle-enabled` | PUT | `/api/workspaces/{uuid}/prompts/{name}` | PATCH | migrate | Eliminate verb path; use PATCH with `{ "enabled": bool }` |
+| `/api/workspace-prompts` | GET, POST, DELETE | `/api/workspace-prompts` | GET, POST, DELETE | keep (rename param) | **Design B (§8 #11):** prompts can be listed/edited before a workspace UUID exists (global / git-worktree / free-form `working_dir`); stays flat per §1. Only rename `?dir=`→`?working_dir=` |
+| `/api/workspace-prompts/toggle-enabled` | PUT | `/api/workspace-prompts/{name}` | PATCH | migrate | Eliminate verb path; `PATCH` flat resource with `?working_dir=` + `{ "enabled": bool }` (stays flat per §1, **not** nested under `{uuid}`) |
 | `/api/workspace-processors` | GET | `/api/workspaces/{uuid}/processors` | GET | **done** | Migrated; nested under workspace |
 | `/api/workspace-processors/toggle-enabled` | PUT | `/api/workspaces/{uuid}/processors/{name}` | PATCH | **done** | Migrated; PATCH {uuid}/processors/{name} with {enabled} |
 | `/api/workspace-mcp-tools` | GET | `/api/workspaces/{uuid}/mcp-tools` | GET | **done** | Migrated; nested under workspace; acp_server kept as explicit override |
@@ -251,3 +253,4 @@ All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them
 | 8 | Runners path | `/api/runners` (migrate from `/api/supported-runners`) | Drop redundant adjective; nest defaults under it |
 | 9 | UI preferences | `/api/config/ui-preferences` (migrate) | Config family; avoids top-level proliferation |
 | 10 | Advanced flags | `/api/config/flags` (migrate) | Config family |
+| 11 | Workspace-prompts path shape | Keep flat `/api/workspace-prompts` + `?working_dir=` (**not** nested under `{uuid}`) | Prompts are listed/edited before a workspace UUID exists (global, git worktrees, free-form working dirs); FE hooks pass `workingDir`, not a uuid. Resolves the §1-vs-§7.2 contradiction. Drop the verb path via `PATCH /api/workspace-prompts/{name}` |
