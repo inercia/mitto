@@ -1527,7 +1527,7 @@ function App() {
 
         if (!res.ok) {
           const data = await res.json();
-          showToast({ style: "error", title: data.error || "Failed to open folder" });
+          showToast({ style: "error", title: data.error?.message || data.error || "Failed to open folder" });
         } else {
           const data = await res.json();
           if (!data.success && data.error) {
@@ -1555,7 +1555,7 @@ function App() {
 
         if (!res.ok) {
           const data = await res.json();
-          showToast({ style: "error", title: data.error || "Failed to open folder" });
+          showToast({ style: "error", title: data.error?.message || data.error || "Failed to open folder" });
         } else {
           const data = await res.json();
           if (!data.success && data.error) {
@@ -1618,7 +1618,7 @@ function App() {
 
         if (!res.ok) {
           const data = await res.json();
-          showToast({ style: "error", title: data.error || "Failed to open terminal" });
+          showToast({ style: "error", title: data.error?.message || data.error || "Failed to open terminal" });
         } else {
           const data = await res.json();
           if (!data.success && data.error) {

@@ -47,26 +47,26 @@ func (h *Handlers) HandleBadgeClick(w http.ResponseWriter, r *http.Request) {
 				"client_ip", clientIP,
 			)
 		}
-		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "This endpoint is only available from localhost")
 		return
 	}
 
 	// Parse request body
 	var req badgeClickRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	// Validate workspace path
 	if req.WorkspacePath == "" {
-		http.Error(w, "workspace_path is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "workspace_path is required")
 		return
 	}
 
 	// Ensure the path is absolute to prevent path traversal attacks
 	if !filepath.IsAbs(req.WorkspacePath) {
-		http.Error(w, "workspace_path must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "workspace_path must be an absolute path")
 		return
 	}
 
