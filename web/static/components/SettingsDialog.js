@@ -1857,11 +1857,12 @@ export function SettingsDialog({
         body: JSON.stringify(config),
       });
 
-      const result = await res.json();
-
       if (!res.ok) {
-        throw new Error(result.error || "Failed to save configuration");
+        let errData = null;
+        try { errData = await res.json(); } catch (_e) { /* non-JSON error body */ }
+        throw new Error(errData?.error?.message || "Failed to save configuration");
       }
+      const result = await res.json();
 
       // Config changed on disk — invalidate cache so next read is fresh.
       invalidateConfigCache();

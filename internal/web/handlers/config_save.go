@@ -73,7 +73,7 @@ type ConfigSaveRequest struct {
 func (h *Handlers) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	// Reject saves when config is read-only (loaded from --config file)
 	if h.deps.ConfigReadOnly {
-		http.Error(w, "Configuration is read-only (loaded from config file)", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "Configuration is read-only (loaded from config file)")
 		return
 	}
 
@@ -111,7 +111,7 @@ func (h *Handlers) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to build settings", "error", err)
 		}
-		http.Error(w, "Failed to build settings: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to build settings: "+err.Error())
 		return
 	}
 
@@ -133,7 +133,7 @@ func (h *Handlers) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to save settings", "error", err)
 		}
-		http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save settings: "+err.Error())
 		return
 	}
 

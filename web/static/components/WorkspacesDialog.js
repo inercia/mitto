@@ -938,8 +938,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...configWithoutWeb, workspaces: updated, prompts: [] }),
       });
+      if (!res.ok) {
+        let errData = null;
+        try { errData = await res.json(); } catch (_e) { /* non-JSON error body */ }
+        throw new Error(errData?.error?.message || "Failed to save configuration");
+      }
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "Failed to save configuration");
       invalidateConfigCache();
 
       // Save workspace metadata after config save (workspace must exist first)

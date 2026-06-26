@@ -18,11 +18,22 @@ func (e *configValidationError) Error() string {
 
 // writeConfigError writes a JSON error response for config validation errors.
 func (s *Server) writeConfigError(w http.ResponseWriter, err *configValidationError) {
-	if err.Details != nil {
-		writeJSON(w, err.StatusCode, err.Details)
-	} else {
-		writeJSON(w, err.StatusCode, map[string]string{"error": err.Message})
+	body := errorBody{Code: defaultCodeForStatus(err.StatusCode), Message: err.Message}
+	// Preserve domain-specific context (e.g. conflict workspace + conversation_count)
+	// under the canonical details field, dropping the legacy flat error/message keys.
+	if len(err.Details) > 0 {
+		details := make(map[string]any, len(err.Details))
+		for k, v := range err.Details {
+			if k == "error" || k == "message" {
+				continue
+			}
+			details[k] = v
+		}
+		if len(details) > 0 {
+			body.Details = details
+		}
 	}
+	writeJSON(w, err.StatusCode, errorEnvelope{Error: body})
 }
 
 // hasExistingSimpleAuth returns true if the server already has simple auth configured
