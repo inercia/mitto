@@ -36,7 +36,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	// Session endpoints.
 	routes = append(routes,
 		apiRoute{pattern: "/api/sessions", handler: http.HandlerFunc(s.handleSessions)},
-		apiRoute{pattern: "/api/sessions/running", handler: http.HandlerFunc(s.apiHandlers.HandleRunningSessions)},
+		apiRoute{method: "GET", pattern: "/api/sessions/running", handler: http.HandlerFunc(s.apiHandlers.HandleRunningSessions)},
 		apiRoute{method: "GET", pattern: "/api/sessions/{id}", handler: http.HandlerFunc(s.handleSessionGet)},
 		apiRoute{method: "PATCH", pattern: "/api/sessions/{id}", handler: http.HandlerFunc(s.handleSessionUpdate)},
 		apiRoute{method: "DELETE", pattern: "/api/sessions/{id}", handler: http.HandlerFunc(s.handleSessionDelete)},
