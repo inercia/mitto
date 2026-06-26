@@ -339,7 +339,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
 
   // View-mode dependencies. The list rows only carry a dependency_count, so the
   // full edges (id + title + status + dependency_type) are fetched from
-  // /api/beads/show when an issue is opened. `depsBusy` gates add/remove
+  // /api/issues/{id} when an issue is opened. `depsBusy` gates add/remove
   // requests; `newDepType`/`newDepId` back the "add dependency" row.
   const [deps, setDeps] = useState([]);
   const [depsLoading, setDepsLoading] = useState(false);
@@ -750,7 +750,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   }, [viewDraft, viewOriginal, data && data.id, workingDir, savingView, showToast, onUpdated]);
 
   // Load the issue's full dependency edges, notes, and comments. The list row
-  // only carries counts, so the actual data comes from /api/beads/show.
+  // only carries counts, so the actual data comes from /api/issues/{id}.
   // seedDraftNotes: when true, also seeds viewDraft.notes from the response so
   // the initial open has a correct draft baseline. Callers that refresh deps
   // after a dep add/remove or comment post must pass false to avoid clobbering
@@ -760,7 +760,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     setDepsLoading(true);
     try {
       const res = await authFetch(
-        apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(data.id),
+        apiUrl(`/api/issues/${encodeURIComponent(data.id)}`) + "?working_dir=" + encodeURIComponent(workingDir),
       );
       const respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
@@ -1700,7 +1700,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
  * on the conversation (it returns a Fragment whose BeadsDetailPanel is a
  * dock-mode drawer, so it does not reflow the conversation behind it). Opened
  * when the user follows a conversation's "Linked beads issue" link. The issue
- * is fetched from /api/beads/show; clicking a dependency navigates within the
+ * is fetched from /api/issues/{id}; clicking a dependency navigates within the
  * viewer via another show fetch. Close (X) / outside-click returns to the
  * conversation via onReturnToConversation. The expand toggle in the panel
  * header lets the user widen it to fill the area.
@@ -1715,7 +1715,7 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
   // Bumped to re-fetch the current issue after a status/defer/dep change.
   const [refreshNonce, setRefreshNonce] = useState(0);
   // Full issue list for the workspace, used to compute the current issue's
-  // subtasks (children). /api/beads/show does not return children, so without
+  // subtasks (children). /api/issues/{id} does not return children, so without
   // the list the Subtasks section would never render here even though it does
   // in the Tasks list view (which passes its already-loaded list as allIssues).
   const [listIssues, setListIssues] = useState([]);
@@ -1725,14 +1725,14 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     setCurrentIssueId(issueId);
   }, [issueId, selectNonce]);
 
-  // Fetch the current issue from /api/beads/show.
+  // Fetch the current issue from /api/issues/{id}.
   useEffect(() => {
     if (!workingDir || !currentIssueId) return;
     let cancelled = false;
     (async () => {
       try {
         const res = await authFetch(
-          apiUrl("/api/beads/show") + "?working_dir=" + encodeURIComponent(workingDir) + "&id=" + encodeURIComponent(currentIssueId),
+          apiUrl(`/api/issues/${encodeURIComponent(currentIssueId)}`) + "?working_dir=" + encodeURIComponent(workingDir),
         );
         const data = await readBeadsResponse(res);
         if (cancelled) return;
@@ -1758,7 +1758,7 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(apiUrl("/api/beads/list") + "?working_dir=" + encodeURIComponent(workingDir));
+        const res = await authFetch(apiUrl("/api/issues") + "?working_dir=" + encodeURIComponent(workingDir));
         const data = await readBeadsResponse(res);
         if (cancelled) return;
         if (res.ok && !data.error && Array.isArray(data)) {
@@ -2122,7 +2122,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(apiUrl("/api/beads/list") + "?working_dir=" + encodeURIComponent(workingDir));
+      const res = await authFetch(apiUrl("/api/issues") + "?working_dir=" + encodeURIComponent(workingDir));
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
         setError(data.error || data.message || "Failed to load issues");

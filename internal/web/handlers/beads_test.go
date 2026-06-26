@@ -149,7 +149,7 @@ func localhostRequest(url string) *http.Request {
 
 func TestHandleBeadsList_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/list", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
@@ -160,7 +160,7 @@ func TestHandleBeadsList_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsList_MissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/list")
+	req := localhostRequest("/api/issues")
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -185,7 +185,7 @@ func TestHandleBeadsList_MissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsList_RelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/list?working_dir=relative/path")
+	req := localhostRequest("/api/issues?working_dir=relative/path")
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -195,7 +195,7 @@ func TestHandleBeadsList_RelativeWorkingDir(t *testing.T) {
 
 func TestHandleBeadsList_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/list?working_dir=/unknown/dir")
+	req := localhostRequest("/api/issues?working_dir=/unknown/dir")
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -207,7 +207,7 @@ func TestHandleBeadsList_BdMissingReturnsJSONError(t *testing.T) {
 	// bd may or may not be present in the test environment.
 	// On success: 200 (bd returns JSON). On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/list?working_dir=/test/workspace")
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
 	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
@@ -218,7 +218,7 @@ func TestHandleBeadsList_BdMissingReturnsJSONError(t *testing.T) {
 func TestHandleBeadsList_BdCommandError_ReturnsServerError(t *testing.T) {
 	// Deterministic failure via stub: List returns an error → canonical 500 envelope.
 	s := newBeadsTestServerWithClient(&listErrorClient{})
-	req := localhostRequest("/api/beads/list?working_dir=/test/workspace")
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
 
@@ -246,7 +246,7 @@ func TestHandleBeadsList_BdCommandError_ReturnsServerError(t *testing.T) {
 
 func TestHandleBeadsStats_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/stats", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/stats", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsStats(w, req)
@@ -257,7 +257,7 @@ func TestHandleBeadsStats_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsStats_MissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/stats")
+	req := localhostRequest("/api/issues/stats")
 	w := httptest.NewRecorder()
 	s.handleBeadsStats(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -282,7 +282,7 @@ func TestHandleBeadsStats_MissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsStats_RelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/stats?working_dir=relative/path")
+	req := localhostRequest("/api/issues/stats?working_dir=relative/path")
 	w := httptest.NewRecorder()
 	s.handleBeadsStats(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -292,7 +292,7 @@ func TestHandleBeadsStats_RelativeWorkingDir(t *testing.T) {
 
 func TestHandleBeadsStats_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/stats?working_dir=/unknown/dir")
+	req := localhostRequest("/api/issues/stats?working_dir=/unknown/dir")
 	w := httptest.NewRecorder()
 	s.handleBeadsStats(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -309,7 +309,7 @@ func TestHandleBeadsStats_StubReturnsSummary(t *testing.T) {
 	})
 	s := New(Deps{SessionManager: sm, BeadsClient: &stubBeadsClient{}})
 
-	req := localhostRequest("/api/beads/stats?working_dir=/test/workspace")
+	req := localhostRequest("/api/issues/stats?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsStats(w, req)
 
@@ -325,7 +325,7 @@ func TestHandleBeadsStats_StubReturnsSummary(t *testing.T) {
 
 func TestHandleBeadsShow_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/show", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsShow(w, req)
@@ -335,8 +335,10 @@ func TestHandleBeadsShow_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleBeadsShow_MissingID(t *testing.T) {
+	// No PathValue("id") set on the request → the handler should treat the id
+	// as missing and return 400 "id is required".
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/show?working_dir=/test/workspace")
+	req := localhostRequest("/api/issues/?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsShow(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -361,7 +363,8 @@ func TestHandleBeadsShow_MissingID(t *testing.T) {
 
 func TestHandleBeadsShow_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/show?working_dir=/unknown/dir&id=abc-1")
+	req := localhostRequest("/api/issues/abc-1?working_dir=/unknown/dir")
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsShow(w, req)
 	if w.Code != http.StatusBadRequest {

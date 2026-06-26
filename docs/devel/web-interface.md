@@ -137,9 +137,9 @@ All endpoints are POST or GET on `/api/beads/{action}`:
 
 | Path | Method | Description |
 | ---- | ------ | ----------- |
-| `/api/beads/list` | GET | List issues |
-| `/api/beads/stats` | GET | Issue statistics |
-| `/api/beads/show` | GET | Show a single issue |
+| `/api/issues` | GET | List issues |
+| `/api/issues/stats` | GET | Issue statistics |
+| `/api/issues/{id}` | GET | Show a single issue |
 | `/api/beads/create` | POST | Create an issue |
 | `/api/beads/update` | POST | Update issue fields |
 | `/api/beads/status` | POST | Change issue status |

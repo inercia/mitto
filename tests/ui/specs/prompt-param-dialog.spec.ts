@@ -81,7 +81,7 @@ async function selectBeadsPrompt(page, timeouts, groupText: string, promptText: 
 
 testWithCleanup.describe("PromptParameterDialog — beadsIssues invocation flow", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_ISSUES) });
     });
     await request.post(apiUrl("/api/workspaces"), { data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA } });

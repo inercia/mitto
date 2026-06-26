@@ -17,7 +17,7 @@ const __dirname = path.dirname(__filename);
  *     viewports.
  *
  * The Beads backend shells out to the external `bd` binary, which is not
- * guaranteed in CI. To keep the list deterministic, /api/beads/list is mocked
+ * guaranteed in CI. To keep the list deterministic, /api/issues is mocked
  * with a fixed set of issues — including one with a very long title.
  */
 
@@ -108,7 +108,7 @@ async function openBeads(page, timeouts) {
 testWithCleanup.describe("Beads view - mobile", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list so the table renders without the external `bd` binary.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -202,7 +202,7 @@ testWithCleanup.describe("Beads view - mobile", () => {
 testWithCleanup.describe("Beads view - detail panel", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list so the table renders without the external `bd` binary.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -609,7 +609,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list with an epic + children so the table renders without
     // the external `bd` binary.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -805,7 +805,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
  */
 testWithCleanup.describe("Beads view - epic grouping", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1038,7 +1038,7 @@ const CLOSED_EPIC_ISSUES = [
 
 testWithCleanup.describe("Beads view - closed epic with open children", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1103,9 +1103,9 @@ testWithCleanup.describe("Beads view - closed epic with open children", () => {
  * Covers the navigation flow for the properties panel's "Linked beads issue"
  * link:
  *   1. Fast-open: the issue's detail panel appears immediately from a single
- *      `/api/beads/show` fetch, without waiting for the full `/api/beads/list`
- *      to load. The list is deliberately gated (held pending) to prove the
- *      panel opens before any list row renders.
+ *      `/api/issues/{id}` fetch, without waiting for the full `/api/issues`
+ *      list to load. The list is deliberately gated (held pending) to prove
+ *      the panel opens before any list row renders.
  *   2. Return-to-origin: closing that detail panel returns the user to the
  *      originating conversation with its properties panel re-opened — instead
  *      of leaving them stranded on the beads list.
@@ -1125,13 +1125,13 @@ const ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("Short issue"))';
 
 // The list-vs-show race test ("opens the linked issue even when the list loads
 // before the show fetch") was removed: BeadsIssueView is now a standalone
-// component that only calls /api/beads/show — there is no full-list fetch to
+// component that only calls /api/issues/{id} — there is no full-list fetch to
 // race against. The list is never mounted in this flow.
 testWithCleanup.describe("Beads view - return to conversation", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the single-issue show endpoint so the detail panel resolves
     // immediately. Returns mitto-bbb.
-    await page.route("**/api/beads/show**", async (route) => {
+    await page.route(/\/api\/issues\/[^/?]+/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1273,7 +1273,7 @@ const NEW_ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("New Issue"))';
 
 testWithCleanup.describe("Beads view - submenu positioning", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1354,7 +1354,7 @@ testWithCleanup.describe("Beads view - submenu positioning", () => {
  */
 testWithCleanup.describe("Beads view - create form fields", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",

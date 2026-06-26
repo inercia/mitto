@@ -172,7 +172,7 @@ testWithCleanup.describe(
   () => {
     testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
       // Mock the beads list so the table renders without the external `bd` binary.
-      await page.route("**/api/beads/list**", async (route) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -276,7 +276,7 @@ testWithCleanup.describe(
   "Named Prompt Menu Sends — Surface 3: beads list menu",
   () => {
     testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-      await page.route("**/api/beads/list**", async (route) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",

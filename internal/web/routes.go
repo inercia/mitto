@@ -97,10 +97,13 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	)
 
 	// Beads (issue tracker) endpoints.
+	// The read endpoints (list/show/stats) follow the RESTful /api/issues
+	// convention (see docs/devel/rest-api-conventions.md §7.5/§8); the
+	// remaining verb-style routes are migrated in later slices.
 	routes = append(routes,
-		apiRoute{pattern: "/api/beads/list", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsList)},
-		apiRoute{pattern: "/api/beads/stats", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStats)},
-		apiRoute{pattern: "/api/beads/show", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsShow)},
+		apiRoute{method: "GET", pattern: "/api/issues", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsList)},
+		apiRoute{method: "GET", pattern: "/api/issues/stats", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStats)},
+		apiRoute{method: "GET", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsShow)},
 		apiRoute{pattern: "/api/beads/create", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCreate)},
 		apiRoute{pattern: "/api/beads/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{pattern: "/api/beads/delete", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDelete)},

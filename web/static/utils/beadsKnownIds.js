@@ -8,7 +8,7 @@ import { authFetch } from "./csrf.js";
 const cache = new Map();
 
 /**
- * Fetch /api/beads/list for the given working directory, update the module
+ * Fetch /api/issues for the given working directory, update the module
  * cache, and dispatch a "beads-ids-updated" window event on success.
  * @param {string} workingDir
  */
@@ -16,7 +16,7 @@ export async function fetchAndCacheBeadsIds(workingDir) {
   if (!workingDir) return;
   try {
     const res = await authFetch(
-      apiUrl("/api/beads/list") + "?working_dir=" + encodeURIComponent(workingDir),
+      apiUrl("/api/issues") + "?working_dir=" + encodeURIComponent(workingDir),
     );
     if (!res.ok) return;
     const data = await res.json();

@@ -13,8 +13,8 @@ const __dirname = path.dirname(__filename);
  * standalone BeadsIssueView for that issue.
  *
  * Strategy:
- *  - Mock /api/beads/list so the ID set is populated without the `bd` binary.
- *  - Mock /api/beads/show so BeadsIssueView can render without the binary.
+ *  - Mock /api/issues so the ID set is populated without the `bd` binary.
+ *  - Mock /api/issues/{id} so BeadsIssueView can render without the binary.
  *  - Send a prompt that triggers the mock ACP to respond with "mitto-aaa" in
  *    the message text (the beads-issue-task.json fixture matches this).
  *  - Assert the linkified <a class="beads-link"> appears in the agent message.
@@ -44,7 +44,7 @@ const MOCK_ISSUE = {
 testWithCleanup.describe("Beads issue linkification", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list so useBeadsKnownIds populates the cache.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -53,7 +53,7 @@ testWithCleanup.describe("Beads issue linkification", () => {
     });
 
     // Mock the beads show endpoint so BeadsIssueView can render.
-    await page.route("**/api/beads/show**", async (route) => {
+    await page.route(/\/api\/issues\/[^/?]+/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -78,7 +78,7 @@ testWithCleanup.describe("Beads issue linkification", () => {
       await helpers.sendMessage(page, "mitto-aaa");
       await helpers.waitForAgentResponse(page);
 
-      // The beads-ids-updated event fires after the /api/beads/list fetch.
+      // The beads-ids-updated event fires after the /api/issues fetch.
       // Wait for the link to appear (linkify runs after ids are cached).
       const beadsLink = page.locator('a.beads-link[data-beads-id="mitto-aaa"]');
       await expect(beadsLink.first()).toBeVisible({
@@ -101,7 +101,7 @@ testWithCleanup.describe("Beads issue linkification", () => {
       // Click the link; globalHandlers.js routes it to window.mittoOpenBeadsIssue.
       await beadsLink.first().click();
 
-      // BeadsIssueView fetches /api/beads/show and renders the issue title.
+      // BeadsIssueView fetches /api/issues/{id} and renders the issue title.
       const issuePanel = page.locator(
         'div.properties-panel:has(h2:has-text("Test Beads Issue"))',
       );

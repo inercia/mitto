@@ -61,7 +61,7 @@ func writeBeadsError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: errorBody{Code: errCodeServerError, Message: err.Error(), Details: details}})
 }
 
-// HandleBeadsList handles GET /api/beads/list?working_dir=...
+// HandleBeadsList handles GET /api/issues?working_dir=...
 // Runs "bd list --json --all -n 0" in the workspace directory.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsList(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +96,7 @@ func (h *Handlers) HandleBeadsList(w http.ResponseWriter, r *http.Request) {
 	w.Write(out) //nolint:errcheck
 }
 
-// HandleBeadsStats handles GET /api/beads/stats?working_dir=...
+// HandleBeadsStats handles GET /api/issues/stats?working_dir=...
 // Runs "bd status --json --no-activity" in the workspace directory, returning an
 // aggregate summary of issue counts by state (open, in_progress, ready, blocked,
 // closed, ...). Used by the sidebar to render a per-folder Tasks stats line.
@@ -133,9 +133,11 @@ func (h *Handlers) HandleBeadsStats(w http.ResponseWriter, r *http.Request) {
 	w.Write(out) //nolint:errcheck
 }
 
-// HandleBeadsShow handles GET /api/beads/show?working_dir=...&id=...
+// HandleBeadsShow handles GET /api/issues/{id}?working_dir=...
 // Runs "bd show <id> --json --include-comments" in the workspace directory,
-// returning the full issue including its comments and dependencies.
+// returning the full issue including its comments and dependencies. The id is
+// read from the URL path via r.PathValue("id"); working_dir remains a query
+// parameter.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -144,7 +146,7 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workingDir := r.URL.Query().Get("working_dir")
-	id := r.URL.Query().Get("id")
+	id := r.PathValue("id")
 
 	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")

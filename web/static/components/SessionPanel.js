@@ -386,7 +386,7 @@ export function SessionPanel({
 
   // --- Effects: fetch linked beads issue status when open ---
   // The status badge mirrors the style used in the Beads view. The status
-  // comes from `bd show` via the existing /api/beads/show endpoint.
+  // comes from `bd show` via the existing /api/issues/{id} endpoint.
   useEffect(() => {
     if (!isOpen || !sessionInfo?.beads_issue || !sessionInfo?.working_dir) {
       setBeadsStatus(null);
@@ -396,11 +396,9 @@ export function SessionPanel({
     (async () => {
       try {
         const res = await authFetch(
-          apiUrl("/api/beads/show") +
+          apiUrl(`/api/issues/${encodeURIComponent(sessionInfo.beads_issue)}`) +
             "?working_dir=" +
-            encodeURIComponent(sessionInfo.working_dir) +
-            "&id=" +
-            encodeURIComponent(sessionInfo.beads_issue),
+            encodeURIComponent(sessionInfo.working_dir),
         );
         if (!res.ok) {
           if (!cancelled) setBeadsStatus(null);

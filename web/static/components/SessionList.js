@@ -116,7 +116,7 @@ const BEADS_STATS_IN_FLIGHT = {};
 async function fetchBeadsStats(workingDir) {
   try {
     const response = await authFetch(
-      apiUrl(`/api/beads/stats?working_dir=${encodeURIComponent(workingDir)}`),
+      apiUrl(`/api/issues/stats?working_dir=${encodeURIComponent(workingDir)}`),
     );
     if (!response.ok) return null;
     const data = await response.json();

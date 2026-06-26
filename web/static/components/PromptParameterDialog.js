@@ -330,7 +330,7 @@ export function PromptParameterDialog({
 
     setLoadingBeads(true);
     const url =
-      apiUrl("/api/beads/list") +
+      apiUrl("/api/issues") +
       "?working_dir=" +
       encodeURIComponent(workingDir);
     authFetch(url)
