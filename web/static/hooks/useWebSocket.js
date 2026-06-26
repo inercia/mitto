@@ -804,8 +804,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          return { error: errorText };
+          let msg = "Failed to add workspace";
+          try {
+            const data = await response.json();
+            msg = data.error?.message || msg;
+          } catch (_e) { /* keep default */ }
+          return { error: msg };
         }
 
         const data = await response.json();
@@ -836,11 +840,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           const contentType = response.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
-            const error = new Error(
-              errorData.message || "Failed to remove workspace",
-            );
-            error.code = errorData.error;
-            error.conversationCount = errorData.conversation_count;
+            const error = new Error(errorData.error?.message || "Failed to remove workspace");
+            error.code = errorData.error?.code;
+            error.conversationCount = errorData.error?.details?.conversation_count;
             throw error;
           }
           const errorText = await response.text();

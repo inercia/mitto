@@ -79,37 +79,37 @@ func (h *Handlers) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 
 	if req.ACPServer == "" {
-		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "acp_server is required")
 		return
 	}
 
 	// Validate the directory exists
 	info, err := os.Stat(req.WorkingDir)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Directory does not exist: %s", req.WorkingDir), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Directory does not exist: %s", req.WorkingDir))
 		return
 	}
 	if !info.IsDir() {
-		http.Error(w, fmt.Sprintf("Path is not a directory: %s", req.WorkingDir), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Path is not a directory: %s", req.WorkingDir))
 		return
 	}
 
 	// Validate the ACP server exists in global config.
 	if h.deps.MittoConfig != nil {
 		if _, err := h.deps.MittoConfig.GetServer(req.ACPServer); err != nil {
-			http.Error(w, fmt.Sprintf("Unknown ACP server: %s", req.ACPServer), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Unknown ACP server: %s", req.ACPServer))
 			return
 		}
 	}
 
 	// Check if workspace already exists
 	if ws := h.deps.SessionManager.GetWorkspace(req.WorkingDir); ws != nil {
-		http.Error(w, fmt.Sprintf("Workspace already exists for directory: %s", req.WorkingDir), http.StatusConflict)
+		writeErrorJSON(w, http.StatusConflict, "", fmt.Sprintf("Workspace already exists for directory: %s", req.WorkingDir))
 		return
 	}
 
@@ -146,12 +146,12 @@ func (h *Handlers) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request)
 		// Legacy support: find first workspace matching directory
 		ws = h.deps.SessionManager.GetWorkspace(workingDir)
 	} else {
-		http.Error(w, "uuid or dir query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "uuid or dir query parameter is required")
 		return
 	}
 
 	if ws == nil {
-		http.Error(w, "Workspace not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
 		return
 	}
 
@@ -159,7 +159,7 @@ func (h *Handlers) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request)
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -168,7 +168,7 @@ func (h *Handlers) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request)
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to list sessions", "error", err)
 		}
-		http.Error(w, "Failed to check workspace usage", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to check workspace usage")
 		return
 	}
 
@@ -182,11 +182,11 @@ func (h *Handlers) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request)
 
 	if conversationCount > 0 {
 		// Return error with count - don't allow deletion
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error":              "workspace_in_use",
-			"message":            fmt.Sprintf("Cannot delete workspace: %d conversation(s) are using it", conversationCount),
-			"conversation_count": conversationCount,
-		})
+		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{
+			Code:    errCodeConflict,
+			Message: fmt.Sprintf("Cannot delete workspace: %d conversation(s) are using it", conversationCount),
+			Details: map[string]any{"conversation_count": conversationCount},
+		}})
 		return
 	}
 
