@@ -64,6 +64,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/workspaces", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaces)},
 		apiRoute{method: "GET", pattern: "/api/workspaces/{uuid}/effective-runner-config", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceEffectiveRunnerConfig)},
 		apiRoute{method: "POST", pattern: "/api/workspaces/{uuid}/restart-acp", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceRestartACP)},
+		apiRoute{method: "GET", pattern: "/api/workspaces/{uuid}/metadata", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMetadata)},
+		apiRoute{method: "PUT", pattern: "/api/workspaces/{uuid}/metadata", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMetadata)},
 		apiRoute{pattern: "/api/workspace-prompts", handler: http.HandlerFunc(s.handleWorkspacePrompts)},
 		apiRoute{pattern: "/api/workspace-prompts/toggle-enabled", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsToggleEnabled)},
 		apiRoute{pattern: "/api/workspace-processors", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceProcessors)},
@@ -71,7 +73,6 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/workspace-mcp-tools", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMCPTools)},
 		apiRoute{pattern: "/api/workspace-mcp-install", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMCPInstall)},
 		apiRoute{pattern: "/api/workspace-mcp-remove", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMCPRemove)},
-		apiRoute{pattern: "/api/workspace-metadata", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMetadata)},
 		apiRoute{pattern: "/api/folder-group", handler: http.HandlerFunc(s.apiHandlers.HandleFolderGroup)},
 		apiRoute{pattern: "/api/workspace/user-data-schema", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceUserDataSchema)},
 	)

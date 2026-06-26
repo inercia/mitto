@@ -165,7 +165,7 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 | `/api/workspace-mcp-tools` | GET | `/api/workspaces/{uuid}/mcp-tools` | GET | migrate | Nest under workspace |
 | `/api/workspace-mcp-install` | POST | `/api/workspaces/{uuid}/mcp-tools/install` | POST | migrate | Nest under workspace; action sub-path acceptable |
 | `/api/workspace-mcp-remove` | POST | `/api/workspaces/{uuid}/mcp-tools/remove` | POST | migrate | Nest under workspace; action sub-path acceptable |
-| `/api/workspace-metadata` | GET, PUT | `/api/workspaces/{uuid}/metadata` | GET, PUT | migrate | Nest under workspace |
+| `/api/workspace-metadata` | GET, PUT | `/api/workspaces/{uuid}/metadata` | GET, PUT | **done** | Migrated; flat path removed |
 | `/api/workspace/user-data-schema` | GET, PUT | `/api/workspaces/{uuid}/user-data-schema` | GET, PUT | migrate | Fix inconsistent singular `workspace`; nest under `{uuid}` |
 | `/api/folder-group` | GET | `/api/workspaces/{uuid}/folder-group` | GET | migrate | Nest under workspace |
 

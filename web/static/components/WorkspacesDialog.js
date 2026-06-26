@@ -466,9 +466,9 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setEditMetaUrl("");
     setEditMetaGroup("");
     setEditUserDataFields([]);
-    if (firstWs.working_dir) {
+    if (firstWs.uuid) {
       setMetadataLoading(true);
-      secureFetch(apiUrl(`/api/workspace-metadata?working_dir=${encodeURIComponent(firstWs.working_dir)}`))
+      secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(firstWs.uuid)}/metadata`))
         .then((r) => r.json())
         .then((data) => {
           setFolderMetadata(data || null);
@@ -961,14 +961,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       // Save workspace metadata after config save (workspace must exist first)
       if (selectedFolder && (editMetaDescription || editMetaUrl || editMetaGroup)) {
         const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
-        const folderWorkingDir = folderGroup?.workspaces[0]?.working_dir;
-        if (folderWorkingDir) {
+        const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
+        if (folderWsUuid) {
           try {
-            const metaRes = await secureFetch(apiUrl("/api/workspace-metadata"), {
+            const metaRes = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(folderWsUuid)}/metadata`), {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                working_dir: folderWorkingDir,
                 description: editMetaDescription,
                 url: editMetaUrl,
                 group: editMetaGroup,
