@@ -292,8 +292,12 @@ testWithCleanup.describe("Beads view - detail panel", () => {
     async ({ page, timeouts }) => {
       // Capture the update request so we can assert the new title is sent.
       let updateBody: any = null;
-      await page.route("**/api/beads/update", async (route) => {
+      let updatedId: string | null = null;
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
         updateBody = route.request().postDataJSON();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        updatedId = m ? decodeURIComponent(m[1]) : null;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -327,7 +331,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })
         .not.toBeNull();
-      expect(updateBody.id).toBe("mitto-bbb");
+      expect(updatedId).toBe("mitto-bbb");
       expect(updateBody.title).toBe("Renamed issue");
     },
   );
@@ -335,7 +339,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   testWithCleanup(
     "delete confirmation dialog renders above the open detail panel",
     async ({ page, timeouts }) => {
-      await page.route("**/api/beads/delete", async (route) => {
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -398,7 +403,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
     "pressing Escape cancels the title edit without saving",
     async ({ page, timeouts }) => {
       let updateCalled = false;
-      await page.route("**/api/beads/update", async (route) => {
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
         updateCalled = true;
         await route.fulfill({
           status: 200,
@@ -491,8 +497,12 @@ testWithCleanup.describe("Beads view - detail panel", () => {
     async ({ page, timeouts }) => {
       // Capture the update request so we can assert the new type is sent.
       let updateBody: any = null;
-      await page.route("**/api/beads/update", async (route) => {
+      let updatedId: string | null = null;
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
         updateBody = route.request().postDataJSON();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        updatedId = m ? decodeURIComponent(m[1]) : null;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -521,7 +531,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })
         .not.toBeNull();
-      expect(updateBody.id).toBe("mitto-bbb");
+      expect(updatedId).toBe("mitto-bbb");
       expect(updateBody.type).toBe("task");
     },
   );
@@ -533,8 +543,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
  * When deleting an epic (an issue with descendants), the confirmation dialog
  * offers a radio group controlling what happens to the whole descendant subtree
  * (recursive): leave them unchanged (default), close the open ones via
- * /api/beads/status (action "close"), or permanently delete all of them via
- * /api/beads/delete. The epic itself is always deleted last.
+ * POST /api/issues/{id}/status (action "close"), or permanently delete all of
+ * them via DELETE /api/issues/{id}. The epic itself is always deleted last.
  *
  * The mock tree is:
  *   mitto-epic (epic, open)
@@ -660,9 +670,12 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     async ({ page, timeouts }) => {
       // Capture the close (status) and delete calls the frontend makes.
       const closedIds: string[] = [];
-      await page.route("**/api/beads/status", async (route) => {
+      await page.route(/\/api\/issues\/[^/?]+\/status(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         const body = route.request().postDataJSON();
-        if (body && body.action === "close") closedIds.push(body.id);
+        const m = route.request().url().match(/\/api\/issues\/([^/]+)\/status/);
+        const id = m ? decodeURIComponent(m[1]) : null;
+        if (body && body.action === "close" && id) closedIds.push(id);
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -670,9 +683,10 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         });
       });
       let deletedId: string | null = null;
-      await page.route("**/api/beads/delete", async (route) => {
-        const body = route.request().postDataJSON();
-        deletedId = body && body.id;
+      await page.route(/\/api\/issues\/[^/?]+(\?|$)/, async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        deletedId = m ? decodeURIComponent(m[1]) : null;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -713,7 +727,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     "choosing 'delete children' permanently deletes the whole subtree",
     async ({ page, timeouts }) => {
       let statusCalled = false;
-      await page.route("**/api/beads/status", async (route) => {
+      await page.route(/\/api\/issues\/[^/?]+\/status(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         statusCalled = true;
         await route.fulfill({
           status: 200,
@@ -722,9 +737,10 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         });
       });
       const deletedIds: string[] = [];
-      await page.route("**/api/beads/delete", async (route) => {
-        const body = route.request().postDataJSON();
-        if (body && body.id) deletedIds.push(body.id);
+      await page.route(/\/api\/issues\/[^/?]+(\?|$)/, async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        if (m) deletedIds.push(decodeURIComponent(m[1]));
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -755,7 +771,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     "the default 'leave unchanged' option leaves the subtree untouched",
     async ({ page, timeouts }) => {
       let statusCalled = false;
-      await page.route("**/api/beads/status", async (route) => {
+      await page.route(/\/api\/issues\/[^/?]+\/status(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         statusCalled = true;
         await route.fulfill({
           status: 200,
@@ -764,9 +781,10 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         });
       });
       const deletedIds: string[] = [];
-      await page.route("**/api/beads/delete", async (route) => {
-        const body = route.request().postDataJSON();
-        if (body && body.id) deletedIds.push(body.id);
+      await page.route(/\/api\/issues\/[^/?]+(\?|$)/, async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        if (m) deletedIds.push(decodeURIComponent(m[1]));
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -1349,7 +1367,7 @@ testWithCleanup.describe("Beads view - submenu positioning", () => {
  *
  * Opens the "New Issue" panel via the "+" toolbar button, fills in a
  * description, adds a dependency, sets an assignee and notes, then clicks
- * Save. The POST /api/beads/create request is intercepted and the body is
+ * Save. The POST /api/issues request is intercepted and the body is
  * asserted to contain the `dependencies`, `assignee`, and `notes` fields.
  */
 testWithCleanup.describe("Beads view - create form fields", () => {
@@ -1380,7 +1398,8 @@ testWithCleanup.describe("Beads view - create form fields", () => {
 
       // Capture the create request body before clicking Save.
       let capturedBody: Record<string, unknown> | null = null;
-      await page.route("**/api/beads/create", async (route) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         capturedBody = JSON.parse(route.request().postData() ?? "{}");
         await route.fulfill({
           status: 200,
