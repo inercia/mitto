@@ -956,13 +956,13 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			// For API requests, return 401
 			if isAPIRequest {
 				logger.Info("AUTH: Returning 401 for API request", "path", r.URL.Path, "raw_uri", r.RequestURI)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				writeErrorJSON(w, http.StatusUnauthorized, "", "Unauthorized")
 				return
 			}
 			// For WebSocket requests, return 401
 			if r.URL.Path == "/ws" || strings.HasSuffix(r.URL.Path, "/ws") {
 				logger.Info("AUTH: Returning 401 for WebSocket request", "path", r.URL.Path)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				writeErrorJSON(w, http.StatusUnauthorized, "", "Unauthorized")
 				return
 			}
 			// For page requests, redirect to login

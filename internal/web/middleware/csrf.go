@@ -252,7 +252,7 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 				"has_header", headerToken != "",
 				"has_cookie", cookieToken != "",
 				"client_ip", GetClientIPWithProxyCheck(r))
-			http.Error(w, "CSRF token required", http.StatusForbidden)
+			writeErrorJSON(w, http.StatusForbidden, "", "CSRF token required")
 			return
 		}
 
@@ -262,7 +262,7 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 				"method", r.Method,
 				"path", r.URL.Path,
 				"client_ip", GetClientIPWithProxyCheck(r))
-			http.Error(w, "CSRF token mismatch", http.StatusForbidden)
+			writeErrorJSON(w, http.StatusForbidden, "", "CSRF token mismatch")
 			return
 		}
 
