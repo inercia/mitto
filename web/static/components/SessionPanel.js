@@ -432,7 +432,7 @@ export function SessionPanel({
         const wsUuid = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
         const [userDataRes, schemaRes] = await Promise.all([
           authFetch(endpoints.sessions.userData(sessionId)),
-          authFetch(apiUrl(`/api/workspaces/${encodeURIComponent(wsUuid)}/user-data-schema`)),
+          authFetch(endpoints.workspaces.userDataSchema(wsUuid)),
         ]);
 
         if (userDataRes.ok) setUserData(await userDataRes.json());

@@ -435,7 +435,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setMcpToolsError("");
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
-      secureFetch(apiUrl(`/api/workspaces/${selectedWorkspace.uuid}/effective-runner-config`))
+      secureFetch(endpoints.workspaces.effectiveRunnerConfig(selectedWorkspace.uuid))
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => setEffectiveConfig(data))
         .catch(() => {});
@@ -470,7 +470,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setEditUserDataFields([]);
     if (firstWs.uuid) {
       setMetadataLoading(true);
-      secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(firstWs.uuid)}/metadata`))
+      secureFetch(endpoints.workspaces.metadata(firstWs.uuid))
         .then((r) => r.json())
         .then((data) => {
           setFolderMetadata(data || null);
@@ -604,8 +604,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       return;
     }
     try {
-      const params = new URLSearchParams({ acp_server: acpServer });
-      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/mcp-tools?${params}`));
+      const res = await secureFetch(endpoints.workspaces.mcpTools(uuid, { acp_server: acpServer }));
       if (!res.ok) {
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
@@ -645,7 +644,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!selectedWorkspace?.uuid) return;
     setRestarting(true);
     try {
-      const res = await secureFetch(apiUrl(`/api/workspaces/${selectedWorkspace.uuid}/restart-acp`), {
+      const res = await secureFetch(endpoints.workspaces.restartAcp(selectedWorkspace.uuid), {
         method: "POST",
       });
       if (!res.ok) {
@@ -702,7 +701,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(selectedWorkspace.uuid)}/mcp-tools/install`), {
+      const res = await secureFetch(endpoints.workspaces.mcpToolsInstall(selectedWorkspace.uuid), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -757,7 +756,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setMcpRemoveLoading(true);
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(selectedWorkspace.uuid)}/mcp-tools/remove`), {
+      const res = await secureFetch(endpoints.workspaces.mcpToolsRemove(selectedWorkspace.uuid), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -805,7 +804,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!selectedWorkspace?.uuid) { setMcpInstallError("No workspace selected"); return; }
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(selectedWorkspace.uuid)}/mcp-tools/install`), {
+      const res = await secureFetch(endpoints.workspaces.mcpToolsInstall(selectedWorkspace.uuid), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -970,7 +969,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
         if (folderWsUuid) {
           try {
-            const metaRes = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(folderWsUuid)}/metadata`), {
+            const metaRes = await secureFetch(endpoints.workspaces.metadata(folderWsUuid), {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -999,7 +998,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           // Filter out fields with empty names
           const validFields = editUserDataFields.filter(f => f.name.trim() !== '');
           try {
-            const schemaRes = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(folderWsUuid)}/user-data-schema`), {
+            const schemaRes = await secureFetch(endpoints.workspaces.userDataSchema(folderWsUuid), {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1446,7 +1445,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!firstWs?.uuid) return;
 
     setProcessorsLoading(true);
-    secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(firstWs.uuid)}/processors`))
+    secureFetch(endpoints.workspaces.processors(firstWs.uuid))
       .then((r) => r.json())
       .then((data) => { setFolderProcessors(data.processors || []); })
       .catch((err) => console.error("Failed to load processors:", err))
@@ -1455,7 +1454,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   // Reload processors for the selected folder
   const reloadFolderProcessors = async (uuid) => {
-    const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/processors`));
+    const res = await secureFetch(endpoints.workspaces.processors(uuid));
     const data = await res.json();
     setFolderProcessors(data.processors || []);
   };
@@ -1465,7 +1464,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     const uuid = getSelectedFolderUuid();
     if (!uuid) return;
     try {
-      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/processors/${encodeURIComponent(processor.name)}`), {
+      const res = await secureFetch(endpoints.workspaces.processor(uuid, processor.name), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: !processor.enabled }),

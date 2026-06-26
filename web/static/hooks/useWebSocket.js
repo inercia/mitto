@@ -775,7 +775,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
     try {
-      const response = await authFetch(apiUrl("/api/workspaces"));
+      const response = await authFetch(endpoints.workspaces.list());
       if (response.ok) {
         const data = await response.json();
         setWorkspaces(data.workspaces || []);
@@ -795,7 +795,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   const addWorkspace = useCallback(
     async (workingDir, acpServer) => {
       try {
-        const response = await secureFetch(apiUrl("/api/workspaces"), {
+        const response = await secureFetch(endpoints.workspaces.create(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -830,7 +830,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     async (workingDir) => {
       try {
         const response = await secureFetch(
-          apiUrl(`/api/workspaces?working_dir=${encodeURIComponent(workingDir)}`),
+          endpoints.workspaces.list({ working_dir: workingDir }),
           {
             method: "DELETE",
           },

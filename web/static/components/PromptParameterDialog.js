@@ -377,11 +377,7 @@ export function PromptParameterDialog({
     setLoadingWorkspaces(true);
     // Scope the ACP server list to the current folder when known, so the
     // acpServer dropdown only offers agents configured for this workspace.
-    const wsUrl = workingDir
-      ? apiUrl("/api/workspaces") +
-        "?working_dir=" +
-        encodeURIComponent(workingDir)
-      : apiUrl("/api/workspaces");
+    const wsUrl = endpoints.workspaces.list(workingDir ? { working_dir: workingDir } : undefined);
     authFetch(wsUrl)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
