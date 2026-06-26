@@ -188,6 +188,7 @@ type BackgroundSession struct {
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
 	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
+	promptArgCache       *promptArgCache                        // Per-conversation prompt argument value cache (composition)
 	queueDisp            queueDispatcher                        // Queue tick / dispatch logic collaborator (composition)
 	callbackSink         acpCallbackSink                        // WebClient callback cluster collaborator (composition)
 	uiPromptCtr          uiPromptCenter                         // UI prompt + notify collaborator (composition)
@@ -551,6 +552,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	// Initialize the deferred-config store
 	bs.pendingConfig = make(map[string]string)
 
+	// Initialize the per-conversation prompt argument value cache
+	bs.promptArgCache = newPromptArgCache()
+
 	// Initialize activity timestamp
 	bs.lastActivityAt.Store(time.Now().UnixNano())
 
@@ -757,6 +761,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Initialize the deferred-config store
 	bs.pendingConfig = make(map[string]string)
+
+	// Initialize the per-conversation prompt argument value cache
+	bs.promptArgCache = newPromptArgCache()
 
 	// Initialize activity timestamp
 	bs.lastActivityAt.Store(time.Now().UnixNano())
