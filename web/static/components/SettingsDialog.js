@@ -12,6 +12,7 @@ import {
   openExternalURL,
   fetchConfig,
   invalidateConfigCache,
+  endpoints,
 } from "../utils/index.js";
 import { setPromptSortMode as savePromptSortMode } from "../utils/storage.js";
 
@@ -1307,7 +1308,7 @@ export function SettingsDialog({
 
   // Fetch available agent types for the type dropdown
   useEffect(() => {
-    secureFetch(apiUrl("/api/agents/types"))
+    secureFetch(endpoints.agents.types())
       .then((r) => r.json())
       .then((data) => setAgentTypes(data.agent_types || []))
       .catch(() => setAgentTypes([]));

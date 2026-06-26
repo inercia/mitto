@@ -6,7 +6,7 @@
 const { html, useState, useEffect, useCallback } = window.preact;
 
 import { Modal } from "./Modal.js";
-import { apiUrl, secureFetch } from "../utils/index.js";
+import { apiUrl, secureFetch, endpoints } from "../utils/index.js";
 
 /**
  * AgentDiscoveryDialog - Discover and configure AI agents.
@@ -53,7 +53,7 @@ export function AgentDiscoveryDialog({
     setPhase("scanning");
     setError("");
     try {
-      const resp = await secureFetch(apiUrl("/api/agents/scan"), {
+      const resp = await secureFetch(endpoints.agents.scan(), {
         method: "POST",
       });
       if (!resp.ok) {
@@ -126,7 +126,7 @@ export function AgentDiscoveryDialog({
     setPhase("confirming");
     setError("");
     try {
-      const resp = await secureFetch(apiUrl("/api/agents/confirm"), {
+      const resp = await secureFetch(endpoints.agents.confirm(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agents: toAdd }),
