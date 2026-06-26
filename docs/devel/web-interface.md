@@ -133,23 +133,24 @@ Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/wo
 
 ### Issues (Beads)
 
-All endpoints are POST or GET on `/api/beads/{action}`:
+Issues follow the RESTful `/api/issues` convention. `working_dir` is always a
+query parameter (`?working_dir=...`); the issue id is a path segment:
 
 | Path | Method | Description |
 | ---- | ------ | ----------- |
 | `/api/issues` | GET | List issues |
 | `/api/issues/stats` | GET | Issue statistics |
 | `/api/issues/{id}` | GET | Show a single issue |
-| `/api/beads/create` | POST | Create an issue |
-| `/api/beads/update` | POST | Update issue fields |
-| `/api/beads/status` | POST | Change issue status |
-| `/api/beads/comment` | POST | Add a comment |
-| `/api/beads/dep` | POST | Manage issue dependencies |
-| `/api/beads/delete` | POST | Delete an issue |
-| `/api/beads/cleanup` | POST | Prune closed issues |
-| `/api/beads/config` | GET, POST | Get or update beads configuration |
-| `/api/beads/upstream` | POST | Sync with upstream beads remote |
-| `/api/beads/sync` | POST | Full sync (pull + push) |
+| `/api/issues` | POST | Create an issue |
+| `/api/issues/{id}` | PATCH | Update issue fields |
+| `/api/issues/{id}` | DELETE | Delete an issue |
+| `/api/issues/{id}/status` | POST | Change issue status (close/reopen/defer/undefer) |
+| `/api/issues/{id}/comments` | POST | Add a comment |
+| `/api/issues/{id}/dependencies` | POST | Manage issue dependencies |
+| `/api/issues/cleanup` | POST | Prune closed issues |
+| `/api/issues/config` | GET, PUT, DELETE | Get, set, or unset beads configuration |
+| `/api/issues/upstream` | GET, PUT | Get or set the upstream task system |
+| `/api/issues/sync` | POST | Sync with upstream (pull/push/sync) |
 
 ---
 
