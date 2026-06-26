@@ -160,8 +160,8 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 | `/api/workspaces/` | GET | `/api/workspaces/{uuid}` | GET | migrate | Replace query-param lookup with UUID path segment |
 | `/api/workspace-prompts` | GET, POST, DELETE | `/api/workspaces/{uuid}/prompts` | GET, POST, DELETE | migrate | Nest under workspace; use `{uuid}` not `?dir=` |
 | `/api/workspace-prompts/toggle-enabled` | PUT | `/api/workspaces/{uuid}/prompts/{name}` | PATCH | migrate | Eliminate verb path; use PATCH with `{ "enabled": bool }` |
-| `/api/workspace-processors` | GET | `/api/workspaces/{uuid}/processors` | GET | migrate | Nest under workspace |
-| `/api/workspace-processors/toggle-enabled` | PUT | `/api/workspaces/{uuid}/processors/{name}` | PATCH | migrate | Eliminate verb path; PATCH with `{ "enabled": bool }` |
+| `/api/workspace-processors` | GET | `/api/workspaces/{uuid}/processors` | GET | **done** | Migrated; nested under workspace |
+| `/api/workspace-processors/toggle-enabled` | PUT | `/api/workspaces/{uuid}/processors/{name}` | PATCH | **done** | Migrated; PATCH {uuid}/processors/{name} with {enabled} |
 | `/api/workspace-mcp-tools` | GET | `/api/workspaces/{uuid}/mcp-tools` | GET | migrate | Nest under workspace |
 | `/api/workspace-mcp-install` | POST | `/api/workspaces/{uuid}/mcp-tools/install` | POST | migrate | Nest under workspace; action sub-path acceptable |
 | `/api/workspace-mcp-remove` | POST | `/api/workspaces/{uuid}/mcp-tools/remove` | POST | migrate | Nest under workspace; action sub-path acceptable |

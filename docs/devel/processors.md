@@ -539,18 +539,16 @@ Source stamping happens in `apply.go`:
 
 Two REST endpoints manage processor enabled state per workspace:
 
-| Endpoint                                      | Method | Description                                                  |
-| --------------------------------------------- | ------ | ------------------------------------------------------------ |
-| `/api/workspace-processors?dir=...`           | GET    | List all processors for a workspace with source and enabled state |
-| `/api/workspace-processors/toggle-enabled`    | PUT    | Toggle a processor's enabled state                           |
+| Endpoint                                                  | Method  | Description                                                  |
+| --------------------------------------------------------- | ------- | ------------------------------------------------------------ |
+| `/api/workspaces/{uuid}/processors`                       | GET     | List all processors for a workspace with source and enabled state |
+| `/api/workspaces/{uuid}/processors/{name}`                | PATCH   | Toggle a processor's enabled state                           |
 
 **GET response** includes processors sorted by source (workspace first, then global) and name, with the `processors` overrides from `.mittorc` applied.
 
-**PUT request body:**
+**PATCH request body:**
 ```json
 {
-  "dir": "/path/to/workspace",
-  "name": "processor-name",
   "enabled": false
 }
 ```

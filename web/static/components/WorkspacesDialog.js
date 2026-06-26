@@ -1194,6 +1194,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     return folderGroup?.workspaces[0]?.working_dir || null;
   };
 
+  const getSelectedFolderUuid = () => {
+    const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
+    return folderGroup?.workspaces[0]?.uuid || null;
+  };
+
   // Load (reload) beads config for the selected folder via GET /api/beads/config.
   const reloadBeadsConfig = async (workingDir) => {
     setBeadsConfigLoading(true);
@@ -1433,10 +1438,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!selectedFolder || activeTab !== "processors") return;
     const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
     const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs?.working_dir) return;
+    if (!firstWs?.uuid) return;
 
     setProcessorsLoading(true);
-    secureFetch(apiUrl(`/api/workspace-processors?dir=${encodeURIComponent(firstWs.working_dir)}`))
+    secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(firstWs.uuid)}/processors`))
       .then((r) => r.json())
       .then((data) => { setFolderProcessors(data.processors || []); })
       .catch((err) => console.error("Failed to load processors:", err))
@@ -1444,25 +1449,21 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   }, [selectedFolder, activeTab, groupedWorkspaces]);
 
   // Reload processors for the selected folder
-  const reloadFolderProcessors = async (workingDir) => {
-    const res = await secureFetch(apiUrl(`/api/workspace-processors?dir=${encodeURIComponent(workingDir)}`));
+  const reloadFolderProcessors = async (uuid) => {
+    const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/processors`));
     const data = await res.json();
     setFolderProcessors(data.processors || []);
   };
 
-  // Toggle enabled state for a processor via the toggle-enabled endpoint.
+  // Toggle enabled state for a processor via PATCH /api/workspaces/{uuid}/processors/{name}.
   const toggleProcessorEnabled = async (processor) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
+    const uuid = getSelectedFolderUuid();
+    if (!uuid) return;
     try {
-      const res = await secureFetch(apiUrl("/api/workspace-processors/toggle-enabled"), {
-        method: "PUT",
+      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/processors/${encodeURIComponent(processor.name)}`), {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dir: workingDir,
-          name: processor.name,
-          enabled: !processor.enabled,
-        }),
+        body: JSON.stringify({ enabled: !processor.enabled }),
       });
       if (!res.ok) {
         const ct = res.headers.get("content-type");
@@ -1472,7 +1473,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         }
         throw new Error(await res.text());
       }
-      await reloadFolderProcessors(workingDir);
+      await reloadFolderProcessors(uuid);
     } catch (err) {
       setError("Failed to toggle processor: " + err.message);
     }

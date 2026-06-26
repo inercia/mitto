@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 )
 
@@ -35,18 +36,18 @@ func TestToggleEnabled_SingleDocFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	h := newProcHandlers(conversation.NewSessionManager("", "", false, nil))
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{{UUID: "ws-uuid", WorkingDir: wsDir}})
+	h := newProcHandlers(sm)
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"dir":     wsDir,
-		"name":    "my-proc",
-		"enabled": false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/workspace-processors/toggle-enabled", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]interface{}{"enabled": false})
+	req := httptest.NewRequest(http.MethodPatch, "/api/workspaces/ws-uuid/processors/my-proc", bytes.NewReader(body))
+	req.SetPathValue("uuid", "ws-uuid")
+	req.SetPathValue("name", "my-proc")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	h.HandleWorkspaceProcessorsToggleEnabled(w, req)
+	h.HandleWorkspaceProcessorPatch(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
@@ -86,18 +87,18 @@ func TestToggleEnabled_MultiDocFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	h := newProcHandlers(conversation.NewSessionManager("", "", false, nil))
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{{UUID: "ws-uuid", WorkingDir: wsDir}})
+	h := newProcHandlers(sm)
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"dir":     wsDir,
-		"name":    "multi-proc",
-		"enabled": false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/workspace-processors/toggle-enabled", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]interface{}{"enabled": false})
+	req := httptest.NewRequest(http.MethodPatch, "/api/workspaces/ws-uuid/processors/multi-proc", bytes.NewReader(body))
+	req.SetPathValue("uuid", "ws-uuid")
+	req.SetPathValue("name", "multi-proc")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	h.HandleWorkspaceProcessorsToggleEnabled(w, req)
+	h.HandleWorkspaceProcessorPatch(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
@@ -133,18 +134,18 @@ func TestToggleEnabled_GlobalProcessor(t *testing.T) {
 	// Do NOT create any processor file in the workspace dir —
 	// simulates a global/builtin processor.
 
-	h := newProcHandlers(conversation.NewSessionManager("", "", false, nil))
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{{UUID: "ws-uuid", WorkingDir: wsDir}})
+	h := newProcHandlers(sm)
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"dir":     wsDir,
-		"name":    "global-proc",
-		"enabled": false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/workspace-processors/toggle-enabled", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]interface{}{"enabled": false})
+	req := httptest.NewRequest(http.MethodPatch, "/api/workspaces/ws-uuid/processors/global-proc", bytes.NewReader(body))
+	req.SetPathValue("uuid", "ws-uuid")
+	req.SetPathValue("name", "global-proc")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	h.HandleWorkspaceProcessorsToggleEnabled(w, req)
+	h.HandleWorkspaceProcessorPatch(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())

@@ -24,7 +24,7 @@ type WebProcessor struct {
 	Mode        string                     `json:"mode,omitempty"` // "text", "command", or "prompt"
 }
 
-// HandleWorkspaceProcessors handles GET /api/workspace-processors?dir=...
+// HandleWorkspaceProcessors handles GET /api/workspaces/{uuid}/processors.
 // Returns all processors applicable to the workspace (global + workspace-local),
 // with enabled state reflecting any .mittorc overrides.
 func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Request) {
@@ -33,11 +33,13 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	workingDir := r.URL.Query().Get("dir")
-	if workingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "dir query parameter is required")
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
 		return
 	}
+	workingDir := ws.WorkingDir
 
 	// Get merged processor manager (global + workspace processors)
 	procMgr := h.deps.SessionManager.GetWorkspaceProcessorManager(workingDir)
@@ -121,7 +123,7 @@ func sourceOrder(src processors.ProcessorSource) int {
 	}
 }
 
-// HandleWorkspaceProcessorsToggleEnabled handles PUT /api/workspace-processors/toggle-enabled.
+// HandleWorkspaceProcessorPatch handles PATCH /api/workspaces/{uuid}/processors/{name}.
 //
 // Routing logic:
 //   - Workspace-local, single-document YAML file → update enabled field in-place.
@@ -130,27 +132,29 @@ func sourceOrder(src processors.ProcessorSource) int {
 //
 // The processor is resolved by Name through the merged manager so that multi-doc
 // files (where filename ≠ processor name) are handled correctly.
-func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
+func (h *Handlers) HandleWorkspaceProcessorPatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
 		methodNotAllowed(w)
 		return
 	}
 
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	workingDir := ws.WorkingDir
+	name := r.PathValue("name")
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
+		return
+	}
 	var req struct {
-		Dir     string `json:"dir"`
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
+		Enabled bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid JSON: "+err.Error())
-		return
-	}
-	if req.Dir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "dir is required")
-		return
-	}
-	if req.Name == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
 		return
 	}
 
@@ -159,9 +163,9 @@ func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter,
 	// not match the processor name.
 	var resolvedFilePath string
 	var resolvedSource processors.ProcessorSource
-	if procMgr := h.deps.SessionManager.GetWorkspaceProcessorManager(req.Dir); procMgr != nil {
+	if procMgr := h.deps.SessionManager.GetWorkspaceProcessorManager(workingDir); procMgr != nil {
 		for _, p := range procMgr.Processors() {
-			if p.Name == req.Name {
+			if p.Name == name {
 				resolvedFilePath = p.FilePath
 				resolvedSource = p.Source
 				break
@@ -184,10 +188,10 @@ func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter,
 	// resolve the processor (e.g. newly added file not yet loaded). Apply the
 	// same single-document guard before allowing an in-place write.
 	if !useInPlace && resolvedFilePath == "" {
-		workspaceProcessorDirs := h.deps.SessionManager.GetWorkspaceAllProcessorDirs(req.Dir)
+		workspaceProcessorDirs := h.deps.SessionManager.GetWorkspaceAllProcessorDirs(workingDir)
 		for _, dir := range workspaceProcessorDirs {
 			for _, ext := range []string{".yaml", ".yml"} {
-				candidate := filepath.Join(dir, req.Name+ext)
+				candidate := filepath.Join(dir, name+ext)
 				if _, err := os.Stat(candidate); err == nil {
 					multi, err := processors.IsMultiDocFile(candidate)
 					if err == nil && !multi {
@@ -215,17 +219,17 @@ func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter,
 	} else {
 		// Multi-document file, global/builtin, or unresolvable processor —
 		// record override in the workspace .mittorc processors section.
-		if err := configPkg.SaveWorkspaceRCProcessorEnabled(req.Dir, req.Name, req.Enabled); err != nil {
+		if err := configPkg.SaveWorkspaceRCProcessorEnabled(workingDir, name, req.Enabled); err != nil {
 			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update workspace config: "+err.Error())
 			return
 		}
 		// Invalidate cache so the next read picks up the change.
 		if h.deps.SessionManager != nil {
-			h.deps.SessionManager.InvalidateWorkspaceRC(req.Dir)
+			h.deps.SessionManager.InvalidateWorkspaceRC(workingDir)
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Debug("Updated .mittorc processor enabled state",
-				"dir", req.Dir, "name", req.Name, "enabled", req.Enabled)
+				"dir", workingDir, "name", name, "enabled", req.Enabled)
 		}
 	}
 
