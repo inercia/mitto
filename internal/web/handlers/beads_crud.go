@@ -433,14 +433,12 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, beadsActionResponse{OK: true})
 }
 
-// beadsCommentRequest is the JSON body for POST /api/beads/comment.
+// beadsCommentRequest is the JSON body for POST /api/issues/{id}/comments.
 type beadsCommentRequest struct {
-	WorkingDir string `json:"working_dir"`
-	ID         string `json:"id"`
-	Text       string `json:"text"`
+	Text string `json:"text"`
 }
 
-// HandleBeadsComment handles POST /api/beads/comment.
+// HandleBeadsComment handles POST /api/issues/{id}/comments?working_dir=...
 // Runs "bd comment <id> -- <text>" in the workspace directory, adding a comment
 // to the issue. The text must be non-empty.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
@@ -456,15 +454,17 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	id := r.PathValue("id")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
-	if strings.TrimSpace(req.ID) == "" {
+	if strings.TrimSpace(id) == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
@@ -472,12 +472,12 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "text must not be empty")
 		return
 	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
+	if !h.isKnownWorkspaceDir(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
-	if err := h.beadsClient().Comment(r.Context(), req.WorkingDir, req.ID, req.Text); err != nil {
+	if err := h.beadsClient().Comment(r.Context(), workingDir, id, req.Text); err != nil {
 		writeBeadsError(w, err)
 		return
 	}
@@ -485,19 +485,17 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 	writeJSONOK(w, beadsActionResponse{OK: true})
 }
 
-// beadsDepRequest is the JSON body for POST /api/beads/dep.
+// beadsDepRequest is the JSON body for POST /api/issues/{id}/dependencies.
 // Action must be "add" or "remove". For "add", Type selects the dependency
 // edge kind (default "blocks"). DependsOn is the issue that ID depends on; it
 // may be a local issue id or an external reference (external:<project>:<cap>).
 type beadsDepRequest struct {
-	WorkingDir string `json:"working_dir"`
-	ID         string `json:"id"`
-	DependsOn  string `json:"depends_on"`
-	Type       string `json:"type,omitempty"`
-	Action     string `json:"action"`
+	DependsOn string `json:"depends_on"`
+	Type      string `json:"type,omitempty"`
+	Action    string `json:"action"`
 }
 
-// HandleBeadsDep handles POST /api/beads/dep.
+// HandleBeadsDep handles POST /api/issues/{id}/dependencies?working_dir=...
 // For action "add" it runs "bd dep add <id> <depends_on> -t <type>"; for
 // "remove" it runs "bd dep remove <id> <depends_on>". Both emit plain text.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
@@ -513,15 +511,17 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.WorkingDir == "" {
+	workingDir := r.URL.Query().Get("working_dir")
+	id := r.PathValue("id")
+	if workingDir == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
-	if !filepath.IsAbs(req.WorkingDir) {
+	if !filepath.IsAbs(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
-	if !isValidBeadsIssueRef(req.ID) {
+	if !isValidBeadsIssueRef(id) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
@@ -529,7 +529,7 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "depends_on is required")
 		return
 	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
+	if !h.isKnownWorkspaceDir(workingDir) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
@@ -551,8 +551,8 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.beadsClient().Dep(r.Context(), req.WorkingDir, beads.DepParams{
-		ID:        req.ID,
+	if err := h.beadsClient().Dep(r.Context(), workingDir, beads.DepParams{
+		ID:        id,
 		DependsOn: req.DependsOn,
 		Type:      req.Type,
 		Action:    req.Action,

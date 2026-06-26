@@ -1080,8 +1080,9 @@ func TestHandleBeadsUpdate_TypeAccepted(t *testing.T) {
 
 func TestHandleBeadsDep_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodGet, "/api/beads/dep", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/issues/abc-1/dependencies?working_dir=/test/workspace", nil)
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -1091,9 +1092,10 @@ func TestHandleBeadsDep_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsDep_InvalidBody(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=/test/workspace",
 		strings.NewReader(`not-json`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1103,9 +1105,10 @@ func TestHandleBeadsDep_InvalidBody(t *testing.T) {
 
 func TestHandleBeadsDep_MissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"id":"abc-1","depends_on":"abc-2","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies",
+		strings.NewReader(`{"depends_on":"abc-2","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1116,9 +1119,10 @@ func TestHandleBeadsDep_MissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsDep_RelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"relative/path","id":"abc-1","depends_on":"abc-2","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=relative/path",
+		strings.NewReader(`{"depends_on":"abc-2","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1128,9 +1132,10 @@ func TestHandleBeadsDep_RelativeWorkingDir(t *testing.T) {
 }
 
 func TestHandleBeadsDep_MissingID(t *testing.T) {
+	// No path value set → id = "" → fails isValidBeadsIssueRef → 400.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"","depends_on":"abc-2","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues//dependencies?working_dir=/test/workspace",
+		strings.NewReader(`{"depends_on":"abc-2","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1142,9 +1147,10 @@ func TestHandleBeadsDep_MissingID(t *testing.T) {
 
 func TestHandleBeadsDep_MissingDependsOn(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","depends_on":"","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=/test/workspace",
+		strings.NewReader(`{"depends_on":"","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1169,11 +1175,12 @@ func TestHandleBeadsDep_MissingDependsOn(t *testing.T) {
 }
 
 func TestHandleBeadsDep_FlagLikeID(t *testing.T) {
-	// A leading-dash id must be rejected to prevent flag injection.
+	// A leading-dash id in the path must be rejected to prevent flag injection.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"--force","depends_on":"abc-2","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/--force/dependencies?working_dir=/test/workspace",
+		strings.NewReader(`{"depends_on":"abc-2","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "--force")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1184,9 +1191,10 @@ func TestHandleBeadsDep_FlagLikeID(t *testing.T) {
 
 func TestHandleBeadsDep_InvalidAction(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","depends_on":"abc-2","action":"frobnicate"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=/test/workspace",
+		strings.NewReader(`{"depends_on":"abc-2","action":"frobnicate"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1212,9 +1220,10 @@ func TestHandleBeadsDep_InvalidAction(t *testing.T) {
 
 func TestHandleBeadsDep_InvalidType(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","depends_on":"abc-2","type":"bogus","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=/test/workspace",
+		strings.NewReader(`{"depends_on":"abc-2","type":"bogus","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1225,9 +1234,10 @@ func TestHandleBeadsDep_InvalidType(t *testing.T) {
 
 func TestHandleBeadsDep_UnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/unknown/dir","id":"abc-1","depends_on":"abc-2","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=/unknown/dir",
+		strings.NewReader(`{"depends_on":"abc-2","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
@@ -1241,9 +1251,10 @@ func TestHandleBeadsDep_ExternalRefAccepted(t *testing.T) {
 	// never a 4xx for the colon-bearing ref itself.
 	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
-		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","depends_on":"external:beads:mol-run","action":"add"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/abc-1/dependencies?working_dir=/test/workspace",
+		strings.NewReader(`{"depends_on":"external:beads:mol-run","action":"add"}`))
 	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "abc-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)

@@ -358,7 +358,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   // View-mode "add comment": a "+" button at the bottom of the comments list
   // reveals a textarea with the same save-on-blur behaviour as notes. An empty
   // draft on blur just closes the editor without a request; otherwise the
-  // comment is posted via /api/beads/comment and the list is refreshed.
+  // comment is posted via /api/issues/{id}/comments and the list is refreshed.
   const [addingComment, setAddingComment] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
   const [savingComment, setSavingComment] = useState(false);
@@ -804,10 +804,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     }
     setSavingComment(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/comment"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(data.id)}/comments`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id: data.id, text }),
+        body: JSON.stringify({ text }),
       });
       const respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
@@ -839,15 +839,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     }
   }, [isOpen, creating, data && data.id]);
 
-  // Add or remove a dependency edge via /api/beads/dep, then refresh both the
+  // Add or remove a dependency edge via /api/issues/{id}/dependencies, then refresh both the
   // dependency list and the parent issue list (so counts stay current).
   const mutateDep = useCallback(async (action, dependsOn, depType) => {
     if (!data || !data.id || !dependsOn) return;
     setDepsBusy(true);
     try {
-      const body = { working_dir: workingDir, id: data.id, depends_on: dependsOn, action };
+      const body = { depends_on: dependsOn, action };
       if (action === "add") body.type = depType || "blocks";
-      const res = await secureFetch(apiUrl("/api/beads/dep"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(data.id)}/dependencies`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -883,18 +883,18 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     if (!data || !data.id || !dependsOn || depsBusy) return;
     setDepsBusy(true);
     try {
-      const post = (body) => secureFetch(apiUrl("/api/beads/dep"), {
+      const post = (body) => secureFetch(apiUrl(`/api/issues/${encodeURIComponent(data.id)}/dependencies`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      let res = await post({ working_dir: workingDir, id: data.id, depends_on: dependsOn, action: "remove" });
+      let res = await post({ depends_on: dependsOn, action: "remove" });
       let respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
         showToast && showToast({ style: "error", title: respData.error || "Failed to change dependency type" });
         return;
       }
-      res = await post({ working_dir: workingDir, id: data.id, depends_on: dependsOn, type: nextType, action: "add" });
+      res = await post({ depends_on: dependsOn, type: nextType, action: "add" });
       respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
         showToast && showToast({ style: "error", title: respData.error || "Failed to change dependency type" });
@@ -2695,10 +2695,10 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     const id = direction === "blocks" ? other.id : issue.id;
     const dependsOn = direction === "blocks" ? issue.id : other.id;
     try {
-      const res = await secureFetch(apiUrl("/api/beads/dep"), {
+      const res = await secureFetch(apiUrl(`/api/issues/${encodeURIComponent(id)}/dependencies`) + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, id, depends_on: dependsOn, type: "blocks", action: "add" }),
+        body: JSON.stringify({ depends_on: dependsOn, type: "blocks", action: "add" }),
       });
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
