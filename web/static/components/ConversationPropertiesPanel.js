@@ -12,7 +12,7 @@ import {
   FolderIcon,
   PeriodicFilledIcon,
 } from "./Icons.js";
-import { apiUrl } from "../utils/api.js";
+import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
@@ -538,7 +538,7 @@ export function ConversationPropertiesPanel({
           setSessionSettings(data.settings || {});
         } else {
           const errorData = await res.json().catch(() => ({}));
-          setFlagsError(errorData.error?.message || errorData.message || "Failed to save setting");
+          setFlagsError(errorMessageFromData(errorData, "Failed to save setting"));
         }
       } catch (err) {
         console.error("Failed to save flag:", err);

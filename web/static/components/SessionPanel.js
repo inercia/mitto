@@ -13,7 +13,7 @@ import {
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
-import { apiUrl } from "../utils/api.js";
+import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
@@ -561,7 +561,7 @@ export function SessionPanel({
           setSessionSettings(data.settings || {});
         } else {
           const errorData = await res.json().catch(() => ({}));
-          setFlagsError(errorData.error?.message || errorData.message || "Failed to save setting");
+          setFlagsError(errorMessageFromData(errorData, "Failed to save setting"));
         }
       } catch (err) {
         console.error("Failed to save flag:", err);
@@ -696,7 +696,7 @@ export function SessionPanel({
         setEditingAttribute(null);
       } else {
         const errorData = await res.json().catch(() => ({}));
-        setUserDataError(errorData?.error?.message || errorData.message || "Failed to save attribute");
+        setUserDataError(errorMessageFromData(errorData, "Failed to save attribute"));
       }
     } catch (err) {
       console.error("Failed to save attribute:", err);

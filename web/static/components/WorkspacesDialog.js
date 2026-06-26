@@ -4,6 +4,7 @@ const { useState, useEffect, useMemo, useCallback, useRef, html } = window.preac
 import {
   secureFetch,
   apiUrl,
+  errorMessageFromData,
   hasNativeFolderPicker,
   pickFolder,
   fetchConfig,
@@ -602,7 +603,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const ed = await res.json();
-          throw new Error(ed.error?.message || "request failed");
+          throw new Error(errorMessageFromData(ed, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -644,7 +645,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         let msg = "Failed to restart ACP";
         try {
           const data = await res.json();
-          msg = data.error?.message || msg;
+          msg = errorMessageFromData(data, msg);
         } catch (_) { /* keep default */ }
         throw new Error(msg);
       }
@@ -708,7 +709,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const ed = await res.json();
-          throw new Error(ed.error?.message || "request failed");
+          throw new Error(errorMessageFromData(ed, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -763,7 +764,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const ed = await res.json();
-          throw new Error(ed.error?.message || "request failed");
+          throw new Error(errorMessageFromData(ed, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -811,7 +812,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const ed = await res.json();
-          throw new Error(ed.error?.message || "request failed");
+          throw new Error(errorMessageFromData(ed, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -952,7 +953,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       if (!res.ok) {
         let errData = null;
         try { errData = await res.json(); } catch (_e) { /* non-JSON error body */ }
-        throw new Error(errData?.error?.message || "Failed to save configuration");
+        throw new Error(errorMessageFromData(errData, "Failed to save configuration"));
       }
       const result = await res.json();
       invalidateConfigCache();
@@ -975,7 +976,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             });
             if (!metaRes.ok) {
               const metaErr = await metaRes.json().catch(() => ({}));
-              throw new Error(metaErr.error?.message || "Failed to save workspace metadata");
+              throw new Error(errorMessageFromData(metaErr, "Failed to save workspace metadata"));
             }
           } catch (metaErr) {
             setError("Failed to save metadata: " + metaErr.message);
@@ -1003,7 +1004,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             });
             if (!schemaRes.ok) {
               const schemaErr = await schemaRes.json().catch(() => ({}));
-              throw new Error(schemaErr.error?.message || "Failed to save user data schema");
+              throw new Error(errorMessageFromData(schemaErr, "Failed to save user data schema"));
             }
           } catch (schemaErr) {
             setError("Failed to save user data schema: " + schemaErr.message);
@@ -1394,7 +1395,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const data = await res.json();
-          throw new Error(data.error?.message || "request failed");
+          throw new Error(errorMessageFromData(data, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -1419,7 +1420,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const data = await res.json();
-          throw new Error(data.error?.message || "request failed");
+          throw new Error(errorMessageFromData(data, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -1469,7 +1470,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const data = await res.json();
-          throw new Error(data.error?.message || "request failed");
+          throw new Error(errorMessageFromData(data, "request failed"));
         }
         throw new Error(await res.text());
       }
@@ -1500,7 +1501,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           const data = await res.json();
-          throw new Error(data.error?.message || "request failed");
+          throw new Error(errorMessageFromData(data, "request failed"));
         }
         throw new Error(await res.text());
       }

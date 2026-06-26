@@ -6,6 +6,7 @@ import {
   secureFetch,
   authFetch,
   apiUrl,
+  errorMessageFromData,
   hasNativeFolderPicker,
   pickFolder,
   openExternalURL,
@@ -1860,7 +1861,7 @@ export function SettingsDialog({
       if (!res.ok) {
         let errData = null;
         try { errData = await res.json(); } catch (_e) { /* non-JSON error body */ }
-        throw new Error(errData?.error?.message || "Failed to save configuration");
+        throw new Error(errorMessageFromData(errData, "Failed to save configuration"));
       }
       const result = await res.json();
 
