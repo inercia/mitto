@@ -1267,7 +1267,7 @@ func TestHandleBeadsDep_ExternalRefAccepted(t *testing.T) {
 
 func TestHandleBeadsConfig_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/config", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/config", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
@@ -1278,7 +1278,7 @@ func TestHandleBeadsConfig_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsConfig_GetMissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/config")
+	req := localhostRequest("/api/issues/config")
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1303,7 +1303,7 @@ func TestHandleBeadsConfig_GetMissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsConfig_GetRelativeWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/config?working_dir=relative/path")
+	req := localhostRequest("/api/issues/config?working_dir=relative/path")
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1313,7 +1313,7 @@ func TestHandleBeadsConfig_GetRelativeWorkingDir(t *testing.T) {
 
 func TestHandleBeadsConfig_GetUnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/config?working_dir=/unknown/dir")
+	req := localhostRequest("/api/issues/config?working_dir=/unknown/dir")
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1325,7 +1325,7 @@ func TestHandleBeadsConfig_GetKnownWorkspace(t *testing.T) {
 	// bd may or may not be present.
 	// On bd success: 200 (JSON config). On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/config?working_dir=/test/workspace")
+	req := localhostRequest("/api/issues/config?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
 	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
@@ -1334,8 +1334,10 @@ func TestHandleBeadsConfig_GetKnownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsConfig_SetInvalidBody(t *testing.T) {
+	// working_dir is now validated before body decode, so supply a valid working_dir
+	// in the query so the request reaches the body-decode step.
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPut, "/api/beads/config",
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/config?working_dir=/test/workspace",
 		strings.NewReader(`not-json`))
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
@@ -1347,7 +1349,7 @@ func TestHandleBeadsConfig_SetInvalidBody(t *testing.T) {
 
 func TestHandleBeadsConfig_SetMissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPut, "/api/beads/config",
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/config",
 		strings.NewReader(`{"key":"jira.url","value":"https://x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
@@ -1360,8 +1362,8 @@ func TestHandleBeadsConfig_SetMissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsConfig_SetInvalidKey(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPut, "/api/beads/config",
-		strings.NewReader(`{"working_dir":"/test/workspace","key":"--force","value":"x"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/config?working_dir=/test/workspace",
+		strings.NewReader(`{"key":"--force","value":"x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1388,8 +1390,8 @@ func TestHandleBeadsConfig_SetInvalidKey(t *testing.T) {
 
 func TestHandleBeadsConfig_SetUnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPut, "/api/beads/config",
-		strings.NewReader(`{"working_dir":"/unknown/dir","key":"jira.url","value":"x"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/config?working_dir=/unknown/dir",
+		strings.NewReader(`{"key":"jira.url","value":"x"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1401,7 +1403,7 @@ func TestHandleBeadsConfig_SetUnknownWorkspace(t *testing.T) {
 
 func TestHandleBeadsConfig_UnsetMissingKey(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodDelete, "/api/beads/config?working_dir=/test/workspace", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/config?working_dir=/test/workspace", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
@@ -1412,7 +1414,7 @@ func TestHandleBeadsConfig_UnsetMissingKey(t *testing.T) {
 
 func TestHandleBeadsConfig_UnsetUnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodDelete, "/api/beads/config?working_dir=/unknown/dir&key=jira.url", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/issues/config?working_dir=/unknown/dir&key=jira.url", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
@@ -1425,7 +1427,7 @@ func TestHandleBeadsConfig_UnsetUnknownWorkspace(t *testing.T) {
 
 func TestHandleBeadsUpstream_MethodNotAllowed(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/api/beads/upstream", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/upstream", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	w := httptest.NewRecorder()
 	s.handleBeadsUpstream(w, req)
@@ -1436,7 +1438,7 @@ func TestHandleBeadsUpstream_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBeadsUpstream_GetMissingWorkingDir(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/upstream")
+	req := localhostRequest("/api/issues/upstream")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpstream(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1446,7 +1448,7 @@ func TestHandleBeadsUpstream_GetMissingWorkingDir(t *testing.T) {
 
 func TestHandleBeadsUpstream_GetUnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/upstream?working_dir=/unknown/dir")
+	req := localhostRequest("/api/issues/upstream?working_dir=/unknown/dir")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpstream(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1457,7 +1459,7 @@ func TestHandleBeadsUpstream_GetUnknownWorkspace(t *testing.T) {
 func TestHandleBeadsUpstream_GetKnownDefaultsToNone(t *testing.T) {
 	setupMittoDir(t)
 	s := newBeadsTestServer()
-	req := localhostRequest("/api/beads/upstream?working_dir=/test/workspace")
+	req := localhostRequest("/api/issues/upstream?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpstream(w, req)
 	if w.Code != http.StatusOK {
@@ -1470,8 +1472,8 @@ func TestHandleBeadsUpstream_GetKnownDefaultsToNone(t *testing.T) {
 
 func TestHandleBeadsUpstream_SetInvalidUpstream(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"trello"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"trello"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1499,8 +1501,8 @@ func TestHandleBeadsUpstream_SetInvalidUpstream(t *testing.T) {
 
 func TestHandleBeadsUpstream_SetUnknownWorkspace(t *testing.T) {
 	s := newBeadsTestServer()
-	req := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/unknown/dir","upstream":"jira"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/unknown/dir",
+		strings.NewReader(`{"upstream":"jira"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1514,8 +1516,8 @@ func TestHandleBeadsUpstream_SetThenGetRoundTrip(t *testing.T) {
 	setupMittoDir(t)
 	s := newBeadsTestServer()
 
-	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"jira"}`))
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"jira"}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
@@ -1524,7 +1526,7 @@ func TestHandleBeadsUpstream_SetThenGetRoundTrip(t *testing.T) {
 		t.Fatalf("PUT status = %d, want %d (%s)", pw.Code, http.StatusOK, pw.Body.String())
 	}
 
-	get := localhostRequest("/api/beads/upstream?working_dir=/test/workspace")
+	get := localhostRequest("/api/issues/upstream?working_dir=/test/workspace")
 	gw := httptest.NewRecorder()
 	s.handleBeadsUpstream(gw, get)
 	if gw.Code != http.StatusOK {
@@ -1540,8 +1542,8 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_AllEmpty(t *testing.T) {
 	setupMittoDir(t)
 	s := newBeadsTestServer()
 
-	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"","push_prompt":"","sync_prompt":""}`))
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"","push_prompt":"","sync_prompt":""}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
@@ -1559,8 +1561,8 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_NonExistentPrompt(t *testing.T) 
 	setupMittoDir(t)
 	s := newBeadsTestServer()
 
-	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"does-not-exist"}`))
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"does-not-exist"}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
@@ -1593,8 +1595,8 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *t
 		},
 	})
 
-	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"parameterized-prompt"}`))
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"parameterized-prompt"}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
@@ -1623,8 +1625,8 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ValidPromptRoundTrip(t *testing.
 		},
 	})
 
-	put := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"my-pull-prompt"}`))
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"my-pull-prompt"}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
@@ -1634,7 +1636,7 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ValidPromptRoundTrip(t *testing.
 	}
 
 	// GET must return upstream=prompts and the stored pull_prompt.
-	get := localhostRequest("/api/beads/upstream?working_dir=/test/workspace")
+	get := localhostRequest("/api/issues/upstream?working_dir=/test/workspace")
 	gw := httptest.NewRecorder()
 	s.handleBeadsUpstream(gw, get)
 	if gw.Code != http.StatusOK {
@@ -1669,8 +1671,8 @@ func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.
 	})
 
 	// First, set prompts upstream.
-	put1 := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"prompts","pull_prompt":"pull-prompt"}`))
+	put1 := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"pull-prompt"}`))
 	put1.RemoteAddr = "127.0.0.1:1"
 	put1.Header.Set("Content-Type", "application/json")
 	pw1 := httptest.NewRecorder()
@@ -1680,8 +1682,8 @@ func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.
 	}
 
 	// Switch to jira — prompt names must disappear.
-	put2 := httptest.NewRequest(http.MethodPut, "/api/beads/upstream",
-		strings.NewReader(`{"working_dir":"/test/workspace","upstream":"jira"}`))
+	put2 := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
+		strings.NewReader(`{"upstream":"jira"}`))
 	put2.RemoteAddr = "127.0.0.1:1"
 	put2.Header.Set("Content-Type", "application/json")
 	pw2 := httptest.NewRecorder()
@@ -1690,7 +1692,7 @@ func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.
 		t.Fatalf("second PUT status = %d, want %d (%s)", pw2.Code, http.StatusOK, pw2.Body.String())
 	}
 
-	get := localhostRequest("/api/beads/upstream?working_dir=/test/workspace")
+	get := localhostRequest("/api/issues/upstream?working_dir=/test/workspace")
 	gw := httptest.NewRecorder()
 	s.handleBeadsUpstream(gw, get)
 	if gw.Code != http.StatusOK {

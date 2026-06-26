@@ -109,10 +109,13 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDelete)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/comments", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsComment)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/dependencies", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDep)},
+		apiRoute{method: "GET", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
+		apiRoute{method: "PUT", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
+		apiRoute{method: "DELETE", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
+		apiRoute{method: "GET", pattern: "/api/issues/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
+		apiRoute{method: "PUT", pattern: "/api/issues/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
 		apiRoute{pattern: "/api/beads/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{pattern: "/api/beads/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},
-		apiRoute{pattern: "/api/beads/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
-		apiRoute{pattern: "/api/beads/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
 		apiRoute{pattern: "/api/beads/sync", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsSync)},
 	)
 

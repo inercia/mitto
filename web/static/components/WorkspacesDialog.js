@@ -242,7 +242,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const [newBeadsKey, setNewBeadsKey] = useState("");
   const [newBeadsValue, setNewBeadsValue] = useState("");
   // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"|"prompts"),
-  // persisted in folders.json via /api/beads/upstream.
+  // persisted in folders.json via /api/issues/upstream.
   const [beadsUpstream, setBeadsUpstream] = useState("none");
   const [beadsUpstreamSaving, setBeadsUpstreamSaving] = useState(false);
   // "prompts" upstream: names of the three configured prompt actions.
@@ -1203,12 +1203,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     return folderGroup?.workspaces[0]?.uuid || null;
   };
 
-  // Load (reload) beads config for the selected folder via GET /api/beads/config.
+  // Load (reload) beads config for the selected folder via GET /api/issues/config.
   const reloadBeadsConfig = async (workingDir) => {
     setBeadsConfigLoading(true);
     setBeadsConfigError("");
     try {
-      const res = await secureFetch(apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}`));
+      const res = await secureFetch(apiUrl(`/api/issues/config?working_dir=${encodeURIComponent(workingDir)}`));
       const data = await res.json();
       const errMsg = beadsErrorMessage(data);
       if (errMsg) {
@@ -1226,17 +1226,17 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     }
   };
 
-  // Set a single beads config key via PUT /api/beads/config, then reload.
+  // Set a single beads config key via PUT /api/issues/config, then reload.
   const setBeadsConfigKey = async (key, value) => {
     const workingDir = getSelectedFolderDir();
     if (!workingDir || !key) return;
     setBeadsConfigSaving(true);
     setBeadsConfigError("");
     try {
-      const res = await secureFetch(apiUrl("/api/beads/config"), {
+      const res = await secureFetch(apiUrl("/api/issues/config") + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, key, value }),
+        body: JSON.stringify({ key, value }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(beadsErrorMessage(data) || "Failed to set config");
@@ -1249,7 +1249,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     }
   };
 
-  // Delete a single beads config key via DELETE /api/beads/config, then reload.
+  // Delete a single beads config key via DELETE /api/issues/config, then reload.
   const unsetBeadsConfigKey = async (key) => {
     const workingDir = getSelectedFolderDir();
     if (!workingDir || !key) return;
@@ -1257,7 +1257,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setBeadsConfigError("");
     try {
       const res = await secureFetch(
-        apiUrl(`/api/beads/config?working_dir=${encodeURIComponent(workingDir)}&key=${encodeURIComponent(key)}`),
+        apiUrl(`/api/issues/config?working_dir=${encodeURIComponent(workingDir)}&key=${encodeURIComponent(key)}`),
         { method: "DELETE" },
       );
       const data = await res.json().catch(() => ({}));
@@ -1271,10 +1271,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     }
   };
 
-  // Load the folder's upstream task system via GET /api/beads/upstream.
+  // Load the folder's upstream task system via GET /api/issues/upstream.
   const reloadBeadsUpstream = async (workingDir) => {
     try {
-      const res = await secureFetch(apiUrl(`/api/beads/upstream?working_dir=${encodeURIComponent(workingDir)}`));
+      const res = await secureFetch(apiUrl(`/api/issues/upstream?working_dir=${encodeURIComponent(workingDir)}`));
       const data = await res.json().catch(() => ({}));
       setBeadsUpstream((data && data.upstream) || "none");
       setBeadsPullPrompt((data && data.pull_prompt) || "");
@@ -1304,7 +1304,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     }
   };
 
-  // Persist the folder's upstream task system via PUT /api/beads/upstream.
+  // Persist the folder's upstream task system via PUT /api/issues/upstream.
   const saveBeadsUpstream = async (upstream) => {
     const workingDir = getSelectedFolderDir();
     if (!workingDir) return;
@@ -1312,13 +1312,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setBeadsUpstream(upstream); // optimistic
     setBeadsUpstreamSaving(true);
     try {
-      const body = { working_dir: workingDir, upstream };
+      const body = { upstream };
       if (upstream === "prompts") {
         body.pull_prompt = beadsPullPrompt;
         body.push_prompt = beadsPushPrompt;
         body.sync_prompt = beadsSyncPrompt;
       }
-      const res = await secureFetch(apiUrl("/api/beads/upstream"), {
+      const res = await secureFetch(apiUrl("/api/issues/upstream") + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1358,11 +1358,10 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setter(value); // optimistic
     setBeadsUpstreamSaving(true);
     try {
-      const res = await secureFetch(apiUrl("/api/beads/upstream"), {
+      const res = await secureFetch(apiUrl("/api/issues/upstream") + "?working_dir=" + encodeURIComponent(workingDir), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          working_dir: workingDir,
           upstream: "prompts",
           pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
           push_prompt: field === "push_prompt" ? value : beadsPushPrompt,

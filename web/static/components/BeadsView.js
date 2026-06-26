@@ -2156,7 +2156,7 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(apiUrl("/api/beads/upstream") + "?working_dir=" + encodeURIComponent(workingDir));
+        const res = await authFetch(apiUrl("/api/issues/upstream") + "?working_dir=" + encodeURIComponent(workingDir));
         const data = await readBeadsResponse(res);
         if (!cancelled) {
           setUpstream((data && data.upstream) || "none");

@@ -11,17 +11,16 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
-// beadsConfigSetRequest is the JSON body for PUT /api/beads/config.
+// beadsConfigSetRequest is the JSON body for PUT /api/issues/config.
 type beadsConfigSetRequest struct {
-	WorkingDir string `json:"working_dir"`
-	Key        string `json:"key"`
-	Value      string `json:"value"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // HandleBeadsConfig handles the per-folder beads config store:
-//   - GET    /api/beads/config?working_dir=...            -> "bd config show --json"
-//   - PUT    /api/beads/config (body: working_dir,key,value) -> "bd config set <key> <value>"
-//   - DELETE /api/beads/config?working_dir=...&key=...     -> "bd config unset <key>"
+//   - GET    /api/issues/config?working_dir=...            -> "bd config show --json"
+//   - PUT    /api/issues/config?working_dir=... (body: key,value) -> "bd config set <key> <value>"
+//   - DELETE /api/issues/config?working_dir=...&key=...     -> "bd config unset <key>"
 //
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsConfig(w http.ResponseWriter, r *http.Request) {
@@ -74,30 +73,32 @@ func (h *Handlers) handleBeadsConfigGet(w http.ResponseWriter, r *http.Request) 
 // an integration in a fresh folder "just works" rather than failing with
 // "run 'bd init' first".
 func (h *Handlers) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+
 	var req beadsConfigSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
-	if req.WorkingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
-		return
-	}
-	if !filepath.IsAbs(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
-		return
-	}
 	if !beads.IsValidConfigKey(req.Key) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
 		return
 	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
-		return
-	}
 
-	if err := h.beadsClient().ConfigSet(r.Context(), req.WorkingDir, req.Key, req.Value); err != nil {
+	if err := h.beadsClient().ConfigSet(r.Context(), workingDir, req.Key, req.Value); err != nil {
 		writeBeadsError(w, err)
 		return
 	}
@@ -135,10 +136,9 @@ func (h *Handlers) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request
 	writeJSONOK(w, beadsActionResponse{OK: true})
 }
 
-// beadsUpstreamRequest is the JSON body for PUT /api/beads/upstream.
+// beadsUpstreamRequest is the JSON body for PUT /api/issues/upstream.
 type beadsUpstreamRequest struct {
-	WorkingDir string `json:"working_dir"`
-	Upstream   string `json:"upstream"`
+	Upstream string `json:"upstream"`
 	// PullPrompt, PushPrompt, SyncPrompt are the workspace prompt names to run for
 	// pull/push/sync operations. Only used when Upstream == "prompts". Empty strings
 	// are allowed (the corresponding operation is simply unconfigured).
@@ -157,8 +157,8 @@ type beadsUpstreamResponse struct {
 
 // HandleBeadsUpstream manages the per-folder beads upstream task system stored
 // in folders.json (folder-native, not a bd config value):
-//   - GET /api/beads/upstream?working_dir=...        -> {"upstream":"none|jira|github|gitlab|linear|prompts","pull_prompt","push_prompt","sync_prompt"}
-//   - PUT /api/beads/upstream (body: working_dir,upstream,pull_prompt,push_prompt,sync_prompt) -> persists the choice
+//   - GET /api/issues/upstream?working_dir=...        -> {"upstream":"none|jira|github|gitlab|linear|prompts","pull_prompt","push_prompt","sync_prompt"}
+//   - PUT /api/issues/upstream?working_dir=... (body: upstream,pull_prompt,push_prompt,sync_prompt) -> persists the choice
 //
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
@@ -201,26 +201,28 @@ func (h *Handlers) handleBeadsUpstreamGet(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request) {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+
 	var req beadsUpstreamRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
-	if req.WorkingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
-		return
-	}
-	if !filepath.IsAbs(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
-		return
-	}
 	if !beads.IsValidUpstream(req.Upstream) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "upstream must be one of: none, jira, github, gitlab, linear, prompts")
-		return
-	}
-	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -229,7 +231,7 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 		// effective prompt list and must have no parameters (len(Parameters)==0).
 		var allPrompts []config.WebPrompt
 		if h.deps.GetWorkspacePromptsAll != nil {
-			allPrompts = h.deps.GetWorkspacePromptsAll(req.WorkingDir)
+			allPrompts = h.deps.GetWorkspacePromptsAll(workingDir)
 		}
 		promptIdx := make(map[string]config.WebPrompt, len(allPrompts))
 		for _, p := range allPrompts {
@@ -253,12 +255,12 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-		if err := config.SetFolderBeadsPromptUpstream(req.WorkingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt); err != nil {
+		if err := config.SetFolderBeadsPromptUpstream(workingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt); err != nil {
 			writeBeadsError(w, err)
 			return
 		}
 	} else {
-		if err := config.SetFolderBeadsUpstream(req.WorkingDir, req.Upstream); err != nil {
+		if err := config.SetFolderBeadsUpstream(workingDir, req.Upstream); err != nil {
 			writeBeadsError(w, err)
 			return
 		}
@@ -268,7 +270,7 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 	if upstream == "" {
 		upstream = "none"
 	}
-	pull, push, sync := config.FolderBeadsPrompts(req.WorkingDir)
+	pull, push, sync := config.FolderBeadsPrompts(workingDir)
 	writeJSONOK(w, beadsUpstreamResponse{
 		Upstream:   upstream,
 		PullPrompt: pull,

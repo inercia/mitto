@@ -222,7 +222,7 @@ All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them
 | `/api/beads/comment` | POST | `/api/issues/{id}/comments` | POST | migrate | Sub-resource on issue |
 | `/api/beads/dep` | POST | `/api/issues/{id}/dependencies` | POST | migrate | Sub-resource on issue |
 | `/api/beads/config` | GET, PUT | `/api/issues/config` | GET, PUT | migrate | Issues config sub-resource |
-| `/api/beads/upstream` | GET | `/api/issues/upstream` | GET | migrate | Read-only sync info |
+| `/api/beads/upstream` | GET, PUT | `/api/issues/upstream` | GET, PUT | migrate | GET + PUT; stores upstream config in folders.json |
 | `/api/beads/sync` | POST | `/api/issues/sync` | POST | migrate | Non-CRUD action; acceptable |
 | `/api/beads/cleanup` | POST | `/api/issues/cleanup` | POST | migrate | Non-CRUD bulk action; acceptable |
 
