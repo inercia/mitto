@@ -561,7 +561,7 @@ export function SessionPanel({
           setSessionSettings(data.settings || {});
         } else {
           const errorData = await res.json().catch(() => ({}));
-          setFlagsError(errorData.message || "Failed to save setting");
+          setFlagsError(errorData.error?.message || errorData.message || "Failed to save setting");
         }
       } catch (err) {
         console.error("Failed to save flag:", err);

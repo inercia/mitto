@@ -33,20 +33,20 @@ func (h *Handlers) HandleSessionSettings(w http.ResponseWriter, r *http.Request,
 func (h *Handlers) HandleGetSessionSettings(w http.ResponseWriter, r *http.Request, sessionID string) {
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to get session metadata", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session metadata")
 		return
 	}
 
@@ -69,7 +69,7 @@ func (h *Handlers) HandleUpdateSessionSettings(w http.ResponseWriter, r *http.Re
 
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -86,13 +86,13 @@ func (h *Handlers) HandleUpdateSessionSettings(w http.ResponseWriter, r *http.Re
 	})
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to update session settings", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to update session settings", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to update session settings")
 		return
 	}
 
@@ -102,7 +102,7 @@ func (h *Handlers) HandleUpdateSessionSettings(w http.ResponseWriter, r *http.Re
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get updated metadata", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to get updated settings", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated settings")
 		return
 	}
 
