@@ -31,35 +31,35 @@ type SaveFileToPathResponse struct {
 func (h *Handlers) HandleCheckFileExists(w http.ResponseWriter, r *http.Request) {
 	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
 	if middleware.IsExternalConnection(r) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "Forbidden")
 		return
 	}
 
 	// Security check 2: Verify this is a localhost connection
 	if !middleware.IsLocalhostRequest(r) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "Forbidden")
 		return
 	}
 
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 		return
 	}
 
 	filePath := r.URL.Query().Get("path")
 	if filePath == "" {
-		http.Error(w, "path query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "path query parameter is required")
 		return
 	}
 
 	if !filepath.IsAbs(filePath) {
-		http.Error(w, "Path must be absolute", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Path must be absolute")
 		return
 	}
 
 	cleanPath := filepath.Clean(filePath)
 	if strings.Contains(cleanPath, "..") {
-		http.Error(w, "Invalid path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid path")
 		return
 	}
 
@@ -81,7 +81,7 @@ func (h *Handlers) HandleSaveFileToPath(w http.ResponseWriter, r *http.Request) 
 				"remote_addr", r.RemoteAddr,
 			)
 		}
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "Forbidden")
 		return
 	}
 
@@ -93,44 +93,44 @@ func (h *Handlers) HandleSaveFileToPath(w http.ResponseWriter, r *http.Request) 
 				"remote_addr", r.RemoteAddr,
 			)
 		}
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "Forbidden")
 		return
 	}
 
 	// Only allow POST
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 		return
 	}
 
 	// Parse request body
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024)) // 10MB limit
 	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Failed to read request body")
 		return
 	}
 
 	var req SaveFileToPathRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid JSON")
 		return
 	}
 
 	// Validate path
 	if req.Path == "" {
-		http.Error(w, "Path is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Path is required")
 		return
 	}
 
 	// Security check 3: Ensure path is absolute and doesn't contain path traversal
 	if !filepath.IsAbs(req.Path) {
-		http.Error(w, "Path must be absolute", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Path must be absolute")
 		return
 	}
 
 	cleanPath := filepath.Clean(req.Path)
 	if strings.Contains(cleanPath, "..") {
-		http.Error(w, "Invalid path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid path")
 		return
 	}
 
@@ -140,7 +140,7 @@ func (h *Handlers) HandleSaveFileToPath(w http.ResponseWriter, r *http.Request) 
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to create directory", "dir", dir, "error", err)
 		}
-		http.Error(w, fmt.Sprintf("Failed to create directory: %v", err), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", fmt.Sprintf("Failed to create directory: %v", err))
 		return
 	}
 
@@ -149,7 +149,7 @@ func (h *Handlers) HandleSaveFileToPath(w http.ResponseWriter, r *http.Request) 
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to write file", "path", cleanPath, "error", err)
 		}
-		http.Error(w, fmt.Sprintf("Failed to write file: %v", err), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", fmt.Sprintf("Failed to write file: %v", err))
 		return
 	}
 

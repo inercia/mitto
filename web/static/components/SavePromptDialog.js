@@ -9,6 +9,11 @@ import { apiUrl } from "../utils/api.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
 
+// Extract a human-readable message from the canonical JSON error envelope
+// ({"error":{"code","message"}}), falling back to a plain message or a default.
+const saveErrorMessage = (data, fallback) =>
+  data?.error?.message || data?.message || fallback;
+
 /**
  * Sanitize a prompt name into a safe filename.
  * Lowercases, replaces spaces/special chars with hyphens, adds .prompt.yaml extension.
@@ -145,8 +150,13 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
       });
 
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `Save failed (${response.status})`);
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (_) {
+          // non-JSON body; fall back to status-based message
+        }
+        throw new Error(saveErrorMessage(data, `Save failed (${response.status})`));
       }
 
       // Success - close dialog
