@@ -10,8 +10,8 @@
 //      ETag and the server returns 304 Not Modified when the payload is unchanged.
 //      This cuts the ~35 KB body transfer to a ~300-byte round-trip for unchanged config.
 
-import { apiUrl } from "./api.js";
 import { authFetch } from "./csrf.js";
+import { endpoints } from "./endpoints.js";
 
 /** Cache TTL in milliseconds (30 seconds). */
 const CONFIG_CACHE_TTL_MS = 30_000;
@@ -59,12 +59,7 @@ export async function fetchConfig(acpServer = null, force = false, sessionId = n
     }
   }
 
-  let url = acpServer
-    ? apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`)
-    : apiUrl("/api/config");
-  if (sessionId) {
-    url += (url.includes("?") ? "&" : "?") + `session_id=${encodeURIComponent(sessionId)}`;
-  }
+  const url = endpoints.config.get({ acp_server: acpServer, session_id: sessionId });
 
   // Attach the stored ETag (if any) so the server can return 304 Not Modified
   // when the config has not changed since the last successful fetch.

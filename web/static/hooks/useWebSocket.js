@@ -205,7 +205,7 @@ async function checkAuthOrRedirect() {
   if (!_authCheckInflight) {
     // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
     // routes 401s through the shared handleUnauthorized → redirectToLogin().
-    _authCheckInflight = authFetch(apiUrl("/api/config"))
+    _authCheckInflight = authFetch(endpoints.config.get())
       .then((res) => ({ status: res.status, ok: res.ok }))
       .finally(() => {
         _authCheckInflight = null;
@@ -255,7 +255,7 @@ async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
     try {
       // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
       // routes 401s through the shared handleUnauthorized → redirectToLogin().
-      const response = await authFetch(apiUrl("/api/config"));
+      const response = await authFetch(endpoints.config.get());
 
       // Got a response - check if authenticated
       if (response.status === 401) {

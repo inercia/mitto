@@ -95,7 +95,7 @@ export const endpoints = {
 
   /** Global server configuration. */
   config: {
-    get:    () => apiUrl("/api/config"),
+    get:    (params) => apiUrl("/api/config" + qs(params)),
     update: () => apiUrl("/api/config"),
   },
 

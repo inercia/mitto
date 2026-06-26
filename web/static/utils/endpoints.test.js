@@ -191,6 +191,14 @@ describe("endpoints registry", () => {
     beforeEach(() => { window.mittoApiPrefix = ""; });
 
     test("config.get", () => expect(endpoints.config.get()).toBe("/api/config"));
+    test("config.get with acp_server", () => expect(endpoints.config.get({ acp_server: "server-a" })).toBe("/api/config?acp_server=server-a"));
+    test("config.get with acp_server and session_id", () => {
+      const url = endpoints.config.get({ acp_server: "server-a", session_id: "s1" });
+      expect(url).toContain("acp_server=server-a");
+      expect(url).toContain("session_id=s1");
+    });
+    test("config.get skips null params", () => expect(endpoints.config.get({ acp_server: null, session_id: null })).toBe("/api/config"));
+    test("config.update", () => expect(endpoints.config.update()).toBe("/api/config"));
     test("agents.types", () => expect(endpoints.agents.types()).toBe("/api/agents/types"));
     test("agents.scan", () => expect(endpoints.agents.scan()).toBe("/api/agents/scan"));
     test("aux.improvePrompt", () => expect(endpoints.aux.improvePrompt()).toBe("/api/aux/improve-prompt"));

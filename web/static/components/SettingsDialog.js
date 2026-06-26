@@ -1853,7 +1853,7 @@ export function SettingsDialog({
       console.log("DEBUG: Saving config:", JSON.stringify(config.ui, null, 2));
       console.log("DEBUG: nativeNotifications state:", nativeNotifications);
 
-      const res = await secureFetch(apiUrl("/api/config"), {
+      const res = await secureFetch(endpoints.config.update(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),

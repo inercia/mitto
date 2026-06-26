@@ -950,7 +950,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       // belong to the Settings dialog. Omit the `web` section entirely so the backend
       // preserves the existing auth config and never validates a password here.
       const { web: _omitWeb, ...configWithoutWeb } = config;
-      const res = await secureFetch(apiUrl("/api/config"), {
+      const res = await secureFetch(endpoints.config.update(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...configWithoutWeb, workspaces: updated, prompts: [] }),
