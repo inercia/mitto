@@ -24,7 +24,7 @@ func (h *Handlers) handleQueueMessage(w http.ResponseWriter, r *http.Request, qu
 
 	// Handle direct message operations (no sub-action)
 	if subAction != "" {
-		http.Error(w, "Unknown action", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Unknown action")
 		return
 	}
 
@@ -43,13 +43,13 @@ func (h *Handlers) handleGetQueueMessage(w http.ResponseWriter, queue *session.Q
 	msg, err := queue.Get(messageID)
 	if err != nil {
 		if errors.Is(err, session.ErrMessageNotFound) {
-			http.Error(w, "Message not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Message not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get queue message", "error", err, "message_id", messageID)
 		}
-		http.Error(w, "Failed to get queue message", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get queue message")
 		return
 	}
 
@@ -60,13 +60,13 @@ func (h *Handlers) handleGetQueueMessage(w http.ResponseWriter, queue *session.Q
 func (h *Handlers) handleDeleteQueueMessage(w http.ResponseWriter, queue *session.Queue, sessionID, messageID string) {
 	if err := queue.Remove(messageID); err != nil {
 		if errors.Is(err, session.ErrMessageNotFound) {
-			http.Error(w, "Message not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Message not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to delete queue message", "error", err, "session_id", sessionID, "message_id", messageID)
 		}
-		http.Error(w, "Failed to delete queue message", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to delete queue message")
 		return
 	}
 
@@ -93,13 +93,13 @@ func (h *Handlers) handleMoveQueueMessage(w http.ResponseWriter, r *http.Request
 	messages, err := queue.Move(messageID, req.Direction)
 	if err != nil {
 		if errors.Is(err, session.ErrMessageNotFound) {
-			http.Error(w, "Message not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Message not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to move queue message", "error", err, "session_id", sessionID, "message_id", messageID, "direction", req.Direction)
 		}
-		http.Error(w, "Failed to move queue message", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to move queue message")
 		return
 	}
 
