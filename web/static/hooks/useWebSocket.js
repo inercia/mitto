@@ -829,7 +829,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     async (workingDir) => {
       try {
         const response = await secureFetch(
-          apiUrl(`/api/workspaces?dir=${encodeURIComponent(workingDir)}`),
+          apiUrl(`/api/workspaces?working_dir=${encodeURIComponent(workingDir)}`),
           {
             method: "DELETE",
           },

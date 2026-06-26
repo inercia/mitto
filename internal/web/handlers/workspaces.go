@@ -136,7 +136,7 @@ func (h *Handlers) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 // Supports both 'uuid' and legacy 'dir' query parameters for backwards compatibility.
 func (h *Handlers) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 	uuid := r.URL.Query().Get("uuid")
-	workingDir := r.URL.Query().Get("dir")
+	workingDir := r.URL.Query().Get("working_dir")
 
 	// Find the workspace - prefer UUID, fall back to workingDir
 	var ws *configPkg.WorkspaceSettings

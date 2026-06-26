@@ -98,7 +98,7 @@ func TestHandleRemoveWorkspace_NotFound(t *testing.T) {
 	h := newWSHandlers(conversation.NewSessionManager("", "", false, nil), nil)
 
 	// Request with non-existent workspace
-	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces?dir=/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces?working_dir=/nonexistent", nil)
 	w := httptest.NewRecorder()
 
 	h.HandleWorkspaces(w, req)
@@ -176,7 +176,7 @@ func TestHandleRemoveWorkspace_WithDir(t *testing.T) {
 	})
 	h := newWSHandlers(sm, nil)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces?dir=/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces?working_dir=/nonexistent", nil)
 	w := httptest.NewRecorder()
 
 	h.HandleWorkspaces(w, req)
