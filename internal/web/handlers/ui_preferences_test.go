@@ -119,6 +119,23 @@ func TestHandleUIPreferences_PUT_InvalidGroupingMode(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Failed to unmarshal error envelope: %v (body=%q)", err, w.Body.String())
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	const wantMsg = "Invalid grouping_mode: must be 'none', 'server', 'folder', or 'workspace'"
+	if env.Error.Message != wantMsg {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
+	}
 }
 
 func TestHandleUIPreferences_PUT_InvalidJSON(t *testing.T) {

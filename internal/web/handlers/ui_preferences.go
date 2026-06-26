@@ -55,7 +55,7 @@ func (h *Handlers) handleGetUIPreferences(w http.ResponseWriter, r *http.Request
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to load UI preferences", "error", err)
 		}
-		http.Error(w, "Failed to load UI preferences", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to load UI preferences")
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 		prefs.GroupingMode != "server" &&
 		prefs.GroupingMode != "folder" &&
 		prefs.GroupingMode != "workspace" {
-		http.Error(w, "Invalid grouping_mode: must be 'none', 'server', 'folder', or 'workspace'", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid grouping_mode: must be 'none', 'server', 'folder', or 'workspace'")
 		return
 	}
 
@@ -83,7 +83,7 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 	if prefs.PromptSortMode != "" &&
 		prefs.PromptSortMode != "alphabetical" &&
 		prefs.PromptSortMode != "color" {
-		http.Error(w, "Invalid prompt_sort_mode: must be 'alphabetical' or 'color'", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid prompt_sort_mode: must be 'alphabetical' or 'color'")
 		return
 	}
 
@@ -92,11 +92,11 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 	validGroupingModes := map[string]bool{"none": true, "server": true, "folder": true, "workspace": true}
 	for key, value := range prefs.FilterTabGrouping {
 		if !validFilterTabs[key] {
-			http.Error(w, "Invalid filter_tab_grouping key: must be 'conversations', 'periodic', or 'archived'", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid filter_tab_grouping key: must be 'conversations', 'periodic', or 'archived'")
 			return
 		}
 		if !validGroupingModes[value] {
-			http.Error(w, "Invalid filter_tab_grouping value: must be 'none', 'server', 'folder', or 'workspace'", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid filter_tab_grouping value: must be 'none', 'server', 'folder', or 'workspace'")
 			return
 		}
 	}
@@ -105,7 +105,7 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to save UI preferences", "error", err)
 		}
-		http.Error(w, "Failed to save UI preferences", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save UI preferences")
 		return
 	}
 

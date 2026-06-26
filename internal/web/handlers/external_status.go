@@ -18,7 +18,7 @@ type ExternalStatusResponse struct {
 // http.Server); this handler only reports that state via the Deps facade.
 func (h *Handlers) HandleExternalStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeErrorJSON(w, http.StatusMethodNotAllowed, "", "Method not allowed")
 		return
 	}
 
