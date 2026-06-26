@@ -10,7 +10,7 @@
 // Security comes from the fact that an attacker cannot read the cookie
 // value due to same-origin policy, so they cannot set the correct header.
 
-import { apiUrl } from "./api.js";
+import { endpoints } from "./endpoints.js";
 
 const CSRF_COOKIE_NAME = "mitto_csrf";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
@@ -34,7 +34,7 @@ function getTokenFromCookie() {
  * @returns {Promise<string>} The CSRF token
  */
 async function fetchCSRFToken() {
-  const response = await fetch(apiUrl("/api/csrf-token"), {
+  const response = await fetch(endpoints.misc.csrfToken(), {
     credentials: "include", // Include cookies for cross-origin requests (external access via Tailscale)
   });
   if (!response.ok) {
