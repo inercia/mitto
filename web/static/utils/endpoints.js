@@ -83,6 +83,7 @@ export const endpoints = {
     restartAcp:           (uuid)           => apiUrl(`/api/workspaces/${enc(uuid)}/restart-acp`),
     processors:           (uuid)           => apiUrl(`/api/workspaces/${enc(uuid)}/processors`),
     processor:            (uuid, name)     => apiUrl(`/api/workspaces/${enc(uuid)}/processors/${enc(name)}`),
+    processorArguments:   (uuid, name)     => apiUrl(`/api/workspaces/${enc(uuid)}/processors/${enc(name)}/arguments`),
   },
 
   /** Workspace-scoped prompt management. */

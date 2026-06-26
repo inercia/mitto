@@ -179,6 +179,8 @@ describe("endpoints registry", () => {
     test("mcpTools", () => expect(endpoints.workspaces.mcpTools("uuid-1")).toBe("/api/workspaces/uuid-1/mcp-tools"));
     test("mcpToolsInstall", () => expect(endpoints.workspaces.mcpToolsInstall("u")).toBe("/api/workspaces/u/mcp-tools/install"));
     test("processor", () => expect(endpoints.workspaces.processor("u", "myproc")).toBe("/api/workspaces/u/processors/myproc"));
+    test("processorArguments", () => expect(endpoints.workspaces.processorArguments("u", "myproc")).toBe("/api/workspaces/u/processors/myproc/arguments"));
+    test("processorArguments encodes special chars in name", () => expect(endpoints.workspaces.processorArguments("u", "my proc/v2")).toBe("/api/workspaces/u/processors/my%20proc%2Fv2/arguments"));
   });
 
   describe("workspacePrompts group", () => {
