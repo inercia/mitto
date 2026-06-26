@@ -1570,16 +1570,19 @@ function App() {
   );
 
   // Move a folder to an organizational group (folders.json group label). An
-  // empty group clears the assignment. Persists via PUT /api/folder-group, then
-  // refreshes workspaces so the sidebar regroups immediately.
+  // empty group clears the assignment. Persists via PUT /api/workspaces/{uuid}/folder-group,
+  // then refreshes workspaces so the sidebar regroups immediately.
   const handleMoveFolderToGroup = useCallback(
     async (workingDir, group) => {
       if (!workingDir) return;
+      const ws = (workspaces || []).find((w) => w.working_dir === workingDir);
+      const uuid = ws?.uuid;
+      if (!uuid) { showToast({ style: "error", title: "Unknown workspace folder" }); return; }
       try {
-        const res = await secureFetch(apiUrl("/api/folder-group"), {
+        const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/folder-group`), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ working_dir: workingDir, group: group || "" }),
+          body: JSON.stringify({ group: group || "" }),
         });
         if (!res.ok) {
           let msg = "Failed to move folder to group";
@@ -1601,7 +1604,7 @@ function App() {
         showToast({ style: "error", title: "Failed to move folder to group: " + err.message });
       }
     },
-    [showToast, refreshWorkspaces],
+    [showToast, refreshWorkspaces, workspaces],
   );
 
   // Handle terminal action - calls API to open terminal at workspace path

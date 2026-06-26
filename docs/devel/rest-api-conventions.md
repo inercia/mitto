@@ -167,7 +167,7 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 | `/api/workspace-mcp-remove` | POST | `/api/workspaces/{uuid}/mcp-tools/remove` | POST | **done** | Migrated; nested under workspace; acp_server kept as explicit override |
 | `/api/workspace-metadata` | GET, PUT | `/api/workspaces/{uuid}/metadata` | GET, PUT | **done** | Migrated; flat path removed |
 | `/api/workspace/user-data-schema` | GET, PUT | `/api/workspaces/{uuid}/user-data-schema` | GET, PUT | **done** | Migrated; flat path removed |
-| `/api/folder-group` | GET | `/api/workspaces/{uuid}/folder-group` | GET | migrate | Nest under workspace |
+| `/api/folder-group` | PUT | `/api/workspaces/{uuid}/folder-group` | PUT | **done** | Migrated; nested under workspace; PUT (mutation) — corrected from GET; resolves working_dir from uuid, applies group folder-wide |
 
 ### 7.3 Agents & Runners
 

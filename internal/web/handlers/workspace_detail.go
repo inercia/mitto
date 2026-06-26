@@ -100,7 +100,7 @@ func (h *Handlers) handleRestartWorkspaceACP(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// HandleFolderGroup handles PUT /api/folder-group.
+// HandleFolderGroup handles PUT /api/workspaces/{uuid}/folder-group.
 // Sets (or clears) the folder-level organizational group label shared by all
 // workspaces in the given working directory. An empty group clears the
 // assignment ("ungrouped"). The group is folder-level: SetWorkspaces hoists it
@@ -112,27 +112,23 @@ func (h *Handlers) HandleFolderGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	workingDir := ws.WorkingDir
+
 	var req struct {
-		WorkingDir string `json:"working_dir"`
-		Group      string `json:"group"`
+		Group string `json:"group"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
-	workingDir := strings.TrimSpace(req.WorkingDir)
 	group := strings.TrimSpace(req.Group)
-	if workingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
-		return
-	}
-
-	// Validate that this is a known workspace directory.
-	if h.deps.SessionManager.GetWorkspace(workingDir) == nil {
-		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
-		return
-	}
 
 	// Update the group on every workspace sharing this folder, then persist.
 	// SetWorkspaces hoists the folder-level group into folders.json (shared by
