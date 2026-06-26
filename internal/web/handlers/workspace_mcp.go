@@ -10,7 +10,7 @@ import (
 	"github.com/inercia/mitto/internal/mcpserver"
 )
 
-// HandleWorkspaceMCPTools handles GET /api/workspace-mcp-tools?acp_server=...&dir=...
+// HandleWorkspaceMCPTools handles GET /api/workspaces/{uuid}/mcp-tools?acp_server=...
 // Returns MCP tools available for the workspace's ACP server type by running
 // the agent's mcp-list.sh script.
 func (h *Handlers) HandleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request) {
@@ -20,12 +20,18 @@ func (h *Handlers) HandleWorkspaceMCPTools(w http.ResponseWriter, r *http.Reques
 	}
 
 	acpServerName := r.URL.Query().Get("acp_server")
-	workingDir := r.URL.Query().Get("dir")
-
 	if acpServerName == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "acp_server query parameter is required")
 		return
 	}
+
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	workingDir := ws.WorkingDir
 
 	// Live Mitto MCP server URL, exposed so the UI can offer a one-click install.
 	// Defaults to the well-known port and is overridden with the actual runtime
@@ -91,10 +97,7 @@ func (h *Handlers) HandleWorkspaceMCPTools(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Run mcp-list.sh with workspace path
-	input := &agents.MCPListInput{}
-	if workingDir != "" {
-		input.Path = workingDir
-	}
+	input := &agents.MCPListInput{Path: workingDir}
 
 	output, err := mgr.ListMCPServers(r.Context(), agent.DirName, input)
 	if err != nil {
@@ -120,7 +123,7 @@ func (h *Handlers) HandleWorkspaceMCPTools(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// HandleWorkspaceMCPRemove handles POST /api/workspace-mcp-remove
+// HandleWorkspaceMCPRemove handles POST /api/workspaces/{uuid}/mcp-tools/remove
 // Removes an MCP server from a workspace's ACP agent by running mcp-remove.sh.
 func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -128,9 +131,16 @@ func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	workingDir := ws.WorkingDir
+
 	type mcpRemoveRequest struct {
 		ACPServer string `json:"acp_server"`
-		Dir       string `json:"dir"`
 		Scope     string `json:"scope"`
 		Name      string `json:"name"`
 	}
@@ -194,7 +204,7 @@ func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Reque
 	input := &agents.MCPRemoveInput{
 		Name:  req.Name,
 		Scope: req.Scope,
-		Path:  req.Dir,
+		Path:  workingDir,
 	}
 
 	output, err := mgr.RemoveMCPServer(r.Context(), agent.DirName, input)
@@ -214,13 +224,21 @@ func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// HandleWorkspaceMCPInstall handles POST /api/workspace-mcp-install
+// HandleWorkspaceMCPInstall handles POST /api/workspaces/{uuid}/mcp-tools/install
 // Installs MCP servers for a workspace's ACP agent by running mcp-install.sh.
 func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
+
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	workingDir := ws.WorkingDir
 
 	type mcpServerEntry struct {
 		Command string            `json:"command"`
@@ -231,7 +249,6 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 
 	type mcpInstallRequest struct {
 		ACPServer  string `json:"acp_server"`
-		Dir        string `json:"dir"`
 		Scope      string `json:"scope"`
 		Definition struct {
 			MCPServers map[string]json.RawMessage `json:"mcpServers"`
@@ -328,7 +345,7 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 			URL:     entry.URL,
 			Env:     entry.Env,
 			Scope:   req.Scope,
-			Path:    req.Dir,
+			Path:    workingDir,
 		}
 
 		output, err := mgr.InstallMCPServer(r.Context(), agent.DirName, input)

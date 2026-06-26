@@ -498,7 +498,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   useEffect(() => {
     if (activeTab === "mcp" && selectedWorkspace && !selectedFolder) {
-      loadMcpTools(editAcpServer || selectedWorkspace.acp_server, selectedWorkspace.working_dir);
+      loadMcpTools(editAcpServer || selectedWorkspace.acp_server, selectedWorkspace.uuid);
     }
   }, [activeTab, selectedWorkspaceKey, editAcpServer]);
 
@@ -591,14 +591,19 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     };
   };
 
-  const loadMcpTools = useCallback(async (acpServer, workingDir) => {
+  const loadMcpTools = useCallback(async (acpServer, uuid) => {
     setMcpToolsLoading(true);
     setMcpToolsError("");
     setMcpTools(null);
+    if (!uuid) {
+      setMcpToolsError("No workspace selected");
+      setMcpTools({ servers: [], agent_name: "" });
+      setMcpToolsLoading(false);
+      return;
+    }
     try {
       const params = new URLSearchParams({ acp_server: acpServer });
-      if (workingDir) params.set("dir", workingDir);
-      const res = await secureFetch(apiUrl(`/api/workspace-mcp-tools?${params}`));
+      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/mcp-tools?${params}`));
       if (!res.ok) {
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
@@ -688,18 +693,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       }
     }
 
+    if (!selectedWorkspace?.uuid) { setMcpInstallError("No workspace selected"); return; }
     setMcpInstallLoading(true);
     setMcpInstallError("");
     setMcpInstallSuccess("");
 
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(apiUrl("/api/workspace-mcp-install"), {
+      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(selectedWorkspace.uuid)}/mcp-tools/install`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           acp_server: acpServer,
-          dir: selectedWorkspace?.working_dir || "",
           scope: mcpInstallScope,
           definition: parsed,
         }),
@@ -731,7 +736,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         }
         // Reload MCP tools list after successful install
         setTimeout(() => {
-          loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+          loadMcpTools(acpServer, selectedWorkspace?.uuid);
           setMcpInstallOpen(false);
           setMcpInstallJson("");
           setMcpInstallName("");
@@ -750,12 +755,11 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setMcpRemoveLoading(true);
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(apiUrl("/api/workspace-mcp-remove"), {
+      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(selectedWorkspace.uuid)}/mcp-tools/remove`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           acp_server: acpServer,
-          dir: selectedWorkspace?.working_dir,
           scope: scope || mcpTools?.mcp_scopes?.[0] || "",
           name: serverName,
         }),
@@ -779,7 +783,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         }
       }
       // Refresh the MCP tools list
-      await loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+      await loadMcpTools(acpServer, selectedWorkspace?.uuid);
     } catch (err) {
       setMcpToolsError("Failed to remove MCP server: " + err.message);
     } finally {
@@ -796,14 +800,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setMcpInstallLoading(true);
     setMcpInstallError("");
     setMcpInstallSuccess("");
+    if (!selectedWorkspace?.uuid) { setMcpInstallError("No workspace selected"); return; }
     try {
       const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(apiUrl("/api/workspace-mcp-install"), {
+      const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(selectedWorkspace.uuid)}/mcp-tools/install`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           acp_server: acpServer,
-          dir: selectedWorkspace?.working_dir || "",
           scope,
           definition: { mcpServers: { mitto: { url: mcpUrl } } },
         }),
@@ -828,7 +832,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             if (hasActive) setNeedsRestart(true);
           });
         }
-        await loadMcpTools(acpServer, selectedWorkspace?.working_dir);
+        await loadMcpTools(acpServer, selectedWorkspace?.uuid);
       }
     } catch (err) {
       setMcpInstallError("Installation failed: " + err.message);
@@ -2603,7 +2607,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
                         </p>
                         <div class="flex items-center gap-0.5">
                           <button
-                            onClick=${() => { if (mcpToolsLoading) return; loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.working_dir); }}
+                            onClick=${() => { if (mcpToolsLoading) return; loadMcpTools(editAcpServer || selectedWorkspace?.acp_server, selectedWorkspace?.uuid); }}
                             aria-disabled=${mcpToolsLoading ? "true" : "false"}
                             class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${mcpToolsLoading ? "opacity-40 pointer-events-none" : ""}"
                             data-tip="Refresh MCP server list"

@@ -162,9 +162,9 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 | `/api/workspace-prompts/toggle-enabled` | PUT | `/api/workspaces/{uuid}/prompts/{name}` | PATCH | migrate | Eliminate verb path; use PATCH with `{ "enabled": bool }` |
 | `/api/workspace-processors` | GET | `/api/workspaces/{uuid}/processors` | GET | **done** | Migrated; nested under workspace |
 | `/api/workspace-processors/toggle-enabled` | PUT | `/api/workspaces/{uuid}/processors/{name}` | PATCH | **done** | Migrated; PATCH {uuid}/processors/{name} with {enabled} |
-| `/api/workspace-mcp-tools` | GET | `/api/workspaces/{uuid}/mcp-tools` | GET | migrate | Nest under workspace |
-| `/api/workspace-mcp-install` | POST | `/api/workspaces/{uuid}/mcp-tools/install` | POST | migrate | Nest under workspace; action sub-path acceptable |
-| `/api/workspace-mcp-remove` | POST | `/api/workspaces/{uuid}/mcp-tools/remove` | POST | migrate | Nest under workspace; action sub-path acceptable |
+| `/api/workspace-mcp-tools` | GET | `/api/workspaces/{uuid}/mcp-tools` | GET | **done** | Migrated; nested under workspace; acp_server kept as explicit override |
+| `/api/workspace-mcp-install` | POST | `/api/workspaces/{uuid}/mcp-tools/install` | POST | **done** | Migrated; nested under workspace; acp_server kept as explicit override |
+| `/api/workspace-mcp-remove` | POST | `/api/workspaces/{uuid}/mcp-tools/remove` | POST | **done** | Migrated; nested under workspace; acp_server kept as explicit override |
 | `/api/workspace-metadata` | GET, PUT | `/api/workspaces/{uuid}/metadata` | GET, PUT | **done** | Migrated; flat path removed |
 | `/api/workspace/user-data-schema` | GET, PUT | `/api/workspaces/{uuid}/user-data-schema` | GET, PUT | **done** | Migrated; flat path removed |
 | `/api/folder-group` | GET | `/api/workspaces/{uuid}/folder-group` | GET | migrate | Nest under workspace |
