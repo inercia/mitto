@@ -1308,7 +1308,7 @@ export function SettingsDialog({
 
   // Fetch available agent types for the type dropdown
   useEffect(() => {
-    secureFetch(endpoints.agents.types())
+    authFetch(endpoints.agents.types())
       .then((r) => r.json())
       .then((data) => setAgentTypes(data.agent_types || []))
       .catch(() => setAgentTypes([]));

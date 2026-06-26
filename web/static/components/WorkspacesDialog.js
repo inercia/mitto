@@ -435,7 +435,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setMcpToolsError("");
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
-      secureFetch(endpoints.workspaces.effectiveRunnerConfig(selectedWorkspace.uuid))
+      authFetch(endpoints.workspaces.effectiveRunnerConfig(selectedWorkspace.uuid))
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => setEffectiveConfig(data))
         .catch(() => {});
@@ -470,7 +470,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setEditUserDataFields([]);
     if (firstWs.uuid) {
       setMetadataLoading(true);
-      secureFetch(endpoints.workspaces.metadata(firstWs.uuid))
+      authFetch(endpoints.workspaces.metadata(firstWs.uuid))
         .then((r) => r.json())
         .then((data) => {
           setFolderMetadata(data || null);
@@ -604,7 +604,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       return;
     }
     try {
-      const res = await secureFetch(endpoints.workspaces.mcpTools(uuid, { acp_server: acpServer }));
+      const res = await authFetch(endpoints.workspaces.mcpTools(uuid, { acp_server: acpServer }));
       if (!res.ok) {
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
@@ -630,7 +630,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const checkActiveSessionsForWorkspace = useCallback(async (workspaceUUID) => {
     if (!workspaceUUID) return false;
     try {
-      const res = await secureFetch(endpoints.sessions.running());
+      const res = await authFetch(endpoints.sessions.running());
       if (!res.ok) return false;
       const data = await res.json();
       return (data.sessions || []).some(s => s.workspace_uuid === workspaceUUID);
@@ -1186,7 +1186,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!firstWs?.working_dir) return;
 
     setPromptsLoading(true);
-    secureFetch(endpoints.workspacePrompts.list({ working_dir: firstWs.working_dir, include_global: true }))
+    authFetch(endpoints.workspacePrompts.list({ working_dir: firstWs.working_dir, include_global: true }))
       .then((r) => r.json())
       .then((data) => { setFolderPrompts(data.prompts || []); })
       .catch((err) => console.error("Failed to load prompts:", err))
@@ -1291,7 +1291,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     setBeadsUpstreamPromptsLoading(true);
     try {
-      const res = await secureFetch(endpoints.workspacePrompts.list({ working_dir: workingDir, include_global: true }));
+      const res = await authFetch(endpoints.workspacePrompts.list({ working_dir: workingDir, include_global: true }));
       const data = await res.json().catch(() => ({}));
       const all = (data && data.prompts) || [];
       // Only offer enabled prompts with no parameters (argument-free).
@@ -1382,7 +1382,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   // Load (reload) prompts for the selected folder
   const reloadFolderPrompts = async (workingDir) => {
-    const res = await secureFetch(endpoints.workspacePrompts.list({ working_dir: workingDir, include_global: true }));
+    const res = await authFetch(endpoints.workspacePrompts.list({ working_dir: workingDir, include_global: true }));
     const data = await res.json();
     setFolderPrompts(data.prompts || []);
   };
@@ -1445,7 +1445,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!firstWs?.uuid) return;
 
     setProcessorsLoading(true);
-    secureFetch(endpoints.workspaces.processors(firstWs.uuid))
+    authFetch(endpoints.workspaces.processors(firstWs.uuid))
       .then((r) => r.json())
       .then((data) => { setFolderProcessors(data.processors || []); })
       .catch((err) => console.error("Failed to load processors:", err))
@@ -1454,7 +1454,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   // Reload processors for the selected folder
   const reloadFolderProcessors = async (uuid) => {
-    const res = await secureFetch(endpoints.workspaces.processors(uuid));
+    const res = await authFetch(endpoints.workspaces.processors(uuid));
     const data = await res.json();
     setFolderProcessors(data.processors || []);
   };
