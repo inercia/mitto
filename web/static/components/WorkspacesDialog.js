@@ -1186,7 +1186,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!firstWs?.working_dir) return;
 
     setPromptsLoading(true);
-    secureFetch(apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(firstWs.working_dir)}&include_global=true`))
+    secureFetch(endpoints.workspacePrompts.list({ working_dir: firstWs.working_dir, include_global: true }))
       .then((r) => r.json())
       .then((data) => { setFolderPrompts(data.prompts || []); })
       .catch((err) => console.error("Failed to load prompts:", err))
@@ -1291,7 +1291,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     setBeadsUpstreamPromptsLoading(true);
     try {
-      const res = await secureFetch(apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&include_global=true`));
+      const res = await secureFetch(endpoints.workspacePrompts.list({ working_dir: workingDir, include_global: true }));
       const data = await res.json().catch(() => ({}));
       const all = (data && data.prompts) || [];
       // Only offer enabled prompts with no parameters (argument-free).
@@ -1382,7 +1382,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   // Load (reload) prompts for the selected folder
   const reloadFolderPrompts = async (workingDir) => {
-    const res = await secureFetch(apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&include_global=true`));
+    const res = await secureFetch(endpoints.workspacePrompts.list({ working_dir: workingDir, include_global: true }));
     const data = await res.json();
     setFolderPrompts(data.prompts || []);
   };
@@ -1393,7 +1393,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     setPromptSaving(true);
     try {
-      const res = await secureFetch(apiUrl("/api/workspace-prompts"), {
+      const res = await secureFetch(endpoints.workspacePrompts.create(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ working_dir: workingDir, ...promptData }),
@@ -1420,7 +1420,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     try {
       const res = await secureFetch(
-        apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&name=${encodeURIComponent(promptName)}`),
+        endpoints.workspacePrompts.list({ working_dir: workingDir, name: promptName }),
         { method: "DELETE" }
       );
       if (!res.ok) {
@@ -1491,7 +1491,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     const isCurrentlyEnabled = prompt.enabled !== false;
     try {
-      const res = await secureFetch(apiUrl(`/api/workspace-prompts/${encodeURIComponent(prompt.name)}?working_dir=${encodeURIComponent(workingDir)}`), {
+      const res = await secureFetch(endpoints.workspacePrompts.update(prompt.name, { working_dir: workingDir }), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: !isCurrentlyEnabled }),
