@@ -128,7 +128,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		Notes:       strings.TrimSpace(req.Notes),
 	})
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -183,7 +183,7 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 	// Fast phase: list closed IDs using the request context.
 	ids, err := h.beadsClient().ListClosedIDs(r.Context(), req.WorkingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 	total := len(ids)
@@ -297,7 +297,7 @@ func (h *Handlers) HandleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().Delete(r.Context(), req.WorkingDir, req.ID); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -355,7 +355,7 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().SetStatus(r.Context(), req.WorkingDir, req.ID, verb); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -436,7 +436,7 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		Assignee:    req.Assignee,
 		Notes:       req.Notes,
 	}); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -488,7 +488,7 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().Comment(r.Context(), req.WorkingDir, req.ID, req.Text); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -567,7 +567,7 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		Type:      req.Type,
 		Action:    req.Action,
 	}); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 

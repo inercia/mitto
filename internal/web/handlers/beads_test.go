@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"github.com/inercia/mitto/internal/conversation"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,11 +12,20 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 // beadsCreateParams is a minimal helper to capture title from stubBeadsClient.
 type beadsCreateParams struct {
 	title string
+}
+
+// listErrorClient is a beads.Client that always returns an error from List,
+// used to test the canonical 500 envelope on bd-command failure.
+type listErrorClient struct{ stubBeadsClient }
+
+func (c *listErrorClient) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, errors.New("bd: command failed: exit status 1")
 }
 
 // stubBeadsClient implements beads.Client for unit tests.
@@ -195,16 +204,41 @@ func TestHandleBeadsList_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsList_BdMissingReturnsJSONError(t *testing.T) {
-	// bd is likely present in the test environment, but we test against an unknown workspace
-	// to exercise the JSON error path without needing to mock the binary.
-	// The "bd missing" path is tested via runBD unit tests below.
+	// bd may or may not be present in the test environment.
+	// On success: 200 (bd returns JSON). On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := localhostRequest("/api/beads/list?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsList(w, req)
-	// Either 200 (bd found, JSON response) or 200 with JSON error body — never 500.
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
+	}
+}
+
+func TestHandleBeadsList_BdCommandError_ReturnsServerError(t *testing.T) {
+	// Deterministic failure via stub: List returns an error → canonical 500 envelope.
+	s := newBeadsTestServerWithClient(&listErrorClient{})
+	req := localhostRequest("/api/beads/list?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "server_error" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "server_error")
+	}
+	if env.Error.Message == "" {
+		t.Error("error.message should be non-empty")
 	}
 }
 
@@ -510,7 +544,7 @@ func TestHandleBeadsCreate_NilSessionManager(t *testing.T) {
 
 func TestHandleBeadsCreate_BdErrorReturnsJSONError(t *testing.T) {
 	// Valid request reaching bd execution — bd may or may not be present.
-	// Either 200 (success JSON) or 200 (JSON error body) — never 500.
+	// On success: 200 (bd returns JSON). On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/create",
 		strings.NewReader(`{"working_dir":"/test/workspace","title":"Test issue"}`))
@@ -518,8 +552,8 @@ func TestHandleBeadsCreate_BdErrorReturnsJSONError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsCreate(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -588,9 +622,8 @@ func TestHandleBeadsCleanup_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsCleanup_BdErrorReturnsJSONError(t *testing.T) {
-	// Valid request reaching bd execution against a workspace with no bd
-	// database — bd returns an error, which must surface as a 200 JSON error
-	// body, never a 500.
+	// Valid request reaching bd execution — bd may or may not be present.
+	// On success with empty closed list: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/cleanup",
 		strings.NewReader(`{"working_dir":"/test/workspace"}`))
@@ -598,8 +631,8 @@ func TestHandleBeadsCleanup_BdErrorReturnsJSONError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsCleanup(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -776,8 +809,8 @@ func TestHandleBeadsStatus_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsStatus_DeferActionAccepted(t *testing.T) {
-	// "defer" is a valid action — the request reaches bd execution, so the
-	// response is 200 (success or JSON error body), never a 4xx for the action.
+	// "defer" is a valid action — the request reaches bd execution.
+	// On success: 200. On bd error: 500 (canonical envelope). Never 4xx.
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/status",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","action":"defer"}`))
@@ -785,13 +818,13 @@ func TestHandleBeadsStatus_DeferActionAccepted(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsStatus(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
 func TestHandleBeadsStatus_UndeferActionAccepted(t *testing.T) {
-	// "undefer" is a valid action — same 200 expectation as defer above.
+	// "undefer" is a valid action — same expectation as defer above.
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/status",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","action":"undefer"}`))
@@ -799,8 +832,8 @@ func TestHandleBeadsStatus_UndeferActionAccepted(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsStatus(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -895,9 +928,8 @@ func TestHandleBeadsUpdate_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsUpdate_EmptyDescriptionAllowed(t *testing.T) {
-	// An empty (but present) description is valid — it clears the field. The
-	// request reaches bd execution, so the response is 200 (success or JSON
-	// error body), never a 4xx for the empty value itself.
+	// An empty (but present) description is valid — never a 4xx for the empty value.
+	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","description":""}`))
@@ -905,8 +937,8 @@ func TestHandleBeadsUpdate_EmptyDescriptionAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -925,8 +957,8 @@ func TestHandleBeadsUpdate_EmptyTitleRejected(t *testing.T) {
 }
 
 func TestHandleBeadsUpdate_TitleOnlyAllowed(t *testing.T) {
-	// A non-empty title with no description is valid — the request reaches bd
-	// execution, so the response is 200 (success or JSON error body).
+	// A non-empty title with no description is valid — never a 4xx for this.
+	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","title":"New title"}`))
@@ -934,15 +966,14 @@ func TestHandleBeadsUpdate_TitleOnlyAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
 func TestHandleBeadsUpdate_PriorityOnlyAllowed(t *testing.T) {
-	// A priority with no title or description is valid — including 0 ("Critical"),
-	// which the *int field distinguishes from absent. The request reaches bd
-	// execution, so the response is 200 (success or JSON error body).
+	// A priority-only update is valid — never a 4xx for the value itself.
+	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","priority":0}`))
@@ -950,8 +981,8 @@ func TestHandleBeadsUpdate_PriorityOnlyAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -985,8 +1016,8 @@ func TestHandleBeadsUpdate_PriorityOutOfRangeRejected(t *testing.T) {
 }
 
 func TestHandleBeadsUpdate_AssigneeOnlyAllowed(t *testing.T) {
-	// An assignee with no other field is valid — the request reaches bd
-	// execution, so the response is 200 (success or JSON error body).
+	// An assignee-only update is valid — never a 4xx for this.
+	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","assignee":"alice"}`))
@@ -994,15 +1025,14 @@ func TestHandleBeadsUpdate_AssigneeOnlyAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
 func TestHandleBeadsUpdate_EmptyAssigneeAllowed(t *testing.T) {
-	// An empty (but present) assignee is valid — it clears the field. The *string
-	// field distinguishes it from absent, so the request reaches bd execution and
-	// the response is 200 (success or JSON error body).
+	// An empty (but present) assignee is valid — it clears the field.
+	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/update",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","assignee":""}`))
@@ -1010,8 +1040,8 @@ func TestHandleBeadsUpdate_EmptyAssigneeAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsUpdate(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -1204,9 +1234,9 @@ func TestHandleBeadsDep_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsDep_ExternalRefAccepted(t *testing.T) {
-	// An external reference (external:<project>:<capability>) passes validation
-	// and reaches bd execution, so the response is 200 (success or JSON error
-	// body), never a 4xx for the colon-bearing ref itself.
+	// An external reference (external:<project>:<capability>) passes validation —
+	// never a 4xx for the colon-bearing ref itself.
+	// On bd success: 200. On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/dep",
 		strings.NewReader(`{"working_dir":"/test/workspace","id":"abc-1","depends_on":"external:beads:mol-run","action":"add"}`))
@@ -1214,8 +1244,8 @@ func TestHandleBeadsDep_ExternalRefAccepted(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsDep(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -1278,14 +1308,14 @@ func TestHandleBeadsConfig_GetUnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsConfig_GetKnownWorkspace(t *testing.T) {
-	// bd may or may not be present; either way the handler must return 200
-	// (JSON config on success, or a JSON error body) — never 500.
+	// bd may or may not be present.
+	// On bd success: 200 (JSON config). On bd error: 500 (canonical envelope).
 	s := newBeadsTestServer()
 	req := localhostRequest("/api/beads/config?working_dir=/test/workspace")
 	w := httptest.NewRecorder()
 	s.handleBeadsConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 200 or 500", w.Code)
 	}
 }
 
@@ -1687,6 +1717,7 @@ func TestHandleBeadsSync_UnknownWorkspace(t *testing.T) {
 }
 
 func TestHandleBeadsSync_NoUpstreamConfigured(t *testing.T) {
+	// No upstream configured → handler returns canonical 500 envelope with message "no upstream...".
 	setupMittoDir(t)
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/api/beads/sync",
@@ -1695,11 +1726,23 @@ func TestHandleBeadsSync_NoUpstreamConfigured(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.handleBeadsSync(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
-	if !strings.Contains(w.Body.String(), "no upstream") {
-		t.Errorf("body = %q, want no-upstream error", w.Body.String())
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "server_error" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "server_error")
+	}
+	if !strings.Contains(env.Error.Message, "no upstream") {
+		t.Errorf("error.message = %q, want it to contain %q", env.Error.Message, "no upstream")
 	}
 }
 

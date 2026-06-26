@@ -51,10 +51,14 @@ func isValidBeadsIssueRef(s string) bool {
 	return true
 }
 
-// beadsErrorResponse is returned when bd is missing or exits non-zero.
-type beadsErrorResponse struct {
-	Error  string `json:"error"`
-	Stderr string `json:"stderr,omitempty"`
+// writeBeadsError reports a bd-command failure using the canonical error
+// envelope (HTTP 500), carrying any captured stderr under error.details.stderr.
+func writeBeadsError(w http.ResponseWriter, err error) {
+	var details map[string]any
+	if s := beads.StderrOf(err); s != "" {
+		details = map[string]any{"stderr": s}
+	}
+	writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: errorBody{Code: errCodeServerError, Message: err.Error(), Details: details}})
 }
 
 // HandleBeadsList handles GET /api/beads/list?working_dir=...
@@ -82,7 +86,7 @@ func (h *Handlers) HandleBeadsList(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.beadsClient().List(r.Context(), workingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -119,7 +123,7 @@ func (h *Handlers) HandleBeadsStats(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.beadsClient().Status(r.Context(), workingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -161,7 +165,7 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.beadsClient().Show(r.Context(), workingDir, id)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 

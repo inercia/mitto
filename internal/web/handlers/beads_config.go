@@ -62,7 +62,7 @@ func (h *Handlers) handleBeadsConfigGet(w http.ResponseWriter, r *http.Request) 
 
 	result, err := h.beadsClient().ConfigShow(r.Context(), workingDir)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -98,7 +98,7 @@ func (h *Handlers) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := h.beadsClient().ConfigSet(r.Context(), req.WorkingDir, req.Key, req.Value); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -128,7 +128,7 @@ func (h *Handlers) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := h.beadsClient().ConfigUnset(r.Context(), workingDir, key); err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
@@ -254,12 +254,12 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 			}
 		}
 		if err := config.SetFolderBeadsPromptUpstream(req.WorkingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt); err != nil {
-			writeJSONOK(w, beadsErrorResponse{Error: err.Error()})
+			writeBeadsError(w, err)
 			return
 		}
 	} else {
 		if err := config.SetFolderBeadsUpstream(req.WorkingDir, req.Upstream); err != nil {
-			writeJSONOK(w, beadsErrorResponse{Error: err.Error()})
+			writeBeadsError(w, err)
 			return
 		}
 	}
@@ -322,7 +322,7 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 	// The integration is read from folders.json, never trusted from the client.
 	upstream := config.FolderBeadsUpstream(req.WorkingDir)
 	if upstream == "" || upstream == "none" {
-		writeJSONOK(w, beadsErrorResponse{Error: "no upstream task system is configured for this folder"})
+		writeErrorJSON(w, http.StatusInternalServerError, "", "no upstream task system is configured for this folder")
 		return
 	}
 
@@ -337,7 +337,7 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.beadsClient().Sync(r.Context(), req.WorkingDir, upstream, req.Action)
 	if err != nil {
-		writeJSONOK(w, beadsErrorResponse{Error: err.Error(), Stderr: beads.StderrOf(err)})
+		writeBeadsError(w, err)
 		return
 	}
 
