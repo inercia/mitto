@@ -65,6 +65,6 @@ export {
   authFetch,
 } from "./csrf.js";
 
-export { getApiPrefix, apiUrl, wsUrl } from "./api.js";
+export { getApiPrefix, apiUrl, wsUrl, errorMessageFromData } from "./api.js";
 
 export { fetchConfig, invalidateConfigCache } from "./configCache.js";

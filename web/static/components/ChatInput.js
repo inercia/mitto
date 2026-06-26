@@ -13,7 +13,7 @@ import {
   getAPIPrefix,
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl } from "../utils/api.js";
+import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { getContextWindowSize } from "../utils/models.js";
 import {
   getPromptSortMode,
@@ -30,9 +30,6 @@ import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import { flattenPrompts, getMissingPromptParameters } from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
-
-const uploadErrorMessage = (data, fallback) =>
-  data?.error?.message || data?.message || fallback;
 
 /**
  * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
@@ -1406,7 +1403,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(uploadErrorMessage(error, "Failed to upload image"));
+        throw new Error(errorMessageFromData(error, "Failed to upload image"));
       }
 
       const data = await response.json();
@@ -1464,7 +1461,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(uploadErrorMessage(error, "Failed to upload images"));
+        throw new Error(errorMessageFromData(error, "Failed to upload images"));
       }
 
       const results = await response.json();
@@ -1522,7 +1519,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(uploadErrorMessage(error, "Failed to upload file"));
+        throw new Error(errorMessageFromData(error, "Failed to upload file"));
       }
 
       const data = await response.json();
@@ -1584,7 +1581,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(uploadErrorMessage(error, "Failed to upload files"));
+        throw new Error(errorMessageFromData(error, "Failed to upload files"));
       }
 
       const results = await response.json();

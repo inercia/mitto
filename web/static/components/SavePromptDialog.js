@@ -5,14 +5,9 @@ const { useState, useEffect, useCallback, useRef, html, Fragment } = window.prea
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl } from "../utils/api.js";
+import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
-
-// Extract a human-readable message from the canonical JSON error envelope
-// ({"error":{"code","message"}}), falling back to a plain message or a default.
-const saveErrorMessage = (data, fallback) =>
-  data?.error?.message || data?.message || fallback;
 
 /**
  * Sanitize a prompt name into a safe filename.
@@ -156,7 +151,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
         } catch (_) {
           // non-JSON body; fall back to status-based message
         }
-        throw new Error(saveErrorMessage(data, `Save failed (${response.status})`));
+        throw new Error(errorMessageFromData(data, `Save failed (${response.status})`));
       }
 
       // Success - close dialog
