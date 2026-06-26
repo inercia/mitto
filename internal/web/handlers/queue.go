@@ -41,13 +41,13 @@ type QueueListResponse struct {
 func (h *Handlers) HandleSessionQueue(w http.ResponseWriter, r *http.Request, sessionID, queuePath string) {
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	// Check if session exists
 	if !store.Exists(sessionID) {
-		http.Error(w, "Session not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 		return
 	}
 
@@ -91,7 +91,7 @@ func (h *Handlers) handleListQueue(w http.ResponseWriter, queue *session.Queue) 
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to list queue", "error", err)
 		}
-		http.Error(w, "Failed to list queue", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to list queue")
 		return
 	}
 
@@ -151,7 +151,7 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to add message to queue", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to add message to queue", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to add message to queue")
 		return
 	}
 
@@ -188,7 +188,7 @@ func (h *Handlers) handleClearQueue(w http.ResponseWriter, queue *session.Queue,
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to clear queue", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to clear queue", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to clear queue")
 		return
 	}
 

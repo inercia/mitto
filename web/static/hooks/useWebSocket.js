@@ -944,8 +944,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           const data = await response.json().catch(() => ({}));
           return {
             success: false,
-            error: data.error || "queue_full",
-            message: data.message,
+            error: data.error?.code || data.error || "queue_full",
+            message: data.error?.message || data.message,
           };
         }
         console.error("Failed to add to queue:", response.status);

@@ -182,7 +182,7 @@ export async function seedConversationWithPrompt(sessionId, prompt, { arguments:
     if (resp.ok || resp.status === 201) {
       return { success: true, messageId: data.id };
     }
-    return { success: false, error: data.error || "request_failed" };
+    return { success: false, error: data.error?.code || data.error || "request_failed" };
   } catch (err) {
     console.error("seedConversationWithPrompt error:", err);
     return { success: false, error: "request_failed" };
