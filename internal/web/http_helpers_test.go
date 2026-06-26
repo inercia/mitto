@@ -112,16 +112,21 @@ func TestWriteErrorJSON(t *testing.T) {
 		t.Errorf("writeErrorJSON() status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 
-	var resp map[string]string
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp["error"] != "validation_error" {
-		t.Errorf("writeErrorJSON() error = %q, want %q", resp["error"], "validation_error")
+	if resp.Error.Code != "validation_error" {
+		t.Errorf("writeErrorJSON() error code = %q, want %q", resp.Error.Code, "validation_error")
 	}
-	if resp["message"] != "Field is required" {
-		t.Errorf("writeErrorJSON() message = %q, want %q", resp["message"], "Field is required")
+	if resp.Error.Message != "Field is required" {
+		t.Errorf("writeErrorJSON() message = %q, want %q", resp.Error.Message, "Field is required")
 	}
 }
 

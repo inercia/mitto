@@ -71,6 +71,10 @@ Every non-exception API response that indicates an error MUST use this JSON shap
 
 `details` is optional and may carry structured context (field name, constraint, etc.).
 
+Endpoints in the `external-stable` exception list (§6) may retain a legacy flat
+`{ "error": "code", "message": "..." }` error shape where external callers depend
+on it — e.g. `POST /api/callback/{token}` (emitted via a dedicated `writeCallbackError`).
+
 ### HTTP Status → error code table
 
 | HTTP Status | `error.code`        | When to use                                     |

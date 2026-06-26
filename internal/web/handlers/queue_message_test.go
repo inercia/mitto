@@ -242,12 +242,17 @@ func TestHandleSessionQueue_AddByPromptName(t *testing.T) {
 			t.Errorf("Status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body.String())
 		}
 
-		var errResp map[string]string
+		var errResp struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
 		if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 			t.Fatalf("Failed to decode error response: %v", err)
 		}
-		if errResp["error"] != "empty_message" {
-			t.Errorf("error code = %q, want %q", errResp["error"], "empty_message")
+		if errResp.Error.Code != "empty_message" {
+			t.Errorf("error code = %q, want %q", errResp.Error.Code, "empty_message")
 		}
 	})
 }

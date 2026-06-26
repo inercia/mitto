@@ -40,13 +40,23 @@ func writeNoContent(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// writeErrorJSON writes a structured JSON error response with the given status
-// code, error code, and message.
+// errorBody is the inner object of the canonical API error envelope.
+type errorBody struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+// errorEnvelope is the canonical error response shape for all non-exception API
+// responses. See docs/devel/rest-api-conventions.md §4.
+type errorEnvelope struct {
+	Error errorBody `json:"error"`
+}
+
+// writeErrorJSON writes a structured JSON error response using the canonical
+// error envelope: {"error":{"code":...,"message":...}}.
 func writeErrorJSON(w http.ResponseWriter, status int, errorCode, message string) {
-	writeJSON(w, status, map[string]string{
-		"error":   errorCode,
-		"message": message,
-	})
+	writeJSON(w, status, errorEnvelope{Error: errorBody{Code: errorCode, Message: message}})
 }
 
 // parseJSONBody decodes the request body as JSON into the given value.
