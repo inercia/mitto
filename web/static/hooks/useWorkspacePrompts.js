@@ -7,7 +7,7 @@
 // helpers.
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
-import { apiUrl, authFetch } from "../utils/index.js";
+import { authFetch, endpoints } from "../utils/index.js";
 import { promptMenus, menuSatisfies } from "../utils/prompts.js";
 
 /**
@@ -73,9 +73,10 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       if (!sessionId || !dir) return [];
       try {
         const res = await authFetch(
-          apiUrl(
-            `/api/workspace-prompts?working_dir=${encodeURIComponent(dir)}&session_id=${encodeURIComponent(sessionId)}`,
-          ),
+          endpoints.workspacePrompts.list({
+            working_dir: dir,
+            session_id: sessionId,
+          }),
         );
         if (!res.ok) return [];
         const data = await res.json();
@@ -116,13 +117,11 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       }
 
       try {
-        const sessionParam = activeSessionId
-          ? `&session_id=${encodeURIComponent(activeSessionId)}`
-          : "";
         const res = await authFetch(
-          apiUrl(
-            `/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}${sessionParam}`,
-          ),
+          endpoints.workspacePrompts.list({
+            working_dir: workingDir,
+            session_id: activeSessionId,
+          }),
           { headers },
         );
 

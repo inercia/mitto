@@ -6,7 +6,7 @@
 // and navigating from a conversation's linked-issue link into the beads view.
 const { useState, useCallback, useMemo, useRef } = window.preact;
 
-import { apiUrl, authFetch } from "../utils/index.js";
+import { authFetch, endpoints } from "../utils/index.js";
 import { promptMenus, menuSatisfies, collectPromptArguments, getMissingPromptParameters } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
@@ -126,16 +126,21 @@ export function useBeadsIntegration({
   const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir, issue) => {
     if (!workingDir) return [];
     try {
-      let url = `/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
-      if (activeSessionId) url += `&session_id=${encodeURIComponent(activeSessionId)}`;
+      const params = {
+        working_dir: workingDir,
+        enabled_context: "workspace",
+        session_id: activeSessionId,
+      };
       if (issue) {
-        url += `&item_kind=beadsIssue`;
-        if (issue.id) url += `&item_id=${encodeURIComponent(issue.id)}`;
-        if (issue.status) url += `&item_status=${encodeURIComponent(issue.status)}`;
-        if (issue.issue_type) url += `&item_type=${encodeURIComponent(issue.issue_type)}`;
-        if (typeof issue.priority === "number") url += `&item_priority=${encodeURIComponent(String(issue.priority))}`;
+        params.item_kind = "beadsIssue";
+        params.item_id = issue.id;
+        params.item_status = issue.status;
+        params.item_type = issue.issue_type;
+        if (typeof issue.priority === "number") {
+          params.item_priority = String(issue.priority);
+        }
       }
-      const res = await authFetch(apiUrl(url));
+      const res = await authFetch(endpoints.workspacePrompts.list(params));
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
@@ -165,9 +170,13 @@ export function useBeadsIntegration({
   const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
     if (!workingDir) return [];
     try {
-      let url = `/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
-      if (activeSessionId) url += `&session_id=${encodeURIComponent(activeSessionId)}`;
-      const res = await authFetch(apiUrl(url));
+      const res = await authFetch(
+        endpoints.workspacePrompts.list({
+          working_dir: workingDir,
+          enabled_context: "workspace",
+          session_id: activeSessionId,
+        }),
+      );
       if (!res.ok) return [];
       const data = await res.json();
       const all = data?.prompts || [];
