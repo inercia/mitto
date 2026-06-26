@@ -10,6 +10,26 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+func TestDefaultCodeForStatus(t *testing.T) {
+	cases := map[int]string{
+		http.StatusBadRequest:            "bad_request",
+		http.StatusUnauthorized:          "unauthenticated",
+		http.StatusForbidden:             "forbidden",
+		http.StatusNotFound:              "not_found",
+		http.StatusMethodNotAllowed:      "method_not_allowed",
+		http.StatusConflict:              "conflict",
+		http.StatusRequestEntityTooLarge: "too_large",
+		http.StatusTooManyRequests:       "rate_limited",
+		http.StatusInternalServerError:   "server_error",
+		http.StatusTeapot:                "server_error", // unmapped → fallback
+	}
+	for status, want := range cases {
+		if got := defaultCodeForStatus(status); got != want {
+			t.Errorf("defaultCodeForStatus(%d) = %q, want %q", status, got, want)
+		}
+	}
+}
+
 func TestHandleSessionQueue_Clear(t *testing.T) {
 	store, h, sessionID := setupQueueTestHandlers(t)
 	queue := store.Queue(sessionID)
