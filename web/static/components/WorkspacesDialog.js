@@ -539,7 +539,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     try {
       const [config, runnersRes] = await Promise.all([
         fetchConfig(null, true),
-        fetch(apiUrl("/api/supported-runners"), { credentials: "same-origin" }),
+        fetch(endpoints.runners.supported(), { credentials: "same-origin" }),
       ]);
       const servers = config.acp_servers || [];
       setAcpServers(servers);

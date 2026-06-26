@@ -472,7 +472,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
     try {
-      const response = await secureFetch(apiUrl("/api/aux/improve-prompt"), {
+      const response = await secureFetch(endpoints.aux.improvePrompt(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

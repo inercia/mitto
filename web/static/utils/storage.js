@@ -7,8 +7,8 @@
 // - On app load, we sync from server to localStorage
 // - On changes, we update both localStorage and server
 
-import { apiUrl } from "./api.js";
 import { secureFetch, authFetch } from "./csrf.js";
+import { endpoints } from "./endpoints.js";
 
 // =============================================================================
 // UI Preferences Server Sync
@@ -64,7 +64,7 @@ export async function initUIPreferences() {
     migrateLegacyTabStorage();
     try {
       // Use authFetch to include credentials for cross-origin requests
-      const response = await authFetch(apiUrl("/api/ui-preferences"));
+      const response = await authFetch(endpoints.misc.uiPreferences());
       if (response.ok) {
         const prefs = await response.json();
         uiPreferencesCache = prefs;
@@ -121,7 +121,7 @@ function saveUIPreferencesToServer(prefs) {
   saveTimeout = setTimeout(async () => {
     try {
       // Use secureFetch to include CSRF token and credentials for cross-origin requests
-      const response = await secureFetch(apiUrl("/api/ui-preferences"), {
+      const response = await secureFetch(endpoints.misc.uiPreferences(), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(prefs),

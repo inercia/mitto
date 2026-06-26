@@ -1317,7 +1317,7 @@ export function SettingsDialog({
   // Load supported runners from server
   const loadSupportedRunners = async () => {
     try {
-      const res = await fetch(apiUrl("/api/supported-runners"), {
+      const res = await fetch(endpoints.runners.supported(), {
         credentials: "same-origin",
       });
       if (res.ok) {
@@ -1341,7 +1341,7 @@ export function SettingsDialog({
 
     // Also load runner defaults
     try {
-      const res = await authFetch(apiUrl("/api/runner-defaults"));
+      const res = await authFetch(endpoints.runners.defaults());
       if (res.ok) {
         const defaults = await res.json();
         setRunnerDefaults(defaults || {});
@@ -1361,7 +1361,7 @@ export function SettingsDialog({
       // force=true ensures the settings dialog always shows the latest saved config.
       const [config, externalStatusRes] = await Promise.all([
         fetchConfig(null, /* force */ true),
-        authFetch(apiUrl("/api/external-status")),
+        authFetch(endpoints.misc.externalStatus()),
       ]);
 
       // Load external status
@@ -1570,7 +1570,7 @@ export function SettingsDialog({
 
       // Load available flags and configured default flags
       try {
-        const flagsRes = await authFetch(apiUrl("/api/advanced-flags"));
+        const flagsRes = await authFetch(endpoints.misc.advancedFlags());
         if (flagsRes.ok) {
           const flagsData = await flagsRes.json();
           setAvailableFlags(flagsData.flags || []);
@@ -1901,7 +1901,7 @@ export function SettingsDialog({
       // Hoist activeExternalPort so it is visible at the toast-building site below.
       let activeExternalPort = null;
       try {
-        const statusRes = await authFetch(apiUrl("/api/external-status"));
+        const statusRes = await authFetch(endpoints.misc.externalStatus());
         if (statusRes.ok) {
           const status = await statusRes.json();
           setExternalEnabled(status.enabled);

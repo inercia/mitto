@@ -346,7 +346,7 @@ export function ConversationPropertiesPanel({
             periodicConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
-            authFetch(apiUrl("/api/advanced-flags")),
+            authFetch(endpoints.misc.advancedFlags()),
             authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 

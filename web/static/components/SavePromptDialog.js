@@ -5,7 +5,8 @@ const { useState, useEffect, useCallback, useRef, html, Fragment } = window.prea
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
+import { errorMessageFromData } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
 
@@ -138,7 +139,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       const content = buildFileContent(name, description, promptText);
-      const response = await secureFetch(apiUrl("/api/save-file-to-path"), {
+      const response = await secureFetch(endpoints.misc.saveFileToPath(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: fullPath, content }),
@@ -181,11 +182,7 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       // Check if file already exists
-      const checkUrl =
-        apiUrl("/api/check-file-exists") +
-        "?path=" +
-        encodeURIComponent(fullPath);
-      const checkResponse = await authFetch(checkUrl);
+      const checkResponse = await authFetch(endpoints.misc.checkFileExists({ path: fullPath }));
 
       if (checkResponse.ok) {
         const data = await checkResponse.json();

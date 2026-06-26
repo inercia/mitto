@@ -1279,7 +1279,7 @@ export function ChatInput({
     try {
       const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
 
-      const response = await secureFetch(apiUrl("/api/aux/improve-prompt"), {
+      const response = await secureFetch(endpoints.aux.improvePrompt(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
