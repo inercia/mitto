@@ -1366,6 +1366,294 @@ func TestParsePromptFile_TemplateValidation(t *testing.T) {
 	}
 }
 
+// ---- PromptParameterCache tests ----
+
+func TestParsePromptFile_CacheWithTTL(t *testing.T) {
+	data := []byte(`name: "Cached Prompt"
+parameters:
+  - name: SlackChannel
+    type: text
+    description: Slack channel name
+    cache:
+      destination: memory
+      ttl: 1h
+prompt: |
+  Post to ${SlackChannel}.
+`)
+	prompt, err := ParsePromptFile("cached.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(prompt.Parameters))
+	}
+	p := prompt.Parameters[0]
+	if p.Name != "SlackChannel" {
+		t.Errorf("Parameters[0].Name = %q, want %q", p.Name, "SlackChannel")
+	}
+	if p.Cache == nil {
+		t.Fatal("Parameters[0].Cache = nil, want non-nil")
+	}
+	if p.Cache.Destination != "memory" {
+		t.Errorf("Cache.Destination = %q, want %q", p.Cache.Destination, "memory")
+	}
+	if p.Cache.TTL != "1h" {
+		t.Errorf("Cache.TTL = %q, want %q", p.Cache.TTL, "1h")
+	}
+}
+
+func TestParsePromptFile_CacheWithoutTTL(t *testing.T) {
+	data := []byte(`name: "Cached No TTL"
+parameters:
+  - name: Channel
+    type: text
+    cache:
+      destination: memory
+prompt: |
+  Use ${Channel}.
+`)
+	prompt, err := ParsePromptFile("cached-nottl.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(prompt.Parameters))
+	}
+	p := prompt.Parameters[0]
+	if p.Cache == nil {
+		t.Fatal("Parameters[0].Cache = nil, want non-nil")
+	}
+	if p.Cache.Destination != "memory" {
+		t.Errorf("Cache.Destination = %q, want %q", p.Cache.Destination, "memory")
+	}
+	if p.Cache.TTL != "" {
+		t.Errorf("Cache.TTL = %q, want empty (conversation lifetime)", p.Cache.TTL)
+	}
+}
+
+func TestParsePromptFile_CacheInvalidDestination(t *testing.T) {
+	data := []byte(`name: "Bad Cache"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: disk
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("bad-cache.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for invalid cache destination, got nil error")
+	}
+	if !strings.Contains(err.Error(), "destination") {
+		t.Errorf("error = %q, want it to mention 'destination'", err.Error())
+	}
+}
+
+func TestParsePromptFile_CacheInvalidTTL_Unparseable(t *testing.T) {
+	data := []byte(`name: "Bad TTL"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: memory
+      ttl: not-a-duration
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("bad-ttl.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unparseable TTL, got nil error")
+	}
+	if !strings.Contains(err.Error(), "ttl") {
+		t.Errorf("error = %q, want it to mention 'ttl'", err.Error())
+	}
+}
+
+func TestParsePromptFile_CacheInvalidTTL_Zero(t *testing.T) {
+	data := []byte(`name: "Zero TTL"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: memory
+      ttl: 0s
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("zero-ttl.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for zero TTL, got nil error")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error = %q, want it to mention 'positive'", err.Error())
+	}
+}
+
+func TestParsePromptFile_CacheInvalidTTL_Negative(t *testing.T) {
+	data := []byte(`name: "Negative TTL"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: memory
+      ttl: -1h
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("neg-ttl.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for negative TTL, got nil error")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error = %q, want it to mention 'positive'", err.Error())
+	}
+}
+
+func TestToWebPrompt_RoundTripsCacheBlock(t *testing.T) {
+	pf := &PromptFile{
+		Name:    "Cached Param Prompt",
+		Content: "body",
+		Parameters: []PromptParameter{
+			{Name: "SlackChannel", Type: "text", Cache: &PromptParameterCache{Destination: "memory", TTL: "1h"}},
+			{Name: "Note", Type: "text"},
+		},
+	}
+
+	wp := pf.ToWebPrompt()
+
+	if len(wp.Parameters) != 2 {
+		t.Fatalf("WebPrompt.Parameters len = %d, want 2", len(wp.Parameters))
+	}
+	c := wp.Parameters[0].Cache
+	if c == nil {
+		t.Fatal("WebPrompt.Parameters[0].Cache = nil, want non-nil")
+	}
+	if c.Destination != "memory" {
+		t.Errorf("Cache.Destination = %q, want %q", c.Destination, "memory")
+	}
+	if c.TTL != "1h" {
+		t.Errorf("Cache.TTL = %q, want %q", c.TTL, "1h")
+	}
+	if wp.Parameters[1].Cache != nil {
+		t.Errorf("WebPrompt.Parameters[1].Cache = %+v, want nil", wp.Parameters[1].Cache)
+	}
+
+	// Verify JSON round-trip.
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+	if !strings.Contains(jsonStr, `"destination":"memory"`) {
+		t.Errorf("JSON missing cache destination; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"ttl":"1h"`) {
+		t.Errorf("JSON missing cache ttl; got: %s", jsonStr)
+	}
+}
+
+func TestPromptParameterCache_ParsedTTL(t *testing.T) {
+	t.Run("empty TTL returns (0, nil)", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: ""}
+		d, err := c.ParsedTTL()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d != 0 {
+			t.Errorf("ParsedTTL() = %v, want 0", d)
+		}
+	})
+
+	t.Run("1h returns time.Hour", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "1h"}
+		d, err := c.ParsedTTL()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d != time.Hour {
+			t.Errorf("ParsedTTL() = %v, want %v", d, time.Hour)
+		}
+	})
+
+	t.Run("invalid TTL returns error", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "not-valid"}
+		_, err := c.ParsedTTL()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("zero TTL returns error", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "0s"}
+		_, err := c.ParsedTTL()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("negative TTL returns error", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "-30m"}
+		_, err := c.ParsedTTL()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
+
+func TestValidatePromptParameters_Cache(t *testing.T) {
+	t.Run("valid memory destination with TTL", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "memory", TTL: "30m"}},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid memory destination without TTL", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "memory"}},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown destination returns error naming parameter and destination", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "disk"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "Chan") {
+			t.Errorf("error = %q, want it to mention parameter name 'Chan'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "disk") {
+			t.Errorf("error = %q, want it to mention bad destination 'disk'", err.Error())
+		}
+	})
+
+	t.Run("invalid TTL returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "memory", TTL: "bad"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("nil cache is accepted (cache is optional)", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
 // TestBuiltinPromptsParseClean ensures every .prompt.yaml in config/prompts/builtin/
 // passes ParsePromptFile without error. This exercises load-time template validation
 // (added in mitto-m7sb.6) on the migrated builtin prompt set (mitto-m7sb.7/8).

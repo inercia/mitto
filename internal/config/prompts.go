@@ -54,6 +54,26 @@ type PromptPeriodic struct {
 	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
 }
 
+// PromptParameterCache configures value caching for a single prompt parameter.
+// When present, a successfully collected argument value may be reused within the
+// same conversation without re-prompting the user.
+//
+// Example YAML:
+//
+//	cache:
+//	  destination: memory   # only "memory" is valid in v1
+//	  ttl: 1h               # optional Go duration; absent => cached for conversation lifetime
+type PromptParameterCache struct {
+	// Destination is the cache backend. Only "memory" is valid in v1; future versions
+	// may introduce additional backends (e.g. "disk"). The value is validated at parse
+	// time against KnownPromptCacheDestinations.
+	Destination string `yaml:"destination" json:"destination"`
+	// TTL is an optional Go duration string (e.g. "1h", "30m") that limits how long
+	// the cached value is valid. When absent or empty, the value is cached for the
+	// entire conversation lifetime (no expiry).
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+}
+
 // PromptParameter declares a single named, typed parameter that the prompt body
 // references via ${NAME} or ${NAME:-default} substitution syntax.
 type PromptParameter struct {
@@ -71,6 +91,10 @@ type PromptParameter struct {
 	// supplied. Required for processor parameters (mandatory); optional for prompt-file
 	// parameters (the ${VAR:-default} body syntax also provides per-site defaults).
 	Default string `yaml:"default,omitempty" json:"default,omitempty"`
+	// Cache, when non-nil, enables per-conversation value caching for this parameter.
+	// The collected argument value is stored so the UI can skip re-asking within the
+	// same conversation. See PromptParameterCache for the configuration schema.
+	Cache *PromptParameterCache `yaml:"cache,omitempty" json:"cache,omitempty"`
 }
 
 // PromptFile represents a parsed YAML prompt file.

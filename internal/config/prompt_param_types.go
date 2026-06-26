@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // KnownPromptParameterTypes is the canonical registry of supported parameter types
@@ -48,11 +49,37 @@ func IsKnownPromptParameterType(t string) bool {
 	return false
 }
 
+// KnownPromptCacheDestinations is the registry of valid cache destination values
+// for the PromptParameterCache.Destination field. Only "memory" is valid in v1;
+// additional destinations (e.g. "disk") may be added in future versions.
+var KnownPromptCacheDestinations = map[string]bool{
+	"memory": true,
+}
+
+// ParsedTTL parses the TTL field of a PromptParameterCache.
+// An empty TTL means "no expiry / conversation lifetime" and returns (0, nil).
+// A non-empty TTL must be a valid Go duration string with a positive value;
+// otherwise an error is returned.
+func (c *PromptParameterCache) ParsedTTL() (time.Duration, error) {
+	if c.TTL == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.TTL)
+	if err != nil {
+		return 0, fmt.Errorf("invalid cache ttl %q: %w", c.TTL, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid cache ttl %q: must be a positive duration", c.TTL)
+	}
+	return d, nil
+}
+
 // ValidatePromptParameters validates a prompt's declared parameters against the
 // known type registry and any type-specific menu constraints.
 //   - menus is the prompt's raw comma-separated menus string ("" => treated as "prompts").
 //   - childSessionId parameters are only valid in prompts targeting the
 //     "prompts" and/or "conversation" menus.
+//   - Cache blocks (when present) must have a known destination and a valid TTL.
 func ValidatePromptParameters(menus string, params []PromptParameter) error {
 	for i, param := range params {
 		if param.Name == "" {
@@ -60,6 +87,19 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		}
 		if param.Type == "" || !IsKnownPromptParameterType(param.Type) {
 			return fmt.Errorf("parameter %q has unknown type %q (must be one of: %s)", param.Name, param.Type, strings.Join(KnownPromptParameterTypes, ", "))
+		}
+		// Validate the optional cache block.
+		if param.Cache != nil {
+			if !KnownPromptCacheDestinations[param.Cache.Destination] {
+				known := make([]string, 0, len(KnownPromptCacheDestinations))
+				for k := range KnownPromptCacheDestinations {
+					known = append(known, k)
+				}
+				return fmt.Errorf("parameter %q: cache destination %q is not valid (must be one of: %s)", param.Name, param.Cache.Destination, strings.Join(known, ", "))
+			}
+			if _, err := param.Cache.ParsedTTL(); err != nil {
+				return fmt.Errorf("parameter %q: %w", param.Name, err)
+			}
 		}
 	}
 	// childSessionId menu rule: only valid in "prompts" and/or "conversation" menus.

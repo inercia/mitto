@@ -852,6 +852,38 @@ branch on it, e.g. `{{ if eq .Args.Commit "true" }}…{{ end }}`.
 `mitto_prompt_get` and `mitto_prompt_list` include a `parameters` array per prompt,
 matching the YAML schema above.
 
+### Parameter value caching (`cache` block)
+
+An optional `cache` sub-block on any parameter enables **per-conversation value
+caching**. When the user supplies a value for the parameter, it is stored so the
+UI can skip re-asking for it within the same conversation.
+
+```yaml
+parameters:
+  - name: SlackChannel
+    type: text
+    description: Slack channel to post to
+    cache:
+      destination: memory   # required — only "memory" is valid in v1
+      ttl: 1h               # optional Go duration; absent = cached for conversation lifetime
+```
+
+#### Fields
+
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `destination` | Yes | Cache backend. Only `"memory"` is valid in v1. |
+| `ttl` | No | How long the cached value is valid. Any Go duration string (e.g. `"30m"`, `"2h"`). Must be **positive** if provided. When absent, the value is cached for the entire conversation lifetime. |
+
+#### Rules
+
+- `destination` must be `"memory"` (the only valid value in v1). An unknown destination
+  is a hard parse error.
+- `ttl`, when present, must be a parseable Go duration **greater than zero**. Values of
+  `"0s"` or negative durations (e.g. `"-1h"`) are rejected at parse time.
+- `cache` is **optional** — parameters without a `cache` block behave exactly as before.
+- Scoping is **per-conversation and per-parameter** (not cross-conversation or global).
+
 ## Go Template Syntax in Prompts
 
 Prompt bodies are rendered with Go [`text/template`](https://pkg.go.dev/text/template) at send time. **This is the recommended way to inject session context** — legacy `@mitto:` placeholders and `${VAR}` arguments still work but are deprecated in prompt bodies (see [Variable Substitution in Prompts](#variable-substitution-in-prompts) below).

@@ -172,6 +172,25 @@ preferredModels:
 
 Backend calls `selectPreferredModel()` to pick the best matching active model from the session's ACP server. If the active model **already satisfies** the preference, it is kept; otherwise the preference is applied. This enables smart routing of multi-model sessions without forcing model switches when not needed.
 
+## Parameter Value Caching (`cache` block)
+
+An optional `cache` sub-block on any `PromptParameter` enables per-conversation caching:
+
+```yaml
+parameters:
+  - name: SlackChannel
+    type: text
+    cache:
+      destination: memory   # only "memory" is valid in v1
+      ttl: 1h               # optional Go duration; absent = conversation lifetime
+```
+
+- `destination` must be one of `KnownPromptCacheDestinations` (`"memory"` only in v1).
+- `ttl` must be a positive Go duration if provided (`"0s"` / negative → validation error).
+- Scoping is **per-conversation, per-parameter** — not global.
+- `Cache *PromptParameterCache` lives on `PromptParameter`; it flows through `ToWebPrompt` automatically (no change to `WebPrompt`).
+- `ParsedTTL()` method on `*PromptParameterCache`: `"" → (0, nil)` (conversation lifetime), `"1h" → (time.Hour, nil)`, invalid → error.
+
 ### Pitfalls
 
 - `EnabledWhen` has `json:"-"` → settings override of a builtin loses `enabledWhen`. Merge logic must carry forward from lower-priority source.
