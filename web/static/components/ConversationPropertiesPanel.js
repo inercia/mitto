@@ -14,6 +14,7 @@ import {
 } from "./Icons.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+import { endpoints } from "../utils/index.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
 import { Drawer } from "./Drawer.js";
@@ -340,13 +341,13 @@ export function ConversationPropertiesPanel({
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
             periodicConfigured
-              ? authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
+              ? authFetch(endpoints.sessions.periodic(sessionId))
               : Promise.resolve(null),
             periodicConfigured
-              ? authFetch(apiUrl(`/api/sessions/${sessionId}/callback`))
+              ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
             authFetch(apiUrl("/api/advanced-flags")),
-            authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
+            authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 
         if (periodicRes && periodicRes.ok) {
@@ -525,7 +526,7 @@ export function ConversationPropertiesPanel({
 
       try {
         const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/settings`),
+          endpoints.sessions.settings(sessionId),
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -560,7 +561,7 @@ export function ConversationPropertiesPanel({
       if (!sessionId) return;
       try {
         const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          endpoints.sessions.periodic(sessionId),
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -585,7 +586,7 @@ export function ConversationPropertiesPanel({
   );
 
   const handleEnableCallback = useCallback(async () => {
-    const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "POST" });
+    const res = await secureFetch(endpoints.sessions.callback(sessionId), { method: "POST" });
     if (res.ok) {
       const data = await res.json();
       setCallbackConfig(data);
@@ -620,7 +621,7 @@ export function ConversationPropertiesPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "POST" });
+        const res = await secureFetch(endpoints.sessions.callback(sessionId), { method: "POST" });
         if (res.ok) {
           const data = await res.json();
           setCallbackConfig(data);
@@ -644,7 +645,7 @@ export function ConversationPropertiesPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "DELETE" });
+        const res = await secureFetch(endpoints.sessions.callback(sessionId), { method: "DELETE" });
         if (res.ok) {
           setCallbackConfig(null);
         }

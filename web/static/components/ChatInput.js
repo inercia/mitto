@@ -14,6 +14,7 @@ import {
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 import { getContextWindowSize } from "../utils/models.js";
 import {
   getPromptSortMode,
@@ -534,7 +535,7 @@ export function ChatInput({
     const fetchPeriodicConfig = async () => {
       try {
         const response = await authFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          endpoints.sessions.periodic(sessionId),
         );
         if (response.ok) {
           const config = await response.json();
@@ -625,7 +626,7 @@ export function ChatInput({
           setPeriodicNextScheduledAt(nextScheduledAt);
         }
         // Fetch the full config to get the prompt name and fresh_context
-        authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
+        authFetch(endpoints.sessions.periodic(sessionId))
           .then((response) => response.json())
           .then((config) => {
             setPeriodicPromptName(config.prompt_name || "");
@@ -945,7 +946,7 @@ export function ChatInput({
     setIsPeriodicSaving(true);
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -977,7 +978,7 @@ export function ChatInput({
     setIsPeriodicSaving(true);
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -1014,7 +1015,7 @@ export function ChatInput({
           body.arguments = extraArgs;
         }
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          endpoints.sessions.periodic(sessionId),
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1394,7 +1395,7 @@ export function ChatInput({
       formData.append("image", file);
 
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/images`),
+        endpoints.sessions.images(sessionId),
         {
           method: "POST",
           body: formData,
@@ -1451,7 +1452,7 @@ export function ChatInput({
 
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/images/from-path`),
+        endpoints.sessions.imagesFromPath(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1513,7 +1514,7 @@ export function ChatInput({
       formData.append("file", file);
 
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/files`),
+        endpoints.sessions.files(sessionId),
         { method: "POST", body: formData },
       );
 
@@ -1571,7 +1572,7 @@ export function ChatInput({
 
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/files/from-path`),
+        endpoints.sessions.filesFromPath(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -47,6 +47,7 @@ import {
 } from "../utils/csrf.js";
 
 import { apiUrl, wsUrl, getApiPrefix } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 
 import { isNativeApp } from "../utils/native.js";
 
@@ -867,7 +868,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     }
     try {
       const response = await authFetch(
-        apiUrl(`/api/sessions/${activeSessionId}/queue`),
+        endpoints.sessions.queue(activeSessionId),
       );
       if (response.ok) {
         const data = await response.json();
@@ -896,7 +897,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       if (!activeSessionId || !messageId) return false;
       try {
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${activeSessionId}/queue/${messageId}`),
+          endpoints.sessions.queueMsg(activeSessionId, messageId),
           { method: "DELETE" },
         );
         if (response.ok || response.status === 204) {
@@ -927,7 +928,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         };
         if (promptName) body.prompt_name = promptName;
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${activeSessionId}/queue`),
+          endpoints.sessions.queue(activeSessionId),
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -967,7 +968,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       if (direction !== "up" && direction !== "down") return false;
       try {
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${activeSessionId}/queue/${messageId}/move`),
+          endpoints.sessions.queueMove(activeSessionId, messageId),
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3623,7 +3624,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Fetch stored sessions
   const fetchStoredSessions = useCallback(async () => {
     try {
-      const res = await authFetch(apiUrl("/api/sessions"));
+      const res = await authFetch(endpoints.sessions.list());
       const data = await res.json();
       // Update global working_dir map for each session
       (data || []).forEach((s) => {
@@ -3819,7 +3820,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       try {
         // Get session metadata first to know total event count and working_dir
         const metaResponse = await authFetch(
-          apiUrl(`/api/sessions/${sessionId}`),
+          endpoints.sessions.get(sessionId),
         );
         const meta = metaResponse.ok ? await metaResponse.json() : {};
 
@@ -4643,7 +4644,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         if (opts.arguments && Object.keys(opts.arguments).length > 0) {
           sessionBody.arguments = opts.arguments;
         }
-        const response = await secureFetch(apiUrl("/api/sessions"), {
+        const response = await secureFetch(endpoints.sessions.create(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(sessionBody),
@@ -5387,7 +5388,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     async (sessionId, name) => {
       try {
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}`),
+          endpoints.sessions.update(sessionId),
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -5414,7 +5415,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Pin/unpin a session via REST API
   const pinSession = useCallback(async (sessionId, pinned) => {
     try {
-      const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+      const response = await secureFetch(endpoints.sessions.update(sessionId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned }),
@@ -5447,7 +5448,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Archive/unarchive a session via REST API
   const archiveSession = useCallback(async (sessionId, archived) => {
     try {
-      const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+      const response = await secureFetch(endpoints.sessions.update(sessionId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ archived }),
@@ -5531,7 +5532,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
       // Delete from server first
       try {
-        await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+        await secureFetch(endpoints.sessions.remove(sessionId), {
           method: "DELETE",
         });
       } catch (err) {

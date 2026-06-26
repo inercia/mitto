@@ -4,6 +4,7 @@
 
 import { secureFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 
 /**
  * Parse a duration string or number into seconds.
@@ -85,7 +86,7 @@ export async function makePeriodicNow(sessionId, prompt, { arguments: args, fetc
 
   // Step 1: configure periodic
   try {
-    const putResp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic`), {
+    const putResp = await fetch_(endpoints.sessions.periodic(sessionId), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -117,7 +118,7 @@ export async function makePeriodicNow(sessionId, prompt, { arguments: args, fetc
   // and running. Treat 409 as success rather than surfacing a misleading
   // "failed to configure periodic" error to the user.
   try {
-    const runResp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic/run-now`), {
+    const runResp = await fetch_(endpoints.sessions.periodicRunNow(sessionId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reset_timer: true }),
@@ -170,7 +171,7 @@ export async function seedConversationWithPrompt(sessionId, prompt, { arguments:
   const body = buildSeedQueueBody(prompt, { arguments: args });
 
   try {
-    const resp = await fetch_(apiUrl(`/api/sessions/${sessionId}/queue`), {
+    const resp = await fetch_(endpoints.sessions.queue(sessionId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -224,7 +225,7 @@ export async function configurePeriodicSchedule(sessionId, prompt, periodic, { a
 
   const fetch_ = fetchImpl || secureFetch;
   try {
-    const resp = await fetch_(apiUrl(`/api/sessions/${sessionId}/periodic`), {
+    const resp = await fetch_(endpoints.sessions.periodic(sessionId), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

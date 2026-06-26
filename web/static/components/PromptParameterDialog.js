@@ -351,7 +351,7 @@ export function PromptParameterDialog({
     if (!needsSessions) return;
 
     setLoadingSessions(true);
-    authFetch(apiUrl("/api/sessions"))
+    authFetch(endpoints.sessions.list())
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
         const list = Array.isArray(data) ? data : (data?.sessions ?? []);

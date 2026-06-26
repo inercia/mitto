@@ -631,7 +631,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   const checkActiveSessionsForWorkspace = useCallback(async (workspaceUUID) => {
     if (!workspaceUUID) return false;
     try {
-      const res = await secureFetch(apiUrl("/api/sessions/running"));
+      const res = await secureFetch(endpoints.sessions.running());
       if (!res.ok) return false;
       const data = await res.json();
       return (data.sessions || []).some(s => s.workspace_uuid === workspaceUUID);

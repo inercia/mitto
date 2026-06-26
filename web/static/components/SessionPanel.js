@@ -348,13 +348,13 @@ export function SessionPanel({
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
             periodicConfigured
-              ? authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
+              ? authFetch(endpoints.sessions.periodic(sessionId))
               : Promise.resolve(null),
             periodicConfigured
-              ? authFetch(apiUrl(`/api/sessions/${sessionId}/callback`))
+              ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
             authFetch(apiUrl("/api/advanced-flags")),
-            authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
+            authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 
         if (periodicRes && periodicRes.ok)
@@ -431,7 +431,7 @@ export function SessionPanel({
       try {
         const wsUuid = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
         const [userDataRes, schemaRes] = await Promise.all([
-          authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
+          authFetch(endpoints.sessions.userData(sessionId)),
           authFetch(apiUrl(`/api/workspaces/${encodeURIComponent(wsUuid)}/user-data-schema`)),
         ]);
 
@@ -459,7 +459,7 @@ export function SessionPanel({
       setChangesError(null);
       try {
         const resp = await authFetch(
-          apiUrl(`/api/sessions/${sessionId}/changes`),
+          endpoints.sessions.changes(sessionId),
         );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
@@ -543,7 +543,7 @@ export function SessionPanel({
       setFlagsError(null);
       try {
         const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/settings`),
+          endpoints.sessions.settings(sessionId),
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -570,7 +570,7 @@ export function SessionPanel({
   // --- Handlers: callback URL ---
   const handleEnableCallback = useCallback(async () => {
     const res = await secureFetch(
-      apiUrl(`/api/sessions/${sessionId}/callback`),
+      endpoints.sessions.callback(sessionId),
       { method: "POST" },
     );
     if (res.ok) {
@@ -608,7 +608,7 @@ export function SessionPanel({
       onConfirm: async () => {
         setConfirmDialog(null);
         const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/callback`),
+          endpoints.sessions.callback(sessionId),
           { method: "POST" },
         );
         if (res.ok) {
@@ -635,7 +635,7 @@ export function SessionPanel({
       onConfirm: async () => {
         setConfirmDialog(null);
         const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/callback`),
+          endpoints.sessions.callback(sessionId),
           { method: "DELETE" },
         );
         if (res.ok) setCallbackConfig(null);
@@ -678,7 +678,7 @@ export function SessionPanel({
         });
       }
       const res = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/user-data`),
+        endpoints.sessions.userData(sessionId),
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -898,7 +898,7 @@ export function SessionPanel({
       setChangesError(null);
       try {
         const resp = await authFetch(
-          apiUrl(`/api/sessions/${sessionId}/changes`),
+          endpoints.sessions.changes(sessionId),
         );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();

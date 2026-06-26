@@ -78,7 +78,7 @@ const SIDEBAR_TOOLTIP_DELAY_MS = 250;
 // Returns { files, is_git_repo, branch } or null on error.
 async function fetchGitChanges(sessionId) {
   try {
-    const response = await authFetch(apiUrl(`/api/sessions/${sessionId}/changes`));
+    const response = await authFetch(endpoints.sessions.changes(sessionId));
     if (!response.ok) return null;
     return await response.json();
   } catch {

@@ -13,6 +13,7 @@ import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 import { PortalTooltip } from "./ContextMenu.js";
 
 /** Minimum delay for on-completion trigger (seconds). Used for client-side clamp helper text. */
@@ -416,7 +417,7 @@ export function PeriodicFrequencyPanel({
       }
 
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -525,7 +526,7 @@ export function PeriodicFrequencyPanel({
     setIsTriggering(true);
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic/run-now`),
+        endpoints.sessions.periodicRunNow(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -615,7 +616,7 @@ export function PeriodicFrequencyPanel({
     setIsSavingEnabled(true);
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -656,7 +657,7 @@ export function PeriodicFrequencyPanel({
         body.reset_counters = true;
       }
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
