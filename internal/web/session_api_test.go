@@ -2290,6 +2290,9 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}", func(w http.ResponseWriter, r *http.Request) {
 		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId")
 	})
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}/{subAction}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId") + ":" + r.PathValue("subAction")
+	})
 	mux.HandleFunc("/api/sessions/{id}/periodic", func(w http.ResponseWriter, r *http.Request) {
 		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
 	})
@@ -2311,6 +2314,7 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 		"/api/sessions/abc123/files/f9":         "files:abc123:f9",
 		"/api/sessions/abc123/queue":            "queue:abc123:",
 		"/api/sessions/abc123/queue/m42":        "queue:abc123:m42",
+		"/api/sessions/abc123/queue/m42/move":   "queue:abc123:m42:move",
 		"/api/sessions/abc123/periodic":         "periodic:abc123:",
 		"/api/sessions/abc123/periodic/run-now": "periodic:abc123:run-now",
 		// Base and events routes (increment 5 — explicit, no subtree).
@@ -2324,5 +2328,67 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 		if hit != want {
 			t.Errorf("path %s routed to %q, want %q", path, hit, want)
 		}
+	}
+}
+
+// TestQueueMoveViaRouter is a through-the-mux regression test for mitto-lv0t.
+// Before the fix, POST /api/sessions/{id}/queue/{msgId}/move was not in the
+// route table, so the mux returned 404 and the frontend move buttons silently
+// failed. This test drives the request through the real mux (with the real
+// queue handler wired in) and asserts HTTP 200 + correct reorder.
+func TestQueueMoveViaRouter(t *testing.T) {
+	s := newContractServer(t)
+
+	// Build a mux with the three queue routes (same patterns as routes.go).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/sessions/{id}/queue", s.handleSessionQueue)
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}", s.handleSessionQueue)
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}/{subAction}", s.handleSessionQueue)
+
+	// Create a session in the store so the handler finds it.
+	// Session ID must match YYYYMMDD-HHMMSS-8hex (see IsValidSessionID).
+	sessionID := "20260101-120000-deadbeef"
+	if err := s.store.Create(session.Metadata{SessionID: sessionID, WorkingDir: "/tmp", ACPServer: "test-acp"}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	t.Cleanup(func() { s.store.Delete(sessionID) })
+
+	// Add two messages. We want to move msg2 up (before msg1).
+	queue := s.store.Queue(sessionID)
+	msg1, err := queue.Add("first", nil, nil, "", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add msg1: %v", err)
+	}
+	msg2, err := queue.Add("second", nil, nil, "", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add msg2: %v", err)
+	}
+
+	// POST /api/sessions/{id}/queue/{msg2.ID}/move — the route that was broken.
+	body := strings.NewReader(`{"direction":"up"}`)
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/sessions/"+sessionID+"/queue/"+msg2.ID+"/move", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (route was probably not matched — 404 indicates the mux fix is missing); body: %s",
+			w.Code, w.Body.String())
+	}
+
+	// Verify the response contains the reordered queue: [msg2, msg1].
+	var resp handlers.QueueListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(resp.Messages))
+	}
+	if resp.Messages[0].ID != msg2.ID {
+		t.Errorf("messages[0].ID = %q, want %q (msg2 should be first after moving up)", resp.Messages[0].ID, msg2.ID)
+	}
+	if resp.Messages[1].ID != msg1.ID {
+		t.Errorf("messages[1].ID = %q, want %q (msg1 should be second)", resp.Messages[1].ID, msg1.ID)
 	}
 }

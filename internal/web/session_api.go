@@ -95,6 +95,9 @@ func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
 		queuePath := ""
 		if msgID := r.PathValue("msgId"); msgID != "" {
 			queuePath = "/" + msgID
+			if sub := r.PathValue("subAction"); sub != "" {
+				queuePath += "/" + sub
+			}
 		}
 		s.apiHandlers.HandleSessionQueue(w, r, id, queuePath)
 	}
