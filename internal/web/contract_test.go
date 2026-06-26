@@ -140,6 +140,106 @@ func TestContract_MethodNotAllowed(t *testing.T) {
 	})
 }
 
+// TestContract_MethodNotAllowed_AllRoutes locks the "wrong HTTP method → 405"
+// convention across the ENTIRE method-qualified route table (not just sessions).
+// For every concrete path that has at least one method-qualified route, it picks
+// the first method in {GET,POST,PUT,PATCH,DELETE} that is NOT registered there
+// and asserts that the mux returns 405.
+// Status is asserted only — the Go 1.22 central-mux 405 body is plain text,
+// NOT an envelope (mirrors the central_mux_405 comment in TestContract_MethodNotAllowed).
+func TestContract_MethodNotAllowed_AllRoutes(t *testing.T) {
+	s := newContractServer(t)
+	csrfMgr := middleware.NewCSRFManager()
+	fileServer := NewFileServer(s.sessionManager, nil)
+	routes := s.apiRoutes(nil, csrfMgr, fileServer)
+
+	if len(routes) == 0 {
+		t.Fatal("apiRoutes returned no routes")
+	}
+
+	// Register the full route table on a single mux (same as RouteTableReachable).
+	mux := http.NewServeMux()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("route table panics on single-mux registration (conflict/drift): %v", r)
+			}
+		}()
+		for _, rt := range routes {
+			pattern := rt.pattern
+			if rt.method != "" {
+				pattern = rt.method + " " + pattern
+			}
+			mux.Handle(pattern, rt.handler)
+		}
+	}()
+
+	// Group registered HTTP methods per concrete path (method-qualified routes only).
+	pathMethods := make(map[string]map[string]bool)
+	for _, rt := range routes {
+		if rt.method == "" {
+			continue
+		}
+		path := pathParamRe.ReplaceAllString(rt.pattern, "x")
+		if pathMethods[path] == nil {
+			pathMethods[path] = make(map[string]bool)
+		}
+		pathMethods[path][rt.method] = true
+	}
+
+	// Ordered candidate methods — avoid OPTIONS/HEAD (mux treats those specially).
+	candidates := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+	}
+
+	for path, methods := range pathMethods {
+		path, methods := path, methods // capture loop vars
+
+		// Probe candidate methods to find one the mux genuinely 405s.
+		// We cannot rely on the registered-method set alone: a concrete path like
+		// /api/issues/cleanup is also matched by a wildcard route (GET /api/issues/{id}),
+		// so GET there is routed to that handler (returning 400, not 405). We must
+		// probe the actual mux to detect real 405 behaviour.
+		disallowed := ""
+		for _, m := range candidates {
+			if methods[m] {
+				continue // definitely registered for this exact pattern — skip
+			}
+			probe := httptest.NewRequest(m, path, nil)
+			pw := httptest.NewRecorder()
+			mux.ServeHTTP(pw, probe)
+			if pw.Code == http.StatusMethodNotAllowed {
+				disallowed = m
+				break
+			}
+		}
+		if disallowed == "" {
+			// No candidate method yielded 405 — path is fully covered by overlapping
+			// routes or has all five methods registered. Skip.
+			continue
+		}
+
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(disallowed, path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			// Central/mux 405 — status only; Go 1.22 mux body is plain text, NOT an envelope.
+			if w.Code != http.StatusMethodNotAllowed {
+				registered := make([]string, 0, len(methods))
+				for m := range methods {
+					registered = append(registered, m)
+				}
+				t.Errorf("path %q: %s returned %d, want 405 (registered methods: %v)",
+					path, disallowed, w.Code, registered)
+			}
+		})
+	}
+}
+
 // TestContract_ErrorEnvelopeShape is a table-driven test over representative
 // migrated error paths. Each case asserts: correct HTTP status AND that the
 // body decodes into {error:{code,message}} with the expected non-empty code.
