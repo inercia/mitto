@@ -93,7 +93,16 @@ dirs := sessionManager.GetWorkspacePromptsDirs(workingDir)
 overrides := sessionManager.GetWorkspaceProcessorOverrides(workingDir)
 ```
 
-Workspace RC supports: `prompts` (inline prompts + disable overrides), `processors` (processor enabled/disabled overrides using `{name, enabled}` entries — mirrors the prompts pattern), `prompts_dirs` (extra search paths), `processors_dirs` (extra processor search paths), `user_data_schema` (per-workspace metadata).
+Workspace RC supports: `prompts` (inline prompts + disable overrides), `processors` (processor overrides: `{name, enabled?, arguments?}` — `arguments` is a name→value map for prompt-mode parameter overrides), `prompts_dirs` (extra search paths), `processors_dirs` (extra processor search paths), `user_data_schema` (per-workspace metadata).
+
+```go
+// Save per-workspace processor argument overrides (mitto-5g2v.3)
+config.SaveWorkspaceRCProcessorArguments(workingDir, "auggie-update-rules", map[string]string{"HistoryLimit": "25"})
+
+// Read back via LoadWorkspaceRC → ProcessorOverrides[i].Arguments map
+// Or via SessionManager → GetWorkspaceProcessorOverrides → ProcessorOverride.Arguments
+// → wired into ProcessorInput.ProcessorArgOverrides → ResolveProcessorArgs → SubstituteArguments
+```
 
 See `07-prompts.md` for prompt-specific workspace RC usage.
 

@@ -41,12 +41,9 @@ when:                  # required block — BOTH on: and match: are required
     afterTokens: 50000
     afterTime: 1h
   # agentResponded/agentIdle-only (forbidden on userPrompt):
-  stopReasons: [end_turn]   # default ["end_turn"]; valid: end_turn max_tokens max_turn_requests refusal cancelled
-  excludeOrigins: []        # origins to skip: user queue periodic-runner mcp-send-prompt
+  stopReasons: [end_turn]   # default ["end_turn"]; origins to skip: excludeOrigins: [user, queue, ...]
   cadence:             # optional throttle; only valid with on:agentResponded|agentIdle + match:all/allExceptFirst
-    everyNTurns: 3     # fire every N agent responses (pre-increment; everyNTurns:3 → turns 3,6,9,…)
-    everyNTokens: 15000 # AND: after N cumulative tokens since last firing
-    afterInterval: 5m  # AND: after this wall-clock duration since last firing
+    everyNTurns: 3     # fire every N responses; everyNTokens: 15000; afterInterval: 5m (all AND-logic)
 priority: 100          # lower = earlier
 enabled: true          # false = never loads (build-time gate)
 enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'  # CEL runtime gate
@@ -67,7 +64,15 @@ outputFormat: json     # json | raw — raw uses stdout verbatim (trimmed); comm
 prompt: |
   Analyze these messages: @mitto:messages   # legacy; see note below
 timeout: 300s
+
+# Prompt-mode parameters (declare typed ${VAR} inputs; mandatory non-empty default):
+parameters:
+  - name: HistoryLimit
+    type: text   # beadsId|beadsTitle|sessionId|childSessionId|workspaceId|workspaceFolder|acpServer|text|boolean
+    default: "10"  # REQUIRED — missing default is a load error (red badge in UI)
 ```
+
+**Prompt-mode `${VAR}` substitution**: `${NAME}` → value or `""`; `${NAME:-fallback}` → value if set AND non-empty, else fallback; `\${NAME}` → literal. Resolution: declared `default` first, then per-workspace `.mittorc` `arguments:` overlay. Override values are saved in Workspaces → Processors (Save button) → `.mittorc` `processors: [{name, arguments: {k: v}}]`.
 
 ## Phase/Field Rules
 
@@ -133,18 +138,14 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | `fileExists(path)`      | `fileExists("Makefile")`, `fileExists("go.mod")` — checks if file exists (not directory); workspace-relative |
 | `dirExists(path)`       | `dirExists(".github")`, `dirExists("src")` — checks if directory exists; workspace-relative |
 
-**`tools.*` fail-open behavior:** `tools.hasPattern` / `hasAllPatterns` / `hasAnyPattern` return `true` (fail-open) when the tool list is unknown (cache cold during warm-up or unknown tool query), so tool-gated prompts/processors are not hidden. Once the MCP tool list is fetched, they evaluate against the real tool list. **Processors always see known tools** (fail-open is forced false internally) so they use the actual tool list unconditionally.
+**`tools.*` fail-open behavior:** return `true` when tool list is unknown (warm-up); evaluate against real list once fetched. **Processors always see known tools** (fail-open disabled internally).
 
 ## Common Mistakes
 
-- **Missing `on:` or `match:`** — both required
-- **`all-except-first`** — use camelCase: `allExceptFirst`
-- **Text-mode without `mutate:`** — required field
-- **`rerun:` with `match: all`** — only valid with `match: first`
-- **`cadence:` with `on: userPrompt`** — only valid with `agentResponded`/`agentIdle`
-- **`cadence:` with `match: first`** — not needed; firing once requires no cadence
-- **`cadence:` with no thresholds** — at least one field required
-- `cadence` and `rerun` are mutually exclusive (different `on:` values)
+- Missing `on:` or `match:` — both required; use camelCase `allExceptFirst` (not `all-except-first`)
+- Text-mode: `mutate:` required; `rerun:` only valid with `match: first`
+- `cadence:` only valid with `agentResponded`/`agentIdle` + `match: all/allExceptFirst`; at least one threshold required; mutually exclusive with `rerun:`
+- Prompt-mode parameters: missing `default` → load error (red badge in UI); use `${VAR:-fallback}` not bare `${VAR}` for resilience
 
 ## Defaults
 

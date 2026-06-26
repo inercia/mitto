@@ -22,6 +22,8 @@ From this tab you can:
 
 - **Enable/disable** any processor using the checkbox — global processors can be disabled per workspace
 - See each processor's **source** (workspace, global, or built-in), **mode** (text, command, or prompt), and **trigger** (phase + match)
+- **Override argument values** for prompt-mode processors that declare `parameters:` — each parameter shows an editable input prefilled with the effective value (workspace override or declared default); clicking **Save** persists the values to the folder's `.mittorc`
+- See a red **error** badge (with the full error as a tooltip) for any processor that fails to load or validate — e.g. a missing mandatory `default` on a parameter
 
 Each processor shows badges indicating:
 - **Source**: `global` (orange), `workspace` (green), or `built-in` (blue)
@@ -364,6 +366,62 @@ prompt: |
 - **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional *Auxiliary Model Selection* (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
 - **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
 
+### Parameters (Prompt-Mode Only)
+
+Prompt-mode processors can declare named, typed inputs via a `parameters:` block. At dispatch time, each `${NAME}` / `${NAME:-fallback}` placeholder in the prompt body is replaced with the resolved value. Values are overridable per workspace without editing the YAML file.
+
+#### Schema
+
+```yaml
+parameters:
+  - name: HistoryLimit      # placeholder name → ${HistoryLimit}
+    type: text              # one of: beadsId beadsTitle sessionId childSessionId
+                            #         workspaceId workspaceFolder acpServer text boolean
+    description: "..."      # optional hint shown in the UI
+    default: "10"           # MANDATORY, must be non-empty — missing default is a load error
+```
+
+A missing or empty `default` is a **load error**: the processor is not loaded and appears as a red **error** badge with the full message as a tooltip in the Workspaces → Processors tab.
+
+#### Substitution semantics
+
+| Syntax               | Result                                                         |
+| -------------------- | -------------------------------------------------------------- |
+| `${NAME}`            | Resolved value, or `""` if absent                             |
+| `${NAME:-fallback}`  | Resolved value when set AND non-empty; else the inline fallback|
+| `\${NAME}`           | Literal `${NAME}` (escape — no substitution)                  |
+
+Surrounding single or double quotes around an inline fallback are stripped: `${NAME:-"a value"}` yields `a value` when `NAME` is unset.
+
+**Resolution order**: the declared `default` is used as the base value; a per-workspace override from `.mittorc` (non-empty) takes precedence.
+
+#### Per-workspace overrides
+
+In the Workspaces → Processors tab, each prompt-mode processor with declared parameters shows an editable input per parameter (prefilled with the effective value). Clicking **Save** persists overrides to the folder's `.mittorc`:
+
+```yaml
+# .mittorc (auto-managed — do not edit the arguments key manually)
+processors:
+  - name: auggie-update-rules
+    arguments:
+      HistoryLimit: "25"   # overrides the declared default of "10"
+```
+
+**Example** (the builtin `auggie-update-rules`):
+
+```yaml
+parameters:
+  - name: HistoryLimit
+    type: text
+    description: "How many recent user/agent messages the auxiliary agent reviews"
+    default: "10"
+prompt: |
+  ...
+  - `last_n`: ${HistoryLimit:-10}
+```
+
+With the workspace override above, the dispatched prompt will contain `last_n: 25`.
+
 ### Examples
 
 #### Track user preferences automatically
@@ -450,6 +508,14 @@ command: /path/to/script.sh  # Command to execute (see Command Resolution)
 prompt: |  # Prompt template for auxiliary AI agent (fire-and-forget)
   Session: @mitto:session_id
   Use mitto_conversation_history to retrieve messages and analyze them.
+
+# Prompt-mode only: declare typed inputs substituted into the prompt body.
+# Each needs a MANDATORY non-empty default; values overridable per-workspace (.mittorc).
+parameters:
+  - name: HistoryLimit      # placeholder name → ${HistoryLimit}
+    type: text              # one of the known parameter types
+    description: "..."      # optional UI/MCP hint
+    default: "10"           # REQUIRED, non-empty
 
 # Optional fields
 description: "Adds context"  # Description of what the processor does
