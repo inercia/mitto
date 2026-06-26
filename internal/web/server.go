@@ -728,6 +728,9 @@ func NewServer(config Config) (*Server, error) {
 		GetExternalPort:                    s.GetExternalPort,
 		IsExternalListenerRunning:          s.IsExternalListenerRunning,
 		TriggerPeriodicNow:                 s.periodicRunner.TriggerNow,
+		StopPeriodicForArchive: func(sessionID string) {
+			s.periodicRunner.StopPeriodicForArchive(sessionID, session.StoppedReasonArchived)
+		},
 		ErrSessionBusy:                     ErrSessionBusy,
 		ErrPeriodicNotEnabled:              ErrPeriodicNotEnabled,
 		PeriodicDelayFloor:                 s.periodicDelayFloor,

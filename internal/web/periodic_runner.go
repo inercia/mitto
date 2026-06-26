@@ -371,6 +371,13 @@ func (r *PeriodicRunner) OnConversationIdle(sessionID string) {
 		return
 	}
 
+	// Never arm a timer for an archived conversation — archiving stops the loop (mitto-efnb).
+	meta, err := r.store.GetMetadata(sessionID)
+	if err != nil || meta.Archived {
+		r.cancelCompletionTimer(sessionID)
+		return
+	}
+
 	periodicStore := r.store.Periodic(sessionID)
 	periodic, err := periodicStore.Get()
 	if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnCompletion() {
@@ -409,6 +416,47 @@ func (r *PeriodicRunner) armCompletionTimer(sessionID string, delay time.Duratio
 	r.completionTimers[sessionID] = time.AfterFunc(delay, func() {
 		r.fireOnCompletion(sessionID)
 	})
+}
+
+// StopPeriodicForArchive authoritatively stops a conversation's periodic loop as part
+// of archiving it (manual or automatic). It cancels any pending on-completion timer,
+// disables the periodic config with the given reason when currently enabled, and
+// broadcasts the updated periodic state so the UI no longer shows an enabled loop.
+// It is a no-op for sessions without a periodic config and is idempotent (an
+// already-disabled config keeps its existing StoppedReason).
+func (r *PeriodicRunner) StopPeriodicForArchive(sessionID string, reason session.StoppedReason) {
+	if r.store == nil {
+		return
+	}
+	// Cancel any pending on-completion timer regardless of config state.
+	r.cancelCompletionTimer(sessionID)
+
+	periodicStore := r.store.Periodic(sessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil {
+		// No periodic config (ErrPeriodicNotFound) or unreadable — nothing to disable.
+		return
+	}
+	if !periodic.Enabled {
+		// Already stopped/paused — leave the existing reason intact.
+		return
+	}
+	if err := periodicStore.MarkStopped(reason); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to stop periodic config on archive",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+	if r.onPeriodicAutoStopped != nil {
+		if final, gErr := periodicStore.Get(); gErr == nil {
+			r.onPeriodicAutoStopped(sessionID, final)
+		}
+	}
+	if r.logger != nil {
+		r.logger.Info("Stopped periodic loop on archive",
+			"session_id", sessionID, "reason", reason)
+	}
 }
 
 // cancelCompletionTimer stops and removes any pending on-completion timer for the session.
@@ -934,6 +982,8 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 							"error", markErr)
 					}
 				}
+				// Cancel any pending on-completion timer so it cannot fire after archiving (mitto-efnb).
+				r.cancelCompletionTimer(sessionID)
 
 				// Update metadata to mark as archived
 				if updateErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
@@ -953,6 +1003,13 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 					}
 					// Delete child sessions (async, same as manual archive)
 					go r.sessionManager.DeleteChildSessions(sessionID)
+
+					// Broadcast the periodic disable so the UI badge reflects reality (mitto-efnb).
+					if r.onPeriodicAutoStopped != nil {
+						if final, gErr := periodicStore.Get(); gErr == nil {
+							r.onPeriodicAutoStopped(sessionID, final)
+						}
+					}
 
 					if r.logger != nil {
 						r.logger.Info("Session archived after repeated ACP resume failures",

@@ -2176,3 +2176,267 @@ func substituteTestArgs(text string, args map[string]string) string {
 	}
 	return processors.SubstituteArguments(text, args)
 }
+
+// =============================================================================
+// StopPeriodicForArchive tests (mitto-efnb)
+// =============================================================================
+
+// TestStopPeriodicForArchive_ScheduleBased verifies that StopPeriodicForArchive disables
+// an enabled schedule-based periodic config, sets StoppedReason="archived", clears
+// NextScheduledAt, and fires the onPeriodicAutoStopped callback.
+func TestStopPeriodicForArchive_ScheduleBased(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a schedule-based periodic session.
+	meta := session.Metadata{SessionID: "arch-sched", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Periodic("arch-sched")
+	nextAt := time.Now().Add(time.Hour).UTC()
+	if err := ps.Set(&session.PeriodicPrompt{
+		Prompt:          "check",
+		Enabled:         true,
+		Trigger:         session.TriggerSchedule,
+		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		NextScheduledAt: &nextAt,
+	}); err != nil {
+		t.Fatalf("ps.Set() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	var callbackSessionID string
+	var callbackPeriodic *session.PeriodicPrompt
+	runner.SetOnPeriodicAutoStopped(func(sid string, p *session.PeriodicPrompt) {
+		callbackSessionID = sid
+		callbackPeriodic = p
+	})
+
+	runner.StopPeriodicForArchive("arch-sched", session.StoppedReasonArchived)
+
+	final, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() after StopPeriodicForArchive: %v", err)
+	}
+	if final.Enabled {
+		t.Error("Enabled = true after StopPeriodicForArchive, want false")
+	}
+	if final.StoppedReason != session.StoppedReasonArchived {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonArchived)
+	}
+	if final.NextScheduledAt != nil {
+		t.Errorf("NextScheduledAt = %v, want nil", final.NextScheduledAt)
+	}
+	if callbackSessionID != "arch-sched" {
+		t.Errorf("onPeriodicAutoStopped called with session %q, want %q", callbackSessionID, "arch-sched")
+	}
+	if callbackPeriodic == nil || callbackPeriodic.Enabled {
+		t.Error("onPeriodicAutoStopped received nil or still-enabled periodic")
+	}
+}
+
+// TestStopPeriodicForArchive_OnCompletion verifies that StopPeriodicForArchive disables
+// an enabled onCompletion config, cancels any armed completion timer, and is a no-op
+// (no panic, no broadcast) when there is no periodic config at all.
+func TestStopPeriodicForArchive_OnCompletion(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create an onCompletion session with a very long timer so it won't fire.
+	newOnCompletionSession(t, store, "arch-oc", 3600)
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	callbackFired := false
+	runner.SetOnPeriodicAutoStopped(func(_ string, _ *session.PeriodicPrompt) {
+		callbackFired = true
+	})
+
+	// Arm a completion timer to confirm it gets cancelled.
+	runner.armCompletionTimer("arch-oc", time.Hour)
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("precondition: completionTimers = %d, want 1", got)
+	}
+
+	runner.StopPeriodicForArchive("arch-oc", session.StoppedReasonArchived)
+
+	// Timer must be cancelled.
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d after StopPeriodicForArchive, want 0", got)
+	}
+
+	// Config must be disabled.
+	final, err := store.Periodic("arch-oc").Get()
+	if err != nil {
+		t.Fatalf("ps.Get() after StopPeriodicForArchive: %v", err)
+	}
+	if final.Enabled {
+		t.Error("Enabled = true after StopPeriodicForArchive, want false")
+	}
+	if final.StoppedReason != session.StoppedReasonArchived {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonArchived)
+	}
+	if !callbackFired {
+		t.Error("onPeriodicAutoStopped not called")
+	}
+
+	// No-op for a session with no periodic config (must not panic).
+	meta2 := session.Metadata{SessionID: "no-periodic", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta2); err != nil {
+		t.Fatalf("store.Create(no-periodic): %v", err)
+	}
+	broadcastCount := 0
+	runner.SetOnPeriodicAutoStopped(func(_ string, _ *session.PeriodicPrompt) { broadcastCount++ })
+	runner.StopPeriodicForArchive("no-periodic", session.StoppedReasonArchived) // must not panic
+	if broadcastCount != 0 {
+		t.Errorf("onPeriodicAutoStopped called %d times for session without periodic config, want 0", broadcastCount)
+	}
+}
+
+// TestStopPeriodicForArchive_Idempotent verifies that StopPeriodicForArchive is a no-op
+// (no second broadcast, reason unchanged) when the config is already disabled.
+func TestStopPeriodicForArchive_Idempotent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 3600)
+	ps := store.Periodic("s1")
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	broadcastCount := 0
+	runner.SetOnPeriodicAutoStopped(func(_ string, _ *session.PeriodicPrompt) { broadcastCount++ })
+
+	// First call disables.
+	runner.StopPeriodicForArchive("s1", session.StoppedReasonArchived)
+	if broadcastCount != 1 {
+		t.Fatalf("broadcastCount = %d after first call, want 1", broadcastCount)
+	}
+
+	// Second call must be idempotent.
+	runner.StopPeriodicForArchive("s1", session.StoppedReasonArchived)
+	if broadcastCount != 1 {
+		t.Errorf("broadcastCount = %d after second call, want 1 (idempotent)", broadcastCount)
+	}
+
+	// Original stopped reason must be preserved.
+	final, _ := ps.Get()
+	if final.StoppedReason != session.StoppedReasonArchived {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonArchived)
+	}
+}
+
+// TestStopPeriodicForArchive_NoFurtherDelivery verifies that after archiving (via
+// StopPeriodicForArchive + UpdateMetadata), RunOnce delivers nothing.
+func TestStopPeriodicForArchive_NoFurtherDelivery(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a schedule-based session that is overdue.
+	meta := session.Metadata{SessionID: "arch-nodelay", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Periodic("arch-nodelay")
+	pastDue := time.Now().UTC().Add(-time.Hour)
+	if err := ps.Set(&session.PeriodicPrompt{
+		Prompt:          "check",
+		Enabled:         true,
+		Trigger:         session.TriggerSchedule,
+		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		NextScheduledAt: &pastDue,
+	}); err != nil {
+		t.Fatalf("ps.Set() error = %v", err)
+	}
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	runner := NewPeriodicRunner(store, sm, nil)
+
+	// Archive the session: stop periodic and mark metadata archived.
+	runner.StopPeriodicForArchive("arch-nodelay", session.StoppedReasonArchived)
+	if err := store.UpdateMetadata("arch-nodelay", func(m *session.Metadata) {
+		m.Archived = true
+		m.ArchivedAt = time.Now()
+		m.ArchiveReason = session.ArchiveReasonManual
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	delivered, skipped, errored := runner.RunOnce()
+	if delivered != 0 || errored != 0 {
+		t.Errorf("RunOnce() = (%d, %d, %d), want (0, *, 0) for archived session", delivered, skipped, errored)
+	}
+
+	// Periodic config must remain disabled.
+	final, _ := ps.Get()
+	if final.Enabled {
+		t.Error("periodic still enabled after archive + RunOnce")
+	}
+}
+
+// TestOnConversationIdle_ArchivedNoop verifies that OnConversationIdle does NOT arm
+// a completion timer for an archived session.
+func TestOnConversationIdle_ArchivedNoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create an onCompletion session then mark it archived.
+	newOnCompletionSession(t, store, "s1", 3600)
+	if err := store.UpdateMetadata("s1", func(m *session.Metadata) {
+		m.Archived = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.OnConversationIdle("s1")
+
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (archived session must not arm timer)", got)
+	}
+}
+
+// TestOnConversationIdle_ArchivedCancelsExistingTimer verifies that OnConversationIdle
+// cancels a stale timer when the session is archived.
+func TestOnConversationIdle_ArchivedCancelsExistingTimer(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 3600)
+	if err := store.UpdateMetadata("s1", func(m *session.Metadata) {
+		m.Archived = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	// Pre-arm a stale timer.
+	runner.armCompletionTimer("s1", time.Hour)
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("precondition: completionTimers = %d, want 1", got)
+	}
+
+	runner.OnConversationIdle("s1")
+
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (archived must cancel stale timer)", got)
+	}
+}

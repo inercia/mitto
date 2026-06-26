@@ -135,6 +135,11 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 
 	// Delete all child sessions when parent is archived
 	if req.Archived != nil && *req.Archived {
+		// Authoritatively stop the periodic loop on archive so it can never schedule a
+		// new run or spawn new children, and the UI badge clears (mitto-efnb).
+		if h.deps.StopPeriodicForArchive != nil {
+			h.deps.StopPeriodicForArchive(sessionID)
+		}
 		if h.deps.SessionManager != nil {
 			go h.deps.SessionManager.DeleteChildSessions(sessionID)
 		}

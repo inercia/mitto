@@ -43,6 +43,10 @@ const (
 	// StoppedReasonDisabledByAgent is a resumable (paused) reason set when the agent
 	// self-disables the loop via mitto_conversation_update. Re-enabling clears it.
 	StoppedReasonDisabledByAgent StoppedReason = "disabledByAgent"
+
+	// StoppedReasonArchived is set when the conversation is archived (manual or auto),
+	// which authoritatively stops the periodic loop.
+	StoppedReasonArchived StoppedReason = "archived"
 )
 
 var (

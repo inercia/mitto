@@ -220,6 +220,11 @@ type Deps struct {
 	// immediate periodic run for a session. May be nil; callers must nil-guard.
 	TriggerPeriodicNow func(sessionID string, resetTimer bool) error
 
+	// StopPeriodicForArchive mirrors Server.periodicRunner.StopPeriodicForArchive bound
+	// to the "archived" stopped reason: it authoritatively stops a conversation's
+	// periodic loop when the conversation is archived. May be nil; callers must nil-guard.
+	StopPeriodicForArchive func(sessionID string)
+
 	// ErrSessionBusy and ErrPeriodicNotEnabled mirror the web package's
 	// periodic-runner sentinel errors. They are exposed here so callback handlers
 	// can map TriggerPeriodicNow failures to HTTP status codes without importing
