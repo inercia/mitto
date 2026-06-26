@@ -25,7 +25,17 @@ async function readBeadsResponse(res) {
   const text = await res.text();
   if (text) {
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      // Normalize the canonical nested error envelope {error:{code,message,details}}
+      // down to the flat {error:"<message>", stderr} shape the beads consumers expect.
+      // Leaves the legacy flat {error:"...", stderr} (bd-failure 200 path) untouched.
+      if (parsed && typeof parsed.error === "object" && parsed.error !== null) {
+        return {
+          error: parsed.error.message || `Request failed (HTTP ${res.status})`,
+          stderr: (parsed.error.details && parsed.error.details.stderr) || undefined,
+        };
+      }
+      return parsed;
     } catch (_e) {
       // fall through to error object below
     }

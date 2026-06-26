@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
@@ -156,6 +157,21 @@ func TestHandleBeadsList_MissingWorkingDir(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if resp.Error.Message != "working_dir is required" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "working_dir is required")
+	}
 }
 
 func TestHandleBeadsList_RelativeWorkingDir(t *testing.T) {
@@ -212,6 +228,21 @@ func TestHandleBeadsStats_MissingWorkingDir(t *testing.T) {
 	s.handleBeadsStats(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if resp.Error.Message != "working_dir is required" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "working_dir is required")
 	}
 }
 
@@ -276,6 +307,21 @@ func TestHandleBeadsShow_MissingID(t *testing.T) {
 	s.handleBeadsShow(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if resp.Error.Message != "id is required" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "id is required")
 	}
 }
 

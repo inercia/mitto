@@ -68,15 +68,15 @@ func (h *Handlers) HandleBeadsList(w http.ResponseWriter, r *http.Request) {
 
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(workingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -105,15 +105,15 @@ func (h *Handlers) HandleBeadsStats(w http.ResponseWriter, r *http.Request) {
 
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(workingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -143,19 +143,19 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(workingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if id == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
