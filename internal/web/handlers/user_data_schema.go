@@ -9,35 +9,26 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
-// HandleWorkspaceUserDataSchema dispatches GET and PUT /api/workspace/user-data-schema.
+// HandleWorkspaceUserDataSchema dispatches GET and PUT /api/workspaces/{uuid}/user-data-schema.
 func (h *Handlers) HandleWorkspaceUserDataSchema(w http.ResponseWriter, r *http.Request) {
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		h.HandleWorkspaceUserDataSchemaGet(w, r)
+		h.HandleWorkspaceUserDataSchemaGet(w, r, ws.WorkingDir)
 	case http.MethodPut:
-		h.HandleWorkspaceUserDataSchemaPut(w, r)
+		h.HandleWorkspaceUserDataSchemaPut(w, r, ws.WorkingDir)
 	default:
 		methodNotAllowed(w)
 	}
 }
 
-// HandleWorkspaceUserDataSchemaGet handles GET /api/workspace/user-data-schema?working_dir=...
-func (h *Handlers) HandleWorkspaceUserDataSchemaGet(w http.ResponseWriter, r *http.Request) {
-	// Get the working directory from query parameter
-	workingDir := r.URL.Query().Get("working_dir")
-	if workingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir query parameter is required")
-		return
-	}
-
-	// Validate that this is a known workspace
-	workingDir = strings.TrimSpace(workingDir)
-	workspace := h.deps.SessionManager.GetWorkspace(workingDir)
-	if workspace == nil {
-		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
-		return
-	}
-
+// HandleWorkspaceUserDataSchemaGet handles GET /api/workspaces/{uuid}/user-data-schema.
+func (h *Handlers) HandleWorkspaceUserDataSchemaGet(w http.ResponseWriter, r *http.Request, workingDir string) {
 	// Get the schema from workspace RC
 	schema := h.deps.SessionManager.GetUserDataSchema(workingDir)
 
@@ -56,27 +47,14 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaGet(w http.ResponseWriter, r *ht
 	})
 }
 
-// HandleWorkspaceUserDataSchemaPut handles PUT /api/workspace/user-data-schema.
+// HandleWorkspaceUserDataSchemaPut handles PUT /api/workspaces/{uuid}/user-data-schema.
 // Saves the user data schema to the workspace .mittorc file.
-func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *http.Request, workingDir string) {
 	var req struct {
-		WorkingDir string                       `json:"working_dir"`
-		Fields     []config.UserDataSchemaField `json:"fields"`
+		Fields []config.UserDataSchemaField `json:"fields"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
-		return
-	}
-	if req.WorkingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
-		return
-	}
-	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
-
-	// Validate that this is a known workspace
-	workspace := h.deps.SessionManager.GetWorkspace(req.WorkingDir)
-	if workspace == nil {
-		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
 		return
 	}
 
@@ -92,9 +70,9 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *ht
 		}
 	}
 
-	if err := config.SaveWorkspaceUserDataSchema(req.WorkingDir, req.Fields); err != nil {
+	if err := config.SaveWorkspaceUserDataSchema(workingDir, req.Fields); err != nil {
 		if h.deps.Logger != nil {
-			h.deps.Logger.Error("Failed to save workspace user data schema", "working_dir", req.WorkingDir, "error", err)
+			h.deps.Logger.Error("Failed to save workspace user data schema", "working_dir", workingDir, "error", err)
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save user data schema: "+err.Error())
 		return
@@ -102,11 +80,11 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *ht
 
 	// Invalidate the workspace RC cache so subsequent reads pick up the new data
 	if h.deps.SessionManager != nil {
-		h.deps.SessionManager.InvalidateWorkspaceRC(req.WorkingDir)
+		h.deps.SessionManager.InvalidateWorkspaceRC(workingDir)
 	}
 
 	if h.deps.Logger != nil {
-		h.deps.Logger.Info("Workspace user data schema saved", "working_dir", req.WorkingDir, "fields", len(req.Fields))
+		h.deps.Logger.Info("Workspace user data schema saved", "working_dir", workingDir, "fields", len(req.Fields))
 	}
 
 	writeJSONOK(w, map[string]string{"status": "ok"})

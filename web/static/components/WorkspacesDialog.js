@@ -988,16 +988,15 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       // Save user data schema
       if (selectedFolder) {
         const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
-        const folderWorkingDir = folderGroup?.workspaces[0]?.working_dir;
-        if (folderWorkingDir) {
+        const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
+        if (folderWsUuid) {
           // Filter out fields with empty names
           const validFields = editUserDataFields.filter(f => f.name.trim() !== '');
           try {
-            const schemaRes = await secureFetch(apiUrl("/api/workspace/user-data-schema"), {
+            const schemaRes = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(folderWsUuid)}/user-data-schema`), {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                working_dir: folderWorkingDir,
                 fields: validFields,
               }),
             });

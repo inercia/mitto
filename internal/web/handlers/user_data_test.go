@@ -265,7 +265,8 @@ func TestHandleUserData_InvalidBody(t *testing.T) {
 func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
 	_, h := newUserDataHandlers(t, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/workspace/user-data-schema?working_dir=/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/nonexistent/user-data-schema", nil)
+	req.SetPathValue("uuid", "nonexistent")
 	w := httptest.NewRecorder()
 
 	h.HandleWorkspaceUserDataSchema(w, req)
@@ -285,21 +286,22 @@ func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
 	if resp.Error.Code != "not_found" {
 		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
 	}
-	if resp.Error.Message != "Unknown workspace" {
-		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Unknown workspace")
+	if resp.Error.Message != "Workspace not found" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Workspace not found")
 	}
 }
 
-func TestHandleWorkspaceUserDataSchema_MissingParam(t *testing.T) {
+func TestHandleWorkspaceUserDataSchema_EmptyUUID(t *testing.T) {
 	_, h := newUserDataHandlers(t, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/workspace/user-data-schema", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/unknown-uuid/user-data-schema", nil)
+	req.SetPathValue("uuid", "unknown-uuid")
 	w := httptest.NewRecorder()
 
 	h.HandleWorkspaceUserDataSchema(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 	var resp struct {
 		Error struct {
@@ -310,10 +312,10 @@ func TestHandleWorkspaceUserDataSchema_MissingParam(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode error body: %v", err)
 	}
-	if resp.Error.Code != "bad_request" {
-		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
 	}
-	if resp.Error.Message != "working_dir query parameter is required" {
-		t.Errorf("error.message = %q, want %q", resp.Error.Message, "working_dir query parameter is required")
+	if resp.Error.Message != "Workspace not found" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Workspace not found")
 	}
 }

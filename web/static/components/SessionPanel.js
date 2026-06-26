@@ -432,13 +432,10 @@ export function SessionPanel({
       setUserDataError(null);
 
       try {
+        const wsUuid = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
         const [userDataRes, schemaRes] = await Promise.all([
           authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
-          authFetch(
-            apiUrl(
-              `/api/workspace/user-data-schema?working_dir=${encodeURIComponent(sessionInfo.working_dir)}`,
-            ),
-          ),
+          authFetch(apiUrl(`/api/workspaces/${encodeURIComponent(wsUuid)}/user-data-schema`)),
         ]);
 
         if (userDataRes.ok) setUserData(await userDataRes.json());
@@ -454,7 +451,7 @@ export function SessionPanel({
     };
 
     fetchUserData();
-  }, [isOpen, sessionId, sessionInfo?.working_dir]);
+  }, [isOpen, sessionId, sessionInfo?.working_dir, sessionInfo?.workspace_uuid]);
 
   // --- Effects: fetch changes when changes tab is active ---
   useEffect(() => {
