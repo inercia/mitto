@@ -95,7 +95,23 @@ on it — e.g. `POST /api/callback/{token}` (emitted via a dedicated `writeCallb
 
 ## 5. Method-Not-Allowed (405) Handling
 
-The Go 1.22+ `net/http.ServeMux` returns 405 automatically when a method-specific route pattern (`METHOD /path`) does not match. Mitto currently uses catch-all `HandleFunc` patterns and dispatches methods manually. The migration target registers routes with explicit method prefixes so 405 is uniform and requires no per-handler boilerplate.
+405 responses are produced two ways, both carrying the canonical `method_not_allowed` error code:
+
+1. **Central mux 405 (status-only).** Routes registered with an explicit method prefix (`METHOD /path`, Go 1.22+ `net/http.ServeMux`) let the mux reject unsupported methods automatically. The response body is empty; only the `405` status is set.
+2. **Handler-level 405 (JSON envelope).** Catch-all routes that dispatch methods internally (`switch r.Method`) return the canonical error envelope via `methodNotAllowed()` → `writeErrorJSON(…, "method_not_allowed", …)`.
+
+Both paths are locked by `internal/web/contract_test.go` (`TestContract_MethodNotAllowed`).
+
+### Intentional plain-text 405 exceptions
+
+These endpoints intentionally return a plain-text `405` (not the JSON envelope) and are **not** required to migrate:
+
+| Endpoint | Why exempt |
+| --- | --- |
+| `GET /health` | Load-balancer health check; minimal plain-text body by design |
+| `GET /robots.txt` | Non-API text endpoint |
+| Workspace file server (raw file bytes) | Plain-text error subsystem throughout (`internal/web/file_server.go`); the 405 stays consistent with its other plain-text errors |
+| `/api/login`, `/api/logout`, `/api/csrf-token` | Auth/CSRF middleware; status-only 405 asserted by existing tests (`auth_test.go`, `csrf_test.go`) |
 
 ---
 
