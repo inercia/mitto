@@ -11,13 +11,13 @@ import (
 func (h *Handlers) handleDeletePeriodic(w http.ResponseWriter, sessionID string, ps *session.PeriodicStore) {
 	if err := ps.Delete(); err != nil {
 		if err == session.ErrPeriodicNotFound {
-			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to delete periodic prompt", "error", err)
 		}
-		http.Error(w, "Failed to delete periodic prompt", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to delete periodic prompt")
 		return
 	}
 
@@ -37,7 +37,7 @@ func (h *Handlers) handleRunPeriodicNow(w http.ResponseWriter, r *http.Request, 
 
 	// Check if periodic runner is available
 	if h.deps.TriggerPeriodicNow == nil {
-		http.Error(w, "Periodic runner not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Periodic runner not available")
 		return
 	}
 
@@ -46,7 +46,7 @@ func (h *Handlers) handleRunPeriodicNow(w http.ResponseWriter, r *http.Request, 
 	var req RunPeriodicNowRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 			return
 		}
 	}
@@ -59,16 +59,16 @@ func (h *Handlers) handleRunPeriodicNow(w http.ResponseWriter, r *http.Request, 
 	if err := h.deps.TriggerPeriodicNow(sessionID, resetTimer); err != nil {
 		switch err {
 		case session.ErrPeriodicNotFound:
-			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
 		case h.deps.ErrPeriodicNotEnabled:
-			http.Error(w, "Periodic is not enabled for this session", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "Periodic is not enabled for this session")
 		case h.deps.ErrSessionBusy:
-			http.Error(w, "Session is currently processing a prompt", http.StatusConflict)
+			writeErrorJSON(w, http.StatusConflict, "", "Session is currently processing a prompt")
 		default:
 			if h.deps.Logger != nil {
 				h.deps.Logger.Error("Failed to trigger periodic prompt", "error", err, "session_id", sessionID)
 			}
-			http.Error(w, "Failed to trigger periodic prompt", http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to trigger periodic prompt")
 		}
 		return
 	}

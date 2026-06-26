@@ -73,7 +73,7 @@ func (h *Handlers) periodicDelayFloor() int {
 func (h *Handlers) HandleSessionPeriodic(w http.ResponseWriter, r *http.Request, sessionID, subPath string) {
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -81,16 +81,16 @@ func (h *Handlers) HandleSessionPeriodic(w http.ResponseWriter, r *http.Request,
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
-		http.Error(w, "Failed to get session", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session")
 		return
 	}
 
 	// Prevent setting periodic on child sessions - only parents/top-level sessions can be periodic
 	if r.Method != http.MethodGet && meta.ParentSessionID != "" {
-		http.Error(w, "Cannot set periodic on a child conversation. Only parent or top-level conversations can be periodic.", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Cannot set periodic on a child conversation. Only parent or top-level conversations can be periodic.")
 		return
 	}
 
@@ -121,13 +121,13 @@ func (h *Handlers) handleGetPeriodic(w http.ResponseWriter, ps *session.Periodic
 	p, err := ps.Get()
 	if err != nil {
 		if err == session.ErrPeriodicNotFound {
-			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get periodic prompt", "error", err)
 		}
-		http.Error(w, "Failed to get periodic prompt", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get periodic prompt")
 		return
 	}
 

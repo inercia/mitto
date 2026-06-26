@@ -82,6 +82,23 @@ func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
 		t.Errorf("PUT periodic on child: Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Failed to unmarshal error envelope: %v (body=%q)", err, w.Body.String())
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	const wantMsg = "Cannot set periodic on a child conversation. Only parent or top-level conversations can be periodic."
+	if env.Error.Message != wantMsg {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
+	}
+
 	// GET should still work (not rejected as 400)
 	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/test-child-periodic/periodic", nil)
 	w2 := httptest.NewRecorder()

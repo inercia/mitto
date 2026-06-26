@@ -31,20 +31,20 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 	if err := ps.Set(p); err != nil {
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
 			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to set periodic prompt", "error", err)
 		}
-		http.Error(w, "Failed to set periodic prompt", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to set periodic prompt")
 		return
 	}
 
 	// Return the updated periodic prompt
 	updated, err := ps.Get()
 	if err != nil {
-		http.Error(w, "Failed to get updated periodic prompt", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated periodic prompt")
 		return
 	}
 
@@ -89,18 +89,18 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 
 	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments); err != nil {
 		if err == session.ErrPeriodicNotFound {
-			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
 			return
 		}
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
 			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to update periodic prompt", "error", err)
 		}
-		http.Error(w, "Failed to update periodic prompt", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to update periodic prompt")
 		return
 	}
 
@@ -111,7 +111,7 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 			if h.deps.Logger != nil {
 				h.deps.Logger.Error("Failed to reset periodic counters", "error", err)
 			}
-			http.Error(w, "Failed to reset periodic counters", http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to reset periodic counters")
 			return
 		}
 	}
@@ -127,7 +127,7 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 	// Return the updated periodic prompt
 	updated, err := ps.Get()
 	if err != nil {
-		http.Error(w, "Failed to get updated periodic prompt", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated periodic prompt")
 		return
 	}
 
