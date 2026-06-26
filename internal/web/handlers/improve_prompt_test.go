@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,21 @@ func TestHandleImprovePrompt_EmptyPrompt(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if resp.Error.Message != "Prompt is required" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Prompt is required")
+	}
 }
 
 func TestHandleImprovePrompt_InvalidJSON(t *testing.T) {
@@ -45,5 +61,18 @@ func TestHandleImprovePrompt_InvalidJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	// parseJSONBody uses writeErrorJSON → canonical envelope
+	var resp2 struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp2); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp2.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp2.Error.Code, "bad_request")
 	}
 }

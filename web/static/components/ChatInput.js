@@ -1294,8 +1294,8 @@ export function ChatInput({
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Failed to improve prompt");
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData?.error?.message || errData?.message || "Failed to improve prompt");
       }
 
       const data = await response.json();

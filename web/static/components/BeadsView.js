@@ -476,8 +476,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
       });
       clearTimeout(timeoutId);
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Failed to improve description");
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData?.error?.message || errData?.message || "Failed to improve description");
       }
       const respData = await response.json();
       if (respData.improved_prompt) {

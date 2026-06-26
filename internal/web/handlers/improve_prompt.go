@@ -25,12 +25,12 @@ func (h *Handlers) HandleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Prompt == "" {
-		http.Error(w, "Prompt is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Prompt is required")
 		return
 	}
 
 	if req.WorkspaceUUID == "" {
-		http.Error(w, "Workspace UUID is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Workspace UUID is required")
 		return
 	}
 
@@ -39,7 +39,7 @@ func (h *Handlers) HandleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Auxiliary manager not initialized")
 		}
-		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		writeErrorJSON(w, http.StatusServiceUnavailable, "", "Service unavailable")
 		return
 	}
 
@@ -65,7 +65,7 @@ func (h *Handlers) HandleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 		} else {
 			userMsg = "Failed to improve prompt"
 		}
-		http.Error(w, userMsg, http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", userMsg)
 		return
 	}
 
