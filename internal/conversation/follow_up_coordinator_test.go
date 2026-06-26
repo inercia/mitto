@@ -21,14 +21,15 @@ type fakeFollowUpDeps struct {
 	mu sync.Mutex
 
 	// state knobs
-	sessionID      string
-	logger         *slog.Logger
-	closed         bool
-	prompting      bool
-	workspaceUUID  string
-	workingDir     string
-	sessionDir     string
-	storeAvailable bool
+	sessionID                      string
+	logger                         *slog.Logger
+	closed                         bool
+	prompting                      bool
+	workspaceUUID                  string
+	workingDir                     string
+	sessionDir                     string
+	storeAvailable                 bool
+	workspaceProcessorArgOverrides map[string]map[string]string
 	casResult      bool // what fuCASFollowUpInProgress returns
 	loadResult     bool // what fuLoadFollowUpInProgress returns
 	auxAvailable   bool
@@ -105,6 +106,9 @@ func (f *fakeFollowUpDeps) fuAnalyzeFollowUpQuestions(_ context.Context, _, _, _
 
 func (f *fakeFollowUpDeps) fuApplyAfterProcessors(_ context.Context, _ processors.AfterProcessorInput) processors.ApplyAfterResult {
 	return f.applyAfterResult
+}
+func (f *fakeFollowUpDeps) fuWorkspaceProcessorArgOverrides() map[string]map[string]string {
+	return f.workspaceProcessorArgOverrides
 }
 
 func (f *fakeFollowUpDeps) fuIsStoreAvailable() bool { return f.storeAvailable }

@@ -3,6 +3,8 @@ package processors
 import (
 	"regexp"
 	"strings"
+
+	"github.com/inercia/mitto/internal/config"
 )
 
 // argPlaceholderRe matches bash-like ${VAR} and ${VAR:-default} placeholders.
@@ -56,6 +58,35 @@ func SubstituteArguments(text string, args map[string]string) string {
 
 	result = strings.ReplaceAll(result, sentinelDollarBrace, "${")
 	return result
+}
+
+// ResolveProcessorArgs builds the effective argument map for a prompt-mode processor.
+//
+// Resolution rule: start with each declared parameter's Default value, then
+// overlay any per-workspace override from the caller-supplied overrides map
+// (non-empty values only; empty values are treated as "not set" and fall back
+// to the declared default).
+//
+// Returns nil when both params and overrides are empty (fast path: nothing to
+// substitute). A non-nil map is always safe to pass to SubstituteArguments.
+func ResolveProcessorArgs(params []config.PromptParameter, overrides map[string]string) map[string]string {
+	if len(params) == 0 && len(overrides) == 0 {
+		return nil
+	}
+	resolved := make(map[string]string, len(params)+len(overrides))
+	// Seed from declared defaults.
+	for _, p := range params {
+		if p.Default != "" {
+			resolved[p.Name] = p.Default
+		}
+	}
+	// Overlay workspace overrides (non-empty values win over the declared default).
+	for k, v := range overrides {
+		if v != "" {
+			resolved[k] = v
+		}
+	}
+	return resolved
 }
 
 // stripSurroundingQuotes removes a single pair of matching surrounding double

@@ -11,6 +11,22 @@ import (
 	"github.com/inercia/mitto/internal/processors"
 )
 
+// WebProcessorParameter represents one declared parameter of a prompt-mode processor
+// as returned by the workspace processors API.
+type WebProcessorParameter struct {
+	// Name is the parameter identifier used in ${NAME} placeholders.
+	Name string `json:"name"`
+	// Type is one of the known parameter types (see config.KnownPromptParameterTypes).
+	Type string `json:"type"`
+	// Description is a human-readable explanation of the parameter.
+	Description string `json:"description,omitempty"`
+	// Default is the value declared in the processor YAML (always present).
+	Default string `json:"default"`
+	// Value is the effective value: the per-workspace override from .mittorc if set and
+	// non-empty, otherwise the declared Default.
+	Value string `json:"value"`
+}
+
 // WebProcessor represents a processor as returned by the workspace processors API.
 type WebProcessor struct {
 	Name        string                     `json:"name"`
@@ -22,6 +38,12 @@ type WebProcessor struct {
 	Priority    int                        `json:"priority,omitempty"`
 	FilePath    string                     `json:"file_path,omitempty"`
 	Mode        string                     `json:"mode,omitempty"` // "text", "command", or "prompt"
+	// Parameters is non-empty only for prompt-mode processors that declare parameters.
+	// Each entry includes the declared default and the effective per-workspace value.
+	Parameters []WebProcessorParameter `json:"parameters,omitempty"`
+	// Error is non-empty only for processors that failed to load or validate.
+	// Valid processors leave this field empty (omitted from JSON).
+	Error string `json:"error,omitempty"`
 }
 
 // HandleWorkspaceProcessors handles GET /api/workspaces/{uuid}/processors.
@@ -48,12 +70,16 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Build override map from workspace .mittorc processors section.
-	// Mirrors the prompts pattern: [{name, enabled}] entries override processor defaults.
-	overrides := make(map[string]bool) // name → enabled
+	// Build override maps from workspace .mittorc processors section.
+	// Mirrors the prompts pattern: [{name, enabled?, arguments?}] entries override processor defaults.
+	enabledOverrides := make(map[string]bool)            // name → enabled
+	argOverrides := make(map[string]map[string]string)  // name → {paramName → value}
 	for _, o := range h.deps.SessionManager.GetWorkspaceProcessorOverrides(workingDir) {
 		if o.Enabled != nil {
-			overrides[o.Name] = *o.Enabled
+			enabledOverrides[o.Name] = *o.Enabled
+		}
+		if len(o.Arguments) > 0 {
+			argOverrides[o.Name] = o.Arguments
 		}
 	}
 
@@ -66,7 +92,7 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 		}
 		enabled := p.Enabled == nil || *p.Enabled
 		// Apply workspace-level override from .mittorc processors section
-		if override, ok := overrides[p.Name]; ok {
+		if override, ok := enabledOverrides[p.Name]; ok {
 			enabled = override
 		}
 		mode := "command"
@@ -75,7 +101,7 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 		} else if p.IsPromptMode() {
 			mode = "prompt"
 		}
-		result = append(result, WebProcessor{
+		wp := WebProcessor{
 			Name:        p.Name,
 			Description: p.Description,
 			Enabled:     enabled,
@@ -85,6 +111,49 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 			Priority:    p.Priority,
 			FilePath:    p.FilePath,
 			Mode:        mode,
+		}
+		// Populate parameters for prompt-mode processors with declared parameters.
+		// The effective value is the workspace override (if set and non-empty) or the
+		// declared default — following the same overlay pattern as argument substitution.
+		if p.IsPromptMode() && len(p.Parameters) > 0 {
+			pArgs := argOverrides[p.Name]
+			params := make([]WebProcessorParameter, 0, len(p.Parameters))
+			for _, param := range p.Parameters {
+				value := param.Default
+				if v, ok := pArgs[param.Name]; ok && v != "" {
+					value = v
+				}
+				params = append(params, WebProcessorParameter{
+					Name:        param.Name,
+					Type:        param.Type,
+					Description: param.Description,
+					Default:     param.Default,
+					Value:       value,
+				})
+			}
+			wp.Parameters = params
+		}
+		result = append(result, wp)
+	}
+
+	// Surface load/validation errors so invalid processors appear in the tab.
+	// De-dupe by (source, file_path, name).
+	seenErr := make(map[string]bool)
+	for _, le := range procMgr.LoadErrors() {
+		name := le.Name
+		if name == "" {
+			name = filepath.Base(le.FilePath) // file-level parse error: identify by basename
+		}
+		key := string(le.Source) + "\x00" + le.FilePath + "\x00" + name
+		if seenErr[key] {
+			continue
+		}
+		seenErr[key] = true
+		result = append(result, WebProcessor{
+			Name:     name,
+			Source:   le.Source,
+			FilePath: le.FilePath,
+			Error:    le.Error,
 		})
 	}
 
@@ -234,4 +303,119 @@ func (h *Handlers) HandleWorkspaceProcessorPatch(w http.ResponseWriter, r *http.
 	}
 
 	writeJSONOK(w, map[string]interface{}{"ok": true})
+}
+
+// HandleWorkspaceProcessorArguments handles PUT /api/workspaces/{uuid}/processors/{name}/arguments.
+// It saves per-workspace argument value overrides for a prompt-mode processor to the workspace
+// .mittorc file, then returns the updated effective parameter values.
+//
+// Request body: {"arguments": {"paramName": "value", ...}}
+//   - An empty string for a value clears the override (reverts to the declared default).
+//   - Unknown parameter names are rejected with a 400 error.
+//
+// Only prompt-mode processors with declared parameters support argument overrides.
+// Non-prompt-mode or unknown processors are rejected with the appropriate error.
+func (h *Handlers) HandleWorkspaceProcessorArguments(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w)
+		return
+	}
+
+	uuid := r.PathValue("uuid")
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	workingDir := ws.WorkingDir
+	name := r.PathValue("name")
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
+		return
+	}
+
+	// Resolve the processor by name through the merged manager.
+	var proc *processors.Processor
+	if procMgr := h.deps.SessionManager.GetWorkspaceProcessorManager(workingDir); procMgr != nil {
+		for _, p := range procMgr.Processors() {
+			if p.Name == name {
+				proc = p
+				break
+			}
+		}
+	}
+	if proc == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Processor not found: "+name)
+		return
+	}
+	if !proc.IsPromptMode() {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Processor '"+name+"' is not prompt-mode; arguments are only supported for prompt-mode processors")
+		return
+	}
+
+	var req struct {
+		Arguments map[string]string `json:"arguments"`
+	}
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	// Validate: reject keys that don't correspond to declared parameters.
+	knownParams := make(map[string]configPkg.PromptParameter, len(proc.Parameters))
+	for _, p := range proc.Parameters {
+		knownParams[p.Name] = p
+	}
+	for k := range req.Arguments {
+		if _, ok := knownParams[k]; !ok {
+			writeErrorJSON(w, http.StatusBadRequest, "", "unknown parameter: "+k)
+			return
+		}
+	}
+
+	// Persist to .mittorc (empty values clear the override; non-empty values set it).
+	if err := configPkg.SaveWorkspaceRCProcessorArguments(workingDir, name, req.Arguments); err != nil {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to save processor arguments", "dir", workingDir, "name", name, "error", err)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to save arguments: "+err.Error())
+		return
+	}
+
+	// Invalidate cache so subsequent reads pick up the change.
+	if h.deps.SessionManager != nil {
+		h.deps.SessionManager.InvalidateWorkspaceRC(workingDir)
+	}
+	if h.deps.Logger != nil {
+		h.deps.Logger.Debug("Updated .mittorc processor arguments", "dir", workingDir, "name", name)
+	}
+
+	// Re-read fresh overrides from disk (cache was just invalidated) and return
+	// the updated effective parameter values so the frontend can refresh.
+	savedArgs := make(map[string]string)
+	for _, o := range h.deps.SessionManager.GetWorkspaceProcessorOverrides(workingDir) {
+		if o.Name == name {
+			savedArgs = o.Arguments
+			break
+		}
+	}
+
+	params := make([]WebProcessorParameter, 0, len(proc.Parameters))
+	for _, param := range proc.Parameters {
+		value := param.Default
+		if v, ok := savedArgs[param.Name]; ok && v != "" {
+			value = v
+		}
+		params = append(params, WebProcessorParameter{
+			Name:        param.Name,
+			Type:        param.Type,
+			Description: param.Description,
+			Default:     param.Default,
+			Value:       value,
+		})
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"processor":  name,
+		"parameters": params,
+	})
 }

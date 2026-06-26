@@ -82,6 +82,12 @@ type ProcessorInput struct {
 	// ({{ .Args.NAME }}) in prompt bodies. Excluded from JSON (json:"-") so raw,
 	// possibly-sensitive argument values are never sent to external command processors.
 	Arguments map[string]string `json:"-"`
+	// ProcessorArgOverrides holds per-processor argument value overrides from the
+	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
+	// Populated by the caller from config.GetWorkspaceProcessorOverrides. Used in the
+	// before-phase prompt-mode dispatch to overlay declared parameter defaults.
+	// Excluded from JSON — never sent to external command processors.
+	ProcessorArgOverrides map[string]map[string]string `json:"-"`
 	// UserData is the name→value map of the conversation's user data attributes.
 	// Used to populate PromptEnabledContext.UserData for {{ UserData "NAME" }} / .UserData
 	// template access and CEL UserData["X"] expressions. Excluded from JSON (json:"-")

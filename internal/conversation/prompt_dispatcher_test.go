@@ -41,8 +41,9 @@ type fakePromptDeps struct {
 	sessionID      string
 
 	// === New in 2.5-b ===
-	workspaceUUID          string
-	availableACPServers    []processors.AvailableACPServer
+	workspaceUUID                  string
+	availableACPServers            []processors.AvailableACPServer
+	workspaceProcessorArgOverrides map[string]map[string]string
 	sessionMeta            session.Metadata
 	sessionMetaErr         error
 	metaByID               map[string]session.Metadata
@@ -188,6 +189,9 @@ func (f *fakePromptDeps) pdPersistProcessorActivation() {
 }
 func (f *fakePromptDeps) pdBuildPromptWithHistory(msg string) string {
 	return f.historyPrefix + msg
+}
+func (f *fakePromptDeps) pdWorkspaceProcessorArgOverrides() map[string]map[string]string {
+	return f.workspaceProcessorArgOverrides
 }
 
 // === New in 2.5-c ===

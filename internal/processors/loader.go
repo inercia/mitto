@@ -12,13 +12,21 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/inercia/mitto/internal/config"
 )
 
 // Loader loads processors from the processors directory.
 type Loader struct {
 	processorsDir string
 	logger        *slog.Logger
+	errors        []ProcessorLoadError // errors collected during the last Load() call
 }
+
+// Errors returns load/validation errors collected during the last Load() call.
+// Valid processors are unaffected; these records represent documents that were
+// retained instead of silently dropped so the web layer can surface them.
+func (l *Loader) Errors() []ProcessorLoadError { return l.errors }
 
 // NewLoader creates a new processor loader for the given directory.
 func NewLoader(processorsDir string, logger *slog.Logger) *Loader {
@@ -98,6 +106,9 @@ func (l *Loader) Load() ([]*Processor, error) {
 		list, err := l.loadProcessorFile(path)
 		if err != nil {
 			l.logger.Warn("failed to load processor file", "path", path, "error", err)
+			l.errors = append(l.errors, ProcessorLoadError{
+				Name: "", FilePath: path, DocIndex: 0, Error: err.Error(),
+			})
 			return nil // Continue with other files
 		}
 
@@ -222,6 +233,9 @@ func (l *Loader) loadProcessorFile(path string) ([]*Processor, error) {
 				"doc_index", docIndex,
 				"error", err,
 			)
+			l.errors = append(l.errors, ProcessorLoadError{
+				Name: proc.Name, FilePath: path, DocIndex: docIndex, Error: err.Error(),
+			})
 			docIndex++
 			continue
 		}
@@ -359,5 +373,38 @@ func validateProcessor(proc *Processor, path string, docIndex int) error {
 		}
 	}
 
+	// Validate parameters block.
+	if len(proc.Parameters) > 0 {
+		if !proc.IsPromptMode() {
+			return errorf("processor %q (%s): 'parameters' is only allowed for prompt-mode processors (set 'prompt:', remove 'command:' or 'text:')", proc.Name, path)
+		}
+		if err := validateProcessorParameters(proc.Parameters, proc.Name, path); err != nil {
+			return errorf("%w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateProcessorParameters validates the parameters block of a prompt-mode processor.
+// Enforces: non-empty name, unique name, known type, mandatory non-empty default.
+func validateProcessorParameters(params []config.PromptParameter, processorName, filePath string) error {
+	seen := make(map[string]bool, len(params))
+	for i, param := range params {
+		if param.Name == "" {
+			return fmt.Errorf("processor %q (%s): parameter #%d has an empty name", processorName, filePath, i+1)
+		}
+		if seen[param.Name] {
+			return fmt.Errorf("processor %q (%s): duplicate parameter name %q", processorName, filePath, param.Name)
+		}
+		seen[param.Name] = true
+		if !config.IsKnownPromptParameterType(param.Type) {
+			return fmt.Errorf("processor %q (%s): parameter %q has unknown type %q (must be one of: %s)",
+				processorName, filePath, param.Name, param.Type, strings.Join(config.KnownPromptParameterTypes, ", "))
+		}
+		if param.Default == "" {
+			return fmt.Errorf("processor %q (%s): parameter %q is missing a mandatory 'default' value", processorName, filePath, param.Name)
+		}
+	}
 	return nil
 }

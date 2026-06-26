@@ -683,6 +683,10 @@ func (bs *BackgroundSession) pdApplyProcessors(ctx context.Context, input *proce
 	return bs.processorManager.Apply(ctx, input)
 }
 
+func (bs *BackgroundSession) pdWorkspaceProcessorArgOverrides() map[string]map[string]string {
+	return bs.workspaceProcessorArgOverrides
+}
+
 func (bs *BackgroundSession) pdPersistProcessorActivation() {
 	if bs.store == nil || bs.persistedID == "" {
 		return

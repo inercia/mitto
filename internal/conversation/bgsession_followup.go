@@ -116,6 +116,10 @@ func (bs *BackgroundSession) fuApplyAfterProcessors(ctx context.Context, input p
 	return bs.processorManager.ApplyAfter(ctx, input)
 }
 
+func (bs *BackgroundSession) fuWorkspaceProcessorArgOverrides() map[string]map[string]string {
+	return bs.workspaceProcessorArgOverrides
+}
+
 func (bs *BackgroundSession) fuIsStoreAvailable() bool {
 	return bs.store != nil && bs.persistedID != ""
 }

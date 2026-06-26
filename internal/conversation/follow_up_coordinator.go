@@ -48,6 +48,10 @@ type followUpDeps interface {
 
 	// Processor pipeline.
 	fuApplyAfterProcessors(ctx context.Context, input processors.AfterProcessorInput) processors.ApplyAfterResult
+	// fuWorkspaceProcessorArgOverrides returns the per-workspace processor argument overrides
+	// from the folder's .mittorc (procName → argName → value). Used to populate
+	// AfterProcessorInput.ProcessorArgOverrides for ${VAR} substitution in prompt-mode processors.
+	fuWorkspaceProcessorArgOverrides() map[string]map[string]string
 
 	// Session store.
 	fuIsStoreAvailable() bool
@@ -286,19 +290,20 @@ func (c followUpCoordinator) applyAfterProcessors(
 	}
 
 	input := processors.AfterProcessorInput{
-		SessionID:     d.fuSessionID(),
-		SessionDir:    d.fuSessionDir(),
-		WorkspaceUUID: d.fuWorkspaceUUID(),
-		WorkingDir:    d.fuWorkingDir(),
-		Origin:        promptOriginFromSenderID(senderID),
-		StopReason:    stopReason,
-		UserPrompt:    userPrompt,
-		AgentMessages: agentMessages,
-		ToolCalls:     nil,
-		TokenUsage:    tokenUsage,
-		StartedAt:     startedAt,
-		EndedAt:       endedAt,
-		SessionIdle:   sessionIdle,
+		SessionID:             d.fuSessionID(),
+		SessionDir:            d.fuSessionDir(),
+		WorkspaceUUID:         d.fuWorkspaceUUID(),
+		WorkingDir:            d.fuWorkingDir(),
+		Origin:                promptOriginFromSenderID(senderID),
+		StopReason:            stopReason,
+		UserPrompt:            userPrompt,
+		AgentMessages:         agentMessages,
+		ToolCalls:             nil,
+		TokenUsage:            tokenUsage,
+		StartedAt:             startedAt,
+		EndedAt:               endedAt,
+		SessionIdle:           sessionIdle,
+		ProcessorArgOverrides: d.fuWorkspaceProcessorArgOverrides(),
 	}
 
 	result := d.fuApplyAfterProcessors(ctx, input)

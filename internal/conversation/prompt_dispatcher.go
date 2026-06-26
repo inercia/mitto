@@ -62,6 +62,10 @@ type promptDeps interface {
 	pdSessionCtx() context.Context
 	pdHasProcessorManager() bool
 	pdApplyProcessors(ctx context.Context, input *processors.ProcessorInput) (*processors.ProcessorResult, error)
+	// pdWorkspaceProcessorArgOverrides returns the per-workspace processor argument overrides
+	// from the folder's .mittorc (procName → argName → value). Used to populate
+	// ProcessorInput.ProcessorArgOverrides for ${VAR} substitution in prompt-mode processors.
+	pdWorkspaceProcessorArgOverrides() map[string]map[string]string
 	// pdPersistProcessorActivation persists the activation count to metadata after Apply.
 	// No-op when no store or persistedID.
 	pdPersistProcessorActivation()
@@ -421,6 +425,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
 		UserData:               userDataMap,
+		ProcessorArgOverrides:  d.pdWorkspaceProcessorArgOverrides(),
 	}
 }
 

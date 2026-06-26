@@ -110,10 +110,11 @@ type BackgroundSession struct {
 	historyInjected bool           // True after history has been injected
 
 	// Conversation processing
-	processorManager    *processors.Manager             // Unified processor pipeline (text-mode + command-mode)
-	workingDir          string                          // Working directory for processor execution
-	isFirstPrompt       bool                            // True until first prompt is sent (for processor conditions)
-	availableACPServers []processors.AvailableACPServer // ACP servers available in this workspace folder
+	processorManager               *processors.Manager             // Unified processor pipeline (text-mode + command-mode)
+	workspaceProcessorArgOverrides map[string]map[string]string    // Per-processor argument overrides from .mittorc (procName → argName → value)
+	workingDir                     string                          // Working directory for processor execution
+	isFirstPrompt                  bool                            // True until first prompt is sent (for processor conditions)
+	availableACPServers            []processors.AvailableACPServer // ACP servers available in this workspace folder
 
 	// Queue processing
 	queueConfig *config.QueueConfig // Queue configuration (nil means use defaults)
@@ -307,7 +308,12 @@ type BackgroundSessionConfig struct {
 	Store            *session.Store
 	SessionName      string
 	ProcessorManager *processors.Manager // Unified processor pipeline (text-mode + command-mode)
-	QueueConfig      *config.QueueConfig // Queue processing configuration
+	// WorkspaceProcessorArgOverrides carries per-workspace argument value overrides from
+	// the folder's .mittorc file (processors: [{name, arguments: {k: v}}]).
+	// Keyed by processor name → arg name → override value. Built by the session manager
+	// from GetWorkspaceProcessorOverrides and injected at session creation/resume time.
+	WorkspaceProcessorArgOverrides map[string]map[string]string
+	QueueConfig                    *config.QueueConfig // Queue processing configuration
 	Runner           *runner.Runner      // Optional restricted runner for sandboxed execution
 
 	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
@@ -493,16 +499,17 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bs := &BackgroundSession{
-		ctx:                     ctx,
-		cancel:                  cancel,
-		startedAt:               time.Now(),
-		autoApprove:             cfg.AutoApprove,
-		logger:                  cfg.Logger,
-		observers:               make(map[SessionObserver]struct{}),
-		processorManager:        cfg.ProcessorManager,
-		workingDir:              cfg.WorkingDir,
-		isFirstPrompt:           true, // New session starts with first prompt pending
-		queueConfig:             cfg.QueueConfig,
+		ctx:                            ctx,
+		cancel:                         cancel,
+		startedAt:                      time.Now(),
+		autoApprove:                    cfg.AutoApprove,
+		logger:                         cfg.Logger,
+		observers:                      make(map[SessionObserver]struct{}),
+		processorManager:               cfg.ProcessorManager,
+		workspaceProcessorArgOverrides: cfg.WorkspaceProcessorArgOverrides,
+		workingDir:                     cfg.WorkingDir,
+		isFirstPrompt:                  true, // New session starts with first prompt pending
+		queueConfig:                    cfg.QueueConfig,
 		actionButtonsConfig:     cfg.ActionButtonsConfig,
 		fileLinksConfig:         cfg.FileLinksConfig,
 		apiPrefix:               cfg.APIPrefix,
@@ -697,18 +704,19 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	bs := &BackgroundSession{
-		persistedID:             config.PersistedID,
-		ctx:                     ctx,
-		cancel:                  cancel,
-		startedAt:               time.Now(),
-		autoApprove:             config.AutoApprove,
-		logger:                  sessionLogger,
-		observers:               make(map[SessionObserver]struct{}),
-		isResumed:               true, // Mark as resumed session
-		store:                   config.Store,
-		processorManager:        config.ProcessorManager,
-		workingDir:              config.WorkingDir,
-		isFirstPrompt:           true, // Treat first prompt after resume as "first" for processors (re-inject context)
+		persistedID:                    config.PersistedID,
+		ctx:                            ctx,
+		cancel:                         cancel,
+		startedAt:                      time.Now(),
+		autoApprove:                    config.AutoApprove,
+		logger:                         sessionLogger,
+		observers:                      make(map[SessionObserver]struct{}),
+		isResumed:                      true, // Mark as resumed session
+		store:                          config.Store,
+		processorManager:               config.ProcessorManager,
+		workspaceProcessorArgOverrides: config.WorkspaceProcessorArgOverrides,
+		workingDir:                     config.WorkingDir,
+		isFirstPrompt:                  true, // Treat first prompt after resume as "first" for processors (re-inject context)
 		queueConfig:             config.QueueConfig,
 		actionButtonsConfig:     config.ActionButtonsConfig,
 		fileLinksConfig:         config.FileLinksConfig,

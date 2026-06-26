@@ -277,6 +277,10 @@ type Manager struct {
 	lastActivationAt time.Time // When the pipeline was last invoked (zero if never)
 	lastAppliedNames []string  // Names of processors applied on the most recent activation
 
+	// loadErrors holds processor documents that failed to load or validate.
+	// Retained (not silently dropped) so the web layer can surface them in the UI.
+	loadErrors []ProcessorLoadError
+
 	// stateStore persists agentResponseCount and per-processor cadence state across
 	// session restarts. Defaults to FileStateStore (writes processor_state.json in
 	// the session directory). Injected as MemoryStateStore in unit tests.
@@ -417,6 +421,7 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
 		clock:            m.clock,
+		loadErrors:       append([]ProcessorLoadError(nil), m.loadErrors...),
 	}
 	copy(clone.processors, m.processors)
 
@@ -430,6 +435,14 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 	for _, dir := range dirs {
 		loader := NewLoader(dir, logger)
 		procs, err := loader.Load()
+		// Always capture load errors; stamp them as workspace-sourced.
+		dirErrs := loader.Errors()
+		for i := range dirErrs {
+			if dirErrs[i].Source == "" {
+				dirErrs[i].Source = ProcessorSourceWorkspace
+			}
+		}
+		clone.loadErrors = append(clone.loadErrors, dirErrs...)
 		if err != nil {
 			logger.Debug("Skipping workspace processors directory", "dir", dir, "error", err)
 			continue
@@ -505,6 +518,7 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
 		clock:            m.clock,
+		loadErrors:       m.loadErrors, // read-only; safe to share
 	}
 
 	// Deep-copy processor pointers so we can modify Enabled without affecting the original.
@@ -522,10 +536,21 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 	return clone
 }
 
+// LoadErrors returns processor load/validation errors retained during loading.
+func (m *Manager) LoadErrors() []ProcessorLoadError { return m.loadErrors }
+
 // Load loads all processors from the processors directory.
 func (m *Manager) Load() error {
 	loader := NewLoader(m.processorsDir, m.logger)
 	procs, err := loader.Load()
+	// Capture load errors regardless of whether the directory-level walk succeeded.
+	errs := loader.Errors()
+	for i := range errs {
+		if errs[i].Source == "" {
+			errs[i].Source = ProcessorSourceGlobal
+		}
+	}
+	m.loadErrors = errs
 	if err != nil {
 		return err
 	}
@@ -729,8 +754,11 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				continue
 			}
 
-			// Build the prompt with variable substitution.
+			// Build the prompt: first @mitto: variable substitution, then
+			// ${VAR}/${VAR:-fallback} argument substitution.
 			assembledPrompt := SubstituteVariables(proc.Prompt, input)
+			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
+			assembledPrompt = SubstituteArguments(assembledPrompt, resolvedArgs)
 			procTimeout := proc.GetTimeout().Duration()
 
 			// Collect for batched dispatch.
@@ -1106,7 +1134,11 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				continue
 			}
 
+			// Build the prompt: first @mitto: variable substitution, then
+			// ${VAR}/${VAR:-fallback} argument substitution.
 			assembledPrompt := substituteAfterVariables(proc.Prompt, input)
+			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
+			assembledPrompt = SubstituteArguments(assembledPrompt, resolvedArgs)
 			procTimeout := proc.GetTimeout().Duration()
 			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
 				name:    proc.Name,

@@ -986,6 +986,91 @@ text: "hello"
 			expectSkip:  true,
 			expectCount: 0,
 		},
+		// parameters block tests (mitto-5g2v.1)
+		{
+			name: "prompt-mode with valid parameters accepted",
+			yaml: `
+name: ok-params
+when:
+  on: userPrompt
+  match: first
+prompt: "Save content to ${filename}."
+parameters:
+  - name: filename
+    type: text
+    description: Target filename
+    default: AGENTS.md
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "prompt-mode parameter missing default rejected",
+			yaml: `
+name: bad-no-default
+when:
+  on: userPrompt
+  match: first
+prompt: "Save content to ${filename}."
+parameters:
+  - name: filename
+    type: text
+    description: Target filename
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "prompt-mode parameter unknown type rejected",
+			yaml: `
+name: bad-unknown-type
+when:
+  on: userPrompt
+  match: first
+prompt: "Save content to ${filename}."
+parameters:
+  - name: filename
+    type: unknownType
+    default: AGENTS.md
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "prompt-mode duplicate parameter name rejected",
+			yaml: `
+name: bad-dup-name
+when:
+  on: userPrompt
+  match: first
+prompt: "Use ${x} and ${x} again."
+parameters:
+  - name: x
+    type: text
+    default: foo
+  - name: x
+    type: text
+    default: bar
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "command-mode with parameters rejected",
+			yaml: `
+name: bad-cmd-params
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+parameters:
+  - name: filename
+    type: text
+    default: AGENTS.md
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1001,6 +1086,113 @@ text: "hello"
 				t.Errorf("expected %d processors, got %d", tt.expectCount, len(procs))
 			}
 		})
+	}
+}
+
+// TestLoader_Errors_ValidationFailure verifies that a processor with a missing
+// mandatory `default` is retained as a ProcessorLoadError (not silently dropped)
+// and is accessible via Loader.Errors() and Manager.LoadErrors().
+func TestLoader_Errors_ValidationFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "bad.yaml", `
+name: bad-no-default
+when:
+  on: userPrompt
+  match: first
+prompt: "Save to ${filename}."
+parameters:
+  - name: filename
+    type: text
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() should not return error (validation failures are retained), got: %v", err)
+	}
+	if len(procs) != 0 {
+		t.Errorf("expected 0 valid processors, got %d", len(procs))
+	}
+	errs := loader.Errors()
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 load error, got %d: %v", len(errs), errs)
+	}
+	le := errs[0]
+	if le.Name != "bad-no-default" {
+		t.Errorf("error.Name = %q, want %q", le.Name, "bad-no-default")
+	}
+	if le.Error == "" {
+		t.Error("error.Error must not be empty")
+	}
+	if le.FilePath == "" {
+		t.Error("error.FilePath must not be empty")
+	}
+
+	// Manager.LoadErrors() must thread through the same errors.
+	mgr := NewManager(dir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Manager.Load() error: %v", err)
+	}
+	mgrErrs := mgr.LoadErrors()
+	if len(mgrErrs) != 1 {
+		t.Fatalf("Manager.LoadErrors(): expected 1, got %d", len(mgrErrs))
+	}
+	if mgrErrs[0].Name != "bad-no-default" {
+		t.Errorf("Manager error.Name = %q, want %q", mgrErrs[0].Name, "bad-no-default")
+	}
+	if mgrErrs[0].Source != ProcessorSourceGlobal {
+		t.Errorf("Manager error.Source = %q, want %q", mgrErrs[0].Source, ProcessorSourceGlobal)
+	}
+}
+
+// TestLoader_Errors_YAMLParseFailure verifies that a file with a YAML syntax error
+// is retained as a file-level ProcessorLoadError with an empty Name.
+func TestLoader_Errors_YAMLParseFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "bad.yaml", "invalid: yaml: content:")
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() should not return error (bad files are retained), got: %v", err)
+	}
+	if len(procs) != 0 {
+		t.Errorf("expected 0 valid processors, got %d", len(procs))
+	}
+	errs := loader.Errors()
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 load error, got %d: %v", len(errs), errs)
+	}
+	le := errs[0]
+	if le.Name != "" {
+		t.Errorf("file-level error.Name = %q, want empty (file didn't parse)", le.Name)
+	}
+	if le.Error == "" {
+		t.Error("error.Error must not be empty")
+	}
+}
+
+// TestLoader_Errors_ValidProcNoErrors verifies that a valid processor produces no
+// load errors — ensuring the error-collection path doesn't affect the happy path.
+func TestLoader_Errors_ValidProcNoErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "ok.yaml", `
+name: ok-proc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`)
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if len(procs) != 1 {
+		t.Errorf("expected 1 processor, got %d", len(procs))
+	}
+	if len(loader.Errors()) != 0 {
+		t.Errorf("expected 0 load errors for valid processor, got %d: %v", len(loader.Errors()), loader.Errors())
 	}
 }
 
@@ -3433,6 +3625,291 @@ func TestApplyAfter_PromptMode_Dispatched(t *testing.T) {
 	wantPrompt := "Update rules for stop: end_turn origin: user"
 	if d.prompt != wantPrompt {
 		t.Errorf("expected prompt %q, got %q", wantPrompt, d.prompt)
+	}
+}
+
+// TestPromptMode_ArgSubstitution_BeforePhase tests ${VAR} / ${VAR:-inline} substitution
+// in prompt-mode before-phase (userPrompt) processors (mitto-5g2v.2).
+func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
+	proc := &Processor{
+		Name:   "save-rules",
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Prompt: "Save to ${filename} using mode ${mode}.",
+		Parameters: []config.PromptParameter{
+			{Name: "filename", Type: "text", Default: "AGENTS.md"},
+			{Name: "mode", Type: "text", Default: "append"},
+		},
+	}
+
+	called := make(chan string, 1)
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{proc}
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		called <- prompt
+		return nil
+	})
+
+	t.Run("defaults used when no override", func(t *testing.T) {
+		input := &ProcessorInput{
+			Message:       "hello",
+			WorkspaceUUID: "ws-1",
+		}
+		_, err := mgr.Apply(context.Background(), input)
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called:
+			want := "Save to AGENTS.md using mode append."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+
+	t.Run("workspace override wins over default", func(t *testing.T) {
+		input := &ProcessorInput{
+			Message:       "hello",
+			WorkspaceUUID: "ws-1",
+			ProcessorArgOverrides: map[string]map[string]string{
+				"save-rules": {"filename": "CLAUDE.md"},
+			},
+		}
+		_, err := mgr.Apply(context.Background(), input)
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called:
+			want := "Save to CLAUDE.md using mode append."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+
+	t.Run("inline default in body works when no declared param", func(t *testing.T) {
+		// A processor with no declared parameters but using ${VAR:-inline} in the body.
+		proc2 := &Processor{
+			Name:   "inline-default",
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Prompt: "Use ${tool:-bash} for this.",
+		}
+		mgr2 := NewManager("", nil)
+		mgr2.processors = []*Processor{proc2}
+		called2 := make(chan string, 1)
+		mgr2.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			called2 <- prompt
+			return nil
+		})
+
+		input := &ProcessorInput{Message: "hi", WorkspaceUUID: "ws-x"}
+		if _, err := mgr2.Apply(context.Background(), input); err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called2:
+			want := "Use bash for this."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+
+	t.Run("escaped placeholder is preserved", func(t *testing.T) {
+		proc3 := &Processor{
+			Name:   "escape-test",
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Prompt: `Literal \${filename} not substituted.`,
+		}
+		mgr3 := NewManager("", nil)
+		mgr3.processors = []*Processor{proc3}
+		called3 := make(chan string, 1)
+		mgr3.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			called3 <- prompt
+			return nil
+		})
+
+		input := &ProcessorInput{Message: "hi", WorkspaceUUID: "ws-x"}
+		if _, err := mgr3.Apply(context.Background(), input); err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called3:
+			want := "Literal ${filename} not substituted."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+}
+
+// TestPromptMode_ArgSubstitution_AfterPhase tests ${VAR} substitution in prompt-mode
+// after-phase (agentResponded) processors (mitto-5g2v.2).
+func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
+	proc := &Processor{
+		Name: "report-to-file",
+		When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: "Write summary to ${dest}.",
+		Parameters: []config.PromptParameter{
+			{Name: "dest", Type: "text", Default: "SUMMARY.md"},
+		},
+	}
+
+	t.Run("default used when no override", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Write summary to SUMMARY.md."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+
+	t.Run("workspace override wins over default", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.ProcessorArgOverrides = map[string]map[string]string{
+			"report-to-file": {"dest": "NOTES.md"},
+		}
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Write summary to NOTES.md."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+}
+
+// TestPromptMode_ArgSubstitution_MittoRCPersistence is an integration test that
+// exercises the full persistence → resolution → substitution → dispatch chain:
+//   1. Write a per-workspace override to a real .mittorc via SaveWorkspaceRCProcessorArguments.
+//   2. Read it back via LoadWorkspaceRC and build the ProcessorArgOverrides map.
+//   3. Apply a prompt-mode processor whose body uses ${HistoryLimit:-10}.
+//   4. Assert the dispatched prompt reflects the override (25) and the default (10).
+func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
+	dir := t.TempDir()
+	procName := "auggie-update-rules-test"
+
+	// Step 1: persist override via the real RC writer.
+	if err := config.SaveWorkspaceRCProcessorArguments(dir, procName, map[string]string{"HistoryLimit": "25"}); err != nil {
+		t.Fatalf("SaveWorkspaceRCProcessorArguments: %v", err)
+	}
+
+	// Step 2: read back via LoadWorkspaceRC (mirrors session_manager.go's GetWorkspaceProcessorOverrides).
+	rc, err := config.LoadWorkspaceRC(dir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil after writing override")
+	}
+	argOverrides := make(map[string]map[string]string)
+	for _, o := range rc.ProcessorOverrides {
+		if len(o.Arguments) > 0 {
+			argOverrides[o.Name] = o.Arguments
+		}
+	}
+	if argOverrides[procName]["HistoryLimit"] != "25" {
+		t.Fatalf("expected HistoryLimit=25 in loaded overrides, got %v", argOverrides[procName])
+	}
+
+	// Step 3: build a prompt-mode processor with the Parameters block.
+	proc := &Processor{
+		Name: procName,
+		When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Prompt: "Review last_n: ${HistoryLimit:-10} messages.",
+		Parameters: []config.PromptParameter{
+			{Name: "HistoryLimit", Type: "text", Default: "10"},
+		},
+	}
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{proc}
+
+	// Step 4a: override from .mittorc wins → dispatched prompt should use 25.
+	called := make(chan string, 1)
+	mgr.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+		called <- prompt
+		return nil
+	})
+	_, err = mgr.Apply(context.Background(), &ProcessorInput{
+		Message:               "hello",
+		WorkspaceUUID:         "ws-1",
+		ProcessorArgOverrides: argOverrides,
+	})
+	if err != nil {
+		t.Fatalf("Apply (with override): %v", err)
+	}
+	select {
+	case got := <-called:
+		want := "Review last_n: 25 messages."
+		if got != want {
+			t.Errorf("with override: prompt = %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc not called within timeout (with override)")
+	}
+
+	// Step 4b: no override → declared default (10) is used.
+	called2 := make(chan string, 1)
+	mgr.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+		called2 <- prompt
+		return nil
+	})
+	_, err = mgr.Apply(context.Background(), &ProcessorInput{
+		Message:       "hello",
+		WorkspaceUUID: "ws-1",
+		// No ProcessorArgOverrides — should fall back to declared default.
+	})
+	if err != nil {
+		t.Fatalf("Apply (no override): %v", err)
+	}
+	select {
+	case got := <-called2:
+		want := "Review last_n: 10 messages."
+		if got != want {
+			t.Errorf("no override: prompt = %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc not called within timeout (no override)")
 	}
 }
 

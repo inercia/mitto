@@ -67,6 +67,10 @@ type PromptParameter struct {
 	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
 	// Declarative defaults are handled by the ${VAR:-default} body syntax, not here.
 	Required *bool `yaml:"required,omitempty" json:"required,omitempty"`
+	// Default is the default value substituted when the parameter is not explicitly
+	// supplied. Required for processor parameters (mandatory); optional for prompt-file
+	// parameters (the ${VAR:-default} body syntax also provides per-site defaults).
+	Default string `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
 // PromptFile represents a parsed YAML prompt file.

@@ -1216,8 +1216,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
 
 	// Apply workspace-level processor overrides from .mittorc processors section.
+	// Also build the arg-overrides map for ${VAR} substitution in prompt-mode processors.
+	var procArgOverrides map[string]map[string]string
 	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
 		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+		procArgOverrides = buildProcessorArgOverrides(overrides)
 	}
 
 	// Get queue config (prefer workspace config, fall back to global)
@@ -1340,16 +1343,17 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		AutoApprove:             autoApprove,
 		Logger:                  sm.logger,
 		Store:                   store,
-		SessionName:             name,
-		ProcessorManager:        procMgr,
-		QueueConfig:             queueConfig,
-		Runner:                  r,
-		ActionButtonsConfig:     actionButtonsConfig,
-		FileLinksConfig:         fileLinksConfig,
-		APIPrefix:               sm.apiPrefix,
-		WorkspaceUUID:           workspaceUUID,
-		MittoConfig:             sm.mittoConfig,   // Pass config for default flags
-		AvailableACPServers:     availableServers, // Pre-computed workspace server list
+		SessionName:                    name,
+		ProcessorManager:               procMgr,
+		WorkspaceProcessorArgOverrides: procArgOverrides,
+		QueueConfig:                    queueConfig,
+		Runner:                         r,
+		ActionButtonsConfig:            actionButtonsConfig,
+		FileLinksConfig:                fileLinksConfig,
+		APIPrefix:                      sm.apiPrefix,
+		WorkspaceUUID:                  workspaceUUID,
+		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
+		AvailableACPServers:            availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:         sm.mcpServer,
 		AuxiliaryManager:        sm.auxiliaryManager,
 		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
@@ -1845,8 +1849,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
 
 	// Apply workspace-level processor overrides from .mittorc processors section.
+	// Also build the arg-overrides map for ${VAR} substitution in prompt-mode processors.
+	var resumeProcArgOverrides map[string]map[string]string
 	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
 		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+		resumeProcArgOverrides = buildProcessorArgOverrides(overrides)
 	}
 
 	// Get queue config (prefer workspace config, fall back to global)
@@ -1957,16 +1964,17 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		AutoApprove:             autoApprove,
 		Logger:                  sm.logger,
 		Store:                   store,
-		SessionName:             sessionName,
-		ProcessorManager:        procMgr,
-		QueueConfig:             queueConfig,
-		Runner:                  r,
-		ActionButtonsConfig:     actionButtonsConfig,
-		FileLinksConfig:         fileLinksConfig,
-		APIPrefix:               sm.apiPrefix,
-		WorkspaceUUID:           workspaceUUID,
-		MittoConfig:             sm.mittoConfig,         // Pass config for default flags
-		AvailableACPServers:     resumeAvailableServers, // Pre-computed workspace server list
+		SessionName:                    sessionName,
+		ProcessorManager:               procMgr,
+		WorkspaceProcessorArgOverrides: resumeProcArgOverrides,
+		QueueConfig:                    queueConfig,
+		Runner:                         r,
+		ActionButtonsConfig:            actionButtonsConfig,
+		FileLinksConfig:                fileLinksConfig,
+		APIPrefix:                      sm.apiPrefix,
+		WorkspaceUUID:                  workspaceUUID,
+		MittoConfig:                    sm.mittoConfig,         // Pass config for default flags
+		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:         sm.mcpServer,
 		AuxiliaryManager:        sm.auxiliaryManager,
 		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
@@ -2762,6 +2770,35 @@ func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
 			})
 		}
 	}()
+}
+
+// buildProcessorArgOverrides converts a []config.ProcessorOverride slice (from .mittorc)
+// into the map[procName]map[argName]value form expected by ProcessorInput/AfterProcessorInput.
+// Overrides with no arguments are skipped; empty-value argument entries are dropped so they
+// cannot shadow declared parameter defaults.
+func buildProcessorArgOverrides(overrides []config.ProcessorOverride) map[string]map[string]string {
+	if len(overrides) == 0 {
+		return nil
+	}
+	result := make(map[string]map[string]string, len(overrides))
+	for _, o := range overrides {
+		if o.Name == "" || len(o.Arguments) == 0 {
+			continue
+		}
+		args := make(map[string]string, len(o.Arguments))
+		for k, v := range o.Arguments {
+			if k != "" && v != "" {
+				args[k] = v
+			}
+		}
+		if len(args) > 0 {
+			result[o.Name] = args
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // AddSessionForTest injects a BackgroundSession directly into the manager's sessions map.

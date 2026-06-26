@@ -1872,3 +1872,112 @@ func TestSessionManager_DeleteSessionAndChildren(t *testing.T) {
 		t.Error("unrelated-1 should still exist")
 	}
 }
+
+// TestBuildProcessorArgOverrides verifies the helper that converts []ProcessorOverride
+// into the map[procName]map[argName]value form (mitto-5g2v.2 wiring).
+func TestBuildProcessorArgOverrides(t *testing.T) {
+	t.Run("nil input returns nil", func(t *testing.T) {
+		if got := buildProcessorArgOverrides(nil); got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("empty slice returns nil", func(t *testing.T) {
+		if got := buildProcessorArgOverrides([]config.ProcessorOverride{}); got != nil {
+			t.Errorf("expected nil for empty slice, got %v", got)
+		}
+	})
+
+	t.Run("overrides with no Arguments are skipped", func(t *testing.T) {
+		overrides := []config.ProcessorOverride{
+			{Name: "proc-a", Enabled: nil, Arguments: nil},
+		}
+		if got := buildProcessorArgOverrides(overrides); got != nil {
+			t.Errorf("expected nil (no Arguments), got %v", got)
+		}
+	})
+
+	t.Run("empty-value argument entries are dropped", func(t *testing.T) {
+		overrides := []config.ProcessorOverride{
+			{Name: "proc-a", Arguments: map[string]string{"keep": "value", "drop": ""}},
+		}
+		got := buildProcessorArgOverrides(overrides)
+		if got == nil {
+			t.Fatal("expected non-nil map")
+		}
+		args := got["proc-a"]
+		if args["keep"] != "value" {
+			t.Errorf(`args["keep"] = %q, want "value"`, args["keep"])
+		}
+		if _, exists := args["drop"]; exists {
+			t.Error("empty-value key 'drop' should have been dropped")
+		}
+	})
+
+	t.Run("valid overrides build correct nested map", func(t *testing.T) {
+		overrides := []config.ProcessorOverride{
+			{Name: "auggie-manage-rules", Arguments: map[string]string{"filename": "AGENTS.md", "mode": "append"}},
+			{Name: "only-enabled", Enabled: boolPtrSMTest(true), Arguments: nil},
+			{Name: "multi-arg", Arguments: map[string]string{"a": "1", "b": "2"}},
+		}
+		got := buildProcessorArgOverrides(overrides)
+		if got == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 entries (only-enabled skipped), got %d: %v", len(got), got)
+		}
+		if got["auggie-manage-rules"]["filename"] != "AGENTS.md" {
+			t.Errorf("filename = %q, want AGENTS.md", got["auggie-manage-rules"]["filename"])
+		}
+		if got["auggie-manage-rules"]["mode"] != "append" {
+			t.Errorf("mode = %q, want append", got["auggie-manage-rules"]["mode"])
+		}
+		if got["multi-arg"]["a"] != "1" || got["multi-arg"]["b"] != "2" {
+			t.Errorf("multi-arg = %v, want {a:1 b:2}", got["multi-arg"])
+		}
+	})
+
+	t.Run("processor with only empty-value args produces nil map", func(t *testing.T) {
+		overrides := []config.ProcessorOverride{
+			{Name: "all-empty", Arguments: map[string]string{"x": ""}},
+		}
+		if got := buildProcessorArgOverrides(overrides); got != nil {
+			t.Errorf("expected nil (all values empty), got %v", got)
+		}
+	})
+}
+
+// boolPtrSMTest is a test helper to create a *bool.
+func boolPtrSMTest(v bool) *bool { return &v }
+
+// TestProcessorArgOverrides_SeamMethods verifies that the pd* and fu* seam methods
+// on BackgroundSession return the WorkspaceProcessorArgOverrides value injected via
+// BackgroundSessionConfig, completing the end-to-end wiring (mitto-5g2v.2).
+func TestProcessorArgOverrides_SeamMethods(t *testing.T) {
+	argOverrides := map[string]map[string]string{
+		"auggie-manage-rules": {"filename": "AGENTS.md"},
+	}
+
+	// pd* seam: fakePromptDeps carries the overrides and returns them via pdWorkspaceProcessorArgOverrides.
+	pd := newFakePromptDeps()
+	pd.workspaceProcessorArgOverrides = argOverrides
+	got := pd.pdWorkspaceProcessorArgOverrides()
+	if got == nil {
+		t.Fatal("pdWorkspaceProcessorArgOverrides: expected non-nil map")
+	}
+	if got["auggie-manage-rules"]["filename"] != "AGENTS.md" {
+		t.Errorf("pd seam: filename = %q, want AGENTS.md", got["auggie-manage-rules"]["filename"])
+	}
+
+	// fu* seam: fakeFollowUpDeps carries the overrides and returns them via fuWorkspaceProcessorArgOverrides.
+	fu := newFakeFollowUpDeps()
+	fu.workspaceProcessorArgOverrides = argOverrides
+	got2 := fu.fuWorkspaceProcessorArgOverrides()
+	if got2 == nil {
+		t.Fatal("fuWorkspaceProcessorArgOverrides: expected non-nil map")
+	}
+	if got2["auggie-manage-rules"]["filename"] != "AGENTS.md" {
+		t.Errorf("fu seam: filename = %q, want AGENTS.md", got2["auggie-manage-rules"]["filename"])
+	}
+}
