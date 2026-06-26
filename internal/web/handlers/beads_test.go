@@ -372,8 +372,20 @@ func TestHandleBeadsCreate_BothEmpty(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
-	if !strings.Contains(w.Body.String(), "title or description is required") {
-		t.Errorf("body = %q, want 'title or description is required'", w.Body.String())
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "title or description is required" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "title or description is required")
 	}
 }
 
@@ -439,6 +451,21 @@ func TestHandleBeadsCreate_MissingWorkingDir(t *testing.T) {
 	s.handleBeadsCreate(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "working_dir is required" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "working_dir is required")
 	}
 }
 
@@ -612,6 +639,21 @@ func TestHandleBeadsDelete_MissingID(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "id is required" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "id is required")
+	}
 }
 
 func TestHandleBeadsDelete_MissingWorkingDir(t *testing.T) {
@@ -701,6 +743,22 @@ func TestHandleBeadsStatus_InvalidAction(t *testing.T) {
 	s.handleBeadsStatus(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	const wantMsg = "action must be 'close', 'reopen', 'defer' or 'undefer'"
+	if env.Error.Message != wantMsg {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
 	}
 }
 
@@ -909,6 +967,21 @@ func TestHandleBeadsUpdate_PriorityOutOfRangeRejected(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "priority must be between 0 and 4" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "priority must be between 0 and 4")
+	}
 }
 
 func TestHandleBeadsUpdate_AssigneeOnlyAllowed(t *testing.T) {
@@ -1045,6 +1118,21 @@ func TestHandleBeadsDep_MissingDependsOn(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "depends_on is required" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "depends_on is required")
+	}
 }
 
 func TestHandleBeadsDep_FlagLikeID(t *testing.T) {
@@ -1071,6 +1159,21 @@ func TestHandleBeadsDep_InvalidAction(t *testing.T) {
 	s.handleBeadsDep(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "action must be 'add' or 'remove'" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "action must be 'add' or 'remove'")
 	}
 }
 

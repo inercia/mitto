@@ -44,16 +44,16 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 
@@ -62,12 +62,12 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(req.Description)
 
 	if title == "" && description == "" {
-		http.Error(w, "title or description is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "title or description is required")
 		return
 	}
 
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		ws := h.deps.SessionManager.GetWorkspace(req.WorkingDir)
 		if ws == nil || ws.UUID == "" {
-			http.Error(w, "unable to resolve workspace", http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "unable to resolve workspace")
 			return
 		}
 
@@ -103,7 +103,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 	var deps []string
 	for _, dep := range req.Dependencies {
 		if !isValidBeadsIssueRef(dep.ID) {
-			http.Error(w, "invalid dependency id", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "invalid dependency id")
 			return
 		}
 		t := strings.TrimSpace(dep.Type)
@@ -111,7 +111,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 			t = "blocks"
 		}
 		if !beads.IsValidDepType(t) {
-			http.Error(w, "invalid dependency type", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "invalid dependency type")
 			return
 		}
 		deps = append(deps, t+":"+dep.ID)
@@ -164,19 +164,19 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 	var req beadsCleanupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -275,24 +275,24 @@ func (h *Handlers) HandleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -323,20 +323,20 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
 
@@ -345,12 +345,12 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 	case "close", "reopen", "defer", "undefer":
 		verb = req.Action
 	default:
-		http.Error(w, "action must be 'close', 'reopen', 'defer' or 'undefer'", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "action must be 'close', 'reopen', 'defer' or 'undefer'")
 		return
 	}
 
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -394,36 +394,36 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
 	if req.Description == nil && req.Title == nil && req.Type == nil && req.Priority == nil && req.Assignee == nil && req.Notes == nil {
-		http.Error(w, "title, description, type, priority, assignee or notes is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "title, description, type, priority, assignee or notes is required")
 		return
 	}
 	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
-		http.Error(w, "title must not be empty", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "title must not be empty")
 		return
 	}
 	if req.Priority != nil && (*req.Priority < 0 || *req.Priority > 4) {
-		http.Error(w, "priority must be between 0 and 4", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "priority must be between 0 and 4")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -462,28 +462,28 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsCommentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if strings.TrimSpace(req.ID) == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
 	if strings.TrimSpace(req.Text) == "" {
-		http.Error(w, "text must not be empty", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "text must not be empty")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -519,28 +519,28 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 
 	var req beadsDepRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if !filepath.IsAbs(req.WorkingDir) {
-		http.Error(w, "working_dir must be an absolute path", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
 		return
 	}
 	if !isValidBeadsIssueRef(req.ID) {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
 		return
 	}
 	if !isValidBeadsIssueRef(req.DependsOn) {
-		http.Error(w, "depends_on is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "depends_on is required")
 		return
 	}
 	if !h.isKnownWorkspaceDir(req.WorkingDir) {
-		http.Error(w, "working_dir does not match any known workspace", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
 		return
 	}
 
@@ -551,13 +551,13 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 			depType = "blocks"
 		}
 		if !beads.IsValidDepType(depType) {
-			http.Error(w, "invalid dependency type", http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", "invalid dependency type")
 			return
 		}
 	case "remove":
 		// no extra validation needed
 	default:
-		http.Error(w, "action must be 'add' or 'remove'", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "action must be 'add' or 'remove'")
 		return
 	}
 
