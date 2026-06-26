@@ -136,5 +136,5 @@ func writeJSONWithETag(w http.ResponseWriter, r *http.Request, data interface{})
 
 // methodNotAllowed writes a 405 Method Not Allowed response.
 func methodNotAllowed(w http.ResponseWriter) {
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	writeErrorJSON(w, http.StatusMethodNotAllowed, "", "Method not allowed")
 }

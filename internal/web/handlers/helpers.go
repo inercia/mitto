@@ -32,7 +32,7 @@ func writeJSONCreated(w http.ResponseWriter, data interface{}) {
 
 // methodNotAllowed writes a 405 Method Not Allowed response.
 func methodNotAllowed(w http.ResponseWriter) {
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	writeErrorJSON(w, http.StatusMethodNotAllowed, "", "Method not allowed")
 }
 
 // writeNoContent writes a 204 No Content response.

@@ -192,9 +192,20 @@ func TestMethodNotAllowed(t *testing.T) {
 		t.Errorf("methodNotAllowed() status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
 	}
 
-	body := strings.TrimSpace(w.Body.String())
-	if body != "Method not allowed" {
-		t.Errorf("methodNotAllowed() body = %q, want %q", body, "Method not allowed")
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "method_not_allowed" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "method_not_allowed")
+	}
+	if resp.Error.Message != "Method not allowed" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Method not allowed")
 	}
 }
 
