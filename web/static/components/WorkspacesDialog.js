@@ -587,7 +587,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       const params = new URLSearchParams({ acp_server: acpServer });
       if (workingDir) params.set("dir", workingDir);
       const res = await secureFetch(apiUrl(`/api/workspace-mcp-tools?${params}`));
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const ed = await res.json();
+          throw new Error(ed.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       const data = await res.json();
       if (data.error) {
         setMcpToolsError(data.error);
@@ -687,8 +694,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       });
 
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text);
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const ed = await res.json();
+          throw new Error(ed.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
       }
 
       const data = await res.json();
@@ -737,7 +748,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           name: serverName,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const ed = await res.json();
+          throw new Error(ed.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       const data = await res.json();
       if (!data.success) {
         setMcpToolsError(data.message || "Failed to remove MCP server");
@@ -778,7 +796,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           definition: { mcpServers: { mitto: { url: mcpUrl } } },
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const ed = await res.json();
+          throw new Error(ed.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       const data = await res.json();
       const results = data.results || [];
       const failed = results.filter(r => !r.success);

@@ -23,7 +23,7 @@ func (h *Handlers) HandleWorkspaceMCPTools(w http.ResponseWriter, r *http.Reques
 	workingDir := r.URL.Query().Get("dir")
 
 	if acpServerName == "" {
-		http.Error(w, "acp_server query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "acp_server query parameter is required")
 		return
 	}
 
@@ -141,11 +141,11 @@ func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Reque
 	}
 
 	if req.ACPServer == "" {
-		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "acp_server is required")
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
 		return
 	}
 
@@ -160,19 +160,19 @@ func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Reque
 
 	agentsDir, err := appdir.AgentsDir()
 	if err != nil {
-		http.Error(w, "Failed to get agents directory: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get agents directory: "+err.Error())
 		return
 	}
 
 	mgr := agents.NewManager(agentsDir, h.deps.Logger)
 	agent, err := mgr.GetAgentByACPId(acpType)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("No agent definition found for ACP type %q", acpType), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("No agent definition found for ACP type %q", acpType))
 		return
 	}
 
 	if !agent.HasCommand(agents.CommandMCPRemove) {
-		http.Error(w, fmt.Sprintf("Agent %q does not support MCP removal", agent.Metadata.DisplayName), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Agent %q does not support MCP removal", agent.Metadata.DisplayName))
 		return
 	}
 
@@ -186,7 +186,7 @@ func (h *Handlers) HandleWorkspaceMCPRemove(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		if !validScope {
-			http.Error(w, fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes))
 			return
 		}
 	}
@@ -244,12 +244,12 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 	}
 
 	if req.ACPServer == "" {
-		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "acp_server is required")
 		return
 	}
 
 	if len(req.Definition.MCPServers) == 0 {
-		http.Error(w, "definition.mcpServers must contain at least one entry", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "definition.mcpServers must contain at least one entry")
 		return
 	}
 
@@ -265,7 +265,7 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 	// Get agents directory
 	agentsDir, err := appdir.AgentsDir()
 	if err != nil {
-		http.Error(w, "Failed to get agents directory: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get agents directory: "+err.Error())
 		return
 	}
 
@@ -273,20 +273,20 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 	mgr := agents.NewManager(agentsDir, h.deps.Logger)
 	agent, err := mgr.GetAgentByACPId(acpType)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("No agent definition found for ACP type %q", acpType), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("No agent definition found for ACP type %q", acpType))
 		return
 	}
 
 	// Check that the agent supports mcp-install
 	if !agent.HasCommand(agents.CommandMCPInstall) {
-		http.Error(w, fmt.Sprintf("Agent %q does not support MCP installation", agent.Metadata.DisplayName), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Agent %q does not support MCP installation", agent.Metadata.DisplayName))
 		return
 	}
 
 	// Validate scope if the agent declares supported scopes
 	if agent.Metadata.MCP != nil && len(agent.Metadata.MCP.Scopes) > 0 {
 		if req.Scope == "" {
-			http.Error(w, fmt.Sprintf("scope is required; valid scopes for %s: %v", agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("scope is required; valid scopes for %s: %v", agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes))
 			return
 		}
 		validScope := false
@@ -297,7 +297,7 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 			}
 		}
 		if !validScope {
-			http.Error(w, fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("Invalid scope %q; valid scopes for %s: %v", req.Scope, agent.Metadata.DisplayName, agent.Metadata.MCP.Scopes))
 			return
 		}
 	}
