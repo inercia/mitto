@@ -7,6 +7,7 @@ const { useState, useEffect, useCallback, html, Fragment } = window.preact;
 
 import { authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
+import { endpoints } from "../utils/endpoints.js";
 import { Modal } from "./Modal.js";
 
 /**
@@ -329,11 +330,7 @@ export function PromptParameterDialog({
     if (!needsBeads || !workingDir) return;
 
     setLoadingBeads(true);
-    const url =
-      apiUrl("/api/issues") +
-      "?working_dir=" +
-      encodeURIComponent(workingDir);
-    authFetch(url)
+    authFetch(endpoints.issues.list({ working_dir: workingDir }))
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
         setBeadsIssues(Array.isArray(data) ? data : []);

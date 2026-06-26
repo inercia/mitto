@@ -3,7 +3,9 @@ const { useState, useEffect, useMemo, useCallback, useRef, html } = window.preac
 
 import {
   secureFetch,
+  authFetch,
   apiUrl,
+  endpoints,
   errorMessageFromData,
   hasNativeFolderPicker,
   pickFolder,
@@ -1208,7 +1210,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setBeadsConfigLoading(true);
     setBeadsConfigError("");
     try {
-      const res = await secureFetch(apiUrl(`/api/issues/config?working_dir=${encodeURIComponent(workingDir)}`));
+      const res = await authFetch(endpoints.issues.config({ working_dir: workingDir }));
       const data = await res.json();
       const errMsg = beadsErrorMessage(data);
       if (errMsg) {
@@ -1233,7 +1235,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setBeadsConfigSaving(true);
     setBeadsConfigError("");
     try {
-      const res = await secureFetch(apiUrl("/api/issues/config") + "?working_dir=" + encodeURIComponent(workingDir), {
+      const res = await secureFetch(endpoints.issues.config({ working_dir: workingDir }), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value }),
@@ -1257,7 +1259,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setBeadsConfigError("");
     try {
       const res = await secureFetch(
-        apiUrl(`/api/issues/config?working_dir=${encodeURIComponent(workingDir)}&key=${encodeURIComponent(key)}`),
+        endpoints.issues.config({ working_dir: workingDir, key }),
         { method: "DELETE" },
       );
       const data = await res.json().catch(() => ({}));
@@ -1274,7 +1276,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
   // Load the folder's upstream task system via GET /api/issues/upstream.
   const reloadBeadsUpstream = async (workingDir) => {
     try {
-      const res = await secureFetch(apiUrl(`/api/issues/upstream?working_dir=${encodeURIComponent(workingDir)}`));
+      const res = await authFetch(endpoints.issues.upstream({ working_dir: workingDir }));
       const data = await res.json().catch(() => ({}));
       setBeadsUpstream((data && data.upstream) || "none");
       setBeadsPullPrompt((data && data.pull_prompt) || "");
@@ -1318,7 +1320,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         body.push_prompt = beadsPushPrompt;
         body.sync_prompt = beadsSyncPrompt;
       }
-      const res = await secureFetch(apiUrl("/api/issues/upstream") + "?working_dir=" + encodeURIComponent(workingDir), {
+      const res = await secureFetch(endpoints.issues.upstream({ working_dir: workingDir }), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1358,7 +1360,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setter(value); // optimistic
     setBeadsUpstreamSaving(true);
     try {
-      const res = await secureFetch(apiUrl("/api/issues/upstream") + "?working_dir=" + encodeURIComponent(workingDir), {
+      const res = await secureFetch(endpoints.issues.upstream({ working_dir: workingDir }), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

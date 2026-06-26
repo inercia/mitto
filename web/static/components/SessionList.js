@@ -3,6 +3,7 @@ const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = wi
 
 import { apiUrl } from "../utils/api.js";
 import { authFetch } from "../utils/csrf.js";
+import { endpoints } from "../utils/endpoints.js";
 
 import {
   computeUnifiedTree,
@@ -116,7 +117,7 @@ const BEADS_STATS_IN_FLIGHT = {};
 async function fetchBeadsStats(workingDir) {
   try {
     const response = await authFetch(
-      apiUrl(`/api/issues/stats?working_dir=${encodeURIComponent(workingDir)}`),
+      endpoints.issues.stats({ working_dir: workingDir }),
     );
     if (!response.ok) return null;
     const data = await response.json();

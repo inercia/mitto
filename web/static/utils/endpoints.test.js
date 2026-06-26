@@ -132,15 +132,31 @@ describe("endpoints registry", () => {
     beforeEach(() => { window.mittoApiPrefix = ""; });
 
     test("list — base path", () => expect(endpoints.issues.list()).toBe("/api/issues"));
+    test("list — with working_dir", () => expect(endpoints.issues.list({ working_dir: "/w" })).toBe("/api/issues?working_dir=%2Fw"));
     test("stats", () => expect(endpoints.issues.stats({ working_dir: "/w" })).toBe("/api/issues/stats?working_dir=%2Fw"));
     test("show", () => expect(endpoints.issues.show("abc-1")).toBe("/api/issues/abc-1"));
+    test("show — with working_dir", () => expect(endpoints.issues.show("abc-1", { working_dir: "/w" })).toBe("/api/issues/abc-1?working_dir=%2Fw"));
+    test("create — with working_dir", () => expect(endpoints.issues.create({ working_dir: "/w" })).toBe("/api/issues?working_dir=%2Fw"));
+    test("update — with working_dir", () => expect(endpoints.issues.update("abc-1", { working_dir: "/w" })).toBe("/api/issues/abc-1?working_dir=%2Fw"));
+    test("remove — with working_dir", () => expect(endpoints.issues.remove("abc-1", { working_dir: "/w" })).toBe("/api/issues/abc-1?working_dir=%2Fw"));
     test("status sub-resource", () => expect(endpoints.issues.status("abc-1")).toBe("/api/issues/abc-1/status"));
+    test("status — with working_dir", () => expect(endpoints.issues.status("abc-1", { working_dir: "/w" })).toBe("/api/issues/abc-1/status?working_dir=%2Fw"));
     test("comments sub-resource", () => expect(endpoints.issues.comments("abc-1")).toBe("/api/issues/abc-1/comments"));
+    test("comments — with working_dir", () => expect(endpoints.issues.comments("abc-1", { working_dir: "/w" })).toBe("/api/issues/abc-1/comments?working_dir=%2Fw"));
     test("dependencies sub-resource", () => expect(endpoints.issues.dependencies("x")).toBe("/api/issues/x/dependencies"));
+    test("dependencies — with working_dir", () => expect(endpoints.issues.dependencies("x", { working_dir: "/w" })).toBe("/api/issues/x/dependencies?working_dir=%2Fw"));
     test("cleanup", () => expect(endpoints.issues.cleanup()).toBe("/api/issues/cleanup"));
-    test("config", () => expect(endpoints.issues.config()).toBe("/api/issues/config"));
+    test("cleanup — with working_dir", () => expect(endpoints.issues.cleanup({ working_dir: "/w" })).toBe("/api/issues/cleanup?working_dir=%2Fw"));
+    test("config — base", () => expect(endpoints.issues.config()).toBe("/api/issues/config"));
+    test("config — with working_dir + key (DELETE scenario)", () => {
+      const url = endpoints.issues.config({ working_dir: "/w", key: "jira.url" });
+      expect(url).toContain("working_dir=");
+      expect(url).toContain("key=jira.url");
+    });
     test("upstream", () => expect(endpoints.issues.upstream()).toBe("/api/issues/upstream"));
+    test("upstream — with working_dir", () => expect(endpoints.issues.upstream({ working_dir: "/w" })).toBe("/api/issues/upstream?working_dir=%2Fw"));
     test("sync", () => expect(endpoints.issues.sync()).toBe("/api/issues/sync"));
+    test("sync — with working_dir", () => expect(endpoints.issues.sync({ working_dir: "/w" })).toBe("/api/issues/sync?working_dir=%2Fw"));
   });
 
   describe("sessions group", () => {

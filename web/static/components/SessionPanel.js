@@ -15,6 +15,7 @@ import {
 } from "./Icons.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+import { endpoints } from "../utils/endpoints.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
@@ -396,9 +397,7 @@ export function SessionPanel({
     (async () => {
       try {
         const res = await authFetch(
-          apiUrl(`/api/issues/${encodeURIComponent(sessionInfo.beads_issue)}`) +
-            "?working_dir=" +
-            encodeURIComponent(sessionInfo.working_dir),
+          endpoints.issues.show(sessionInfo.beads_issue, { working_dir: sessionInfo.working_dir }),
         );
         if (!res.ok) {
           if (!cancelled) setBeadsStatus(null);

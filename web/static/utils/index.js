@@ -67,4 +67,6 @@ export {
 
 export { getApiPrefix, apiUrl, wsUrl, errorMessageFromData } from "./api.js";
 
+export { endpoints } from "./endpoints.js";
+
 export { fetchConfig, invalidateConfigCache } from "./configCache.js";

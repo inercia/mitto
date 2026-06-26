@@ -1,8 +1,8 @@
 // Mitto Web Interface - Beads Known IDs Cache
 // Module-level cache of known beads issue IDs keyed by working directory.
 
-import { apiUrl } from "./api.js";
 import { authFetch } from "./csrf.js";
+import { endpoints } from "./endpoints.js";
 
 // cache: workingDir -> { ids: Set<string>, meta: Map<string, {title, status}> }
 const cache = new Map();
@@ -16,7 +16,7 @@ export async function fetchAndCacheBeadsIds(workingDir) {
   if (!workingDir) return;
   try {
     const res = await authFetch(
-      apiUrl("/api/issues") + "?working_dir=" + encodeURIComponent(workingDir),
+      endpoints.issues.list({ working_dir: workingDir }),
     );
     if (!res.ok) return;
     const data = await res.json();
