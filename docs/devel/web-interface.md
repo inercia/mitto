@@ -39,32 +39,146 @@ graph TB
 
 ## REST API Endpoints
 
-The web interface uses REST APIs for session management and configuration:
+All routes are declared in `internal/web/routes.go`. Routes use Go 1.22 method-qualified patterns (`METHOD /path`); method mismatches return 405. Most endpoints require a valid session cookie. Exceptions are listed under **Public / Auth** below.
 
-| Endpoint                          | Method | Purpose                                    |
-| --------------------------------- | ------ | ------------------------------------------ |
-| `/api/sessions`                   | GET    | List all sessions                          |
-| `/api/sessions`                   | POST   | Create new session                         |
-| `/api/sessions/{id}`              | DELETE | Delete a session                           |
-| `/api/sessions/{id}/events`       | GET    | Load session events (deprecated, use WS)   |
-| `/api/sessions/{id}/images`       | POST   | Upload image for session                   |
-| `/api/sessions/{id}/images/paths` | POST   | Upload images from file paths (native app) |
-| `/api/workspaces`                 | GET    | List workspaces and ACP servers            |
-| `/api/workspaces`                 | POST   | Add a new workspace                        |
-| `/api/workspaces`                 | DELETE | Remove a workspace                         |
-| `/api/config`                     | GET    | Get server configuration                   |
-| `/api/queue/{session_id}`         | GET    | Get message queue for session              |
-| `/api/queue/{session_id}`         | POST   | Add message to queue                       |
-| `/api/queue/{session_id}/{id}`    | DELETE | Remove message from queue                  |
+**Error envelope** (standard): `{"error": {"code": "...", "message": "...", "details":{...}?}}`. Common codes: `unauthenticated` (401), `method_not_allowed` (405), `server_error` (500). A small set of `external-stable` endpoints (native app / viewer / load-balancer integration) may retain a legacy flat `{"error": "..."}` shape and must not be renamed.
 
-### Callback Endpoints
+**Mid-migration note**: Some workspace-scoped endpoints are still at flat `/api/workspace-*` paths (notably `/api/workspace-prompts*`) and use `?working_dir=` query params. These are being nested under `/api/workspaces/{uuid}/…` as part of epic mitto-ank; see [`docs/devel/rest-api-conventions.md`](rest-api-conventions.md) for the full current→target mapping.
 
-| Endpoint                              | Method | Auth                   | Description                    |
-| ------------------------------------- | ------ | ---------------------- | ------------------------------ |
-| `{prefix}/api/callback/{token}`       | POST   | Token (capability URL) | Trigger periodic prompt run    |
-| `{prefix}/api/sessions/{id}/callback` | GET    | Session auth           | Get callback status            |
-| `{prefix}/api/sessions/{id}/callback` | POST   | Session auth           | Generate/rotate callback token |
-| `{prefix}/api/sessions/{id}/callback` | DELETE | Session auth           | Revoke callback token          |
+---
+
+### Public / Auth
+
+These endpoints do **not** require a session cookie.
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/login` | POST | Authenticate (only when auth is configured) |
+| `/api/logout` | POST | End authenticated session |
+| `/api/csrf-token` | GET | Return a CSRF token for subsequent mutations |
+| `/api/auth-info` | GET | Login-page bootstrap (auth mode, OIDC config) |
+| `/api/health` | GET | Load-balancer liveness probe — always 200 OK (external-stable) |
+| `/api/callback/` | POST | Capability-URL webhook — token in path, no cookie needed (external-stable) |
+| `/api/supported-runners` | GET | List runner types supported by the server |
+
+---
+
+### Sessions
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/sessions` | GET, POST | List all sessions (GET); create a new session (POST) |
+| `GET /api/sessions/running` | GET | List currently running (non-idle) sessions |
+| `GET /api/sessions/{id}` | GET | Get session detail |
+| `PATCH /api/sessions/{id}` | PATCH | Update session metadata (name, archived, beads_issue, …) |
+| `DELETE /api/sessions/{id}` | DELETE | Delete (archive) a session |
+| `GET /api/sessions/{id}/events` | GET | Load persisted event log for a session (REST fallback; the primary live channel is the WebSocket below) |
+| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming WebSocket — see [`docs/devel/websockets/`](websockets/) |
+| `/api/sessions/{id}/user-data` | GET, PUT | Per-session structured user-data attributes |
+| `/api/sessions/{id}/callback` | GET, POST, DELETE | Get status / generate-rotate / revoke capability-URL token |
+| `/api/sessions/{id}/settings` | GET, PUT | Per-session advanced feature flags |
+| `/api/sessions/{id}/prune` | POST | Prune old events from session log |
+| `/api/sessions/{id}/changes` | GET | Get uncommitted file changes for the session's working dir |
+| `/api/sessions/{id}/images` | GET, POST | List uploaded images (GET); upload a new image (POST, multipart) |
+| `/api/sessions/{id}/images/{imageId}` | GET, DELETE | Get or delete a specific uploaded image |
+| `/api/sessions/{id}/images/from-path` | POST | Upload image by local file-system path (native macOS app — external-stable) |
+| `/api/sessions/{id}/files` | GET, POST | List or upload attached files |
+| `/api/sessions/{id}/files/{fileId}` | GET, DELETE | Get or delete a specific attached file |
+| `/api/sessions/{id}/files/from-path` | POST | Attach file by local path (native macOS app — external-stable) |
+| `/api/sessions/{id}/queue` | GET, POST | List pending prompts in queue (GET); enqueue a prompt (POST) |
+| `/api/sessions/{id}/queue/{msgId}` | GET, DELETE | Get or cancel a specific queued prompt |
+| `/api/sessions/{id}/periodic` | GET, PUT, DELETE | Get or set periodic execution configuration |
+| `/api/sessions/{id}/periodic/{subPath}` | varies | Periodic sub-resource actions (e.g. trigger-now) |
+
+---
+
+### Workspaces
+
+Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/workspace-*` paths are being migrated; see the mid-migration note above.
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/workspaces` | GET, POST, DELETE | List all workspaces (GET); add (POST) or remove (DELETE, `?dir=`) a workspace |
+| `GET /api/workspaces/{uuid}/effective-runner-config` | GET | Resolve the effective runner config for a workspace |
+| `POST /api/workspaces/{uuid}/restart-acp` | POST | Restart the ACP process for a workspace |
+| `GET /api/workspaces/{uuid}/metadata` | GET | Read workspace `.mittorc` metadata (description, URL, group) |
+| `PUT /api/workspaces/{uuid}/metadata` | PUT | Save workspace `.mittorc` metadata |
+| `GET /api/workspaces/{uuid}/user-data-schema` | GET | Read per-conversation user-data field schema |
+| `PUT /api/workspaces/{uuid}/user-data-schema` | PUT | Save per-conversation user-data field schema |
+| `GET /api/workspaces/{uuid}/processors` | GET | List message processors for a workspace |
+| `PATCH /api/workspaces/{uuid}/processors/{name}` | PATCH | Enable or disable a specific processor (`{"enabled": bool}`) |
+| `GET /api/workspaces/{uuid}/mcp-tools` | GET | List MCP servers for a workspace's ACP agent (`?acp_server=` required) |
+| `POST /api/workspaces/{uuid}/mcp-tools/install` | POST | Install MCP servers via agent's `mcp-install.sh` |
+| `POST /api/workspaces/{uuid}/mcp-tools/remove` | POST | Remove an MCP server via agent's `mcp-remove.sh` |
+| `PUT /api/workspaces/{uuid}/folder-group` | PUT | Set the organizational group label for a workspace folder |
+| `/api/workspace-prompts` | GET, POST, DELETE | List / create / delete workspace prompts (`?working_dir=` — flat path, mid-migration) |
+| `/api/workspace-prompts/toggle-enabled` | PUT | Enable or disable a workspace prompt (flat path, mid-migration) |
+
+---
+
+### Configuration & Flags
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/config` | GET, POST | Get full server configuration (GET); save updated configuration (POST) |
+| `/api/agent-types` | GET | List configured ACP agent types |
+| `/api/agents/scan` | GET | Scan for installed agent definitions |
+| `/api/agents/confirm` | POST | Confirm/register scanned agents |
+| `/api/supported-runners` | GET | List supported runner types (public, no auth) |
+| `/api/runner-defaults` | GET | Get default runner settings |
+| `/api/advanced-flags` | GET, POST | Get or update per-server advanced feature flags |
+| `/api/external-status` | GET | Get status of external integrations (GitHub, etc.) |
+
+---
+
+### Issues (Beads)
+
+All endpoints are POST or GET on `/api/beads/{action}`:
+
+| Path | Method | Description |
+| ---- | ------ | ----------- |
+| `/api/beads/list` | GET | List issues |
+| `/api/beads/stats` | GET | Issue statistics |
+| `/api/beads/show` | GET | Show a single issue |
+| `/api/beads/create` | POST | Create an issue |
+| `/api/beads/update` | POST | Update issue fields |
+| `/api/beads/status` | POST | Change issue status |
+| `/api/beads/comment` | POST | Add a comment |
+| `/api/beads/dep` | POST | Manage issue dependencies |
+| `/api/beads/delete` | POST | Delete an issue |
+| `/api/beads/cleanup` | POST | Prune closed issues |
+| `/api/beads/config` | GET, POST | Get or update beads configuration |
+| `/api/beads/upstream` | POST | Sync with upstream beads remote |
+| `/api/beads/sync` | POST | Full sync (pull + push) |
+
+---
+
+### Auxiliary
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/aux/improve-prompt` | POST | Rewrite a user prompt using the active agent |
+| `/api/badge-click` | POST | Handle native macOS dock-badge click action (external-stable) |
+
+---
+
+### UI & Files
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/ui-preferences` | GET, POST | Read or save UI display preferences |
+| `/api/files` | GET | Serve workspace files to the viewer (credentialed; external-stable) |
+| `/api/save-file-to-path` | POST | Save content to a local file path (native macOS app — external-stable) |
+| `/api/check-file-exists` | GET | Check whether a local file path exists (native macOS app — external-stable) |
+
+---
+
+### Events & WebSocket
+
+| Path | Protocol | Description |
+| ---- | -------- | ----------- |
+| `/api/events` | WebSocket | Global session-lifecycle event stream (session created/archived/updated) — see [`docs/devel/websockets/`](websockets/) |
+| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming channel (agent chunks, tool calls, status) — see [`docs/devel/websockets/`](websockets/) |
 
 ### Session Metadata Fields
 
