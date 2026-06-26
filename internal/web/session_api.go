@@ -138,13 +138,12 @@ type SessionUpdateRequest = handlers.SessionUpdateRequest
 // handleWorkspaces handles /api/workspaces
 // GET: List all workspaces
 // POST: Add a new workspace
-// DELETE: Remove a workspace (via query param ?dir=...)
 // handleWorkspacePrompts handles GET/POST/DELETE /api/workspace-prompts
 //
-//   - GET ?dir=...                      Returns workspace prompts (backward-compat)
-//   - GET ?dir=...&include_global=true  Returns builtin + workspace prompts merged, all sources
-//   - POST                              Create or update a workspace prompt file
-//   - DELETE ?dir=...&name=...          Delete a workspace prompt file by name
+//   - GET ?working_dir=...                      Returns workspace prompts
+//   - GET ?working_dir=...&include_global=true  Returns builtin + workspace prompts merged, all sources
+//   - POST                                      Create or update a workspace prompt file
+//   - DELETE ?working_dir=...&name=...          Delete a workspace prompt file by name
 func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

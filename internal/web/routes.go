@@ -75,7 +75,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "POST", pattern: "/api/workspaces/{uuid}/mcp-tools/remove", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMCPRemove)},
 		apiRoute{method: "PUT", pattern: "/api/workspaces/{uuid}/folder-group", handler: http.HandlerFunc(s.apiHandlers.HandleFolderGroup)},
 		apiRoute{pattern: "/api/workspace-prompts", handler: http.HandlerFunc(s.handleWorkspacePrompts)},
-		apiRoute{pattern: "/api/workspace-prompts/toggle-enabled", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsToggleEnabled)},
+		apiRoute{method: "PATCH", pattern: "/api/workspace-prompts/{name}", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsToggleEnabled)},
 	)
 
 	// Config and discovery endpoints.

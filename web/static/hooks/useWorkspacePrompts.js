@@ -74,7 +74,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       try {
         const res = await authFetch(
           apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(dir)}&session_id=${encodeURIComponent(sessionId)}`,
+            `/api/workspace-prompts?working_dir=${encodeURIComponent(dir)}&session_id=${encodeURIComponent(sessionId)}`,
           ),
         );
         if (!res.ok) return [];
@@ -121,7 +121,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
           : "";
         const res = await authFetch(
           apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}${sessionParam}`,
+            `/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}${sessionParam}`,
           ),
           { headers },
         );

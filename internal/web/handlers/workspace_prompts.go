@@ -14,36 +14,37 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 )
 
-// HandleWorkspacePromptsToggleEnabled handles PUT /api/workspace-prompts/toggle-enabled.
+// HandleWorkspacePromptsToggleEnabled handles PATCH /api/workspace-prompts/{name}.
 // If the prompt file exists in .mitto/prompts/, updates the enabled field in the YAML file.
 // Otherwise, records the enabled state in the workspace .mittorc file.
 func (h *Handlers) HandleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
+	if r.Method != http.MethodPatch {
 		methodNotAllowed(w)
 		return
 	}
 
+	name := r.PathValue("name")
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
+		return
+	}
+
 	var req struct {
-		Dir     string `json:"dir"`
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
+		Enabled bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid JSON: "+err.Error())
 		return
 	}
-	if req.Dir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "dir is required")
-		return
-	}
-	if req.Name == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
-		return
-	}
 
 	// Check if a dedicated prompt file exists in .mitto/prompts/
-	slug := configPkg.SlugifyPromptName(req.Name)
-	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
+	slug := configPkg.SlugifyPromptName(name)
+	promptsDir := appdir.WorkspacePromptsDir(workingDir)
 	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
 
 	if _, err := os.Stat(filePath); err == nil {
@@ -57,12 +58,12 @@ func (h *Handlers) HandleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r 
 		}
 	} else {
 		// File doesn't exist — record in .mittorc
-		if err := configPkg.SaveWorkspaceRCPromptEnabled(req.Dir, req.Name, req.Enabled); err != nil {
+		if err := configPkg.SaveWorkspaceRCPromptEnabled(workingDir, name, req.Enabled); err != nil {
 			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update workspace config: "+err.Error())
 			return
 		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Debug("Updated .mittorc prompt enabled state", "dir", req.Dir, "name", req.Name, "enabled", req.Enabled)
+			h.deps.Logger.Debug("Updated .mittorc prompt enabled state", "dir", workingDir, "name", name, "enabled", req.Enabled)
 		}
 	}
 
@@ -73,7 +74,7 @@ func (h *Handlers) HandleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r 
 // Creates or updates a workspace prompt file in .mitto/prompts/<slug>.prompt.yaml.
 func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Dir             string `json:"dir"`
+		WorkingDir      string `json:"working_dir"`
 		Name            string `json:"name"`
 		Prompt          string `json:"prompt"`
 		Description     string `json:"description"`
@@ -85,8 +86,8 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid JSON body: "+err.Error())
 		return
 	}
-	if req.Dir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "dir is required")
+	if req.WorkingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	if req.Name == "" {
@@ -95,7 +96,7 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 	}
 
 	// Create the prompts directory if needed
-	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
+	promptsDir := appdir.WorkspacePromptsDir(req.WorkingDir)
 	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to create prompts directory: "+err.Error())
 		return
@@ -139,13 +140,13 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 	writeJSONOK(w, map[string]interface{}{"ok": true, "path": filePath})
 }
 
-// HandleWorkspacePromptsDELETE handles DELETE /api/workspace-prompts?dir=...&name=...
+// HandleWorkspacePromptsDELETE handles DELETE /api/workspace-prompts?working_dir=...&name=...
 // Finds and deletes a workspace prompt file by name from .mitto/prompts/.
 func (h *Handlers) HandleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.Request) {
-	workingDir := r.URL.Query().Get("dir")
+	workingDir := r.URL.Query().Get("working_dir")
 	promptName := r.URL.Query().Get("name")
 	if workingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "dir query parameter is required")
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir query parameter is required")
 		return
 	}
 	if promptName == "" {
@@ -261,16 +262,16 @@ func (h *Handlers) HandleWorkspacePromptsGETIncludeGlobal(w http.ResponseWriter,
 	})
 }
 
-// HandleWorkspacePromptsGET handles GET /api/workspace-prompts?dir=...
+// HandleWorkspacePromptsGET handles GET /api/workspace-prompts?working_dir=...
 // Returns the prompts from the workspace's .mittorc file and prompts_dirs.
 // Prompts are filtered by the workspace's ACP server if specified in the prompt's acps field.
 // Supports conditional requests via If-Modified-Since header.
 // When include_global=true, also loads builtin prompts and returns all (including disabled).
 func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Request) {
 
-	workingDir := r.URL.Query().Get("dir")
+	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "dir query parameter is required")
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir query parameter is required")
 		return
 	}
 

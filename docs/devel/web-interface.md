@@ -111,8 +111,8 @@ Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/wo
 | `POST /api/workspaces/{uuid}/mcp-tools/install` | POST | Install MCP servers via agent's `mcp-install.sh` |
 | `POST /api/workspaces/{uuid}/mcp-tools/remove` | POST | Remove an MCP server via agent's `mcp-remove.sh` |
 | `PUT /api/workspaces/{uuid}/folder-group` | PUT | Set the organizational group label for a workspace folder |
-| `/api/workspace-prompts` | GET, POST, DELETE | List / create / delete workspace prompts (`?working_dir=` — flat path, mid-migration) |
-| `/api/workspace-prompts/toggle-enabled` | PUT | Enable or disable a workspace prompt (flat path, mid-migration) |
+| `/api/workspace-prompts` | GET, POST, DELETE | List (`?working_dir=`), create (POST body `working_dir`), or delete (`?working_dir=&name=`) workspace prompts |
+| `PATCH /api/workspace-prompts/{name}` | PATCH | Enable or disable a prompt (`?working_dir=`, body `{"enabled": bool}`) |
 
 ---
 

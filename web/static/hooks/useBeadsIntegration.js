@@ -126,7 +126,7 @@ export function useBeadsIntegration({
   const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir, issue) => {
     if (!workingDir) return [];
     try {
-      let url = `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
+      let url = `/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
       if (activeSessionId) url += `&session_id=${encodeURIComponent(activeSessionId)}`;
       if (issue) {
         url += `&item_kind=beadsIssue`;
@@ -165,7 +165,7 @@ export function useBeadsIntegration({
   const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
     if (!workingDir) return [];
     try {
-      let url = `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
+      let url = `/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&enabled_context=workspace`;
       if (activeSessionId) url += `&session_id=${encodeURIComponent(activeSessionId)}`;
       const res = await authFetch(apiUrl(url));
       if (!res.ok) return [];

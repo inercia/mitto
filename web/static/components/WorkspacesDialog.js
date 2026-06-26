@@ -1185,7 +1185,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!firstWs?.working_dir) return;
 
     setPromptsLoading(true);
-    secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(firstWs.working_dir)}&include_global=true`))
+    secureFetch(apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(firstWs.working_dir)}&include_global=true`))
       .then((r) => r.json())
       .then((data) => { setFolderPrompts(data.prompts || []); })
       .catch((err) => console.error("Failed to load prompts:", err))
@@ -1290,7 +1290,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     setBeadsUpstreamPromptsLoading(true);
     try {
-      const res = await secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&include_global=true`));
+      const res = await secureFetch(apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&include_global=true`));
       const data = await res.json().catch(() => ({}));
       const all = (data && data.prompts) || [];
       // Only offer enabled prompts with no parameters (argument-free).
@@ -1382,7 +1382,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
 
   // Load (reload) prompts for the selected folder
   const reloadFolderPrompts = async (workingDir) => {
-    const res = await secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&include_global=true`));
+    const res = await secureFetch(apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&include_global=true`));
     const data = await res.json();
     setFolderPrompts(data.prompts || []);
   };
@@ -1396,7 +1396,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
       const res = await secureFetch(apiUrl("/api/workspace-prompts"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dir: workingDir, ...promptData }),
+        body: JSON.stringify({ working_dir: workingDir, ...promptData }),
       });
       if (!res.ok) {
         const ct = res.headers.get("content-type");
@@ -1420,7 +1420,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     if (!workingDir) return;
     try {
       const res = await secureFetch(
-        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&name=${encodeURIComponent(promptName)}`),
+        apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(workingDir)}&name=${encodeURIComponent(promptName)}`),
         { method: "DELETE" }
       );
       if (!res.ok) {
@@ -1483,22 +1483,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     }
   };
 
-  // Toggle enabled state for a prompt using the dedicated toggle-enabled endpoint.
-  // If a .md file exists in .mitto/prompts/, its frontmatter is updated in-place.
+  // Toggle enabled state for a prompt via PATCH /api/workspace-prompts/{name}?working_dir=.
+  // If a .prompt.yaml file exists in .mitto/prompts/, its enabled field is updated in-place.
   // If not, the state is recorded in the workspace .mittorc file.
   const togglePromptEnabled = async (prompt) => {
     const workingDir = getSelectedFolderDir();
     if (!workingDir) return;
     const isCurrentlyEnabled = prompt.enabled !== false;
     try {
-      const res = await secureFetch(apiUrl("/api/workspace-prompts/toggle-enabled"), {
-        method: "PUT",
+      const res = await secureFetch(apiUrl(`/api/workspace-prompts/${encodeURIComponent(prompt.name)}?working_dir=${encodeURIComponent(workingDir)}`), {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dir: workingDir,
-          name: prompt.name,
-          enabled: !isCurrentlyEnabled,
-        }),
+        body: JSON.stringify({ enabled: !isCurrentlyEnabled }),
       });
       if (!res.ok) {
         const ct = res.headers.get("content-type");

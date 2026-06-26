@@ -267,7 +267,7 @@ func TestHandleWorkspacePrompts_Success(t *testing.T) {
 	}
 	wireWorkspacePromptsTestDeps(server)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/prompts?dir=/tmp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir=/tmp", nil)
 	w := httptest.NewRecorder()
 
 	server.handleWorkspacePrompts(w, req)
@@ -297,7 +297,7 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 	wireWorkspacePromptsTestDeps(server)
 
 	// First request - should return prompts with Last-Modified header
-	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w1 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w1, req1)
 
@@ -311,7 +311,7 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 	}
 
 	// Second request with If-Modified-Since - should return 304
-	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	req2.Header.Set("If-Modified-Since", lastModified)
 	w2 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w2, req2)
@@ -341,7 +341,7 @@ func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
 	wireWorkspacePromptsTestDeps(server)
 
 	// First request - should return prompts
-	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w1 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w1, req1)
 
@@ -355,7 +355,7 @@ func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
 	}
 
 	// Request after file deletion - should return OK with empty prompts
-	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w2 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w2, req2)
 
@@ -396,7 +396,7 @@ prompt: |
 	wireWorkspacePromptsTestDeps(server)
 
 	// Request workspace prompts - should include the prompt from .mitto/prompts
-	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w, req)
 
@@ -473,7 +473,7 @@ prompt: |
 	wireWorkspacePromptsTestDeps(server)
 
 	// Request workspace prompts
-	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w, req)
 
@@ -498,6 +498,45 @@ prompt: |
 	// The custom version should win (prompts_dirs overrides default .mitto/prompts)
 	if len(response.Prompts) > 0 && response.Prompts[0].Prompt != "Custom version from prompts_dirs\n" {
 		t.Errorf("Expected custom prompt content, got %q", response.Prompts[0].Prompt)
+	}
+}
+
+func TestHandleWorkspacePromptsToggleEnabled_PATCH(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a prompt file the handler can update in-place.
+	promptsDir := tmpDir + "/.mitto/prompts"
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	promptFile := promptsDir + "/my-prompt.prompt.yaml"
+	if err := os.WriteFile(promptFile, []byte("name: my-prompt\nprompt: hello\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+	}
+	wireWorkspacePromptsTestDeps(server)
+
+	body := strings.NewReader(`{"enabled":false}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/workspace-prompts/my-prompt?working_dir="+tmpDir, body)
+	req.SetPathValue("name", "my-prompt")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.apiHandlers.HandleWorkspacePromptsToggleEnabled(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	// Prompt file should now contain enabled: false
+	data, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "enabled: false") {
+		t.Errorf("expected 'enabled: false' in file; got:\n%s", string(data))
 	}
 }
 
@@ -2091,7 +2130,7 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 	}
 
 	// Without enabled_context: no filtering, both prompts returned.
-	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w1 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w1, req1)
 	if w1.Code != http.StatusOK {
@@ -2106,7 +2145,7 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 	}
 
 	// With enabled_context=workspace: full filter applied, "false"-gated prompt hidden.
-	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir+"&enabled_context=workspace", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir+"&enabled_context=workspace", nil)
 	w2 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w2, req2)
 	if w2.Code != http.StatusOK {
@@ -2200,7 +2239,7 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 
 	// dir=beadsDir (has .beads) but session_id points at otherDir (no .beads).
 	// The dir-gated prompt must still be returned because dir is authoritative.
-	url := "/api/workspace-prompts?dir=" + beadsDir + "&enabled_context=workspace&session_id=active-session"
+	url := "/api/workspace-prompts?working_dir=" + beadsDir + "&enabled_context=workspace&session_id=active-session"
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	w := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w, req)
