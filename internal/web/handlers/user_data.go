@@ -27,20 +27,20 @@ func (h *Handlers) HandleSessionUserData(w http.ResponseWriter, r *http.Request,
 func (h *Handlers) HandleGetSessionUserData(w http.ResponseWriter, r *http.Request, sessionID string) {
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	data, err := store.GetUserData(sessionID)
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get user data", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to get user data", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get user data")
 		return
 	}
 
@@ -56,7 +56,7 @@ func (h *Handlers) HandlePutSessionUserData(w http.ResponseWriter, r *http.Reque
 
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -64,13 +64,13 @@ func (h *Handlers) HandlePutSessionUserData(w http.ResponseWriter, r *http.Reque
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to get session metadata", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session metadata")
 		return
 	}
 
@@ -90,13 +90,13 @@ func (h *Handlers) HandlePutSessionUserData(w http.ResponseWriter, r *http.Reque
 	// Save user data
 	if err := store.SetUserData(sessionID, userData); err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to save user data", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to save user data", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save user data")
 		return
 	}
 

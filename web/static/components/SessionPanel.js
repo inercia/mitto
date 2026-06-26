@@ -696,7 +696,7 @@ export function SessionPanel({
         setEditingAttribute(null);
       } else {
         const errorData = await res.json().catch(() => ({}));
-        setUserDataError(errorData.message || "Failed to save attribute");
+        setUserDataError(errorData?.error?.message || errorData.message || "Failed to save attribute");
       }
     } catch (err) {
       console.error("Failed to save attribute:", err);

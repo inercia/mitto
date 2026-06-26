@@ -152,6 +152,53 @@ func TestHandlePutSessionUserData_NoSchema(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "validation_error" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "validation_error")
+	}
+}
+
+func TestHandlePutSessionUserData_SessionNotFound(t *testing.T) {
+	_, h := newUserDataHandlers(t, nil) // no seeded metadata
+
+	reqBody := UserDataUpdateRequest{
+		Attributes: []session.UserDataAttribute{},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/nonexistent/user-data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandlePutSessionUserData(w, req, "nonexistent")
+
+	// The store returns ErrSessionNotFound on GetMetadata → 404 not_found envelope
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d. Body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	var resp2 struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp2.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp2.Error.Code, "not_found")
+	}
+	if resp2.Error.Message != "Session not found" {
+		t.Errorf("error.message = %q, want %q", resp2.Error.Message, "Session not found")
+	}
 }
 
 func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
