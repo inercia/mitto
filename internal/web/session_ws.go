@@ -142,7 +142,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// Session ID comes from the {id} path wildcard (route: /api/sessions/{id}/ws).
 	sessionID := r.PathValue("id")
 	if !IsValidSessionID(sessionID) {
-		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid session ID format")
 		return
 	}
 	clientIP := middleware.GetClientIPWithProxyCheck(r)

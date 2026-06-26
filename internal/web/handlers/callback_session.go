@@ -15,17 +15,17 @@ import (
 func (h *Handlers) HandleSessionCallback(w http.ResponseWriter, r *http.Request, sessionID string) {
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	// Verify session exists
 	if _, err := store.GetMetadata(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
-		http.Error(w, "Failed to get session", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session")
 		return
 	}
 
@@ -48,13 +48,13 @@ func (h *Handlers) handleGetCallback(w http.ResponseWriter, cs *session.Callback
 	cb, err := cs.Get()
 	if err != nil {
 		if err == session.ErrCallbackNotFound {
-			http.Error(w, "No callback configured", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "No callback configured")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get callback", "error", err)
 		}
-		http.Error(w, "Failed to get callback", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get callback")
 		return
 	}
 
@@ -78,7 +78,7 @@ func (h *Handlers) handleGenerateCallback(w http.ResponseWriter, cs *session.Cal
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to generate callback token", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to generate callback token", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to generate callback token")
 		return
 	}
 
@@ -108,13 +108,13 @@ func (h *Handlers) handleRevokeCallback(w http.ResponseWriter, cs *session.Callb
 	// Revoke in store
 	if err := cs.Revoke(); err != nil {
 		if err == session.ErrCallbackNotFound {
-			http.Error(w, "No callback configured", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "No callback configured")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to revoke callback", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to revoke callback", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to revoke callback")
 		return
 	}
 

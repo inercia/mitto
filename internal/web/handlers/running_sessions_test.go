@@ -46,6 +46,35 @@ func TestHandleRunningSessions_Empty(t *testing.T) {
 	}
 }
 
+func TestHandleRunningSessions_StoreNil(t *testing.T) {
+	sm := conversation.NewSessionManager("", "", false, nil)
+	h := New(Deps{SessionManager: sm}) // Store deliberately nil
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/running", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleRunningSessions(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Failed to unmarshal envelope: %v", err)
+	}
+	if env.Error.Code != "server_error" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "server_error")
+	}
+	if env.Error.Message != "Session store not available" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "Session store not available")
+	}
+}
+
 func TestHandleRunningSessions_MethodNotAllowed(t *testing.T) {
 	sm := conversation.NewSessionManager("", "", false, nil)
 	h := New(Deps{SessionManager: sm})

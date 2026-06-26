@@ -39,7 +39,7 @@ type SessionListResponse = handlers.SessionListResponse
 func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
 	sessionID := r.PathValue("id")
 	if !IsValidSessionID(sessionID) {
-		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid session ID format")
 		return "", false
 	}
 	return sessionID, true
