@@ -29,7 +29,7 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -98,20 +98,20 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 	})
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to update session", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to update session", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to update session")
 		return
 	}
 
 	// Return updated metadata
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
-		http.Error(w, "Failed to get updated metadata", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated metadata")
 		return
 	}
 

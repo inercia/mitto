@@ -11,7 +11,7 @@ func (h *Handlers) HandleDeleteSession(w http.ResponseWriter, sessionID string) 
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -43,13 +43,13 @@ func (h *Handlers) HandleDeleteSession(w http.ResponseWriter, sessionID string) 
 	// Delete from store (cascade-deletes all children recursively)
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to delete session", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to delete session", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to delete session")
 		return
 	}
 

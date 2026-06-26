@@ -12,7 +12,7 @@ func (h *Handlers) HandleGetSession(w http.ResponseWriter, r *http.Request, sess
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
@@ -57,13 +57,13 @@ func (h *Handlers) HandleGetSession(w http.ResponseWriter, r *http.Request, sess
 
 		if err != nil {
 			if err == session.ErrSessionNotFound {
-				http.Error(w, "Session not found", http.StatusNotFound)
+				writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 				return
 			}
 			if h.deps.Logger != nil {
 				h.deps.Logger.Error("Failed to read session events", "error", err, "session_id", sessionID)
 			}
-			http.Error(w, "Failed to read session events", http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read session events")
 			return
 		}
 
@@ -73,13 +73,13 @@ func (h *Handlers) HandleGetSession(w http.ResponseWriter, r *http.Request, sess
 		meta, err := store.GetMetadata(sessionID)
 		if err != nil {
 			if err == session.ErrSessionNotFound {
-				http.Error(w, "Session not found", http.StatusNotFound)
+				writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 				return
 			}
 			if h.deps.Logger != nil {
 				h.deps.Logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
 			}
-			http.Error(w, "Failed to get session metadata", http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session metadata")
 			return
 		}
 

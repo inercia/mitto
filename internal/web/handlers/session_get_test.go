@@ -32,6 +32,22 @@ func TestHandleGetSession_NotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
 	}
+
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Failed to unmarshal error envelope: %v (body=%q)", err, w.Body.String())
+	}
+	if env.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "not_found")
+	}
+	if env.Error.Message != "Session not found" {
+		t.Errorf("error.message = %q, want %q", env.Error.Message, "Session not found")
+	}
 }
 
 func TestHandleGetSession_Found(t *testing.T) {
