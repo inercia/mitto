@@ -2766,7 +2766,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             if (image_ids && image_ids.length > 0) {
               userMessage.images = image_ids.map((id) => ({
                 id,
-                url: `${getApiPrefix()}/api/sessions/${sessionId}/images/${id}`,
+                url: endpoints.sessions.image(sessionId, id),
                 name: id,
               }));
             }

@@ -64,6 +64,7 @@ export const endpoints = {
     queueMsg:       (id, msgId)         => apiUrl(`/api/sessions/${enc(id)}/queue/${enc(msgId)}`),
     queueMove:      (id, msgId)         => apiUrl(`/api/sessions/${enc(id)}/queue/${enc(msgId)}/move`),
     images:         (id)                => apiUrl(`/api/sessions/${enc(id)}/images`),
+    image:          (id, imageId)       => apiUrl(`/api/sessions/${enc(id)}/images/${enc(imageId)}`),
     imagesFromPath: (id)                => apiUrl(`/api/sessions/${enc(id)}/images/from-path`),
     files:          (id)                => apiUrl(`/api/sessions/${enc(id)}/files`),
     filesFromPath:  (id)                => apiUrl(`/api/sessions/${enc(id)}/files/from-path`),

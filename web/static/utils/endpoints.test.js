@@ -168,6 +168,7 @@ describe("endpoints registry", () => {
     test("periodicRunNow", () => expect(endpoints.sessions.periodicRunNow("s1")).toBe("/api/sessions/s1/periodic/run-now"));
     test("queueMove", () => expect(endpoints.sessions.queueMove("s1", "m1")).toBe("/api/sessions/s1/queue/m1/move"));
     test("images", () => expect(endpoints.sessions.images("s1")).toBe("/api/sessions/s1/images"));
+    test("image(id, imageId)", () => expect(endpoints.sessions.image("s1", "img1")).toBe("/api/sessions/s1/images/img1"));
     test("filesFromPath", () => expect(endpoints.sessions.filesFromPath("s1")).toBe("/api/sessions/s1/files/from-path"));
   });
 
