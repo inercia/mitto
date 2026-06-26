@@ -755,20 +755,29 @@
             imgContainer.style.cssText = "display: flex; justify-content: center; align-items: flex-start; padding: 20px; overflow: auto; min-height: 200px;";
 
             const img = document.createElement("img");
-            img.src = fileUrl;
             img.alt = path;
             img.style.cssText = "max-width: 100%; height: auto; object-fit: contain;";
-            img.onerror = () => showError("Failed to load image: " + path);
 
             imgContainer.appendChild(img);
             container.appendChild(imgContainer);
 
-            // Set up download for image
-            document.getElementById("downloadBtn").addEventListener("click", () => {
-              const a = document.createElement("a");
-              a.href = fileUrl;
-              a.download = path.split("/").pop();
-              a.click();
+            // Site 1: load image via credentialed fetch (fixes cross-origin auth bypass).
+            loadCredentialedImage(img, fileUrl, () => showError("Failed to load image: " + path));
+
+            // Site 2: download image via credentialed fetch -> Blob (fixes cross-origin auth bypass).
+            document.getElementById("downloadBtn").addEventListener("click", async () => {
+              try {
+                const res = await fetch(fileUrl, { credentials: "include", cache: "no-store" });
+                if (res.status === 401) { redirectToLogin(); return; }
+                if (!res.ok) { showError("Failed to download image: " + path); return; }
+                const blob = await res.blob();
+                const dlUrl = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = dlUrl;
+                a.download = path.split("/").pop();
+                a.click();
+                URL.revokeObjectURL(dlUrl);
+              } catch (e) { showError("Failed to download image: " + path); }
             });
 
             return;
@@ -886,7 +895,9 @@
                       if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
                       const resolved = resolveWorkspacePath(src);
                       if (resolved) {
-                        img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+                        // Site 3: load via credentialed fetch (fixes cross-origin auth bypass).
+                        img.removeAttribute('src');
+                        loadCredentialedImage(img, `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`);
                       }
                     });
                   }
@@ -1118,6 +1129,23 @@
           // Redirect to the login page (auth middleware returned 401).
           function redirectToLogin() {
             window.location.href = `${apiPrefix}/auth.html`;
+          }
+
+          // Fetch an image via credentialed fetch, assign a Blob object URL to img.src,
+          // and revoke the object URL once the browser has decoded it.
+          // This works identically for same-origin and cross-origin (proxy/Tailscale) requests.
+          async function loadCredentialedImage(img, url, onFail) {
+            try {
+              const res = await fetch(url, { credentials: "include", cache: "no-store" });
+              if (res.status === 401) { redirectToLogin(); return; }
+              if (!res.ok) { if (onFail) onFail(); return; }
+              const blob = await res.blob();
+              const objUrl = URL.createObjectURL(blob);
+              img.src = objUrl;
+              const revoke = () => URL.revokeObjectURL(objUrl);
+              img.addEventListener("load", revoke, { once: true });
+              img.addEventListener("error", revoke, { once: true });
+            } catch (e) { if (onFail) onFail(); }
           }
 
           async function ensureCSRFToken() {
@@ -1393,7 +1421,9 @@
               if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
               const resolved = resolveWorkspacePath(src);
               if (resolved) {
-                img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+                // Site 4: load via credentialed fetch (fixes cross-origin auth bypass).
+                img.removeAttribute('src');
+                loadCredentialedImage(img, `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`);
               }
             });
 
