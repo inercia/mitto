@@ -1374,7 +1374,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dir: workingDir, ...promptData }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const data = await res.json();
+          throw new Error(data.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       await reloadFolderPrompts(workingDir);
     } catch (err) {
       setError("Failed to save prompt: " + err.message);
@@ -1392,7 +1399,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&name=${encodeURIComponent(promptName)}`),
         { method: "DELETE" }
       );
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const data = await res.json();
+          throw new Error(data.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       await reloadFolderPrompts(workingDir);
     } catch (err) {
       setError("Failed to delete prompt: " + err.message);
@@ -1466,7 +1480,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           enabled: !isCurrentlyEnabled,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const data = await res.json();
+          throw new Error(data.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       await reloadFolderPrompts(workingDir);
     } catch (err) {
       setError("Failed to toggle prompt: " + err.message);

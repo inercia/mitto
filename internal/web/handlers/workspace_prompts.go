@@ -29,15 +29,15 @@ func (h *Handlers) HandleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r 
 		Enabled bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid JSON: "+err.Error())
 		return
 	}
 	if req.Dir == "" {
-		http.Error(w, "dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "dir is required")
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
 		return
 	}
 
@@ -49,7 +49,7 @@ func (h *Handlers) HandleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r 
 	if _, err := os.Stat(filePath); err == nil {
 		// File exists — update its enabled field
 		if err := configPkg.UpdatePromptFileEnabled(filePath, req.Enabled); err != nil {
-			http.Error(w, "failed to update prompt file: "+err.Error(), http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update prompt file: "+err.Error())
 			return
 		}
 		if h.deps.Logger != nil {
@@ -58,7 +58,7 @@ func (h *Handlers) HandleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r 
 	} else {
 		// File doesn't exist — record in .mittorc
 		if err := configPkg.SaveWorkspaceRCPromptEnabled(req.Dir, req.Name, req.Enabled); err != nil {
-			http.Error(w, "failed to update workspace config: "+err.Error(), http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update workspace config: "+err.Error())
 			return
 		}
 		if h.deps.Logger != nil {
@@ -82,22 +82,22 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 		Enabled         *bool  `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Dir == "" {
-		http.Error(w, "dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "dir is required")
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
 		return
 	}
 
 	// Create the prompts directory if needed
 	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
 	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
-		http.Error(w, "failed to create prompts directory: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to create prompts directory: "+err.Error())
 		return
 	}
 
@@ -109,7 +109,7 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 
 	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
 	if err := configPkg.PrecompileTemplateConds(req.Name, req.Prompt); err != nil {
-		http.Error(w, "invalid prompt template: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid prompt template: "+err.Error())
 		return
 	}
 	// Warn (non-fatal) when body still uses deprecated @mitto: tokens (mitto-m7sb.9).
@@ -125,11 +125,11 @@ func (h *Handlers) HandleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Req
 	}
 	yamlBytes, err := yaml.Marshal(pf)
 	if err != nil {
-		http.Error(w, "failed to marshal prompt file: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to marshal prompt file: "+err.Error())
 		return
 	}
 	if err := os.WriteFile(filePath, yamlBytes, 0o644); err != nil {
-		http.Error(w, "failed to write prompt file: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to write prompt file: "+err.Error())
 		return
 	}
 
@@ -145,18 +145,18 @@ func (h *Handlers) HandleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.R
 	workingDir := r.URL.Query().Get("dir")
 	promptName := r.URL.Query().Get("name")
 	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "dir query parameter is required")
 		return
 	}
 	if promptName == "" {
-		http.Error(w, "name query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "name query parameter is required")
 		return
 	}
 
 	promptsDir := appdir.WorkspacePromptsDir(workingDir)
 	rawPrompts, err := configPkg.LoadPromptsFromDir(promptsDir)
 	if err != nil {
-		http.Error(w, "failed to read prompts directory: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to read prompts directory: "+err.Error())
 		return
 	}
 
@@ -169,12 +169,12 @@ func (h *Handlers) HandleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.R
 		}
 	}
 	if targetPath == "" {
-		http.Error(w, "prompt not found: "+promptName, http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "prompt not found: "+promptName)
 		return
 	}
 
 	if err := os.Remove(targetPath); err != nil {
-		http.Error(w, "failed to delete prompt file: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to delete prompt file: "+err.Error())
 		return
 	}
 
@@ -270,7 +270,7 @@ func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Requ
 
 	workingDir := r.URL.Query().Get("dir")
 	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "dir query parameter is required")
 		return
 	}
 
