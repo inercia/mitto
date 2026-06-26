@@ -208,23 +208,23 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 
 ### 7.5 Issues (Beads)
 
-All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them to a RESTful `/api/workspaces/{uuid}/issues` resource. Because `bd` (beads) is a local CLI tool whose operations map awkwardly to pure REST (e.g. `sync`, `upstream`, `cleanup`) the paths below keep action sub-paths where needed.
+All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them to a RESTful `/api/issues` resource that stays **flat** and is scoped by a `?working_dir=` query param — **not** nested under `/api/workspaces/{uuid}/` (see §8 #12). Beads operate on git worktrees, ad-hoc folders, and unregistered repos that have no workspace UUID, and all frontend callers already pass `working_dir`; this is the same pre-UUID constraint that produced Design B for workspace-prompts (§8 #11). Because `bd` (beads) is a local CLI tool whose operations map awkwardly to pure REST (e.g. `sync`, `upstream`, `cleanup`) the paths below keep action sub-paths where needed. All targets carry `?working_dir=`.
 
 | Current path | Method(s) | Target path | Method(s) | Classification | Reason / notes |
 |---|---|---|---|---|---|
-| `/api/beads/list` | GET | `/api/workspaces/{uuid}/issues` | GET | migrate | Rename to issues resource |
-| `/api/beads/show` | GET | `/api/workspaces/{uuid}/issues/{id}` | GET | migrate | Path param instead of query param |
-| `/api/beads/stats` | GET | `/api/workspaces/{uuid}/issues/stats` | GET | migrate | Collection sub-resource |
-| `/api/beads/create` | POST | `/api/workspaces/{uuid}/issues` | POST | migrate | Create on collection |
-| `/api/beads/update` | POST | `/api/workspaces/{uuid}/issues/{id}` | PATCH | migrate | Use PATCH for partial update |
-| `/api/beads/delete` | POST | `/api/workspaces/{uuid}/issues/{id}` | DELETE | migrate | Use DELETE |
-| `/api/beads/status` | GET | `/api/workspaces/{uuid}/issues/status` | GET | migrate | Collection-level status |
-| `/api/beads/comment` | POST | `/api/workspaces/{uuid}/issues/{id}/comments` | POST | migrate | Sub-resource on issue |
-| `/api/beads/dep` | POST | `/api/workspaces/{uuid}/issues/{id}/dependencies` | POST | migrate | Sub-resource on issue |
-| `/api/beads/config` | GET, PUT | `/api/workspaces/{uuid}/issues/config` | GET, PUT | migrate | Issues config sub-resource |
-| `/api/beads/upstream` | GET | `/api/workspaces/{uuid}/issues/upstream` | GET | migrate | Read-only sync info |
-| `/api/beads/sync` | POST | `/api/workspaces/{uuid}/issues/sync` | POST | migrate | Non-CRUD action; acceptable |
-| `/api/beads/cleanup` | POST | `/api/workspaces/{uuid}/issues/cleanup` | POST | migrate | Non-CRUD bulk action; acceptable |
+| `/api/beads/list` | GET | `/api/issues` | GET | migrate | Rename to issues resource |
+| `/api/beads/show` | GET | `/api/issues/{id}` | GET | migrate | Path param instead of query param |
+| `/api/beads/stats` | GET | `/api/issues/stats` | GET | migrate | Collection sub-resource |
+| `/api/beads/create` | POST | `/api/issues` | POST | migrate | Create on collection |
+| `/api/beads/update` | POST | `/api/issues/{id}` | PATCH | migrate | Use PATCH for partial update |
+| `/api/beads/delete` | POST | `/api/issues/{id}` | DELETE | migrate | Use DELETE |
+| `/api/beads/status` | GET | `/api/issues/status` | GET | migrate | Collection-level status |
+| `/api/beads/comment` | POST | `/api/issues/{id}/comments` | POST | migrate | Sub-resource on issue |
+| `/api/beads/dep` | POST | `/api/issues/{id}/dependencies` | POST | migrate | Sub-resource on issue |
+| `/api/beads/config` | GET, PUT | `/api/issues/config` | GET, PUT | migrate | Issues config sub-resource |
+| `/api/beads/upstream` | GET | `/api/issues/upstream` | GET | migrate | Read-only sync info |
+| `/api/beads/sync` | POST | `/api/issues/sync` | POST | migrate | Non-CRUD action; acceptable |
+| `/api/beads/cleanup` | POST | `/api/issues/cleanup` | POST | migrate | Non-CRUD bulk action; acceptable |
 
 ### 7.6 Auxiliary
 
@@ -270,3 +270,4 @@ All `/api/beads/*` endpoints expose a verb-based RPC style. The target maps them
 | 9 | UI preferences | `/api/config/ui-preferences` (migrate) | Config family; avoids top-level proliferation |
 | 10 | Advanced flags | `/api/config/flags` (migrate) | Config family |
 | 11 | Workspace-prompts path shape | Keep flat `/api/workspace-prompts` + `?working_dir=` (**not** nested under `{uuid}`) | Prompts are listed/edited before a workspace UUID exists (global, git worktrees, free-form working dirs); FE hooks pass `workingDir`, not a uuid. Resolves the §1-vs-§7.2 contradiction. Drop the verb path via `PATCH /api/workspace-prompts/{name}` |
+| 12 | Issues (beads) path shape | Flat `/api/issues` + `?working_dir=` (**not** nested under `{uuid}`); rename verb paths to RESTful methods | Same pre-UUID constraint as #11: beads operate on git worktrees / ad-hoc / unregistered dirs with no workspace UUID; all FE callers already pass `working_dir`. Applies Design B consistently and supersedes the earlier §7.5 `/api/workspaces/{uuid}/issues` mapping |
