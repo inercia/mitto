@@ -31,6 +31,9 @@ import { PromptsMenu } from "./PromptsMenu.js";
 import { flattenPrompts, getMissingPromptParameters } from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
 
+const uploadErrorMessage = (data, fallback) =>
+  data?.error?.message || data?.message || fallback;
+
 /**
  * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
  * inside a sanitized mitto_ui_form into clickable links that open Mitto's internal file viewer.
@@ -1403,7 +1406,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload image");
+        throw new Error(uploadErrorMessage(error, "Failed to upload image"));
       }
 
       const data = await response.json();
@@ -1461,7 +1464,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload images");
+        throw new Error(uploadErrorMessage(error, "Failed to upload images"));
       }
 
       const results = await response.json();
@@ -1519,7 +1522,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload file");
+        throw new Error(uploadErrorMessage(error, "Failed to upload file"));
       }
 
       const data = await response.json();
@@ -1581,7 +1584,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload files");
+        throw new Error(uploadErrorMessage(error, "Failed to upload files"));
       }
 
       const results = await response.json();

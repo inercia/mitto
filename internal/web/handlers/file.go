@@ -36,13 +36,13 @@ func (h *Handlers) HandleSessionFiles(w http.ResponseWriter, r *http.Request, se
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	// Check if session exists
 	if !store.Exists(sessionID) {
-		http.Error(w, "Session not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 		return
 	}
 
@@ -51,7 +51,7 @@ func (h *Handlers) HandleSessionFiles(w http.ResponseWriter, r *http.Request, se
 		if r.Method == http.MethodPost {
 			h.handleUploadFileFromPath(w, r, store, sessionID)
 		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 		return
 	}
@@ -64,7 +64,7 @@ func (h *Handlers) HandleSessionFiles(w http.ResponseWriter, r *http.Request, se
 		case http.MethodGet:
 			h.handleListFiles(w, r, store, sessionID)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 		return
 	}
@@ -76,7 +76,7 @@ func (h *Handlers) HandleSessionFiles(w http.ResponseWriter, r *http.Request, se
 	case http.MethodDelete:
 		h.handleDeleteFile(w, r, store, sessionID, filePath)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 	}
 }
 
@@ -91,14 +91,14 @@ func (h *Handlers) handleUploadFile(w http.ResponseWriter, r *http.Request, stor
 			writeErrorJSON(w, http.StatusRequestEntityTooLarge, "file_too_large", "File exceeds 50MB limit")
 			return
 		}
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Failed to parse form")
 		return
 	}
 
 	// Get the file from the form
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "No file provided", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "No file provided")
 		return
 	}
 	defer file.Close()
@@ -106,7 +106,7 @@ func (h *Handlers) handleUploadFile(w http.ResponseWriter, r *http.Request, stor
 	// Read file content
 	data, err := io.ReadAll(file)
 	if err != nil {
-		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read file")
 		return
 	}
 
@@ -178,7 +178,7 @@ func (h *Handlers) handleListFiles(w http.ResponseWriter, r *http.Request, store
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to list files", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to list files", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to list files")
 		return
 	}
 
@@ -203,27 +203,27 @@ func (h *Handlers) handleListFiles(w http.ResponseWriter, r *http.Request, store
 func (h *Handlers) handleServeFile(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, fileID string) {
 	// Validate file ID to prevent path traversal
 	if strings.Contains(fileID, "/") || strings.Contains(fileID, "..") {
-		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid file ID")
 		return
 	}
 
 	filePath, err := store.GetFilePath(sessionID, fileID)
 	if err != nil {
 		if err == session.ErrFileNotFound {
-			http.Error(w, "File not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "File not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get file path", "error", err, "session_id", sessionID, "file_id", fileID)
 		}
-		http.Error(w, "Failed to get file", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get file")
 		return
 	}
 
 	// Open the file
 	file, err := os.Open(filePath)
 	if err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "File not found")
 		return
 	}
 	defer file.Close()
@@ -231,7 +231,7 @@ func (h *Handlers) handleServeFile(w http.ResponseWriter, r *http.Request, store
 	// Get file info for size
 	stat, err := file.Stat()
 	if err != nil {
-		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read file")
 		return
 	}
 
@@ -255,20 +255,20 @@ func (h *Handlers) handleServeFile(w http.ResponseWriter, r *http.Request, store
 func (h *Handlers) handleDeleteFile(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, fileID string) {
 	// Validate file ID to prevent path traversal
 	if strings.Contains(fileID, "/") || strings.Contains(fileID, "..") {
-		http.Error(w, "Invalid file ID", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid file ID")
 		return
 	}
 
 	err := store.DeleteFile(sessionID, fileID)
 	if err != nil {
 		if err == session.ErrFileNotFound {
-			http.Error(w, "File not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "File not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to delete file", "error", err, "session_id", sessionID, "file_id", fileID)
 		}
-		http.Error(w, "Failed to delete file", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to delete file")
 		return
 	}
 

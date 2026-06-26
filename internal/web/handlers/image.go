@@ -35,13 +35,13 @@ func (h *Handlers) HandleSessionImages(w http.ResponseWriter, r *http.Request, s
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := h.deps.Store
 	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
 		return
 	}
 
 	// Check if session exists
 	if !store.Exists(sessionID) {
-		http.Error(w, "Session not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
 		return
 	}
 
@@ -50,7 +50,7 @@ func (h *Handlers) HandleSessionImages(w http.ResponseWriter, r *http.Request, s
 		if r.Method == http.MethodPost {
 			h.handleUploadImageFromPath(w, r, store, sessionID)
 		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 		return
 	}
@@ -63,7 +63,7 @@ func (h *Handlers) HandleSessionImages(w http.ResponseWriter, r *http.Request, s
 		case http.MethodGet:
 			h.handleListImages(w, r, store, sessionID)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			methodNotAllowed(w)
 		}
 		return
 	}
@@ -75,7 +75,7 @@ func (h *Handlers) HandleSessionImages(w http.ResponseWriter, r *http.Request, s
 	case http.MethodDelete:
 		h.handleDeleteImage(w, r, store, sessionID, imagePath)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 	}
 }
 
@@ -90,14 +90,14 @@ func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, sto
 			writeErrorJSON(w, http.StatusRequestEntityTooLarge, "image_too_large", "Image exceeds 10MB limit")
 			return
 		}
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Failed to parse form")
 		return
 	}
 
 	// Get the file from the form
 	file, header, err := r.FormFile("image")
 	if err != nil {
-		http.Error(w, "No image file provided", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "No image file provided")
 		return
 	}
 	defer file.Close()
@@ -105,7 +105,7 @@ func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, sto
 	// Read file content
 	data, err := io.ReadAll(file)
 	if err != nil {
-		http.Error(w, "Failed to read image", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read image")
 		return
 	}
 
@@ -167,7 +167,7 @@ func (h *Handlers) handleListImages(w http.ResponseWriter, r *http.Request, stor
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to list images", "error", err, "session_id", sessionID)
 		}
-		http.Error(w, "Failed to list images", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to list images")
 		return
 	}
 
@@ -192,27 +192,27 @@ func (h *Handlers) handleListImages(w http.ResponseWriter, r *http.Request, stor
 func (h *Handlers) handleServeImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, imageID string) {
 	// Validate image ID to prevent path traversal
 	if strings.Contains(imageID, "/") || strings.Contains(imageID, "..") {
-		http.Error(w, "Invalid image ID", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid image ID")
 		return
 	}
 
 	imagePath, err := store.GetImagePath(sessionID, imageID)
 	if err != nil {
 		if err == session.ErrImageNotFound {
-			http.Error(w, "Image not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Image not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to get image path", "error", err, "session_id", sessionID, "image_id", imageID)
 		}
-		http.Error(w, "Failed to get image", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get image")
 		return
 	}
 
 	// Open the file
 	file, err := os.Open(imagePath)
 	if err != nil {
-		http.Error(w, "Image not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Image not found")
 		return
 	}
 	defer file.Close()
@@ -220,7 +220,7 @@ func (h *Handlers) handleServeImage(w http.ResponseWriter, r *http.Request, stor
 	// Get file info for size
 	stat, err := file.Stat()
 	if err != nil {
-		http.Error(w, "Failed to read image", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read image")
 		return
 	}
 
@@ -243,20 +243,20 @@ func (h *Handlers) handleServeImage(w http.ResponseWriter, r *http.Request, stor
 func (h *Handlers) handleDeleteImage(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID, imageID string) {
 	// Validate image ID to prevent path traversal
 	if strings.Contains(imageID, "/") || strings.Contains(imageID, "..") {
-		http.Error(w, "Invalid image ID", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid image ID")
 		return
 	}
 
 	err := store.DeleteImage(sessionID, imageID)
 	if err != nil {
 		if err == session.ErrImageNotFound {
-			http.Error(w, "Image not found", http.StatusNotFound)
+			writeErrorJSON(w, http.StatusNotFound, "", "Image not found")
 			return
 		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to delete image", "error", err, "session_id", sessionID, "image_id", imageID)
 		}
-		http.Error(w, "Failed to delete image", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to delete image")
 		return
 	}
 

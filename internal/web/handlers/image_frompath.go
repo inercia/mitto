@@ -30,7 +30,7 @@ func (h *Handlers) handleUploadImageFromPath(w http.ResponseWriter, r *http.Requ
 				"remote_addr", r.RemoteAddr,
 			)
 		}
-		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "This endpoint is only available from localhost")
 		return
 	}
 
@@ -44,19 +44,19 @@ func (h *Handlers) handleUploadImageFromPath(w http.ResponseWriter, r *http.Requ
 				"session_id", sessionID,
 			)
 		}
-		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "This endpoint is only available from localhost")
 		return
 	}
 
 	// Parse JSON body
 	var req UploadFromPathRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid JSON body")
 		return
 	}
 
 	if len(req.Paths) == 0 {
-		http.Error(w, "No paths provided", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "No paths provided")
 		return
 	}
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,6 +100,21 @@ func TestHandleUploadImageFromPath_InvalidJSON(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env.Error.Code != "bad_request" {
+		t.Errorf("code = %q, want %q", env.Error.Code, "bad_request")
+	}
+	if env.Error.Message != "Invalid JSON body" {
+		t.Errorf("message = %q, want %q", env.Error.Message, "Invalid JSON body")
+	}
 }
 
 func TestHandleUploadImageFromPath_EmptyPaths(t *testing.T) {
@@ -116,5 +132,20 @@ func TestHandleUploadImageFromPath_EmptyPaths(t *testing.T) {
 	// Should be bad request for empty paths
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var env2 struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env2); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env2.Error.Code != "bad_request" {
+		t.Errorf("code = %q, want %q", env2.Error.Code, "bad_request")
+	}
+	if env2.Error.Message != "No paths provided" {
+		t.Errorf("message = %q, want %q", env2.Error.Message, "No paths provided")
 	}
 }
