@@ -1410,7 +1410,14 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
           enabled: !processor.enabled,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          const data = await res.json();
+          throw new Error(data.error?.message || "request failed");
+        }
+        throw new Error(await res.text());
+      }
       await reloadFolderProcessors(workingDir);
     } catch (err) {
       setError("Failed to toggle processor: " + err.message);

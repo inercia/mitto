@@ -35,7 +35,7 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 
 	workingDir := r.URL.Query().Get("dir")
 	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "dir query parameter is required")
 		return
 	}
 
@@ -142,15 +142,15 @@ func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter,
 		Enabled bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "invalid JSON: "+err.Error())
 		return
 	}
 	if req.Dir == "" {
-		http.Error(w, "dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "dir is required")
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "name is required")
 		return
 	}
 
@@ -206,7 +206,7 @@ func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter,
 	if useInPlace {
 		// Single-document workspace file — update enabled field in-place.
 		if err := processors.UpdateProcessorFileEnabled(resolvedFilePath, req.Enabled); err != nil {
-			http.Error(w, "failed to update processor file: "+err.Error(), http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update processor file: "+err.Error())
 			return
 		}
 		if h.deps.Logger != nil {
@@ -216,7 +216,7 @@ func (h *Handlers) HandleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter,
 		// Multi-document file, global/builtin, or unresolvable processor —
 		// record override in the workspace .mittorc processors section.
 		if err := configPkg.SaveWorkspaceRCProcessorEnabled(req.Dir, req.Name, req.Enabled); err != nil {
-			http.Error(w, "failed to update workspace config: "+err.Error(), http.StatusInternalServerError)
+			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update workspace config: "+err.Error())
 			return
 		}
 		// Invalidate cache so the next read picks up the change.
