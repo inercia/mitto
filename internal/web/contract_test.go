@@ -38,10 +38,8 @@ func newContractServer(t *testing.T) *Server {
 	return s
 }
 
-// newContractMux builds a targeted http.ServeMux for the session base routes.
-// It registers only the routes needed for the 405 and envelope-shape tests,
-// avoiding the Go 1.26 conflict between /api/sessions/running (all-methods)
-// and GET /api/sessions/{id} (method-qualified wildcard).
+// newContractMux builds a targeted http.ServeMux for the session base routes,
+// registering only the routes needed for the 405 and envelope-shape tests.
 func newContractMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	// All-method dispatcher: handler-level 405 for unsupported methods.
@@ -56,11 +54,10 @@ func newContractMux(s *Server) *http.ServeMux {
 // pathParamRe replaces {param} segments with a concrete placeholder "x".
 var pathParamRe = regexp.MustCompile(`\{[^}]+\}`)
 
-// TestContract_RouteTableReachable verifies that every route declared in
-// s.apiRoutes is reachable (drift guard). Each route is checked in its own
-// fresh mux to avoid the Go 1.26 conflict between method-qualified wildcard
-// patterns and all-method specific patterns (e.g. /api/sessions/running vs
-// GET /api/sessions/{id}).
+// TestContract_RouteTableReachable registers the ENTIRE route table on a
+// single mux (mirroring server.go) and verifies that every declared route is
+// reachable. A panic during registration means there is a pattern conflict or
+// drift — the deferred recover converts it into a clear t.Fatalf.
 func TestContract_RouteTableReachable(t *testing.T) {
 	s := newContractServer(t)
 	csrfMgr := middleware.NewCSRFManager()
@@ -71,16 +68,25 @@ func TestContract_RouteTableReachable(t *testing.T) {
 		t.Fatal("apiRoutes returned no routes")
 	}
 
-	for _, rt := range routes {
-		rt := rt // capture
-		t.Run(rt.pattern, func(t *testing.T) {
-			mux := http.NewServeMux()
+	mux := http.NewServeMux()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("route table panics on single-mux registration (conflict/drift): %v", r)
+			}
+		}()
+		for _, rt := range routes {
 			pattern := rt.pattern
 			if rt.method != "" {
 				pattern = rt.method + " " + pattern
 			}
 			mux.Handle(pattern, rt.handler)
+		}
+	}()
 
+	for _, rt := range routes {
+		rt := rt // capture
+		t.Run(rt.pattern, func(t *testing.T) {
 			method := rt.method
 			if method == "" {
 				method = http.MethodGet
