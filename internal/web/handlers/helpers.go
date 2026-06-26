@@ -107,7 +107,7 @@ func writeErrorJSON(w http.ResponseWriter, status int, errorCode, message string
 // Returns true if successful, false if there was an error (error response already sent).
 func parseJSONBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body: "+err.Error())
 		return false
 	}
 	return true

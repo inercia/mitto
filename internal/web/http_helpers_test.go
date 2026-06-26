@@ -240,8 +240,20 @@ func TestParseJSONBody_InvalidJSON(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("parseJSONBody() status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
-	if !strings.Contains(w.Body.String(), "Invalid request body") {
-		t.Errorf("parseJSONBody() body should contain 'Invalid request body', got %q", w.Body.String())
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if !strings.Contains(resp.Error.Message, "Invalid request body") {
+		t.Errorf("error.message = %q, should contain %q", resp.Error.Message, "Invalid request body")
 	}
 }
 

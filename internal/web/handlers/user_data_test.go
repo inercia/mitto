@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/conversation"
@@ -177,6 +178,40 @@ func TestHandlePutSessionUserData_EmptyData(t *testing.T) {
 	// Should succeed
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestHandleUserData_InvalidBody(t *testing.T) {
+	// Use a valid session so the handler reaches parseJSONBody, not short-circuit on not-found.
+	_, h := newUserDataHandlers(t, &session.Metadata{
+		SessionID:  "20260131-120000-abcd1234",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/20260131-120000-abcd1234/user-data", bytes.NewReader([]byte("{invalid json}")))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandlePutSessionUserData(w, req, "20260131-120000-abcd1234")
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if !strings.Contains(resp.Error.Message, "Invalid request body") {
+		t.Errorf("error.message = %q, should contain %q", resp.Error.Message, "Invalid request body")
 	}
 }
 
