@@ -53,14 +53,14 @@ func (h *Handlers) HandleScanAgents(w http.ResponseWriter, r *http.Request) {
 
 	agentsDir, err := appdir.AgentsDir()
 	if err != nil {
-		http.Error(w, "Failed to get agents directory: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get agents directory: "+err.Error())
 		return
 	}
 
 	mgr := agents.NewManager(agentsDir, h.deps.Logger)
 	allAgents, err := mgr.ListAgents()
 	if err != nil {
-		http.Error(w, "Failed to list agents: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to list agents: "+err.Error())
 		return
 	}
 
@@ -98,31 +98,31 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 
 	// Reject saves when config is read-only (loaded from --config file)
 	if h.deps.ConfigReadOnly {
-		http.Error(w, "Configuration is read-only (loaded from config file)", http.StatusForbidden)
+		writeErrorJSON(w, http.StatusForbidden, "", "Configuration is read-only (loaded from config file)")
 		return
 	}
 
 	var req AgentConfirmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body: "+err.Error())
 		return
 	}
 
 	if len(req.Agents) == 0 {
-		http.Error(w, "No agents selected", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "No agents selected")
 		return
 	}
 
 	// Load current settings from disk
 	settingsPath, err := appdir.SettingsPath()
 	if err != nil {
-		http.Error(w, "Failed to get settings path: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get settings path: "+err.Error())
 		return
 	}
 
 	var settings configPkg.Settings
 	if err := fileutil.ReadJSON(settingsPath, &settings); err != nil {
-		http.Error(w, "Failed to load settings: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to load settings: "+err.Error())
 		return
 	}
 
@@ -162,7 +162,7 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 
 	// Persist updated settings
 	if err := configPkg.SaveSettings(&settings); err != nil {
-		http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save settings: "+err.Error())
 		return
 	}
 
