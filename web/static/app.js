@@ -1582,8 +1582,12 @@ function App() {
           body: JSON.stringify({ working_dir: workingDir, group: group || "" }),
         });
         if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          showToast({ style: "error", title: text || "Failed to move folder to group" });
+          let msg = "Failed to move folder to group";
+          try {
+            const data = await res.json();
+            msg = data.error?.message || msg;
+          } catch (_) { /* keep default */ }
+          showToast({ style: "error", title: msg });
           return;
         }
         invalidateConfigCache();

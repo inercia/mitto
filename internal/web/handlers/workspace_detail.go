@@ -34,7 +34,7 @@ type EffectiveRunnerConfigResponse struct {
 func (h *Handlers) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Request, uuid string) {
 	ws := h.deps.SessionManager.GetWorkspaceByUUID(uuid)
 	if ws == nil {
-		http.Error(w, "Workspace not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
 		return
 	}
 
@@ -67,13 +67,13 @@ func (h *Handlers) handleRestartWorkspaceACP(w http.ResponseWriter, r *http.Requ
 	// Verify workspace exists
 	ws := h.deps.SessionManager.GetWorkspaceByUUID(workspaceUUID)
 	if ws == nil {
-		http.Error(w, "Workspace not found", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
 		return
 	}
 
 	// Check if the process manager exists (nil RestartWorkspaceACP means unavailable).
 	if h.deps.RestartWorkspaceACP == nil {
-		http.Error(w, "ACP process manager not available", http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "ACP process manager not available")
 		return
 	}
 
@@ -84,7 +84,7 @@ func (h *Handlers) handleRestartWorkspaceACP(w http.ResponseWriter, r *http.Requ
 				"workspace_uuid", workspaceUUID,
 				"error", err)
 		}
-		http.Error(w, "Failed to restart ACP: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to restart ACP: "+err.Error())
 		return
 	}
 
@@ -117,20 +117,20 @@ func (h *Handlers) HandleFolderGroup(w http.ResponseWriter, r *http.Request) {
 		Group      string `json:"group"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 
 	workingDir := strings.TrimSpace(req.WorkingDir)
 	group := strings.TrimSpace(req.Group)
 	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 
 	// Validate that this is a known workspace directory.
 	if h.deps.SessionManager.GetWorkspace(workingDir) == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
 		return
 	}
 

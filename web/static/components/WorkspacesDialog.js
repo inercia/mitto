@@ -422,7 +422,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
       secureFetch(apiUrl(`/api/workspaces/${selectedWorkspace.uuid}/effective-runner-config`))
-        .then((r) => r.json())
+        .then((r) => (r.ok ? r.json() : null))
         .then((data) => setEffectiveConfig(data))
         .catch(() => {});
     }
@@ -623,8 +623,12 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
         method: "POST",
       });
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text);
+        let msg = "Failed to restart ACP";
+        try {
+          const data = await res.json();
+          msg = data.error?.message || msg;
+        } catch (_) { /* keep default */ }
+        throw new Error(msg);
       }
       setNeedsRestart(false);
     } catch (err) {
