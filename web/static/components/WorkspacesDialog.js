@@ -931,7 +931,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             });
             if (!metaRes.ok) {
               const metaErr = await metaRes.json().catch(() => ({}));
-              throw new Error(metaErr.error || "Failed to save workspace metadata");
+              throw new Error(metaErr.error?.message || "Failed to save workspace metadata");
             }
           } catch (metaErr) {
             setError("Failed to save metadata: " + metaErr.message);
@@ -959,7 +959,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, initialWorkingDir, i
             });
             if (!schemaRes.ok) {
               const schemaErr = await schemaRes.json().catch(() => ({}));
-              throw new Error(schemaErr.error || "Failed to save user data schema");
+              throw new Error(schemaErr.error?.message || "Failed to save user data schema");
             }
           } catch (schemaErr) {
             setError("Failed to save user data schema: " + schemaErr.message);

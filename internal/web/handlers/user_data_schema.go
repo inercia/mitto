@@ -26,7 +26,7 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaGet(w http.ResponseWriter, r *ht
 	// Get the working directory from query parameter
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		http.Error(w, "working_dir query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir query parameter is required")
 		return
 	}
 
@@ -34,7 +34,7 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaGet(w http.ResponseWriter, r *ht
 	workingDir = strings.TrimSpace(workingDir)
 	workspace := h.deps.SessionManager.GetWorkspace(workingDir)
 	if workspace == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
 		return
 	}
 
@@ -64,11 +64,11 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *ht
 		Fields     []config.UserDataSchemaField `json:"fields"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
@@ -76,18 +76,18 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *ht
 	// Validate that this is a known workspace
 	workspace := h.deps.SessionManager.GetWorkspace(req.WorkingDir)
 	if workspace == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
 		return
 	}
 
 	// Validate each field
 	for i, f := range req.Fields {
 		if strings.TrimSpace(f.Name) == "" {
-			http.Error(w, fmt.Sprintf("field[%d]: name is required", i), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("field[%d]: name is required", i))
 			return
 		}
 		if f.Type != "" && !f.Type.IsValid() {
-			http.Error(w, fmt.Sprintf("field[%d]: invalid type %q (must be 'string' or 'url')", i, f.Type), http.StatusBadRequest)
+			writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("field[%d]: invalid type %q (must be 'string' or 'url')", i, f.Type))
 			return
 		}
 	}
@@ -96,7 +96,7 @@ func (h *Handlers) HandleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *ht
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to save workspace user data schema", "working_dir", req.WorkingDir, "error", err)
 		}
-		http.Error(w, "Failed to save user data schema: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save user data schema: "+err.Error())
 		return
 	}
 

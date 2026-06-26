@@ -25,7 +25,7 @@ func (h *Handlers) HandleWorkspaceMetadata(w http.ResponseWriter, r *http.Reques
 func (h *Handlers) handleWorkspaceMetadataGet(w http.ResponseWriter, r *http.Request) {
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
-		http.Error(w, "working_dir query parameter is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir query parameter is required")
 		return
 	}
 
@@ -34,7 +34,7 @@ func (h *Handlers) handleWorkspaceMetadataGet(w http.ResponseWriter, r *http.Req
 	// Validate that this is a known workspace
 	workspace := h.deps.SessionManager.GetWorkspace(workingDir)
 	if workspace == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
 		return
 	}
 
@@ -67,11 +67,11 @@ func (h *Handlers) handleWorkspaceMetadataPut(w http.ResponseWriter, r *http.Req
 		Group       string `json:"group"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
 		return
 	}
 	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
 		return
 	}
 	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
@@ -79,7 +79,7 @@ func (h *Handlers) handleWorkspaceMetadataPut(w http.ResponseWriter, r *http.Req
 	// Validate that this is a known workspace
 	workspace := h.deps.SessionManager.GetWorkspace(req.WorkingDir)
 	if workspace == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		writeErrorJSON(w, http.StatusNotFound, "", "Unknown workspace")
 		return
 	}
 
@@ -87,7 +87,7 @@ func (h *Handlers) handleWorkspaceMetadataPut(w http.ResponseWriter, r *http.Req
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to save workspace metadata", "working_dir", req.WorkingDir, "error", err)
 		}
-		http.Error(w, "Failed to save metadata: "+err.Error(), http.StatusInternalServerError)
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to save metadata: "+err.Error())
 		return
 	}
 

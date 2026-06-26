@@ -191,6 +191,21 @@ func TestHandleWorkspaceUserDataSchema_NoWorkspace(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
 	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
+	}
+	if resp.Error.Message != "Unknown workspace" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Unknown workspace")
+	}
 }
 
 func TestHandleWorkspaceUserDataSchema_MissingParam(t *testing.T) {
@@ -203,5 +218,20 @@ func TestHandleWorkspaceUserDataSchema_MissingParam(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if resp.Error.Message != "working_dir query parameter is required" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "working_dir query parameter is required")
 	}
 }
