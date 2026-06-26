@@ -290,3 +290,74 @@ func TestContract_ErrorEnvelopeShape(t *testing.T) {
 		})
 	}
 }
+
+// TestContract_ErrorEnvelopeShape_NonSession broadens the error-envelope
+// convention check to non-session resources (beads/issues + workspaces),
+// driven through the FULL route-table mux. Each case verifies that early
+// validation failures on these handlers produce the canonical
+// {error:{code,message}} envelope — no fixtures or bd DB required.
+func TestContract_ErrorEnvelopeShape_NonSession(t *testing.T) {
+	s := newContractServer(t)
+	csrfMgr := middleware.NewCSRFManager()
+	fileServer := NewFileServer(s.sessionManager, nil)
+	routes := s.apiRoutes(nil, csrfMgr, fileServer)
+
+	// Register the full route table on a single mux (same as MethodNotAllowed_AllRoutes).
+	mux := http.NewServeMux()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("route table panics on single-mux registration (conflict/drift): %v", r)
+			}
+		}()
+		for _, rt := range routes {
+			pattern := rt.pattern
+			if rt.method != "" {
+				pattern = rt.method + " " + pattern
+			}
+			mux.Handle(pattern, rt.handler)
+		}
+	}()
+
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"POST issues malformed body", http.MethodPost, "/api/issues", "INVALID", http.StatusBadRequest, "bad_request"},
+		{"PUT issues/config missing working_dir", http.MethodPut, "/api/issues/config", "{}", http.StatusBadRequest, "bad_request"},
+		{"GET workspace metadata unknown uuid", http.MethodGet, "/api/workspaces/nonexistent/metadata", "", http.StatusNotFound, "not_found"},
+		{"PUT workspace metadata unknown uuid", http.MethodPut, "/api/workspaces/nonexistent/metadata", "{}", http.StatusNotFound, "not_found"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodyReader io.Reader
+			if tc.body != "" {
+				bodyReader = strings.NewReader(tc.body)
+			}
+			req := httptest.NewRequest(tc.method, tc.path, bodyReader)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != tc.wantStatus {
+				t.Errorf("Status = %d, want %d (body=%q)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			var env ctErr
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("body is not JSON envelope: %v (body=%q)", err, w.Body.String())
+			}
+			if env.Error.Code == "" {
+				t.Errorf("error.code is empty, want %q", tc.wantCode)
+			} else if env.Error.Code != tc.wantCode {
+				t.Errorf("error.code = %q, want %q", env.Error.Code, tc.wantCode)
+			}
+			if env.Error.Message == "" {
+				t.Error("error.message is empty")
+			}
+		})
+	}
+}
