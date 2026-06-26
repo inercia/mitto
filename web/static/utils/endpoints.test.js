@@ -209,5 +209,30 @@ describe("endpoints registry", () => {
     test("misc.uiPreferences", () => expect(endpoints.misc.uiPreferences()).toBe("/api/ui-preferences"));
     test("misc.csrfToken", () => expect(endpoints.misc.csrfToken()).toBe("/api/csrf-token"));
     test("misc.saveFileToPath", () => expect(endpoints.misc.saveFileToPath()).toBe("/api/save-file-to-path"));
+
+    test("events.ws returns ws(s):// URL ending in /api/events", () => {
+      window.mittoApiPrefix = "";
+      const url = endpoints.events.ws();
+      expect(url).toMatch(/^wss?:\/\//);
+      expect(url).toMatch(/\/api\/events$/);
+    });
+    test("sessions.ws returns ws(s):// URL ending in /api/sessions/abc/ws", () => {
+      window.mittoApiPrefix = "";
+      const url = endpoints.sessions.ws("abc");
+      expect(url).toMatch(/^wss?:\/\//);
+      expect(url).toMatch(/\/api\/sessions\/abc\/ws$/);
+    });
+    test("events.ws includes prefix when set", () => {
+      window.mittoApiPrefix = "/mitto";
+      const url = endpoints.events.ws();
+      expect(url).toContain("/mitto");
+      expect(url).toMatch(/\/api\/events$/);
+      window.mittoApiPrefix = "";
+    });
+    test("sessions.ws encodes special chars in id", () => {
+      window.mittoApiPrefix = "";
+      const url = endpoints.sessions.ws("a/b");
+      expect(url).toMatch(/\/api\/sessions\/a%2Fb\/ws$/);
+    });
   });
 });

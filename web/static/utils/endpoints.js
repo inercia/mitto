@@ -10,7 +10,7 @@
  *   const url = endpoints.sessions.queue(id);          // GET/POST queue
  *   const url = endpoints.issues.list({ working_dir }); // GET with QS
  */
-import { apiUrl } from "./api.js";
+import { apiUrl, wsUrl } from "./api.js";
 
 /** Build a query string from a params object, omitting null/undefined/"" values. */
 function qs(params) {
@@ -53,7 +53,7 @@ export const endpoints = {
     update:         (id)                => apiUrl(`/api/sessions/${enc(id)}`),
     remove:         (id)                => apiUrl(`/api/sessions/${enc(id)}`),
     events:         (id, params)        => apiUrl(`/api/sessions/${enc(id)}/events`) + qs(params),
-    ws:             (id)                => apiUrl(`/api/sessions/${enc(id)}/ws`),
+    ws:             (id)                => wsUrl(`/api/sessions/${enc(id)}/ws`),
     changes:        (id)                => apiUrl(`/api/sessions/${enc(id)}/changes`),
     settings:       (id)                => apiUrl(`/api/sessions/${enc(id)}/settings`),
     periodic:       (id)                => apiUrl(`/api/sessions/${enc(id)}/periodic`),
@@ -115,6 +115,11 @@ export const endpoints = {
   runners: {
     supported: () => apiUrl("/api/supported-runners"),
     defaults:  () => apiUrl("/api/runner-defaults"),
+  },
+
+  /** Global WebSocket event stream. */
+  events: {
+    ws: () => wsUrl("/api/events"),
   },
 
   /** Miscellaneous / top-level utility endpoints. */

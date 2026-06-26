@@ -46,7 +46,7 @@ import {
   redirectToLogin,
 } from "../utils/csrf.js";
 
-import { apiUrl, wsUrl, getApiPrefix } from "../utils/api.js";
+import { getApiPrefix } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 
 import { isNativeApp } from "../utils/native.js";
@@ -3232,7 +3232,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         return sessionWsRefs.current[sessionId];
       }
 
-      const ws = new WebSocket(wsUrl(`/api/sessions/${sessionId}/ws`));
+      const ws = new WebSocket(endpoints.sessions.ws(sessionId));
       const wsId = Math.random().toString(36).substring(2, 8); // Debug ID for this connection
       ws._debugId = wsId;
 
@@ -4484,7 +4484,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Connect to global events WebSocket
   const connectToEvents = useCallback(() => {
-    const socket = new WebSocket(wsUrl("/api/events"));
+    const socket = new WebSocket(endpoints.events.ws());
 
     socket.onopen = () => {
       setEventsConnected(true);
@@ -4882,7 +4882,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         }, timeout);
 
         // Create new WebSocket connection
-        const ws = new WebSocket(wsUrl(`/api/sessions/${sessionId}/ws`));
+        const ws = new WebSocket(endpoints.sessions.ws(sessionId));
         const wsId = Math.random().toString(36).substring(2, 8);
         ws._debugId = wsId;
 
