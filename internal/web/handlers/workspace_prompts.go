@@ -271,6 +271,14 @@ func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Requ
 
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Rejected workspace-prompts GET: missing working_dir",
+				"method", r.Method,
+				"raw_query", r.URL.RawQuery,
+				"user_agent", r.UserAgent(),
+				"referer", r.Referer(),
+			)
+		}
 		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir query parameter is required")
 		return
 	}
