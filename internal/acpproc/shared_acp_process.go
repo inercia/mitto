@@ -110,10 +110,17 @@ const (
 	// the full retry budget on an unresponsive process. A single successful RPC
 	// resets the counter.
 	sessionSaturationTimeoutThreshold = 3
-	// sessionSaturationCooldown is how long the saturated flag holds before a probe
-	// RPC is allowed through again. Kept short so a recovered process resumes serving
-	// quickly; a probe failure re-trips the flag.
-	sessionSaturationCooldown = 30 * time.Second
+	// sessionSaturationCooldownBase is the initial cooldown duration after the first
+	// saturation trip. The cooldown doubles each time a post-cooldown probe also times
+	// out (escalating saturation, mitto-13ck.2): level 1 → 30s, level 2 → 60s,
+	// level 3 → 120s, capped at sessionSaturationCooldownMax. A successful RPC resets
+	// the level to 0, reverting to the base for the next saturation event.
+	sessionSaturationCooldownBase = 30 * time.Second
+	// sessionSaturationCooldownMax is the upper bound on the escalating cooldown
+	// (mitto-13ck.2). At this cap a spaced-out series of failures can drain at most
+	// ~325s (one ~25s probe + 5min cooldown) per event rather than the unbounded tail
+	// of the pre-fix flat-cooldown design.
+	sessionSaturationCooldownMax = 5 * time.Minute
 
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
@@ -212,9 +219,22 @@ type SharedACPProcess struct {
 	// consecutive timeouts the process is flagged saturated until saturatedUntil,
 	// causing new start/resume RPCs to fail fast. Cleared on the next successful RPC
 	// or when the cooldown elapses. Guarded by saturationMu.
+	//
+	// saturationLevel tracks how many times saturation has been tripped without a
+	// successful RPC in between. Each trip (including post-cooldown probe timeouts)
+	// increments the level, doubling the cooldown from sessionSaturationCooldownBase
+	// up to sessionSaturationCooldownMax. A successful RPC resets level to 0.
+	//
+	// inProbe is true during the single-attempt probe window that opens when a cooldown
+	// elapses: the next NewSession RPC is capped to ONE attempt so a still-hung process
+	// costs ~25s (one attempt), not ~75s (three). A probe timeout immediately escalates
+	// the cooldown (level+1) without waiting for the full threshold. A probe success
+	// resets all saturation state.
 	saturationMu           sync.Mutex
 	consecutiveRPCTimeouts int
 	saturatedUntil         time.Time
+	saturationLevel        int
+	inProbe                bool
 
 	// Restart tracking
 	restartMu    sync.Mutex
@@ -722,25 +742,59 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	return "", nil
 }
 
-// recordRPCTimeout records a NewSession/LoadSession RPC timeout. After
-// sessionSaturationTimeoutThreshold consecutive timeouts, the process is flagged
-// saturated for sessionSaturationCooldown (mitto-13ck.2).
+// saturationCooldownForLevel returns the escalating cooldown duration for the given
+// saturation level (mitto-13ck.2). Level 1 → base (30s), level 2 → 2×base (60s),
+// level 3 → 4×base (120s), and so on, capped at sessionSaturationCooldownMax (5min).
+// Guards against int64 overflow via an early cap at shift≥25.
+func saturationCooldownForLevel(level int) time.Duration {
+	if level <= 0 {
+		return sessionSaturationCooldownBase
+	}
+	shift := level - 1
+	if shift >= 25 {
+		// 30s × 2^25 would overflow int64 nanoseconds; return the cap early.
+		return sessionSaturationCooldownMax
+	}
+	d := sessionSaturationCooldownBase * time.Duration(1<<uint(shift))
+	if d > sessionSaturationCooldownMax || d <= 0 {
+		return sessionSaturationCooldownMax
+	}
+	return d
+}
+
+// recordRPCTimeout records a NewSession/LoadSession RPC timeout (mitto-13ck.2).
+// In normal mode the consecutive counter increments toward the threshold; once the
+// threshold is reached, saturationLevel is incremented and a fresh cooldown is set.
+// In probe mode (inProbe=true) a single timeout immediately escalates the level and
+// re-saturates, because the probe has already confirmed the process is still hung.
 func (p *SharedACPProcess) recordRPCTimeout() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
+	if p.inProbe {
+		// Probe timed out: immediately escalate and re-saturate.
+		p.inProbe = false
+		p.saturationLevel++
+		p.consecutiveRPCTimeouts = 0
+		p.saturatedUntil = time.Now().Add(saturationCooldownForLevel(p.saturationLevel))
+		return
+	}
 	p.consecutiveRPCTimeouts++
 	if p.consecutiveRPCTimeouts >= sessionSaturationTimeoutThreshold {
-		p.saturatedUntil = time.Now().Add(sessionSaturationCooldown)
+		p.saturationLevel++
+		p.saturatedUntil = time.Now().Add(saturationCooldownForLevel(p.saturationLevel))
 	}
 }
 
-// recordRPCSuccess clears saturation tracking after a successful NewSession/
-// LoadSession RPC (mitto-13ck.2).
+// recordRPCSuccess clears all saturation tracking after a successful NewSession/
+// LoadSession RPC (mitto-13ck.2). Resets the saturation level so the next event
+// starts again from the base cooldown (30s).
 func (p *SharedACPProcess) recordRPCSuccess() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
 	p.consecutiveRPCTimeouts = 0
 	p.saturatedUntil = time.Time{}
+	p.saturationLevel = 0
+	p.inProbe = false
 }
 
 // shouldFailFastCreateAttempt decides whether a NewSession retry attempt should
@@ -763,8 +817,10 @@ func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, 
 }
 
 // isSaturated reports whether the shared process is currently flagged saturated.
-// When the cooldown has elapsed it self-clears and returns false so a single
-// probe RPC can re-evaluate the process's health (mitto-13ck.2).
+// When the cooldown has elapsed it self-clears and sets inProbe=true so the next
+// NewSession call is capped to a single probe attempt (mitto-13ck.2). The probe
+// outcome drives further state transitions: a timeout re-escalates the cooldown
+// (recordRPCTimeout) and a success resets all state (recordRPCSuccess).
 func (p *SharedACPProcess) isSaturated() bool {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
@@ -772,8 +828,11 @@ func (p *SharedACPProcess) isSaturated() bool {
 		return false
 	}
 	if time.Now().After(p.saturatedUntil) {
+		// Cooldown elapsed: enter probe mode; the level is preserved until a
+		// successful RPC resets it, so a probe timeout can escalate from here.
 		p.saturatedUntil = time.Time{}
 		p.consecutiveRPCTimeouts = 0
+		p.inProbe = true
 		return false
 	}
 	return true
@@ -815,16 +874,28 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
 	}
 
+	// Probe mode (mitto-13ck.2): isSaturated() sets inProbe when a cooldown elapses.
+	// Cap the retry loop to ONE attempt so a still-hung process costs ~25s (one
+	// attempt budget), not ~75s (three attempts), to re-confirm. A probe timeout
+	// re-escalates the cooldown via recordRPCTimeout; success resets all state.
+	effectiveMaxAttempts := sessionCreateMaxAttempts
+	p.saturationMu.Lock()
+	if p.inProbe {
+		effectiveMaxAttempts = 1
+	}
+	p.saturationMu.Unlock()
+
 	if cwd == "" {
 		cwd = "."
 	}
 
 	// Bounded retry-with-jitter loop (mitto-4no7): mirrors SetSessionModel's policy so
-	// transient deadline failures on session/new are retried up to sessionCreateMaxAttempts.
+	// transient deadline failures on session/new are retried up to effectiveMaxAttempts.
 	// Each attempt gets a fresh sessionCreateAttemptTimeout budget, preserving the
 	// documented 25s per-attempt create deadline (mitto-63o8) without regression.
+	// In probe mode effectiveMaxAttempts=1, limiting the probe to a single attempt.
 	var lastErr error
-	for attempt := 1; attempt <= sessionCreateMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= effectiveMaxAttempts; attempt++ {
 		// Honour caller cancellation before each attempt.
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, ctx.Err())
@@ -918,7 +989,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		}
 	}
 
-	return nil, fmt.Errorf("session/new failed after %d attempts: %w", sessionCreateMaxAttempts, lastErr)
+	return nil, fmt.Errorf("session/new failed after %d attempts: %w", effectiveMaxAttempts, lastErr)
 }
 
 // LoadSession attempts to load/resume an existing ACP session.

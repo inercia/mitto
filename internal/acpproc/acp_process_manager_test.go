@@ -1199,6 +1199,288 @@ func TestLoadSession_ExpiredContextNoSaturation(t *testing.T) {
 	}
 }
 
+// TestSaturationCooldownForLevel verifies the escalating-cooldown math (mitto-13ck.2):
+// level 1 → base (30s), level 2 → 2×base (60s), level 3 → 4×base (120s), with an
+// upper cap of sessionSaturationCooldownMax (5min). Level 0 and negative levels
+// return the base. Very high levels must not overflow and must return the cap.
+func TestSaturationCooldownForLevel(t *testing.T) {
+	base := sessionSaturationCooldownBase
+	max := sessionSaturationCooldownMax
+
+	cases := []struct {
+		level int
+		want  time.Duration
+	}{
+		{-1, base},
+		{0, base},
+		{1, base},        // 30s × 2^0 = 30s
+		{2, 2 * base},    // 30s × 2^1 = 60s
+		{3, 4 * base},    // 30s × 2^2 = 120s
+		{4, 8 * base},    // 30s × 2^3 = 240s
+		{5, max},         // 30s × 2^4 = 480s → capped at 300s
+		{100, max},       // very large level: must not overflow, must return cap
+		{1000, max},      // extreme level: same cap guarantee
+	}
+	for _, tc := range cases {
+		got := saturationCooldownForLevel(tc.level)
+		if got != tc.want {
+			t.Errorf("saturationCooldownForLevel(%d) = %v, want %v", tc.level, got, tc.want)
+		}
+	}
+}
+
+// TestSaturationStateMachine_EscalatingCooldown verifies that repeated saturation trips
+// grow the cooldown exponentially (mitto-13ck.2) and that a successful RPC resets the
+// level, reverting the cooldown to the base on the next event.
+func TestSaturationStateMachine_EscalatingCooldown(t *testing.T) {
+	p := &SharedACPProcess{}
+
+	// Trip saturation once (level 1 → 30s cooldown).
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	p.saturationMu.Lock()
+	lvl1 := p.saturationLevel
+	cd1 := time.Until(p.saturatedUntil)
+	p.saturationMu.Unlock()
+	if lvl1 != 1 {
+		t.Errorf("after first trip: saturationLevel = %d, want 1", lvl1)
+	}
+	wantCD1 := saturationCooldownForLevel(1)
+	if cd1 < wantCD1-time.Second || cd1 > wantCD1+time.Second {
+		t.Errorf("after level-1 trip: cooldown ≈ %v, want ≈ %v", cd1, wantCD1)
+	}
+
+	// Simulate cooldown elapsing → probe mode.
+	p.saturationMu.Lock()
+	p.saturatedUntil = time.Now().Add(-time.Millisecond)
+	p.saturationMu.Unlock()
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false after cooldown elapsed")
+	}
+	p.saturationMu.Lock()
+	if !p.inProbe {
+		t.Error("expected inProbe=true after cooldown self-clear")
+	}
+	p.saturationMu.Unlock()
+
+	// Probe timeout → level escalates to 2 (60s cooldown).
+	p.recordRPCTimeout()
+	p.saturationMu.Lock()
+	lvl2 := p.saturationLevel
+	inProbeAfter := p.inProbe
+	cd2 := time.Until(p.saturatedUntil)
+	p.saturationMu.Unlock()
+	if lvl2 != 2 {
+		t.Errorf("after probe timeout: saturationLevel = %d, want 2", lvl2)
+	}
+	if inProbeAfter {
+		t.Error("inProbe must be false after probe timeout (cleared by recordRPCTimeout)")
+	}
+	wantCD2 := saturationCooldownForLevel(2)
+	if cd2 < wantCD2-time.Second || cd2 > wantCD2+time.Second {
+		t.Errorf("after level-2 trip: cooldown ≈ %v, want ≈ %v", cd2, wantCD2)
+	}
+
+	// Simulate second cooldown elapsing → probe mode again.
+	p.saturationMu.Lock()
+	p.saturatedUntil = time.Now().Add(-time.Millisecond)
+	p.saturationMu.Unlock()
+	p.isSaturated() // triggers inProbe=true transition
+
+	// Second probe timeout → level escalates to 3 (120s cooldown).
+	p.recordRPCTimeout()
+	p.saturationMu.Lock()
+	lvl3 := p.saturationLevel
+	cd3 := time.Until(p.saturatedUntil)
+	p.saturationMu.Unlock()
+	if lvl3 != 3 {
+		t.Errorf("after second probe timeout: saturationLevel = %d, want 3", lvl3)
+	}
+	wantCD3 := saturationCooldownForLevel(3)
+	if cd3 < wantCD3-time.Second || cd3 > wantCD3+time.Second {
+		t.Errorf("after level-3 trip: cooldown ≈ %v, want ≈ %v", cd3, wantCD3)
+	}
+
+	// A successful RPC resets level to 0 and clears all state.
+	p.recordRPCSuccess()
+	p.saturationMu.Lock()
+	lvlReset := p.saturationLevel
+	ctrReset := p.consecutiveRPCTimeouts
+	probeReset := p.inProbe
+	untilReset := p.saturatedUntil
+	p.saturationMu.Unlock()
+	if lvlReset != 0 {
+		t.Errorf("after recordRPCSuccess: saturationLevel = %d, want 0", lvlReset)
+	}
+	if ctrReset != 0 {
+		t.Errorf("after recordRPCSuccess: consecutiveRPCTimeouts = %d, want 0", ctrReset)
+	}
+	if probeReset {
+		t.Error("after recordRPCSuccess: inProbe must be false")
+	}
+	if !untilReset.IsZero() {
+		t.Error("after recordRPCSuccess: saturatedUntil must be zero")
+	}
+
+	// After reset, next trip should again use level 1 (base cooldown).
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	p.saturationMu.Lock()
+	lvlAfterReset := p.saturationLevel
+	p.saturationMu.Unlock()
+	if lvlAfterReset != 1 {
+		t.Errorf("after success-reset + re-trip: saturationLevel = %d, want 1", lvlAfterReset)
+	}
+}
+
+// TestSaturationStateMachine_ProbeMode verifies that isSaturated() sets inProbe=true
+// when a cooldown elapses, and that a probe success fully resets all saturation state
+// (mitto-13ck.2). Distinct from TestSaturationStateMachine_EscalatingCooldown which
+// focuses on probe timeouts.
+func TestSaturationStateMachine_ProbeMode(t *testing.T) {
+	p := &SharedACPProcess{}
+
+	// Trip saturation then force cooldown expiry.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	p.saturationMu.Lock()
+	p.saturatedUntil = time.Now().Add(-time.Millisecond)
+	p.saturationMu.Unlock()
+
+	// isSaturated() should self-clear and set inProbe.
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false after cooldown elapsed")
+	}
+	p.saturationMu.Lock()
+	if !p.inProbe {
+		t.Error("expected inProbe=true after cooldown self-clear")
+	}
+	if p.consecutiveRPCTimeouts != 0 {
+		t.Errorf("expected consecutiveRPCTimeouts=0 after self-clear, got %d", p.consecutiveRPCTimeouts)
+	}
+	p.saturationMu.Unlock()
+
+	// A successful probe RPC resets everything (level, counter, probe flag).
+	p.recordRPCSuccess()
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false after probe success")
+	}
+	p.saturationMu.Lock()
+	if p.inProbe {
+		t.Error("inProbe must be false after probe success")
+	}
+	if p.saturationLevel != 0 {
+		t.Errorf("saturationLevel must be 0 after probe success, got %d", p.saturationLevel)
+	}
+	p.saturationMu.Unlock()
+}
+
+// TestNewSession_ProbeIsSingleAttempt verifies the probe-mode state invariant in
+// NewSession (mitto-13ck.2): when inProbe is true (post-cooldown), the saturation
+// state machine limits the caller to one attempt.
+//
+// Because a zero-value acp.ClientSideConnection NPE's when an RPC is actually
+// issued, this test exercises the state machine directly rather than calling
+// NewSession end-to-end. It verifies:
+//
+//  1. After cooldown expiry, isSaturated() sets inProbe=true.
+//  2. The probe decision (effectiveMaxAttempts=1) is driven by reading inProbe.
+//  3. A simulated probe timeout (recordRPCTimeout with inProbe=true) immediately
+//     escalates the cooldown level and clears inProbe, without waiting for the
+//     sessionSaturationTimeoutThreshold consecutive timeouts that the normal path requires.
+func TestNewSession_ProbeIsSingleAttempt(t *testing.T) {
+	p := &SharedACPProcess{}
+
+	// Trip saturation to level 1.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+	p.saturationMu.Lock()
+	lvlBefore := p.saturationLevel
+	p.saturationMu.Unlock()
+	if lvlBefore != 1 {
+		t.Fatalf("precondition: saturationLevel = %d, want 1", lvlBefore)
+	}
+
+	// Force cooldown expiry → isSaturated() sets inProbe=true.
+	p.saturationMu.Lock()
+	p.saturatedUntil = time.Now().Add(-time.Millisecond)
+	p.saturationMu.Unlock()
+	if p.isSaturated() {
+		t.Fatal("expected isSaturated()=false after cooldown elapsed")
+	}
+	p.saturationMu.Lock()
+	if !p.inProbe {
+		t.Fatal("expected inProbe=true after cooldown self-clear; test precondition not met")
+	}
+	p.saturationMu.Unlock()
+
+	// Verify that inProbe drives effectiveMaxAttempts=1 (mirrors the logic in NewSession).
+	p.saturationMu.Lock()
+	effectiveMaxAttempts := sessionCreateMaxAttempts
+	if p.inProbe {
+		effectiveMaxAttempts = 1
+	}
+	p.saturationMu.Unlock()
+	if effectiveMaxAttempts != 1 {
+		t.Errorf("effectiveMaxAttempts = %d when inProbe=true, want 1", effectiveMaxAttempts)
+	}
+
+	// Simulate the probe timing out (what NewSession would record after one hung attempt).
+	// A single recordRPCTimeout with inProbe=true must immediately escalate the level.
+	p.recordRPCTimeout()
+	p.saturationMu.Lock()
+	probeAfter := p.inProbe
+	lvlAfter := p.saturationLevel
+	p.saturationMu.Unlock()
+	if probeAfter {
+		t.Error("inProbe must be cleared by recordRPCTimeout (probe escalation path)")
+	}
+	if lvlAfter <= lvlBefore {
+		t.Errorf("saturationLevel must increase after probe timeout: before=%d after=%d", lvlBefore, lvlAfter)
+	}
+	// The new cooldown must reflect the escalated level.
+	wantCD := saturationCooldownForLevel(lvlAfter)
+	p.saturationMu.Lock()
+	cd := time.Until(p.saturatedUntil)
+	p.saturationMu.Unlock()
+	if cd < wantCD-time.Second || cd > wantCD+time.Second {
+		t.Errorf("after probe timeout: cooldown ≈ %v, want ≈ %v (level %d)", cd, wantCD, lvlAfter)
+	}
+}
+
+// TestSaturationCooldownCap verifies that the escalating cooldown is capped at
+// sessionSaturationCooldownMax regardless of how many probe-timeout trips occur
+// (mitto-13ck.2). Many successive escalations must never exceed the cap.
+func TestSaturationCooldownCap(t *testing.T) {
+	p := &SharedACPProcess{}
+
+	// Drive saturation to level 1 first.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		p.recordRPCTimeout()
+	}
+
+	// Simulate many probe-timeout escalations.
+	for round := 0; round < 20; round++ {
+		p.saturationMu.Lock()
+		p.saturatedUntil = time.Now().Add(-time.Millisecond)
+		p.saturationMu.Unlock()
+		p.isSaturated() // self-clear → inProbe=true
+		p.recordRPCTimeout() // probe timeout → escalate
+
+		p.saturationMu.Lock()
+		cd := time.Until(p.saturatedUntil)
+		p.saturationMu.Unlock()
+		// Cooldown must never exceed the cap (allow 1s tolerance for Now().Add latency).
+		if cd > sessionSaturationCooldownMax+time.Second {
+			t.Errorf("round %d: cooldown %v exceeds max %v", round, cd, sessionSaturationCooldownMax)
+		}
+	}
+}
+
 // TestAuxStartupJitter verifies the de-stagger jitter helper (mitto-xicp): values are
 // always in [0, max) for positive max, and 0 for non-positive max.
 func TestAuxStartupJitter(t *testing.T) {
